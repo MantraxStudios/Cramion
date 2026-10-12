@@ -23,6 +23,14 @@ namespace {
 
 bool technical(const std::string& component) { return component == "PrefabInstance" || component == "PrefabLink"; }
 
+// Un Bone Socket que sigue a su hueso: RenderSync le pone la Transform en
+// cada frame, asi que la suya no es un cambio propio ni se guarda la pose del
+// momento en el prefab.
+bool followsBone(Entity e) {
+    const BoneSocket* socket = e.tryGet<BoneSocket>();
+    return socket != nullptr && socket->mode == SocketMode::Follow && !socket->bone.empty();
+}
+
 json parse(const std::string& text) {
     json j = json::parse(text, nullptr, false);
     return j.is_object() ? j : json::object();
@@ -85,6 +93,79 @@ bool writeText(const std::filesystem::path& file, const std::string& text, std::
         return false;
     }
     return true;
+}
+
+// Cambia, en el JSON de un componente ya escrito, las referencias a entidades
+// (PropertyVisitor::entity) segun `remap`. El componente vivo solo da la
+// estructura (claves y listas): no se modifica.
+class JsonEntityRefRemapper final : public PropertyVisitor {
+public:
+    JsonEntityRefRemapper(json& data, const std::unordered_map<std::string, std::string>& remap)
+        : stack_{&data}, remap_(remap) {}
+
+    bool field(const Meta&, float&, const FloatRange&) override { return false; }
+    bool field(const Meta&, int&, int, int) override { return false; }
+    bool field(const Meta&, bool&) override { return false; }
+    bool field(const Meta&, std::string&) override { return false; }
+    bool field(const Meta&, core::Vec3&, Vec3Kind) override { return false; }
+    bool field(const Meta&, core::Vec2&, float) override { return false; }
+    bool enumeration(const Meta&, int&, std::span<const char* const>) override { return false; }
+    bool asset(const Meta&, assets::AssetRef&, assets::AssetType) override { return false; }
+    bool layerMask(const Meta&, std::uint32_t&) override { return false; }
+    bool entity(const Meta& m, Uuid&) override {
+        json* value = find(m);
+        if (value == nullptr || !value->is_string()) return false;
+        const auto it = remap_.find(value->get<std::string>());
+        if (it != remap_.end()) *value = it->second;
+        return false;
+    }
+    bool beginList(const Meta& m, std::size_t& count) override {
+        json* list = find(m);
+        if (list == nullptr || !list->is_array() || list->size() != count) return false;
+        lists_.push_back(list);
+        return true;
+    }
+    bool beginListItem(std::size_t index) override {
+        stack_.push_back(&(*lists_.back())[index]);
+        return true;
+    }
+    void endListItem() override { stack_.pop_back(); }
+    int endList() override {
+        lists_.pop_back();
+        return -1;
+    }
+
+private:
+    json* find(const Meta& m) {
+        json& in = *stack_.back();
+        if (!in.is_object()) return nullptr;
+        const auto it = in.find(m.key);
+        return it == in.end() ? nullptr : &*it;
+    }
+    std::vector<json*> stack_;
+    std::vector<json*> lists_;
+    const std::unordered_map<std::string, std::string>& remap_;
+};
+
+// Pasa las referencias a entidades del registro de `e` (entityRecord) por `remap`.
+void remapRecordRefs(World& world, Entity e, json& record, const std::unordered_map<std::string, std::string>& remap) {
+    if (remap.empty() || !record.contains("components") || !record["components"].is_object()) return;
+    json& components = record["components"];
+    for (auto it = components.begin(); it != components.end(); ++it) {
+        const ComponentType* type = ComponentRegistry::instance().find(it.key());
+        if (type == nullptr || !type->has(world, e.handle())) continue;
+        JsonEntityRefRemapper remapper(it.value(), remap);
+        type->reflect(world, e.handle(), remapper);
+    }
+}
+
+// UUID en el mundo -> id en el prefab de las entidades enlazadas de una instancia.
+std::unordered_map<std::string, std::string> worldToSource(const std::unordered_map<std::string, Entity>& links) {
+    std::unordered_map<std::string, std::string> out;
+    for (const auto& [source, e] : links) {
+        if (e.valid()) out[e.uuid().toString()] = source;
+    }
+    return out;
 }
 
 // Quita los enlaces de las instancias que haya dentro de `root` (no los suyos).
@@ -202,8 +283,12 @@ void recordOverrides(World& world, Entity root, const std::string& text) {
     PrefabInstance* instance = root.valid() ? root.tryGet<PrefabInstance>() : nullptr;
     if (instance == nullptr) return;
     const json prefab = parse(text);
-    std::set<std::string> overrides(instance->overrides.begin(), instance->overrides.end());
+    // Se recalculan desde cero (solo se llama con la misma revision): lo que
+    // vuelve a tener el valor del prefab deja de ser un cambio propio.
+    std::set<std::string> overrides;
     const auto links = linkedEntities(world, root);
+    // Las referencias a entidades de la instancia se comparan con los ids del prefab.
+    const auto to_source = worldToSource(links);
     for (const json& record : entitiesOf(prefab)) {
         if (!record.is_object()) continue;
         const std::string source = record.value("uuid", std::string{});
@@ -214,7 +299,9 @@ void recordOverrides(World& world, Entity root, const std::string& text) {
         }
         const Entity e = it->second;
         const bool is_root = e == root;
-        const json mine = entityRecord(world, e, true);
+        const bool follows = followsBone(e);
+        json mine = entityRecord(world, e, true);
+        remapRecordRefs(world, e, mine, to_source);
         for (const char* key : {"name", "active", "tag", "layer", "static"}) {
             if (is_root && std::string(key) == "name") continue;  // el nombre de la raiz es de la instancia
             if (mine.value(key, json()) != record.value(key, json())) overrides.insert(source + "|#" + key);
@@ -222,7 +309,7 @@ void recordOverrides(World& world, Entity root, const std::string& text) {
         const json& theirs = record.contains("components") ? record["components"] : json::object();
         const json& ours = mine["components"];
         for (const auto& [name, data] : ours.items()) {
-            if (technical(name) || (is_root && name == "Transform")) continue;
+            if (technical(name) || ((is_root || follows) && name == "Transform")) continue;
             if (!theirs.contains(name)) {
                 overrides.insert(source + "|+" + name);
                 continue;
@@ -303,6 +390,16 @@ void syncInstance(World& world, Entity root, const std::string& text) {
         if (e == root || in_prefab.count(source) != 0) continue;
         if (world.registry().valid(e.handle())) world.destroy(e);
     }
+    // Las referencias que vienen del prefab (ids del prefab) pasan a las
+    // entidades de esta instancia.
+    std::unordered_map<Uuid, Uuid> refs;
+    for (const auto& [source, e] : resolved) {
+        const Uuid id = Uuid::parse(source);
+        if (id.valid() && world.registry().valid(e.handle())) refs[id] = e.uuid();
+    }
+    for (const auto& [source, e] : resolved) {
+        if (world.registry().valid(e.handle())) world.remapEntityRefs(e, refs);
+    }
     root.get<PrefabInstance>().revision = prefab.value("revision", 0);
 }
 
@@ -327,9 +424,24 @@ std::string applyInstance(World& world, Entity root, const std::filesystem::path
         if (record.contains("components") && record["components"].contains("Transform")) root_transform = record["components"]["Transform"];
         break;
     }
+    // Los que siguen a un hueso guardan la Transform que ya tenian (la de
+    // reposo al crearlos), no la pose animada del momento.
+    std::unordered_map<std::string, json> bone_transforms;
+    for (const json& record : entitiesOf(previous)) {
+        if (!record.is_object() || !record.contains("components") || !record["components"].is_object()) continue;
+        const json& components = record["components"];
+        if (components.contains("BoneSocket") && components.contains("Transform")) {
+            bone_transforms[record.value("uuid", std::string{})] = components["Transform"];
+        }
+    }
+    // Las referencias entre entidades de la instancia se guardan con los ids
+    // del prefab: al instanciarlo (o sincronizar) apuntan a las nuevas copias.
+    std::unordered_map<std::string, std::string> to_source;
+    for (Entity e : entities) to_source[e.uuid().toString()] = e.get<PrefabLink>().source;
     json records = json::array();
     for (Entity e : entities) {
         json record = entityRecord(world, e, e == root);
+        remapRecordRefs(world, e, record, to_source);
         record["uuid"] = e.get<PrefabLink>().source;
         record["parent"] = e == root ? json(nullptr) : json(e.parent().get<PrefabLink>().source);
         json& components = record["components"];
@@ -341,13 +453,28 @@ std::string applyInstance(World& world, Entity root, const std::filesystem::path
             } else {
                 components["Transform"]["position"] = json::array({0.0f, 0.0f, 0.0f});
             }
+        } else if (e != root && components.contains("Transform") && followsBone(e)) {
+            if (const auto it = bone_transforms.find(record["uuid"].get<std::string>()); it != bone_transforms.end()) {
+                components["Transform"] = it->second;
+            }
         }
         records.push_back(std::move(record));
     }
     PrefabInstance& instance = root.get<PrefabInstance>();
     Uuid uuid = Uuid::parse(previous.value("uuid", std::string{}));
     if (!uuid.valid()) uuid = instance.prefab.uuid.valid() ? instance.prefab.uuid : Uuid::generate();
-    json out;
+    // Las claves que no son de este archivo (el bloque "blueprint" de un
+    // Blueprint de actor, o lo que anada otra version) se conservan tal cual.
+    // Un prefab normal no tiene ninguna: sale igual que antes.
+    json out = json::object();
+    for (auto it = previous.begin(); it != previous.end(); ++it) {
+        const std::string& key = it.key();
+        if (key == "format" || key == "version" || key == "uuid" || key == "name" || key == "revision" ||
+            key == "entities") {
+            continue;
+        }
+        out[key] = it.value();
+    }
     out["format"] = "CramionPrefab";
     out["version"] = 1;
     out["uuid"] = uuid.toString();

@@ -100,8 +100,10 @@ std::vector<std::string> EditorApp::unsavedWorkSummary() const {
     if (!has_project_) return items;
     if (playing()) items.emplace_back("Se sale del modo Play (lo cambiado en Play no se guarda)");
     int prefabs = 0;
+    int blueprints = 0;
     for (const Workspace& ws : workspaces_) {
         if (ws.kind == WorkspaceKind::Prefab && (ws.id == world_workspace_ ? dirty_ : ws.dirty)) ++prefabs;
+        if (ws.kind == WorkspaceKind::Blueprint && blueprintDirty(ws.id)) ++blueprints;
     }
     // La escena: con su mundo cargado, dirty_; si se esta en otra pestana,
     // lo que guardo su espacio.
@@ -114,6 +116,7 @@ std::vector<std::string> EditorApp::unsavedWorkSummary() const {
         items.push_back("Escena \"" + world_.sceneName() + "\"" + (scene_path_.empty() ? " (nueva: se guarda en Assets/Scenes)" : ""));
     }
     if (prefabs > 0) items.push_back(std::to_string(prefabs) + " prefab(s) abiertos con cambios");
+    if (blueprints > 0) items.push_back(std::to_string(blueprints) + " Blueprint(s) abiertos con cambios");
     int scripts = 0;
     for (const ScriptTab& tab : script_tabs_) {
         if (tab.text != tab.saved) ++scripts;
@@ -144,14 +147,22 @@ bool EditorApp::saveEverythingForUpdate(std::string* error) {
     for (ScriptTab& tab : script_tabs_) {
         if (tab.text != tab.saved && !saveScript(tab)) fail("script " + tab.relative);
     }
+    // El editor de Visual Script ya no guarda solo (Compilar/Guardar): lo pendiente, ahora.
+    if (graphDoc(GraphKind::VisualScript).dirty) saveGraphDoc(GraphKind::VisualScript);
     // Prefabs abiertos con cambios (como al cerrar el editor).
     std::vector<int> dirty_prefabs;
     for (const Workspace& ws : workspaces_) {
-        if (ws.kind == WorkspaceKind::Prefab && (ws.id == world_workspace_ ? dirty_ : ws.dirty)) dirty_prefabs.push_back(ws.id);
+        if (prefabLikeDirty(ws.id)) dirty_prefabs.push_back(ws.id);
     }
     for (const int id : dirty_prefabs) {
+        const Workspace* ws = findWorkspace(id);
+        const bool blueprint = ws != nullptr && ws->kind == WorkspaceKind::Blueprint;
         loadWorkspaceWorld(id);
-        if (!savePrefabWorkspace()) fail("un prefab abierto");
+        if (blueprint) {
+            if (!saveBlueprintWorkspace()) fail("un Blueprint abierto");
+        } else if (!savePrefabWorkspace()) {
+            fail("un prefab abierto");
+        }
     }
     returnToSceneWorkspace();
     if (dirty_) {

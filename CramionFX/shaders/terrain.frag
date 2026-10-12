@@ -5,7 +5,22 @@
 // 8 capas mezcladas por los mapas de pesos (splat), cada una con su color o
 // textura (con una segunda escala para romper la repeticion), normal map,
 // rugosidad y metal. Despues, lluvia, charcos, humedad y decals como
-// cualquier suelo (gbuffer_surface.glsl).
+// cualquier suelo (gbuffer_surface.glsl). Bajo la hierba de la GPU, el suelo
+// toma el color del cesped (oscuro de cerca, el de las puntas de lejos): los
+// huecos entre briznas y la hierba lejana se leen como pelo, no como tierra.
+
+// La misma que terrain.vert (set 0 del frame: visible en el fragmento).
+layout(set = 0, binding = 0) uniform CameraBuffer {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    vec4 position;
+    mat4 unjittered_view_projection;
+    mat4 previous_view_projection;
+    vec4 jitter;
+    uvec4 motion;
+} camera;
 
 layout(set = 1, binding = 0) uniform sampler2D heightmap;
 layout(set = 1, binding = 1) uniform TerrainParams {
@@ -14,6 +29,8 @@ layout(set = 1, binding = 1) uniform TerrainParams {
     vec4 layer_params[8];    // x repeticion (m), y rugosidad, z metal, w fuerza normal
     vec4 layer_tint[8];      // rgb tinte, a = tiene textura
     vec4 layer_extra[8];     // x = tiene normal map
+    vec4 grass_floor;        // x = capa de la hierba (-1 = sin hierba), y = fuerza, z = empieza lo lejano, w = distancia maxima
+    vec4 grass_floor_color;  // rgb = color del cesped visto de arriba (sRGB), a = umbral de la capa
 } terrain;
 layout(set = 1, binding = 2) uniform sampler2D splat0;
 layout(set = 1, binding = 3) uniform sampler2D splat1;
@@ -59,7 +76,14 @@ void main() {
     float hr = heightAt(v_uv + vec2(step_uv, 0.0));
     float hd = heightAt(v_uv - vec2(0.0, step_uv));
     float hu = heightAt(v_uv + vec2(0.0, step_uv));
-    vec3 n = normalize(vec3(hl - hr, 2.0 * cell, hd - hu));
+    // Se divide por la distancia que de verdad hay entre las muestras: en el
+    // borde del terreno heightAt recorta la UV y la diferencia es de un solo
+    // lado (una celda, no dos). Con 2 * cell fijo la pendiente salia a la
+    // mitad en los bordes y se veia una costura de luz entre trozos.
+    vec2 uv_low = clamp(v_uv - vec2(step_uv), 0.0, 1.0);
+    vec2 uv_high = clamp(v_uv + vec2(step_uv), 0.0, 1.0);
+    vec2 span = max((uv_high - uv_low) * terrain.origin_size.w, vec2(max(cell * 1e-3, 1e-6)));
+    vec3 n = normalize(vec3((hl - hr) / span.x, 1.0, (hd - hu) / span.y));
 
     // --- Pesos de las capas ---
     vec4 w0 = texture(splat0, v_uv);
@@ -125,7 +149,30 @@ void main() {
     tangent_normal = dot(tangent_normal, tangent_normal) > 1e-8 ? normalize(tangent_normal) : vec3(0.0, 0.0, 1.0);
     vec3 normal = normalize(mat3(t, b, n) * vec3(tangent_normal.x, -tangent_normal.y, tangent_normal.z));
 
+    // --- Suelo del cesped: donde crece la hierba, el color de la hierba ---
+    // De cerca, el de debajo de las briznas (oscuro y ocluido); de lejos, el
+    // de las puntas: la hierba lejana (pocas briznas) se funde con el suelo.
+    float occlusion = 1.0;
+    if (terrain.grass_floor.x >= 0.0) {
+        int grass_layer = clamp(int(terrain.grass_floor.x + 0.5), 0, 7);
+        float threshold = terrain.grass_floor_color.a;
+        float grass_weight = smoothstep(threshold, min(threshold + 0.35, 1.0), weights[grass_layer] / total) *
+                             terrain.grass_floor.y;
+        // Solo donde hay briznas: se apaga igual que ellas (z = empieza el
+        // desvanecido, w = distancia maxima). Antes seguia hasta el borde de
+        // la tesela: un cuadrado "con mas hierba" lejos y un circulo oscuro cerca.
+        float d = distance(camera.position.xz, v_world_position.xz);
+        float fade_start = terrain.grass_floor.z;
+        float far_mix = smoothstep(fade_start * 0.25, fade_start, d);
+        grass_weight *= 1.0 - smoothstep(fade_start, terrain.grass_floor.w, d);
+        vec3 top = terrain.grass_floor_color.rgb;
+        vec3 under = top * 0.7;
+        albedo = mix(albedo, mix(under, top, far_mix), grass_weight);
+        roughness = mix(roughness, 0.85, grass_weight);
+        occlusion = mix(1.0, mix(0.75, 0.95, far_mix), grass_weight);
+    }
+
     writeSurface(vec4(clamp(albedo, 0.0, 1.0), 1.0), n, normal, tangent_normal, n, clamp(metallic, 0.0, 1.0),
-                 clamp(roughness, 0.04, 1.0), 1.0, vec3(0.0), 0.04, v_world_position);
+                 clamp(roughness, 0.04, 1.0), occlusion, vec3(0.0), 0.04, v_world_position);
     writeVelocity(v_current_clip, v_previous_clip);
 }

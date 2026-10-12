@@ -364,6 +364,8 @@ void ScriptSystem::Impl::flushDestroys() {
             const entt::entity h = stack.back();
             stack.pop_back();
             for (const auto& fn : hooks.destroying) fn(h);
+            if (destroy_listener && world->registry().valid(h)) destroy_listener(world->wrap(h));
+            if (!world->registry().valid(h)) continue;
             for (const entt::entity c : world->wrap(h).children()) stack.push_back(c);
         }
         world->destroy(world->wrap(handle));
@@ -563,6 +565,8 @@ void ScriptSystem::shutdownNetwork() {
     if (d.network) d.network->close();
     d.network.reset();
     d.net_entities.clear();
+    if (d.websockets) d.websockets->closeAll(1001, "Fin del juego");
+    d.websockets.reset();
 }
 
 std::string ScriptSystem::networkStatus() const {
@@ -581,6 +585,10 @@ void ScriptSystem::reloadFile(const std::string& file) {
     }
 }
 
+void ScriptSystem::resetBridgeCallbacks() {
+    for (const auto& fn : impl_->hooks.bridge_reset) fn();
+}
+
 void ScriptSystem::setNetVarListener(std::function<void(ecs::Entity, const std::string&, const std::string&)> listener) {
     impl_->net_var_listener = std::move(listener);
 }
@@ -589,13 +597,19 @@ void ScriptSystem::setMessageListener(std::function<void(ecs::Entity, const std:
     impl_->message_listener = std::move(listener);
 }
 
+void ScriptSystem::setDestroyListener(std::function<void(ecs::Entity)> listener) { impl_->destroy_listener = std::move(listener); }
+
+void ScriptSystem::destroyLater(ecs::Entity e) {
+    if (e.valid()) impl_->destroyLater(e.handle());
+}
+
 namespace {
 
 void sendEvent(ScriptSystem::Impl& d, ecs::Entity target, const std::string& method, const api::Value& arg) {
     if (!target.valid()) return;
     for (const auto& fn : d.hooks.event) fn(target, method, arg);
     // Y a los scripts de C++ del objeto (Script::onMessage).
-    if (d.message_listener) d.message_listener(target, method, d.native.toJson(arg).dump());
+    if (d.message_listener) d.message_listener(target, method, d.native.toJson(arg).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 }
 
 }  // namespace
@@ -655,7 +669,17 @@ bool ScriptSystem::run(const std::string& code, std::string* output, ecs::World*
     ecs::World* previous = d.world;
     if (!d.running && world != nullptr) d.world = world;
     const bool ok = d.console(code, output);
-    if (!d.running) d.world = previous;
+    if (!d.running) {
+        // Fuera de Play no hay "final del frame" del juego: Scene.destroy y
+        // Entity:destroy se hacen al terminar el comando (tambien si fallo a
+        // medias: lo de antes del error ya se hizo), con el mundo del editor.
+        if (world != nullptr) {
+            d.flushDestroys();
+        } else {
+            d.pending_destroy.clear();  // sin escena no hay nada que borrar
+        }
+        d.world = previous;
+    }
     return ok;
 }
 

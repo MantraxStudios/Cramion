@@ -22,6 +22,7 @@
 #include "CramionCore/ecs/AnimatorController.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/environment/Environment.h"
+#include "CramionCore/jobs/JobSystem.h"
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/anim/Humanoid.h"
 #include "CramionCore/anim/Procedural.h"
@@ -40,6 +41,11 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <chrono>
+
+namespace cramion::gfx {
+struct PreparedTerrain;  // VulkanRenderer.h: un terreno preparado en otro hilo
+}
 
 namespace cramion::physics {
 struct Cloth;
@@ -74,6 +80,17 @@ public:
 
     // Datos de los terrenos (el editor o el juego los comparte con la fisica).
     void setTerrainStore(terrain::TerrainStore* store) { terrain_store_ = store; }
+
+    // Streaming de terrenos a la GPU (para el informe de frames lentos):
+    // teselas preparandose en otro hilo, adoptadas este frame, bytes subidos
+    // este frame (adopciones y regiones cambiadas) y ms en el hilo principal.
+    struct TerrainGpuStats {
+        int preparing = 0;
+        int adopted = 0;
+        std::size_t bytes = 0;
+        double main_ms = 0.0;
+    };
+    const TerrainGpuStats& terrainGpuStats() const { return terrain_gpu_stats_; }
 
     void sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer, float delta_seconds,
               const Options& options);
@@ -382,6 +399,18 @@ private:
     // mueven sus huesos (del frame anterior).
     std::unordered_map<entt::entity, entt::entity> socket_sources_;
     std::unordered_map<entt::entity, std::vector<entt::entity>> drive_sockets_;
+    // Bone Socket -> nodo de su hueso (findBone compara nombres; con 60-200
+    // objetos de hueso cuesta). Vale si es el mismo modelo, el mismo nombre
+    // pedido y el nodo sigue llamandose igual (tras recargar un asset su
+    // direccion puede repetirse). Se vacia con reset().
+    struct SocketBone {
+        const asset::ModelData* model = nullptr;
+        std::string bone;
+        std::string node_name;
+        int node = -1;
+    };
+    std::unordered_map<entt::entity, SocketBone> socket_bones_;
+    int socketBone(entt::entity socket, const asset::ModelData& data, const std::string& bone);
     void updateSockets(World& world, scene::Scene& scene);
     void applyInverseKinematics(World& world, Entity entity, const InverseKinematics& ik, anim::Animator& animator,
                                 const asset::ModelData& data, std::uint32_t model, IKSmoothing& smooth,
@@ -415,7 +444,9 @@ private:
     // algo (el componente, su posicion o el terreno al terminar un trazo) y
     // se sube entera al renderizador al terminar.
     void syncFoliage(World& world, gfx::VulkanRenderer& renderer);
-    std::future<std::vector<gfx::FoliageInstance>> foliage_job_;
+    // La siembra va en un job (Background) y deja su resultado aqui.
+    jobs::JobHandle foliage_job_;
+    std::shared_ptr<std::vector<gfx::FoliageInstance>> foliage_result_;
     std::uint64_t foliage_signature_ = 0;      // lo que hay en la GPU
     std::uint64_t foliage_job_signature_ = 0;  // lo que se esta sembrando
     bool foliage_uploaded_ = false;
@@ -424,16 +455,36 @@ private:
 public:
     // Arboles de la vegetacion en la GPU (0 si no hay o aun se siembran).
     std::uint64_t foliageCount() const { return foliage_count_; }
-    bool foliageGenerating() const { return foliage_job_.valid(); }
+    bool foliageGenerating() const { return foliage_job_ != nullptr; }
 
 private:
 
+    // Preparacion de un terreno en la GPU en otro hilo (imagenes, staging y
+    // copia con submitAsync): el job deja aqui su resultado.
+    struct TerrainPrepare {
+        jobs::JobHandle job;
+        std::shared_ptr<gfx::PreparedTerrain> prepared;  // lo escribe el job
+    };
     struct TerrainGpu {
         std::uint32_t id = 0;
         std::shared_ptr<terrain::TerrainData> data;
         std::uint32_t resolution = 0;
         std::uint32_t splat_resolution = 0;
+        // createTerrain devolvio 0 con estos datos: no se reintenta cada frame
+        // (vuelve a probar si cambian los datos o la tesela sale y vuelve).
+        bool failed = false;
+        std::chrono::steady_clock::time_point retry_after{};  // fallo pasajero: se reintenta (1 s)
+        // Preparandose en otro hilo (sin id hasta adoptarlo).
+        std::shared_ptr<TerrainPrepare> pending;
+        // Descripcion: las capas (rutas) solo se rehacen si cambian.
+        gfx::TerrainDesc desc;
+        std::uint64_t layers_hash = 0;
     };
+    // Preparaciones abandonadas (la tesela se fue antes de adoptarla): se
+    // sueltan cuando su copia en la GPU termino (nunca se espera).
+    std::vector<std::shared_ptr<TerrainPrepare>> draining_terrains_;
+    TerrainGpuStats terrain_gpu_stats_{};
+    void dropTerrainPrepare(std::shared_ptr<TerrainPrepare> prepare);
     terrain::TerrainStore* terrain_store_ = nullptr;
     gfx::VulkanRenderer* renderer_ = nullptr;
     // Por UUID: deshacer o parar Play recrea las entidades (otro handle) y el

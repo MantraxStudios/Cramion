@@ -360,6 +360,30 @@ void drawGlyph(ImDrawList* d, Glyph glyph, ImVec2 center, float size, ImU32 col)
             d->AddLine(f.p(-0.18f, 0.65f), f.p(0.18f, 0.65f), col, t);
             break;
         }
+        case Glyph::Bone: {
+            // Hueso: dos bolas unidas por una barra en diagonal.
+            d->AddLine(f.p(-0.42f, 0.42f), f.p(0.42f, -0.42f), col, t * 1.8f);
+            d->AddCircleFilled(f.p(-0.55f, 0.35f), h * 0.18f, col, 12);
+            d->AddCircleFilled(f.p(-0.35f, 0.55f), h * 0.18f, col, 12);
+            d->AddCircleFilled(f.p(0.55f, -0.35f), h * 0.18f, col, 12);
+            d->AddCircleFilled(f.p(0.35f, -0.55f), h * 0.18f, col, 12);
+            break;
+        }
+        case Glyph::Blueprint: {
+            // Blueprint: hoja con dos nodos unidos por un cable.
+            d->AddRect(f.p(-0.72f, -0.72f), f.p(0.72f, 0.72f), col, h * 0.12f, 0, t);
+            d->AddRectFilled(f.p(-0.5f, -0.45f), f.p(-0.12f, -0.12f), col, h * 0.05f);
+            d->AddRectFilled(f.p(0.12f, 0.12f), f.p(0.5f, 0.45f), col, h * 0.05f);
+            d->AddBezierCubic(f.p(-0.12f, -0.28f), f.p(0.15f, -0.28f), f.p(-0.15f, 0.28f), f.p(0.12f, 0.28f), col, t, 12);
+            break;
+        }
+        case Glyph::Mesh: {
+            // Malla: triangulo con su arista interior.
+            d->AddTriangle(f.p(0.0f, -0.7f), f.p(-0.7f, 0.6f), f.p(0.7f, 0.6f), col, t);
+            d->AddLine(f.p(0.0f, -0.7f), f.p(0.0f, 0.6f), col, t);
+            d->AddLine(f.p(-0.35f, -0.05f), f.p(0.7f, 0.6f), col, t);
+            break;
+        }
         case Glyph::Count: break;
     }
 }

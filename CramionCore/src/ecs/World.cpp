@@ -3,6 +3,7 @@
 #include "CramionCore/ecs/MathUtil.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace cramion::ecs {
 
@@ -218,15 +219,28 @@ void Entity::setWorldMatrix(const Mat4& world) {
     decomposeMatrix(local, position, rotation, scale);
     Transform& t = transform();
     // Conserva los grados que ya se veian si la rotacion no cambio (evita
-    // saltos de 180 a -180 al mover solo la posicion con el gizmo).
-    const Quat before = t.rotation;
+    // saltos de 180 a -180 al mover solo la posicion con el gizmo). Se compara
+    // con la rotacion de esos grados (no con la anterior): muchos giros
+    // pequenos seguidos tambien acaban actualizandolos.
+    const Quat before = quatFromEulerDegrees(t.euler);
     const float same = std::abs(before.x * rotation.x + before.y * rotation.y +
                                 before.z * rotation.z + before.w * rotation.w);
     t.position = position;
     t.scale = scale;
+    // La rotacion siempre se asigna (giros pequenos y acumulados no se pierden);
+    // solo los grados se recalculan si cambio de verdad, y se desenrollan al
+    // valor mas cercano al anterior (sin saltos de 360).
+    t.rotation = rotation;
     if (same < 0.999999f) {
-        t.rotation = rotation;
-        t.euler = quatToEulerDegrees(rotation);
+        const Vec3 previous = t.euler;
+        Vec3 euler = quatToEulerDegrees(rotation);
+        const auto unwrap = [](float value, float closest) {
+            return value + 360.0f * std::round((closest - value) / 360.0f);
+        };
+        euler.x = unwrap(euler.x, previous.x);
+        euler.y = unwrap(euler.y, previous.y);
+        euler.z = unwrap(euler.z, previous.z);
+        t.euler = euler;
     }
     world_->markTransformDirty(handle_);
 }
@@ -282,7 +296,11 @@ void World::destroyRecursive(entt::entity e) {
     for (const entt::entity child : children) {
         destroyRecursive(child);
     }
-    uuid_map_.erase(registry_.get<IdComponent>(e).uuid);
+    // Solo si el UUID es de ESTA entidad: borrar una copia con el mismo UUID
+    // no debe dejar la buena imposible de encontrar.
+    if (const auto it = uuid_map_.find(registry_.get<IdComponent>(e).uuid); it != uuid_map_.end() && it->second == e) {
+        uuid_map_.erase(it);
+    }
     registry_.destroy(e);
 }
 
@@ -292,17 +310,31 @@ Entity World::duplicate(Entity entity) {
     }
     const Hierarchy& h = registry_.get<Hierarchy>(entity.handle());
     const int index = entity.siblingIndex() + 1;
-    const entt::entity copy = duplicateRecursive(entity.handle(), h.parent, index);
+    std::unordered_map<Uuid, Uuid> remap;
+    std::vector<entt::entity> copies;
+    const entt::entity copy = duplicateRecursive(entity.handle(), h.parent, index, remap, copies);
+    // Las referencias dentro de lo copiado apuntan a las copias (una camara
+    // que sigue a su hijo sigue al hijo copiado); las de fuera no cambian.
+    for (const entt::entity e : copies) {
+        remapEntityRefs(wrap(e), remap);
+    }
     return Entity{copy, this};
 }
 
-entt::entity World::duplicateRecursive(entt::entity source, entt::entity parent, int index) {
+entt::entity World::duplicateRecursive(entt::entity source, entt::entity parent, int index,
+                                       std::unordered_map<Uuid, Uuid>& remap,
+                                       std::vector<entt::entity>& copies) {
     Entity copy = create(registry_.get<NameComponent>(source).name, wrap(parent));
     // create() lo pone al final: se recoloca donde toca.
     if (index >= 0) {
         copy.setSiblingIndex(index);
     }
     registry_.get<EntityInfo>(copy.handle()) = registry_.get<EntityInfo>(source);
+    // La copia es del usuario: una tesela de terreno duplicada no puede quedar
+    // transitoria (no se guardaria ni la borraria nadie).
+    registry_.get<EntityInfo>(copy.handle()).transient = false;
+    remap[registry_.get<IdComponent>(source).uuid] = copy.uuid();
+    copies.push_back(copy.handle());
     for (const ComponentType& type : ComponentRegistry::instance().types()) {
         if (type.copy) {
             type.copy(*this, source, copy.handle());
@@ -310,10 +342,52 @@ entt::entity World::duplicateRecursive(entt::entity source, entt::entity parent,
     }
     const std::vector<entt::entity> children = registry_.get<Hierarchy>(source).children;
     for (const entt::entity child : children) {
-        duplicateRecursive(child, copy.handle(), -1);
+        duplicateRecursive(child, copy.handle(), -1, remap, copies);
     }
     markTransformDirty(copy.handle());
     return copy.handle();
+}
+
+namespace {
+// Visitante que solo toca las referencias a entidades.
+class EntityRefRemapper final : public PropertyVisitor {
+public:
+    explicit EntityRefRemapper(const std::unordered_map<Uuid, Uuid>& remap) : remap_(remap) {}
+
+    bool field(const Meta&, float&, const FloatRange&) override { return false; }
+    bool field(const Meta&, int&, int, int) override { return false; }
+    bool field(const Meta&, bool&) override { return false; }
+    bool field(const Meta&, std::string&) override { return false; }
+    bool field(const Meta&, Vec3&, Vec3Kind) override { return false; }
+    bool field(const Meta&, core::Vec2&, float) override { return false; }
+    bool enumeration(const Meta&, int&, std::span<const char* const>) override { return false; }
+    bool asset(const Meta&, assets::AssetRef&, assets::AssetType) override { return false; }
+    bool layerMask(const Meta&, std::uint32_t&) override { return false; }
+    bool entity(const Meta&, Uuid& ref) override {
+        if (!ref.valid()) return false;
+        const auto it = remap_.find(ref);
+        if (it == remap_.end() || it->second == ref) return false;
+        ref = it->second;
+        return true;
+    }
+    // Entra en las listas sin cambiar su tamano.
+    bool beginList(const Meta&, std::size_t&) override { return true; }
+
+private:
+    const std::unordered_map<Uuid, Uuid>& remap_;
+};
+}  // namespace
+
+void World::remapEntityRefs(Entity entity, const std::unordered_map<Uuid, Uuid>& remap) {
+    if (!entity.valid() || entity.world() != this || remap.empty()) {
+        return;
+    }
+    EntityRefRemapper remapper(remap);
+    for (const ComponentType& type : ComponentRegistry::instance().types()) {
+        if (type.reflect && type.has(*this, entity.handle())) {
+            type.reflect(*this, entity.handle(), remapper);
+        }
+    }
 }
 
 void World::clear() {

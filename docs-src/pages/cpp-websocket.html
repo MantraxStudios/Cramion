@@ -1,0 +1,56 @@
+<p>Conexiones WebSocket (ws/wss) con tu servidor; WsClient.</p>
+
+<h3 id="websocket">WebSocket</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value close(id, valor, texto)</code></td><td>cierre limpio (1000, o 3000-4999 propios); no reconecta</td></tr>
+    <tr><td><code>Value closeAll(valor, texto)</code></td><td>cierra todas las conexiones</td></tr>
+    <tr><td><code>Value connect(tabla)</code></td><td>abre una conexion WebSocket (no espera); con name, si ya hay una viva devuelve esa Devuelve: id de la conexion (nil si no vale)</td></tr>
+    <tr><td><code>Value count(...)</code></td><td>conexiones vivas (no cerradas) Devuelve: numero</td></tr>
+    <tr><td><code>Value find(texto)</code></td><td>la conexion con ese nombre Devuelve: id (nil si no hay)</td></tr>
+    <tr><td><code>Value info(id)</code></td><td>datos de la conexion Devuelve: { id, name, url, state, protocol, sent, received, sentBytes, receivedBytes, buffered, rtt, reconnects } (nil si no existe)</td></tr>
+    <tr><td><code>Value list(...)</code></td><td>conexiones vivas Devuelve: lista de { id, name, state, url }</td></tr>
+    <tr><td><code>Value off(escucha)</code></td><td>deja de escuchar (el numero que devolvio on)</td></tr>
+    <tr><td><code>Value on(id, texto, callback)</code></td><td>end) escucha un evento: open, message, close, error, reconnecting o any (id o nombre) Devuelve: numero de la escucha (para off)</td></tr>
+    <tr><td><code>Value poll(id, valor)</code></td><td>saca los eventos pendientes (si no usas on); un viaje por frame Devuelve: lista de eventos</td></tr>
+    <tr><td><code>Value send(id, texto)</code></td><td>envia texto (UTF-8) Devuelve: true si se encolo</td></tr>
+    <tr><td><code>Value sendBinary(id, texto)</code></td><td>envia bytes (en base64) Devuelve: true si se encolo</td></tr>
+    <tr><td><code>Value sendJson(id, tabla)</code></td><td>envia la tabla como texto JSON Devuelve: true si se encolo</td></tr>
+    <tr><td><code>Value setHeader(id, texto, texto2)</code></td><td>cabecera para la proxima reconexion (vacio la quita) Devuelve: true si vale</td></tr>
+    <tr><td><code>Value state(id)</code></td><td>connecting, open, closing, closed o reconnecting Devuelve: texto (&quot;closed&quot; si no existe)</td></tr>
+  </tbody>
+</table>
+
+<h3 id="wsclient">WsClient</h3>
+<table>
+  <tbody>
+    <tr><td><code>WsClient() = default</code></td><td></td></tr>
+    <tr><td><code>WsClient(const WsClient&amp;) = delete</code></td><td></td></tr>
+    <tr><td><code>WsClient&amp; operator=(const WsClient&amp;) = delete</code></td><td></td></tr>
+    <tr><td><code>WsClient(WsClient&amp;&amp; other) noexcept</code></td><td></td></tr>
+    <tr><td><code>WsClient&amp; operator=(WsClient&amp;&amp; other) noexcept</code></td><td></td></tr>
+    <tr><td><code>bool connect(const Value&amp; options)</code></td><td></td></tr>
+    <tr><td><code>bool attach(const std::string&amp; name)</code></td><td></td></tr>
+    <tr><td><code>operator bool() const</code></td><td></td></tr>
+    <tr><td><code>const Value&amp; id() const</code></td><td></td></tr>
+    <tr><td><code>bool send(const std::string&amp; text)</code></td><td></td></tr>
+    <tr><td><code>bool sendJson(const Value&amp; v)</code></td><td></td></tr>
+    <tr><td><code>bool sendBinary(std::string_view bytes)</code></td><td></td></tr>
+    <tr><td><code>void close(int code = 1000, const std::string&amp; reason = {})</code></td><td></td></tr>
+    <tr><td><code>std::string state() const</code></td><td></td></tr>
+    <tr><td><code>Values poll(int max = 0)</code></td><td></td></tr>
+    <tr><td><code>void onOpen(std::function&lt;void(const Value&amp;)&gt; fn)</code></td><td></td></tr>
+    <tr><td><code>void onMessage(std::function&lt;void(const Value&amp;)&gt; fn)</code></td><td></td></tr>
+    <tr><td><code>void onClose(std::function&lt;void(const Value&amp;)&gt; fn)</code></td><td></td></tr>
+    <tr><td><code>void onError(std::function&lt;void(const Value&amp;)&gt; fn)</code></td><td></td></tr>
+    <tr><td><code>void onReconnecting(std::function&lt;void(const Value&amp;)&gt; fn)</code></td><td></td></tr>
+  </tbody>
+</table>
+
+<h3 id="base64-en-el-script-sin-llamar-al-motor">Base64 en el script (sin llamar al motor)</h3>
+<table>
+  <tbody>
+    <tr><td><code>std::string base64Encode(std::string_view bytes)</code></td><td></td></tr>
+    <tr><td><code>bool base64Decode(std::string_view text, std::string&amp; out)</code></td><td></td></tr>
+  </tbody>
+</table>

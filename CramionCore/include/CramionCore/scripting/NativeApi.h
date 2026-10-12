@@ -189,7 +189,10 @@ public:
     static constexpr std::uint64_t kHandleBase = std::uint64_t(1) << 40;
     // Primer id de los callbacks del mismo proceso (Visual Scripts y, en
     // Android, los scripts de C++): van al invocador local, no al sumidero.
-    static constexpr std::uint64_t kLocalCallbackBase = std::uint64_t(1) << 41;
+    // El bit 63: los ids de los scripts de C++ son (proceso << 32) | n con el
+    // proceso en 31 bits (ScriptMain.cpp), asi que nunca llegan aqui (antes, con
+    // 1 << 41, el proceso 512 ya se metia en este rango).
+    static constexpr std::uint64_t kLocalCallbackBase = std::uint64_t(1) << 63;
 
     // --- Registro ---
     void function(std::string path, Function fn, Doc doc = {});  // "Audio.playOneShot"

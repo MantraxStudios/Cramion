@@ -383,7 +383,7 @@ La 2.1 incluye también todo lo de la 2.0 (más abajo), que no se publicó por s
 | Sistema | Windows 10/11 x64 con Windows SDK (DirectX 12) |
 | GPU | Compatible con **Vulkan 1.3** (`dynamicRendering`, `synchronization2`), con una cola que haga gráficos y cómputo |
 | Vulkan SDK | Instalado, con la variable `VULKAN_SDK` definida: el build usa su `glslc` para compilar los shaders |
-| Herramientas | CMake ≥ 3.21, Clang/Clang++ (LLVM), Ninja |
+| Herramientas | CMake ≥ 3.21, Ninja y Clang/Clang++ con la ABI de MSVC: **Visual Studio 2022 con el componente «Herramientas de C++ Clang para Windows»** (o LLVM oficial para Windows), más las herramientas de compilación MSVC y el Windows SDK que Clang usa por debajo |
 | RAM para compilar | **Mínimo 8 GB, recomendado 16 GB.** Cada compilación en paralelo usa hasta ~1,5 GB (la más pesada es `Scripting.cpp`, por sol2) |
 | Disco | **~10 GB libres** para compilar solo Release; **~16 GB** si también compilas Debug. Mejor en un **SSD** (en un disco duro mecánico compila mucho más lento) |
 | Memoria al ejecutar | San Miguel usa ~2 GB de RAM y ~2 GB de VRAM. La primera importación llega a unos 3.5 GB de RAM |
@@ -401,6 +401,13 @@ Cuánto disco ocupa cada cosa (medido):
 | Carpeta `build/` (Debug) | ~6 GB, más las escenas de demostración si las extraes (~5 GB con Bistro y San Miguel) |
 
 Las cabeceras de Vulkan y `vulkan-1.lib` vienen en `CramionFX/vendor/`. Las demás dependencias (assimp, stb, Jolt, EnTT, Recast, miniaudio, zstd, Dear ImGui...) se descargan solas la primera vez que configuras (FetchContent): hace falta **conexión a internet** en ese primer paso.
+
+### Compilador, módulos e iconos
+
+- **Compila con el Clang de Visual Studio 2022 (o el LLVM oficial), no con el clang incluido.** El clang que trae el motor (llvm-mingw, en `build*/toolchain/`) es **solo para los scripts de C++ del editor**: es la toolchain de mingw y no tiene la parte de libc++/ABI de MSVC que necesita el motor. Abre una *Developer PowerShell for VS 2022* (o asegúrate de que `clang++`, `ninja` y el `VULKAN_SDK` están en el `PATH`) antes de `cmake --preset`.
+- **Módulos de C++20.** El motor no usa módulos, así que el `CMakeLists.txt` raíz fija `CMAKE_CXX_SCAN_FOR_MODULES OFF` y CMake ≥ 3.28 ya no pide `clang-scan-deps`. Si usas una copia antigua del código y CMake se queja de `clang-scan-deps`, añade `-DCMAKE_CXX_SCAN_FOR_MODULES=OFF` al configurar.
+- **La carpeta `assets/` no está en el repositorio** (está en `.gitignore` a propósito): `assets/icon.ico`, `assets/icon.png`, `assets/cramion.rc`, `assets/bannerintro.png` y los iconos del editor de `CramionEditor/assets/gizmos/`. Sin ellos el motor compila igual (CMake avisa con un *warning*): los `.exe` salen sin icono y el editor sin iconos de gizmos ni logo. Para tenerlos, cópialos de los binarios oficiales (el zip de la web): `editor_icons/` contiene los iconos de gizmos (cópialos a `CramionEditor/assets/gizmos/`) y `editor_icons/logo.png` es `assets/icon.png`; `player_banner.png` es `assets/bannerintro.png`. El `.ico` se puede extraer de `CramionEditor.exe` o generar desde `icon.png`, y `assets/cramion.rc` es una sola línea: `1 ICON "icon.ico"`. Vuelve a configurar (`cmake --preset ...`) después de copiarlos. El paquete `cramion_package` sí necesita los iconos.
+- **Versiones.** El código de la última versión está en la rama `main`; las etiquetas del repositorio pueden no estar al día.
 
 ### Si el PC se congela al compilar
 

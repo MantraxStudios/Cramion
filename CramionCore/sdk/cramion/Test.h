@@ -83,6 +83,7 @@ struct PromiseBase {
     std::coroutine_handle<> parent;  // (Task) quien la espera
     std::exception_ptr error;
     Wait wait;                       // (root) lo que se espera
+    bool started = false;            // (root) el cuerpo de la prueba llego a empezar
     void unhandled_exception() noexcept { error = std::current_exception(); }
 };
 
@@ -93,24 +94,44 @@ concept TestPromise = std::is_base_of_v<PromiseBase, P>;
 struct Slot {
     std::coroutine_handle<> handle;
     PromiseBase* promise = nullptr;
+    bool coroutine = false;  // la prueba es una corrutina (se creo su promesa)
 };
 // El parametro oculto de CRAMION_TEST (con el, una prueba con co_await es una corrutina).
 struct Context {
     Slot* slot = nullptr;
 };
 
+// La promesa de una prueba con co_await. El handle se deja en el Slot en el
+// constructor (y otra vez en initial_suspend), NO en get_return_object: con
+// una corrutina que devuelve void, el clang del motor no llama a
+// get_return_object() y la prueba se quedaba sin empezar (y contaba como bien).
 struct RootPromise : PromiseBase {
-    Slot* slot;
-    explicit RootPromise(Context c) : slot(c.slot) {}
-    void get_return_object() noexcept {
-        const auto h = std::coroutine_handle<RootPromise>::from_promise(*this);
+    Slot* slot;  // solo valido hasta initial_suspend (es una variable local de begin)
+    explicit RootPromise(Context c) : slot(c.slot) { record(std::coroutine_handle<RootPromise>::from_promise(*this)); }
+    void record(std::coroutine_handle<RootPromise> h) noexcept {
         leaf = h;
         if (slot != nullptr) {
             slot->handle = h;
             slot->promise = this;
+            slot->coroutine = true;
         }
     }
-    std::suspend_always initial_suspend() noexcept { return {}; }
+    // Se deja vacio a proposito (puede no llamarse); ver arriba.
+    void get_return_object() noexcept {}
+    // Para al empezar; al reanudarla por primera vez marca que el cuerpo empezo.
+    struct Start {
+        RootPromise* promise = nullptr;
+        bool await_ready() noexcept { return false; }
+        void await_suspend(std::coroutine_handle<RootPromise> h) noexcept {
+            promise = &h.promise();
+            promise->record(h);
+            promise->slot = nullptr;  // el Slot de begin deja de existir
+        }
+        void await_resume() noexcept {
+            if (promise != nullptr) promise->started = true;
+        }
+    };
+    Start initial_suspend() noexcept { return {}; }
     std::suspend_always final_suspend() noexcept { return {}; }
     void return_void() noexcept {}
 };
@@ -486,6 +507,9 @@ private:
             return;
         }
         if (!slot.handle) {
+            // Sin co_await la prueba ya corrio entera. Si es una corrutina sin
+            // handle, no se puede empezar: fallida (no "bien" sin ejecutarse).
+            if (slot.coroutine) failNow("la prueba no llego a ejecutarse (la corrutina no dejo su handle)");
             end(nullptr);
             return;
         }
@@ -498,7 +522,9 @@ private:
         current_.promise->leaf.resume();
         if (!current_.handle.done()) return;
         const std::exception_ptr error = current_.promise->error;
+        const bool started = current_.promise->started;
         stop();
+        if (!started && !error) failNow("la prueba termino sin ejecutarse");
         end(error);
     }
 

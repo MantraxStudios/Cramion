@@ -7,7 +7,9 @@
 //   1. el tronco entero se inclina (mas arriba, mas);
 //   2. cada rama principal gira sobre su pivote (donde nace del tronco), con
 //      su fase y su flexibilidad: la rama, sus ramitas y sus hojas a la vez;
-//   3. las hojas tiemblan sobre su normal (mas en la punta de la tarjeta).
+//   3. las hojas tiemblan sobre su normal (mas en la punta de la tarjeta) y
+//      su normal gira con el temblor (el brillo y la luz parpadean como en
+//      una copa de verdad, no se mueve una lamina rigida).
 // Con `shadow` se proyecta con la matriz de la luz (cascadas).
 
 layout(set = 0, binding = 0) uniform CameraBuffer {
@@ -31,10 +33,12 @@ layout(std430, set = 1, binding = 1) readonly buffer Visible {
     uint visible[];
 };
 
+// Igual que en foliage.frag (DrawPush de FoliagePass, 112 bytes).
 layout(push_constant) uniform FoliagePush {
     mat4 light_view_projection;
     vec4 params;  // x segundos, y sombra (0/1), z viento, w segundos del frame anterior
-    vec4 offset;  // xyz origen flotante
+    vec4 offset;  // xyz origen flotante, w alfa con ruido en las hojas (0/1)
+    vec4 sun;     // xyz hacia el sol (mundo), w distancia de las sombras
 } push;
 
 layout(location = 0) in vec3 in_position;
@@ -56,12 +60,34 @@ layout(location = 6) out float v_leaf;
 layout(location = 7) out float v_extra;     // corteza: musgo / pie oscuro; hoja: translucidez
 layout(location = 8) out vec3 v_to_camera;
 layout(location = 9) out float v_young;     // corteza joven (lisa; en el pino, anaranjada)
+layout(location = 10) out float v_crown_sun; // hoja: luz del sol que entra en la copa (1 = toda)
 
 // Giro de `v` alrededor del eje unitario `axis` (Rodrigues).
 vec3 rotateAxis(vec3 v, vec3 axis, float angle) {
     float c = cos(angle);
     float s = sin(angle);
     return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1.0 - c);
+}
+
+// Rafaga y temblor de la hoja en el instante t (los mismos que en animate).
+float windPulse(float t, float tree_phase) {
+    float gust = sin(t * 0.45 + tree_phase * 0.5) * 0.5 + 0.5;
+    gust = gust * gust * (3.0 - 2.0 * gust);
+    return 0.25 + 0.75 * gust;
+}
+
+float leafFlutter(float t, float tree_phase) {
+    float lp = in_anim.b * 6.2831853 + tree_phase;
+    return sin(t * 7.3 + lp) * 0.6 + sin(t * 11.9 + lp * 1.7) * 0.4;
+}
+
+// Normal local de la hoja girada con su temblor: sobre el eje horizontal de
+// la tarjeta (unos grados, mas en la punta y con mas viento).
+vec3 flutterNormal(vec3 normal, float t, float tree_phase, float strength) {
+    float tw = leafFlutter(t, tree_phase) * 0.45 * in_layer_flutter.y * strength * windPulse(t, tree_phase);
+    vec3 axis = cross(normal, vec3(0.0, 1.0, 0.0));
+    if (dot(axis, axis) <= 1e-4) return normal;
+    return rotateAxis(normal, normalize(axis), tw);
 }
 
 // Posicion local (a escala 1, sin girar) movida por el viento en el instante t.
@@ -140,6 +166,7 @@ void main() {
     v_young = leaf ? 0.0 : in_anim.b;
 
     vec3 n = in_normal;
+    if (leaf && strength > 0.0) n = flutterNormal(in_normal, t, tree_phase, strength / sqrt(max(scale, 0.25)));
     v_normal = vec3(c * n.x + s * n.z, n.y, -s * n.x + c * n.z);
     // Tono por arbol: algo mas claro u oscuro y, en las hojas, mas amarillo o
     // mas verde (la corteza varia menos).
@@ -152,6 +179,11 @@ void main() {
         color *= mix(0.9, 1.08, tint);
     }
     v_color = vec4(color, in_color.a);
+    // Auto-sombra de la copa (foliage.frag la pone en surface_sun_shadow): la
+    // normal de la hoja es casi la de la copa, asi que la cara que da la
+    // espalda al sol queda dentro de su sombra; la oclusion de la copa
+    // (in_color.a) dice cuanto follaje hay delante.
+    v_crown_sun = mix(in_color.a, 1.0, smoothstep(-0.2, 0.7, dot(v_normal, push.sun.xyz)));
     v_world_position = world;
     v_to_camera = camera.position.xyz - world;
     v_current_clip = camera.unjittered_view_projection * vec4(world, 1.0);

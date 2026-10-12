@@ -13,20 +13,32 @@
 //   if (ev.link) graph.connect(ev.link->from_node, ...);
 //
 // Teclas: Supr borrar, Ctrl+C/V/D copiar/pegar/duplicar, F encuadrar, Espacio
-// o clic derecho buscar nodos, rueda zoom, boton central o Alt+arrastrar
-// desplazar.
+// o clic derecho buscar nodos, rueda zoom, boton central, derecho o
+// Alt+arrastrar desplazar.
+// Con DrawOptions::keys (solo la sobrecarga nueva): Ctrl+A/X/Z/Y/F, F2, Q
+// enderezar, Shift+W/A/S/D alinear, M minimapa, C comentario y tecla de nodo
+// (B, S, D, N, O, G, 1-4) + clic. Con DrawOptions::extended: cables
+// seleccionables (doble clic = reroute, Alt+clic = cortar), Ctrl+arrastrar
+// desde un pin = mover sus enlaces y clic derecho en un pin = pin_menu.
 
 #include <CramionFX/core/Math.h>
 
 #include <imgui.h>
 
+#include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace cramion::editor::nodegraph {
+
+enum class PinShape : std::uint8_t { Circle, Exec, Grid /*array*/, Diamond /*set*/, Square /*delegate*/ };
+enum class NodeStyle : std::uint8_t { Default, Event, Function, Pure, Flow, Compact, Variable, Reroute, Entry, Result };
+enum class AlignOp : std::uint8_t { Top, Middle, Bottom, Left, Center, Right, DistributeH, DistributeV, Straighten };
 
 struct PinView {
     std::string label;
@@ -35,6 +47,10 @@ struct PinView {
     bool connected = false;
     std::string tooltip;      // valor en vivo, tipo...
     bool inline_value = false;  // dibujar un control para su valor (sin enlace)
+    PinShape shape = PinShape::Circle;  // exec=true implica Exec
+    int type = -1;                      // tipo del llamador (para can_link / busqueda)
+    std::string watch;                  // burbuja de valor fija (vacio = no)
+    bool hide_label = false;
 };
 
 struct NodeView {
@@ -57,6 +73,14 @@ struct NodeView {
     core::Vec2* comment_size = nullptr;
     std::string body;             // texto dentro del nodo (debajo de los pines)
     float extra_height = 0.0f;    // espacio bajo los pines para `draw_body`
+    NodeStyle style = NodeStyle::Default;
+    ImU32 header2 = 0;            // fin del degradado (0 = auto)
+    std::string symbol;           // Compact: "+", "×", "=="
+    bool latent = false;          // reloj arriba a la derecha
+    bool disabled = false;        // 40 % de opacidad + franja "Desactivado"
+    std::string warning;          // franja amarilla "AVISO"
+    std::string bubble;           // comentario flotante sobre el nodo
+    ImU32 comment_color = 0;
 };
 
 struct LinkView {
@@ -67,6 +91,8 @@ struct LinkView {
     ImU32 color = IM_COL32(200, 200, 200, 255);
     bool exec = false;
     float flow = 0.0f;  // 0..1: corrio hace poco (puntos que avanzan)
+    int id = 0;         // para seleccion/eventos de cables
+    std::string watch;
 };
 
 struct PinRef {
@@ -98,6 +124,16 @@ struct Events {
     int clicked = 0;            // id del nodo que se acaba de seleccionar
     std::optional<PinRef> hovered_pin;
     int hovered_node = 0;
+    // Cables: doble clic = insertar reroute en `link_point`.
+    std::optional<LinkView> link_double_clicked;
+    core::Vec2 link_point{};
+    std::vector<LinkView> cut_links;                     // Alt+clic en cable (sin arrastre) / menu
+    std::optional<std::pair<PinRef, PinRef>> relink;     // Ctrl+arrastrar: mover todos
+    std::optional<PinRef> pin_menu;                      // clic derecho en pin
+    bool undo = false, redo = false, cut = false, select_all = false, rename = false, find = false;
+    bool wrap_comment = false;                           // tecla C
+    ImGuiKey spawn_key = ImGuiKey_None;                  // B/S/D/N/O/G/1-4 + clic
+    core::Vec2 spawn_at{};
 };
 
 // Dibuja el control de un valor de entrada dentro del nodo (ImGui en la
@@ -106,16 +142,49 @@ using InlineEditor = std::function<bool(int node, int pin, float width)>;
 // Dibuja el cuerpo de un nodo (extra_height) en la posicion del cursor.
 using BodyDrawer = std::function<void(int node, ImVec2 min, ImVec2 max)>;
 
+struct LinkCheck {
+    bool ok = false;
+    bool converts = false;
+    std::string message;
+};
+using LinkQuery = std::function<LinkCheck(PinRef from_output, PinRef to_input)>;
+
+struct DrawOptions {
+    const InlineEditor* inline_editor = nullptr;
+    const BodyDrawer* body = nullptr;
+    const LinkQuery* can_link = nullptr;   // resalta pines compatibles y tooltip al arrastrar
+    bool minimap = true;
+    bool keys = true;                      // Ctrl+Z/Y/A/X, Q, Shift+WASD, teclas de nodo
+    // Cables seleccionables, relink y menu de pin. false = interaccion clasica
+    // (la sobrecarga vieja de draw lo pone a false).
+    bool extended = true;
+};
+
 class Canvas {
 public:
     core::Vec2 pan{80.0f, 80.0f};
     float zoom = 1.0f;
     std::set<int> selection;
     bool vertical = false;  // entradas arriba y salidas abajo (arboles)
-    bool snap = false;      // a la rejilla al soltar
+    bool snap = false;      // a la rejilla mientras se arrastra (Alt = libre; Visual Script lo activa; rejilla de 16)
+    float min_zoom = 0.1f, max_zoom = 2.0f;
+    bool minimap = true;
+    std::set<int> link_selection;  // LinkView::id
 
+    // Version vieja: equivale a DrawOptions con keys=false y minimap=false.
     Events draw(const char* id, std::vector<NodeView>& nodes, const std::vector<LinkView>& links, ImVec2 size,
                 const InlineEditor* inline_editor = nullptr, const BodyDrawer* body_drawer = nullptr);
+    Events draw(const char* id, std::vector<NodeView>& nodes, const std::vector<LinkView>& links, ImVec2 size,
+                const DrawOptions& options);
+    // Alinea la seleccion (Straighten: endereza sus enlaces; sin seleccion,
+    // los cables de link_selection). Usa los tamanos del ultimo draw.
+    void align(AlignOp op, std::vector<NodeView>& nodes, const std::vector<LinkView>& links);
+    // Centra la vista en ese nodo (en el siguiente draw).
+    void frameNode(int id);
+    // Rectangulo en coordenadas del lienzo del ultimo draw (false si no se dibujo).
+    bool nodeRect(int id, core::Vec2& min, core::Vec2& max) const;
+    // Caja de la seleccion (para envolverla en un comentario con la tecla C).
+    bool selectionBounds(core::Vec2& min, core::Vec2& max) const;
 
     // Coordenadas del lienzo <-> pantalla (del ultimo draw).
     core::Vec2 toCanvas(ImVec2 screen) const;
@@ -134,10 +203,35 @@ private:
     ImVec2 size_{};
     std::optional<PinRef> link_from_;
     bool dragging_nodes_ = false;
+    // Arrastre con snap (como Unreal): posicion de inicio de cada nodo que se
+    // mueve y delta acumulado del raton en unidades del lienzo. owner = id del
+    // comentario que lo arrastra (0 = se ajusta a la rejilla por si mismo).
+    struct DragItem {
+        core::Vec2 start{};
+        int owner = 0;
+    };
+    std::map<int, DragItem> drag_items_;
+    core::Vec2 drag_delta_{};
+    bool drag_started_ = false;
     bool box_selecting_ = false;
     ImVec2 box_start_{};
     int resizing_comment_ = 0;
     bool pending_frame_ = false;
+    // Medidas del ultimo draw en unidades del lienzo (ancho medido, pines).
+    struct NodeGeom {
+        core::Vec2 pos{};
+        core::Vec2 size{};
+        std::vector<float> in;   // y de cada entrada desde arriba del nodo
+        std::vector<float> out;
+        std::size_t signature = 0;
+        float measured = 0.0f;
+    };
+    std::map<int, NodeGeom> geom_;
+    bool relinking_ = false;                               // Ctrl+arrastrar desde un pin
+    std::map<std::pair<int, int>, LinkCheck> link_checks_;  // por pin destino, mientras se arrastra
+    std::optional<LinkView> alt_press_link_;               // Alt+clic en un cable (cortar al soltar)
+    bool minimap_drag_ = false;
+    int pending_frame_node_ = 0;
 };
 
 // --- Buscador de nodos (popup) ---------------------------------------------------
@@ -147,12 +241,31 @@ struct SearchItem {
     std::string keywords;
     std::string description;
     int index = 0;  // del que llama
+    std::uint32_t in_types = 0, out_types = 0;  // mascaras (bit = tipo del llamador)
+    std::string owner;                          // "Entity": sus metodos primero
+    bool favorite = false;
+};
+
+struct SearchContext {
+    int pin_type = -1;          // tipo del pin arrastrado (-1 = ninguno)
+    bool exec = false;
+    bool from_output = false;
+    std::string owner;          // "Entity" -> sus metodos primero
+    bool* context_sensitive = nullptr;
+    const std::vector<int>* recent = nullptr;   // indices SearchItem::index
+    // Bits que casan con cualquier tipo de datos (VS: 1 << Any) y bits de
+    // ejecucion (VS: 1 << Exec). Si ningun SearchItem trae mascaras no se filtra.
+    std::uint32_t any_mask = 0;
+    std::uint32_t exec_mask = 0;
 };
 
 // Popup "Crear nodo" con caja de busqueda y categorias. Devuelve el indice
 // del elemento elegido (SearchItem::index) o -1. Llamar cada frame tras
 // ImGui::OpenPopup(popup_id).
 int searchPopup(const char* popup_id, const std::vector<SearchItem>& items, std::string& filter);
+// Con contexto: filtra por el tipo del pin arrastrado. La version vieja llama a esta con nullptr.
+int searchPopup(const char* popup_id, const std::vector<SearchItem>& items, std::string& filter,
+                const SearchContext* context);
 
 // Coincidencia sin mayusculas ni tildes de todas las palabras de `filter`.
 bool fuzzyMatch(const std::string& text, const std::string& filter);

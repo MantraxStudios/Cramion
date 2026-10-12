@@ -4,6 +4,7 @@
 // parar y lo que tarda un frame con muchos objetos. Devuelve 0 si todo va.
 
 #include "CramionCore/ecs/Components.h"
+#include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/world/WorldPartition.h"
 
@@ -151,6 +152,12 @@ int main() {
         worldpart::WorldPartitionSystem wp;
         wp.setCacheFolder(cache);
         wp.begin(world, Vec3{});
+        // La escritura va en el hilo de IO (wp.AsyncCells): unos frames.
+        for (int i = 0; i < 400 && wp.stats().writes_in_flight > 0; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            wp.update(world, Vec3{});
+        }
+        wp.update(world, Vec3{});
         check(wp.stats().disk_bytes > 0 && wp.stats().stored_bytes == 0, "lo descargado va a disco, no a memoria");
         player.setWorldPosition(Vec3{950.0f, 0.0f, 50.0f});
         bool back = false;
@@ -227,7 +234,11 @@ int main() {
         check(ms < 2.0, "un frame quieto cuesta menos de 2 ms");
         // Todo cargado (lo caro: antes cada frame miraba cada objeto y su hijo).
         player.get<worldpart::StreamingSource>().range_scale = 100.0f;
-        for (int i = 0; i < 400 && wp.stats().loaded_cells < wp.stats().cells; ++i) wp.update(world, Vec3{});
+        // Leer y parsear va en otros hilos (wp.AsyncCells): con pausas cortas.
+        for (int i = 0; i < 4000 && wp.stats().loaded_cells < wp.stats().cells; ++i) {
+            wp.update(world, Vec3{});
+            if (wp.stats().loading_cells > 0) std::this_thread::sleep_for(std::chrono::microseconds(500));
+        }
         check(wp.stats().loaded_cells == wp.stats().cells, "todo cargado al ampliar la distancia");
         const auto t1 = std::chrono::steady_clock::now();
         for (int i = 0; i < 100; ++i) wp.update(world, Vec3{});
@@ -237,6 +248,34 @@ int main() {
         check(loaded_ms < 2.0, "con todo cargado, menos de 2 ms");
         wp.end(world, true);
         check(world.entityCount() == 40000 + 2, "todo vuelve al parar");
+    }
+
+    std::printf("UUID repetidos\n");
+    {
+        ecs::World world;
+        ecs::Entity a = prop(world, "Roca", 10.0f, 10.0f);
+        world.create("Hijo", a);
+        const Uuid id = a.uuid();
+        const std::string saved = ecs::serializeEntity(world, a);
+        const std::size_t before = world.entityCount();
+        // Recrear lo guardado con el original aun vivo: no se duplica.
+        const ecs::Entity again = ecs::restoreEntities(world, saved);
+        check(!again.valid() && world.entityCount() == before, "restaurar un UUID que ya esta: no se crea otra copia");
+        check(world.find(id) == a, "y el original sigue encontrandose por su UUID");
+        // Lo mismo parseado en otro hilo.
+        auto parsed = ecs::parseEntities(saved);
+        check(parsed != nullptr, "parsear en otro hilo (sin mundo)");
+        check(parsed && !ecs::restoreParsedEntities(world, *parsed).valid() && world.entityCount() == before,
+              "tampoco desde lo parseado");
+        // Borrar el original y recrear: vuelve con el mismo UUID y su hijo.
+        world.destroy(a);
+        const ecs::Entity back = parsed ? ecs::restoreParsedEntities(world, *parsed) : ecs::Entity{};
+        check(back.valid() && back.uuid() == id && world.find(id) == back && back.children().size() == 1,
+              "borrado y recreado: mismo UUID, con su hijo");
+        // Destruir otra entidad no toca el mapa de UUID del resto.
+        ecs::Entity other = world.create("Otro");
+        world.destroy(other);
+        check(world.find(id) == back, "destruir otra entidad no toca el mapa de UUID ajeno");
     }
 
     std::printf("\n%d de %d comprobaciones bien\n", checks - failures, checks);

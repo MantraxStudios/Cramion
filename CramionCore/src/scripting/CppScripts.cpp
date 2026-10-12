@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -83,11 +84,23 @@ cvar::CVar<int> g_max_restarts("script.cpp.MaxRestarts", 20,
                                "Veces que se rearranca el proceso de scripts en una sesion de Play antes de rendirse",
                                cvar::Saved, 0, 1000);
 
+// El script del SDK que corre las pruebas (cramion/Test.h): sus pruebas con co_await
+// son corrutinas cuyas tramas y codigo viven en la DLL del proceso de scripts.
+constexpr const char* kTestRunnerClass = "CramionTests";
+
 std::filesystem::path g_toolchain_override;
 
 std::string lower(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
+}
+
+// Un numero de linea de un mensaje (0 si no cabe o no es numero): std::stoi
+// lanza con "99999999999" y tumbaria el motor.
+int lineNumber(const std::string& text) {
+    int v = 0;
+    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), v);
+    return ec == std::errc() ? v : 0;
 }
 
 std::string utf8(const std::filesystem::path& p) {
@@ -516,10 +529,14 @@ void CppScript::reflect(ecs::PropertyVisitor& v) {
     const CppClassInfo* info = findCppScriptClass(class_name);
     if (info == nullptr) return;
     bool in_group = false;
+    int group_index = 0;
     for (const CppPropertyInfo& p : info->properties) {
         if (!p.header.empty()) {
             if (in_group) v.endGroup();
-            in_group = v.beginGroup(p.header.c_str(), true);
+            // La misma cabecera puede salir varias veces en la clase: el
+            // sufijo "##gN" (oculto en la UI) hace unico el ID de cada grupo.
+            const std::string header = p.header + "##g" + std::to_string(group_index++);
+            in_group = v.beginGroup(header.c_str(), true);
             if (!in_group) continue;
         }
         if (p.kind == "file") continue;  // el editor los dibuja (soltar imagenes, sonidos...)
@@ -529,7 +546,11 @@ void CppScript::reflect(ecs::PropertyVisitor& v) {
         const std::string label = p.label.empty() ? p.name : p.label;
         std::string tooltip = p.tooltip;
         if (p.kind == "entity" && !p.type.empty()) tooltip += (tooltip.empty() ? "" : "\n") + std::string("Un objeto con ") + p.type;
-        const ecs::Meta meta{p.name.c_str(), label.c_str(), tooltip.empty() ? nullptr : tooltip.c_str()};
+        // Clave solo para la UI (ID de ImGui y ruta de edicion multiple): con
+        // el prefijo "p." una propiedad llamada "enabled" no choca con el campo
+        // fijo de arriba. Lo guardado sigue usando p.name (setValue/value).
+        const std::string ui_key = "p." + p.name;
+        const ecs::Meta meta{ui_key.c_str(), label.c_str(), tooltip.empty() ? nullptr : tooltip.c_str()};
         if (p.kind == "list") {
             std::vector<json> items;
             if (current.is_array()) {
@@ -1103,6 +1124,7 @@ struct CppScriptSystem::Impl {
     };
     std::unordered_map<entt::entity, ReloadState> reload_state;
     int reloads = 0;
+    bool reload_warned = false;  // el aviso de las corrutinas, una vez por Play
     bool load_failed = false;
     std::uint64_t calls = 0;
     double frame_ms = 0.0;
@@ -1124,10 +1146,32 @@ struct CppScriptSystem::Impl {
         return world != nullptr && world->valid(h) ? world->wrap(h).name() : std::string("?");
     }
 
+    // Recarga en caliente con pruebas (CramionTests) a medias: la corrutina de la
+    // prueba no sobrevive al cambio de DLL, asi que la ejecucion se cierra como
+    // fallida (y no queda esperando ni se da por buena). true si habia una a medias.
+    bool abortRunningTests(const std::string& why) {
+        if (api == nullptr) return false;
+        const json reply = json::parse(api->bridgeCall(json{{"fn", "Test.results"}}.dump()), nullptr, false);
+        if (!reply.is_object() || !reply.value("ok", false) || !reply.contains("result")) return false;
+        const json& results = reply.at("result");
+        if (!results.is_object() || results.value("done", true)) return false;
+        const auto cases = results.find("cases");
+        if (cases == results.end() || !cases->is_array() || cases->empty()) return false;
+        api->bridgeCall(json{{"fn", "Test.check"}, {"args", json::array({false, why})}}.dump());
+        api->bridgeCall(json{{"fn", "Test.done"}}.dump());
+        return true;
+    }
+
     void closeHost() {
         host.close();
         for (auto& [h, inst] : instances) inst.created = inst.started = false;
         callbacks.clear();
+    }
+    // Tras cerrar el proceso para reiniciarlo (fallo o recarga): los callbacks de
+    // C++ del motor ya no valen. No en closeHost(): stop() lo llama desde el
+    // destructor, cuando `api` puede no existir ya.
+    void hostRestarted() {
+        if (api != nullptr) api->resetBridgeCallbacks();
     }
 
     RpcHandler handler() {
@@ -1184,7 +1228,7 @@ struct CppScriptSystem::Impl {
         int line = 0;
         if (std::regex_search(message, m, where)) {
             const std::string name = m[1];
-            line = std::stoi(m[2]);
+            line = lineNumber(m[2]);
             std::error_code ec;
             for (std::filesystem::recursive_directory_iterator it(assets_root, ec), end; !ec && it != end; it.increment(ec)) {
                 if (it->is_regular_file(ec) && utf8(it->path().filename()) == name) {
@@ -1212,6 +1256,7 @@ struct CppScriptSystem::Impl {
         reportFault(who, (o == Outcome::Timeout ? "" : "el proceso de scripts cayo: ") + message +
                              "  -> script desactivado; los demas scripts se reinician");
         closeHost();
+        hostRestarted();
         ++restarts;
     }
 
@@ -1304,7 +1349,22 @@ struct CppScriptSystem::Impl {
         return v;
     }
 
+    // Ninguna excepcion (json, componentes...) sale de aqui: tumbaria el motor
+    // por una llamada mala de un script. La respuesta queda vacia (el script lee
+    // ceros y textos vacios) y se avisa en la consola.
     void handleRpc(proto::Rpc op, proto::Reader& r, proto::Writer& out) {
+        try {
+            handleRpcUnchecked(op, r, out);
+        } catch (const std::exception& e) {
+            out.bytes.clear();
+            std::cerr << "[C++] llamada " << static_cast<int>(op) << " al motor fallida: " << e.what() << std::endl;
+        } catch (...) {
+            out.bytes.clear();
+            std::cerr << "[C++] llamada " << static_cast<int>(op) << " al motor fallida" << std::endl;
+        }
+    }
+
+    void handleRpcUnchecked(proto::Rpc op, proto::Reader& r, proto::Writer& out) {
         // CRAMION_CPP_TRACE=1: cada llamada de los scripts en la consola (depurar).
         static const bool trace = std::getenv("CRAMION_CPP_TRACE") != nullptr;
         if (trace) std::cerr << "[C++ rpc] " << static_cast<int>(op) << " (" << r.remaining() << " bytes)" << std::endl;
@@ -1374,8 +1434,15 @@ struct CppScriptSystem::Impl {
             }
             case proto::Rpc::CreateEntity: out.u64(idOf(w.create(r.str()).handle())); break;
             case proto::Rpc::Destroy: {
+                // Por el mismo camino que Entity:destroy (hooks de los modulos y
+                // onDestroy con el objeto aun valido); sin ScriptSystem, el propio.
                 const ecs::Entity e = entity(r.u64());
-                if (e.valid()) pending_destroy.push_back(e.handle());
+                if (!e.valid()) break;
+                if (api != nullptr && api->running()) {
+                    api->destroyLater(e);
+                } else {
+                    pending_destroy.push_back(e.handle());
+                }
                 break;
             }
             case proto::Rpc::Valid: out.u32(entity(r.u64()).valid() ? 1 : 0); break;
@@ -1513,11 +1580,22 @@ struct CppScriptSystem::Impl {
                 bool ok = false;
                 if (node != nullptr) {
                     json parsed = json::parse(value, nullptr, false);
-                    if (!parsed.is_discarded() && parsed.is_object() && parsed.contains("$v") && node->is_object()) {
-                        // Vec3 del script -> {x, y, z} del componente.
-                        (*node)["x"] = parsed["$v"][0];
-                        (*node)["y"] = parsed["$v"][1];
-                        (*node)["z"] = parsed["$v"][2];
+                    const json* vec = !parsed.is_discarded() && parsed.is_object() ? &parsed : nullptr;
+                    if (vec != nullptr) {
+                        const auto v = vec->find("$v");
+                        vec = v != vec->end() ? &*v : nullptr;
+                    }
+                    if (vec != nullptr && node->is_object()) {
+                        // Vec3 del script -> {x, y, z} del componente (solo si son 3 numeros).
+                        const bool vec3 = vec->is_array() && vec->size() >= 3 && (*vec)[0].is_number() &&
+                                          (*vec)[1].is_number() && (*vec)[2].is_number();
+                        if (!vec3) {
+                            out.u32(0);
+                            break;
+                        }
+                        (*node)["x"] = (*vec)[0];
+                        (*node)["y"] = (*vec)[1];
+                        (*node)["z"] = (*vec)[2];
                     } else {
                         *node = parsed.is_discarded() ? json(value) : parsed;
                     }
@@ -1772,7 +1850,8 @@ struct CppScriptSystem::Impl {
         std::vector<std::pair<std::uint64_t, std::string>> list;
         list.swap(callbacks);
         for (const auto& [id, args_json] : list) {
-            if ((id >> 32) != host.serial || !host.running()) continue;  // de un proceso anterior
+            // De un proceso anterior (el SDK guarda el proceso en 31 bits: el 63 es de kLocalCallbackBase).
+            if ((id >> 32) != (host.serial & 0x7FFFFFFFu) || !host.running()) continue;
             proto::Writer w;
             w.u64(id).str(args_json);
             std::string message;
@@ -1782,6 +1861,7 @@ struct CppScriptSystem::Impl {
             } else if (o == Outcome::HostDied || o == Outcome::Timeout) {
                 reportFault("un callback", message + "  -> los scripts se reinician");
                 closeHost();
+                hostRestarted();
                 ++restarts;
                 return;
             }
@@ -1800,11 +1880,39 @@ struct CppScriptSystem::Impl {
         }
     }
 
-    void flushDestroys(ecs::World& w) {
-        for (const entt::entity h : pending_destroy) {
-            if (w.registry().valid(h)) w.destroy(w.wrap(h));
+    // onDestroy de la instancia del objeto mientras aun es valido (justo antes
+    // de borrarlo); sync() ya no la encuentra al frame siguiente.
+    void destroyInstance(entt::entity h) {
+        auto it = instances.find(h);
+        if (it == instances.end()) return;
+        if (playing && it->second.created && host.running() && !faulted.contains(h)) {
+            callEvent(h, it->second, proto::Event::Destroy, args(0.0f));
+            it = instances.find(h);  // por si acaso: onDestroy pide cosas al motor
+            if (it != instances.end() && it->second.created && host.running()) {
+                proto::Writer msg;
+                msg.u32(it->second.id);
+                std::string ignored;
+                request(ipc::Op::Destroy, msg, ignored);
+            }
         }
-        pending_destroy.clear();
+        instances.erase(h);
+    }
+
+    void flushDestroys(ecs::World& w) {
+        std::vector<entt::entity> queue;
+        queue.swap(pending_destroy);  // onDestroy puede pedir mas (van al frame siguiente)
+        for (const entt::entity handle : queue) {
+            if (!w.registry().valid(handle)) continue;
+            std::vector<entt::entity> stack{handle};
+            while (!stack.empty()) {
+                const entt::entity h = stack.back();
+                stack.pop_back();
+                destroyInstance(h);
+                if (!w.registry().valid(h)) continue;
+                for (const entt::entity c : w.wrap(h).children()) stack.push_back(c);
+            }
+            if (w.registry().valid(handle)) w.destroy(w.wrap(handle));
+        }
     }
 
     // Las clases y propiedades de una DLL, en un proceso aparte (los
@@ -1936,6 +2044,11 @@ void CppScriptSystem::setScriptSystem(ScriptSystem* scripts) {
         // Mensajes de los Behavior Trees (Send Message / Run Script): onMessage.
         scripts->setMessageListener([alive, d](ecs::Entity e, const std::string& method, const std::string& value) {
             if (!alive.expired()) d->bt_messages.emplace_back(e.handle(), method, value);
+        });
+        // Objetos que se destruyen (Entity:destroy, Scene.destroy, Entity::destroy
+        // de C++...): onDestroy ahora, con el objeto aun valido.
+        scripts->setDestroyListener([alive, d](ecs::Entity e) {
+            if (!alive.expired() && d->playing) d->destroyInstance(e.handle());
         });
     }
 }
@@ -2156,7 +2269,7 @@ bool CppScriptSystem::upToDate() const {
         if (std::filesystem::last_write_time(p, ec) > built) return false;
     }
     for (const char* f : {"cramion/Script.h", "cramion/Value.h", "cramion/Types.h", "cramion/Api.gen.h", "cramion/CppProtocol.h",
-                          "cramion/ScriptMain.cpp"}) {
+                          "cramion/ScriptMain.cpp", "cramion/WsClient.h"}) {
         const auto t = std::filesystem::last_write_time(impl_->sdk_folder / f, ec);
         if (!ec && t > built) return false;
     }
@@ -2243,7 +2356,7 @@ CppCompileResult CppScriptSystem::compile() {
             std::error_code rel;
             const std::filesystem::path relative = std::filesystem::relative(file, d.assets_root, rel);
             const bool inside = !rel && !relative.empty() && utf8(relative).rfind("..", 0) != 0;
-            result.errors.push_back({generic(inside ? relative : file.filename()), std::stoi(m[2]), m[3]});
+            result.errors.push_back({generic(inside ? relative : file.filename()), lineNumber(m[2]), m[3]});
         } else if (line.find("lld-link: error") != std::string::npos || line.find("ld.lld: error") != std::string::npos ||
                    line.find("LINK : fatal error") != std::string::npos || line.find("error LNK") != std::string::npos) {
             result.errors.push_back({{}, 0, line});
@@ -2301,7 +2414,7 @@ CppCompileResult CppScriptSystem::compile() {
             std::error_code rel;
             const std::filesystem::path relative = std::filesystem::relative(file, d.assets_root, rel);
             const bool inside = !rel && !relative.empty() && utf8(relative).rfind("..", 0) != 0;
-            result.errors.push_back({generic(inside ? relative : file.filename()), std::stoi(m[2]), m[3]});
+            result.errors.push_back({generic(inside ? relative : file.filename()), lineNumber(m[2]), m[3]});
         } else if (line.find("ld: error") != std::string::npos || line.find("ld.lld: error") != std::string::npos ||
                    line.find("undefined reference") != std::string::npos || line.find("collect2: error") != std::string::npos) {
             result.errors.push_back({{}, 0, line});
@@ -2374,6 +2487,7 @@ void CppScriptSystem::start(ecs::World& world) {
     d.pending_destroy.clear();
     d.restarts = 0;
     d.reload_state.clear();
+    d.reload_warned = false;
     d.load_failed = false;
     d.time = 0.0f;
     d.frame = 0;
@@ -2403,6 +2517,35 @@ void CppScriptSystem::reload() {
     // Recarga en caliente: se guarda el estado de cada script vivo (propiedades
     // + onBeforeReload) y se recrean con la DLL nueva sin parar el juego.
     d.reload_state.clear();
+    // Las corrutinas (co_await) de los scripts tienen su trama y su codigo en la
+    // DLL anterior: no se pueden pasar a la nueva. Se pierden con el proceso
+    // viejo (nunca se reanudan con otra DLL) y la instancia nueva empieza sin
+    // ellas: hay que avisarlo para que no parezca un fallo del juego.
+    int live = 0;
+    std::vector<entt::entity> runners;
+    d.forEachLive([&](entt::entity h, Impl::Instance& inst) {
+        ++live;
+        if (inst.cls == kTestRunnerClass) runners.push_back(h);
+    });
+    // Pruebas a medias: se cierran como fallidas y el CramionTests se destruye de
+    // forma controlada (su destructor libera la corrutina de la prueba) mientras
+    // la DLL anterior sigue cargada. Con la DLL nueva queda parado: ni sigue una
+    // prueba que ya no existe ni vuelve a empezar la lista.
+    const bool tests_cut =
+        !runners.empty() && d.abortRunningTests("prueba cortada: se recargaron los scripts en caliente y su corrutina "
+                                                "(co_await) no sobrevive al cambio de DLL; vuelve a ejecutar las pruebas");
+    if (tests_cut) {
+        for (const entt::entity h : runners) {
+            const auto it = d.instances.find(h);
+            if (it == d.instances.end() || !it->second.created || !d.host.running()) continue;
+            proto::Writer w;
+            w.u32(it->second.id);
+            std::string ignored;
+            d.request(ipc::Op::Destroy, w, ignored);
+            it->second.created = false;
+            d.reload_state[h] = Impl::ReloadState{"{}", true};
+        }
+    }
     int kept = 0;
     if (g_hot_keep_state.get() && d.host.running()) {
         d.forEachLive([&](entt::entity h, Impl::Instance& inst) {
@@ -2425,10 +2568,23 @@ void CppScriptSystem::reload() {
         if (d.host.running()) d.request(ipc::Op::Quit, quit, ignored);
     }
     d.closeHost();
+    d.hostRestarted();
     d.load_failed = false;
     d.faulted.clear();
     ++d.reloads;
     std::cout << "[C++] Scripts recargados en caliente (" << kept << " con su estado)" << std::endl;
+    if (live > 0 && !d.reload_warned) {
+        d.reload_warned = true;
+        std::cerr << "[C++] Aviso: la recarga en caliente no conserva las corrutinas vivas (co_await): se detuvieron con la DLL "
+                     "anterior y la instancia nueva empieza sin ellas. Vuelve a lanzarlas en onAfterReload() (guarda su progreso "
+                     "en onBeforeReload) o pon script.cpp.HotReloadKeepState en false para reiniciar los scripts con awake()/start()."
+                  << std::endl;
+    }
+    if (tests_cut) {
+        std::cerr << "[C++] Aviso: habia pruebas (CramionTests) a medias: se dieron por fallidas al recargar. Vuelve a "
+                     "ejecutarlas (Stop y Play) con los scripts ya recargados."
+                  << std::endl;
+    }
 }
 
 void CppScriptSystem::fixedUpdate(ecs::World& world, float step, int steps) {

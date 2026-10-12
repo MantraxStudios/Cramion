@@ -19,6 +19,7 @@
 #include "CramionCore/spline/Spline.h"
 #include "CramionCore/gameplay/Accessibility.h"
 #include "CramionCore/environment/FogVolume.h"
+#include "CramionCore/terrain/TerrainGrid.h"
 #include "CramionCore/terrain/TerrainTools.h"
 
 #include <CramionFX/asset/ImageFile.h>
@@ -33,11 +34,14 @@
 #include <fstream>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <stdexcept>
 #include <string_view>
 #include <mutex>
 #include <unordered_set>
+#include <optional>
+#include <utility>
 
 namespace cramion::ecs {
 namespace {
@@ -59,6 +63,25 @@ cvar::CVar<bool> g_dynamic_probes("render.gi.DynamicProbes", true,
                                    cvar::Saved);
 cvar::CVar<int> g_probes_per_frame("render.gi.ProbesPerFrame", 256, "Sondas dinamicas que se rehacen cada frame",
                                    cvar::Saved, 16, 8192);
+// Sonda de reflexion sin trazado de rayos: cada cara es casi otro frame
+// entero. 0 = automatico segun el nivel de la GPU (Bajo / Medio / Alto / Ultra).
+cvar::CVar<int> g_probe_face_interval("render.probe.FaceInterval", 0,
+                                      "Sonda de reflexion: frames entre una cara y la siguiente (0 = automatico: "
+                                      "4 en Bajo, 3 en Medio, 2 en Alto/Ultra)",
+                                      cvar::Saved, 0, 120);
+cvar::CVar<float> g_probe_min_seconds("render.probe.MinSeconds", 0.0f,
+                                      "Sonda de reflexion: segundos minimos entre dos capturas completas (0 = "
+                                      "automatico: 2 en Bajo, 1 en Medio, 0.5 en Alto/Ultra)",
+                                      cvar::Saved, 0.0f, 600.0f);
+cvar::CVar<float> g_probe_draw_distance("render.probe.DrawDistance", 0.0f,
+                                        "Sonda de reflexion: distancia de dibujo de la captura en metros; mas lejos "
+                                        "se refleja el cielo (0 = automatico: 150 en Bajo, 300 en Medio, 600 en Alto, "
+                                        "1000 en Ultra; nunca mas que la camara)",
+                                        cvar::Saved, 0.0f, 100000.0f);
+cvar::CVar<bool> g_probe_terrain("render.probe.Terrain", true,
+                                 "Sonda de reflexion: dibujar el terreno en la captura (apagado: mas barato con "
+                                 "terrenos grandes, el suelo no se refleja ni rebota luz desde fuera de pantalla)",
+                                 cvar::Saved);
 cvar::CVar<bool> g_texture_mips("render.streaming.TextureMips", true,
                                  "Streaming de texturas: cada modelo sube sus texturas al detalle que pide su tamano en pantalla",
                                  cvar::Saved);
@@ -90,6 +113,63 @@ cvar::CVar<float> g_anim_lod_far("anim.lod.Far", 60.0f,
 cvar::CVar<int> g_anim_lod_offscreen("anim.lod.Offscreen", 6,
                                      "Cada cuantos frames se anima lo que esta detras de la camara (1 = siempre)",
                                      cvar::Saved, 1, 60);
+
+// Streaming de terrenos a la GPU: las teselas nuevas se preparan en otro hilo
+// (imagenes y copia sin esperar a la GPU) y se adoptan en el principal con un
+// presupuesto de ms (stream.MainBudgetMs).
+cvar::CVar<bool> g_async_terrain_upload("render.terrain.AsyncUpload", true,
+                                        "Preparar los terrenos nuevos en otro hilo (sin parar la GPU ni el frame); "
+                                        "apagado: se crean y se suben enteros en el frame, como antes",
+                                        cvar::Saved);
+cvar::CVar<int> g_terrain_prepares("render.terrain.AsyncPrepares", 2,
+                                   "Terrenos preparandose a la vez en otro hilo (memoria de staging: ~12 MB cada uno)",
+                                   cvar::Saved, 1, 16);
+cvar::CVar<bool> g_async_foliage_upload("render.foliage.AsyncUpload", true,
+                                        "Subir la vegetacion sembrada sin parar la GPU (se cambia al terminar de subir); "
+                                        "apagado: se sube en el frame, como antes",
+                                        cvar::Saved);
+// Los interruptores de CramionFX (no depende de las CVars de CramionCore):
+// se registran aqui y se pasan al renderizador en syncTerrains. El editor y el
+// player aplican stream.UploadMBPerFrame (setTerrainUploadBudget) por nombre.
+cvar::CVar<float> g_upload_mb_per_frame("stream.UploadMBPerFrame", 16.0f,
+                                        "MB por frame que se suben a la GPU para terrenos (las ediciones grandes se "
+                                        "reparten en varios frames)",
+                                        cvar::Saved, 0.25f, 1024.0f);
+cvar::CVar<int> g_grass_pool("render.terrain.GrassPool", 6,
+                             "Bloques de hierba compartidos por las teselas mas cercanas (0 = uno por tesela, como antes)",
+                             cvar::Saved, 0, 64);
+cvar::CVar<bool> g_async_terrain_layers("render.terrain.AsyncLayers", true,
+                                        "Leer y subir las texturas de las capas del terreno en otro hilo "
+                                        "(apagado: al momento, como antes)",
+                                        cvar::Saved);
+cvar::CVar<bool> g_rt_async_terrain("render.rt.AsyncTerrain", true,
+                                    "Trazado de rayos: vertices y color del terreno en otro hilo (apagado: en el "
+                                    "principal, como antes)",
+                                    cvar::Saved);
+
+// Una CVar numerica de otro modulo por su nombre (sin depender de que exista:
+// `fallback` si no). Se vuelve a leer solo cuando cambia.
+struct NamedNumber {
+    const char* name;
+    double fallback;
+    cvar::CVarBase* cvar = nullptr;
+    std::uint64_t version = ~0ull;
+    double value = 0.0;
+    double get() {
+        if (cvar == nullptr) cvar = cvar::Registry::instance().find(name);
+        if (cvar == nullptr) return fallback;
+        if (cvar->version() != version) {
+            version = cvar->version();
+            try {
+                value = std::stod(cvar->toString());
+            } catch (...) {
+                value = fallback;
+            }
+        }
+        return value;
+    }
+};
+NamedNumber g_stream_budget_ms{"stream.MainBudgetMs", 2.0};
 
 }  // namespace
 
@@ -1051,6 +1131,7 @@ void RenderSync::reset(scene::Scene& scene) {
     shared_poses_.clear();
     marca("socket_sources_");
     socket_sources_.clear();
+    socket_bones_.clear();
     marca("drive_sockets_");
     drive_sockets_.clear();
     marca("failed_");
@@ -1671,9 +1752,44 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
     std::shared_ptr<const water::OceanSpectrum> ocean_spectrum;
     float ocean_foam = 1.0f;
     float ocean_foam_persistence = 4.0f;
+    // Si hay mas masas de agua de las que caben, las mas cercanas a la camara
+    // (antes: las primeras de la jerarquia, y un lago al lado podia no verse).
+    // El orden de la jerarquia se mantiene entre las elegidas.
+    std::unordered_set<entt::entity> nearest_water;
+    bool limit_water = false;
+    {
+        std::vector<std::pair<float, entt::entity>> candidates;
+        for (const entt::entity handle : world.registry().view<water::WaterBody>()) {
+            const Entity e = world.wrap(handle);
+            if (!e.activeInHierarchy()) continue;
+            const water::WaterBody& body = e.get<water::WaterBody>();
+            float distance = 0.0f;  // el oceano siempre (no tiene borde)
+            if (body.type == water::WaterType::Lake) {
+                const Vec3 c = e.worldPosition();
+                const float radius = 0.5f * std::sqrt(body.size.x * body.size.x + body.size.y * body.size.y);
+                distance = std::max(core::length(Vec3{c.x - camera_position.x, 0.0f, c.z - camera_position.z}) - radius, 0.0f);
+            } else if (body.type == water::WaterType::River) {
+                const Mat4& m = e.worldMatrix();
+                distance = std::numeric_limits<float>::max();
+                for (const water::RiverPoint& point : body.points) {
+                    const Vec3 w = transformPoint(m, point.position);
+                    const float d = core::length(w - camera_position) - point.width * 0.5f;
+                    distance = std::min(distance, std::max(d, 0.0f));
+                }
+            }
+            candidates.emplace_back(distance, handle);
+        }
+        if (candidates.size() > gfx::kMaxWaterBodies) {
+            limit_water = true;
+            std::nth_element(candidates.begin(), candidates.begin() + gfx::kMaxWaterBodies, candidates.end(),
+                             [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (std::size_t i = 0; i < gfx::kMaxWaterBodies; ++i) nearest_water.insert(candidates[i].second);
+        }
+    }
     world.forEachDepthFirst([&](Entity e) {
         const water::WaterBody* body = e.tryGet<water::WaterBody>();
         if (body == nullptr || !e.activeInHierarchy() || bodies.size() >= gfx::kMaxWaterBodies) return;
+        if (limit_water && nearest_water.count(e.handle()) == 0) return;
         const Mat4& m = e.worldMatrix();
         const Vec3 origin = e.worldPosition();
         water_bodies.emplace_back(body, m);
@@ -2104,10 +2220,21 @@ void RenderSync::destroyRenderTextures() {
 }
 
 void RenderSync::destroyTerrains() {
+    // Los jobs de preparacion usan el renderizador y su TerrainPrepare:
+    // esperarlos (solo al cambiar de escena o al cerrar, no en el frame).
+    for (auto& [entity, gpu] : terrains_) {
+        if (gpu.pending && gpu.pending->job) jobs::wait(gpu.pending->job);
+    }
+    for (const std::shared_ptr<TerrainPrepare>& p : draining_terrains_) {
+        if (p->job) jobs::wait(p->job);
+    }
     if (renderer_ != nullptr) {
-        for (auto& [entity, gpu] : terrains_) renderer_->destroyTerrain(gpu.id);
+        for (auto& [entity, gpu] : terrains_) {
+            if (gpu.id != 0) renderer_->destroyTerrain(gpu.id);
+        }
     }
     terrains_.clear();
+    draining_terrains_.clear();
 }
 
 // Vegetacion: firma de todo lo que influye en la siembra; si cambia, se
@@ -2121,8 +2248,10 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
     struct Job {
         foliage::Foliage params;
         core::Vec3 center;
+        std::vector<foliage::FoliageGround> ground;  // solo los terrenos que pisa su area
+        bool no_ground = false;  // hay terrenos, pero ninguno bajo el bosque: no crece nada
     };
-    std::vector<Job> jobs;
+    std::vector<Job> forests;
     const foliage::Foliage* first = nullptr;
     // Coordenadas absolutas (sin el origen flotante): desplazar el mundo no
     // cambia la firma ni obliga a sembrar otra vez.
@@ -2145,11 +2274,11 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
             const float cv[] = {c.center.x, c.center.z, c.radius};
             hash_bytes(cv, sizeof(cv));
         }
-        jobs.push_back({f, p});
-        for (foliage::FoliageClearing& c : jobs.back().params.clearings) c.center = c.center + world_origin;
+        forests.push_back({f, p, {}, false});
+        for (foliage::FoliageClearing& c : forests.back().params.clearings) c.center = c.center + world_origin;
     }
     // El agua de la escena (rios y lagos): alli no crecen arboles.
-    if (!jobs.empty()) {
+    if (!forests.empty()) {
         std::vector<foliage::FoliageWater> water;
         for (const entt::entity handle : world.registry().view<water::WaterBody>()) {
             const Entity e = world.wrap(handle);
@@ -2179,24 +2308,53 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
             const float values[] = {w.a.x, w.a.y, w.a.z, w.b.x, w.b.z, w.width, w.half.x, w.half.y, w.angle};
             hash_bytes(values, sizeof(values));
         }
-        for (Job& job : jobs) job.params.water = water;
+        for (Job& job : forests) job.params.water = water;
     }
-    std::vector<foliage::FoliageGround> ground;
-    if (!jobs.empty() && terrain_store_ != nullptr) {
+    // Terrenos: solo los que pisa algun bosque cuentan en la firma (cargar
+    // una tesela lejana ya no vuelve a sembrar todo). Suma conmutativa: el
+    // orden de las entidades no importa.
+    if (!forests.empty() && terrain_store_ != nullptr) {
+        bool any_terrain = false;
+        std::uint64_t terrain_sum = 0;
         for (const entt::entity handle : world.registry().view<terrain::Terrain>()) {
             const Entity e = world.wrap(handle);
             if (!e.activeInHierarchy()) continue;
             const terrain::Terrain& t = e.get<terrain::Terrain>();
-            std::shared_ptr<terrain::TerrainData> data = terrain_store_->get(t);
+            // Teselas: solo si el streamer ya las cargo (nunca leer en el frame).
+            std::shared_ptr<terrain::TerrainData> data =
+                e.has<terrain::TerrainTile>() ? terrain_store_->find(t) : terrain_store_->get(t);
             if (!data) continue;
+            any_terrain = true;
             const core::Vec3 origin = e.worldPosition() + world_origin;
+            const float size = std::max(t.size, 1.0f);
+            bool used = false;
+            for (Job& job : forests) {
+                if (!job.params.on_terrain) continue;
+                const float half = std::max(job.params.area, 1.0f) * 0.5f;
+                if (origin.x > job.center.x + half || origin.x + size < job.center.x - half ||
+                    origin.z > job.center.z + half || origin.z + size < job.center.z - half) {
+                    continue;
+                }
+                job.ground.push_back({data, t, origin, nullptr});
+                used = true;
+            }
+            if (!used) continue;
             // El terreno cuenta al terminar cada trazo (no en cada toque del pincel).
+            std::uint64_t h = 1469598103934665603ull;
+            const auto mix = [&](const void* bytes, std::size_t count) {
+                const auto* p = static_cast<const unsigned char*>(bytes);
+                for (std::size_t i = 0; i < count; ++i) h = (h ^ p[i]) * 1099511628211ull;
+            };
             const std::uint64_t version = data->collisionVersion();
             const float values[] = {t.size, t.height, origin.x, origin.y, origin.z};
-            hash_bytes(values, sizeof(values));
-            hash_bytes(&version, sizeof(version));
-            ground.push_back({data, t, origin});
+            mix(values, sizeof(values));
+            mix(&version, sizeof(version));
+            const void* identity = data.get();
+            mix(&identity, sizeof(identity));
+            terrain_sum += h;
         }
+        hash_bytes(&terrain_sum, sizeof(terrain_sum));
+        for (Job& job : forests) job.no_ground = job.params.on_terrain && any_terrain && job.ground.empty();
     }
     if (first != nullptr) {
         gfx::FoliageSettings foliage_settings = first->settings();
@@ -2205,15 +2363,22 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
         renderer.setFoliageSpecies(first->species());
     }
 
-    // Termino una siembra: a la GPU.
-    if (foliage_job_.valid() && foliage_job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        std::vector<gfx::FoliageInstance> instances = foliage_job_.get();
-        foliage_count_ = instances.size();
-        renderer.setFoliage(instances);
+    // Termino una siembra: a la GPU (sin parar la GPU: se cambia al subirse).
+    if (foliage_job_ && foliage_job_->done()) {
+        std::shared_ptr<std::vector<gfx::FoliageInstance>> instances = std::move(foliage_result_);
+        foliage_job_.reset();
+        foliage_result_.reset();
+        if (!instances) instances = std::make_shared<std::vector<gfx::FoliageInstance>>();
+        foliage_count_ = instances->size();
+        if (g_async_foliage_upload.get()) {
+            renderer.setFoliageAsync(std::shared_ptr<const std::vector<gfx::FoliageInstance>>(std::move(instances)));
+        } else {
+            renderer.setFoliage(*instances);
+        }
         foliage_signature_ = foliage_job_signature_;
         foliage_uploaded_ = true;
     }
-    if (jobs.empty()) {
+    if (forests.empty()) {
         if (foliage_uploaded_) {
             renderer.clearFoliage();
             foliage_uploaded_ = false;
@@ -2222,17 +2387,29 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
         foliage_signature_ = 0;
         return;
     }
-    if (signature != foliage_signature_ && !foliage_job_.valid()) {
+    if (signature != foliage_signature_ && !foliage_job_) {
         foliage_job_signature_ = signature;
-        foliage_job_ = std::async(std::launch::async, [jobs = std::move(jobs), ground = std::move(ground)]() {
-            std::vector<gfx::FoliageInstance> all;
-            for (const Job& job : jobs) {
-                foliage::FoliageResult r = foliage::generateFoliage(job.params, job.center, ground);
-                all.insert(all.end(), r.instances.begin(), r.instances.end());
-                if (all.size() >= gfx::FoliagePass::kMaxInstances) break;
+        // El job solo ve snapshots inmutables del terreno (no los datos vivos,
+        // que el editor esculpe y el streamer cose en este hilo).
+        for (Job& job : forests) {
+            for (foliage::FoliageGround& g : job.ground) {
+                g.snapshot = g.data ? g.data->snapshot() : nullptr;
+                g.data.reset();
             }
-            return all;
-        });
+        }
+        auto result = std::make_shared<std::vector<gfx::FoliageInstance>>();
+        foliage_result_ = result;
+        foliage_job_ = jobs::schedule(
+            [forests = std::move(forests), result]() {
+                std::vector<gfx::FoliageInstance>& all = *result;
+                for (const Job& job : forests) {
+                    if (job.no_ground) continue;  // como antes: ningun terreno debajo, ningun arbol
+                    foliage::FoliageResult r = foliage::generateFoliage(job.params, job.center, job.ground);
+                    all.insert(all.end(), r.instances.begin(), r.instances.end());
+                    if (all.size() >= gfx::FoliagePass::kMaxInstances) break;
+                }
+            },
+            nullptr, jobs::Priority::Background);
     }
 }
 
@@ -2248,66 +2425,227 @@ bool RenderSync::groundHeight(float x, float z, float& height) const {
     return false;
 }
 
+namespace {
+
+// Los datos de un snapshot del terreno como los entiende CramionFX (que no
+// depende de CramionCore): los mismos buffers compartidos, sin copiar.
+gfx::TerrainPixels terrainPixels(const terrain::TerrainSnapshot& snapshot) {
+    gfx::TerrainPixels pixels;
+    pixels.resolution = snapshot.resolution;
+    pixels.splat_resolution = snapshot.splat_resolution;
+    pixels.heights = snapshot.heights;
+    pixels.splat0 = snapshot.splat0;
+    pixels.splat1 = snapshot.splat1;
+    pixels.version = snapshot.version;
+    return pixels;
+}
+
+// Firma de las capas de un Terrain (sus rutas solo se rehacen si cambia).
+std::uint64_t layersHash(const std::vector<terrain::TerrainLayer>& layers) {
+    std::uint64_t h = 1469598103934665603ull;
+    const auto bytes = [&](const void* data, std::size_t size) {
+        const auto* p = static_cast<const unsigned char*>(data);
+        for (std::size_t i = 0; i < size; ++i) h = (h ^ p[i]) * 1099511628211ull;
+    };
+    const std::size_t count = layers.size();
+    bytes(&count, sizeof(count));
+    for (const terrain::TerrainLayer& l : layers) {
+        bytes(l.albedo.data(), l.albedo.size());
+        bytes("|", 1);
+        bytes(l.normal.data(), l.normal.size());
+        const float values[] = {l.tiling, l.roughness, l.metallic, l.normal_strength, l.tint.x, l.tint.y, l.tint.z};
+        bytes(values, sizeof(values));
+    }
+    return h;
+}
+
+}  // namespace
+
+void RenderSync::dropTerrainPrepare(std::shared_ptr<TerrainPrepare> prepare) {
+    if (prepare) draining_terrains_.push_back(std::move(prepare));
+}
+
 void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const core::Vec3& eye) {
+    const auto main_start = std::chrono::steady_clock::now();
     grass_eye_ = eye;
     terrain_samples_.clear();
     renderer_ = &renderer;
+    terrain_gpu_stats_ = TerrainGpuStats{};
+    renderer.setGrassPoolSize(static_cast<std::uint32_t>(std::max(g_grass_pool.get(), 0)));
+    renderer.setTerrainAsyncLayers(g_async_terrain_layers.get());
+    renderer.setRayTracingAsyncTerrain(g_rt_async_terrain.get());
+    // Preparaciones abandonadas: se sueltan cuando su copia termino (sin
+    // esperar nunca a la GPU).
+    for (auto it = draining_terrains_.begin(); it != draining_terrains_.end();) {
+        const TerrainPrepare& p = **it;
+        const bool job_done = p.job == nullptr || p.job->done();
+        if (job_done && (p.prepared == nullptr || renderer.preparedTerrainReady(p.prepared))) {
+            it = draining_terrains_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    const bool async = g_async_terrain_upload.get();
+    // Terrenos que esperan preparacion: los mas cercanos a la camara primero.
+    struct Want {
+        float distance2;
+        TerrainGpu* gpu;
+    };
+    std::vector<Want> wanted;
+    int preparing = 0;
+    std::optional<jobs::FrameBudget> budget;  // se crea al adoptar el primero
     std::unordered_set<Uuid> alive;
     if (terrain_store_ != nullptr) {
         for (const entt::entity handle : world.registry().view<terrain::Terrain>()) {
             const Entity e = world.wrap(handle);
             if (!e.activeInHierarchy()) continue;
             const terrain::Terrain& comp = e.get<terrain::Terrain>();
-            const std::shared_ptr<terrain::TerrainData> data = terrain_store_->get(comp);
+            // Las teselas las lee el streamer en otro hilo: aqui solo si ya
+            // estan (nunca leer de disco en el frame).
+            const std::shared_ptr<terrain::TerrainData> data =
+                e.has<terrain::TerrainTile>() ? terrain_store_->find(comp) : terrain_store_->get(comp);
             if (!data) continue;
             alive.insert(e.uuid());
-            terrain_samples_.push_back({data, comp, e.worldPosition()});
+            const core::Vec3 origin = e.worldPosition();
+            terrain_samples_.push_back({data, comp, origin});
             TerrainGpu& gpu = terrains_[e.uuid()];
-            if (gpu.id == 0 || gpu.data != data || gpu.resolution != data->resolution() ||
-                gpu.splat_resolution != data->splatResolution()) {
+            const bool changed = gpu.data != data || gpu.resolution != data->resolution() ||
+                                 gpu.splat_resolution != data->splatResolution();
+            if (changed) {
                 if (gpu.id != 0) renderer.destroyTerrain(gpu.id);
-                gpu.id = renderer.createTerrain(data->resolution(), data->splatResolution());
+                gpu.id = 0;
+                gpu.failed = false;
+                dropTerrainPrepare(std::move(gpu.pending));
+                gpu.pending.reset();
                 gpu.data = data;
                 gpu.resolution = data->resolution();
                 gpu.splat_resolution = data->splatResolution();
-                data->markAll();
+            }
+            // Un fallo (sin descriptores o memoria, pase aun sin crear) se
+            // reintenta cada segundo, no cada frame (antes: cada frame).
+            if (gpu.failed && main_start >= gpu.retry_after) gpu.failed = false;
+            if (gpu.id == 0 && !gpu.failed) {
+                if (!async) {
+                    // Como antes: crear y subirlo entero en este frame.
+                    dropTerrainPrepare(std::move(gpu.pending));
+                    gpu.pending.reset();
+                    gpu.id = renderer.createTerrain(data->resolution(), data->splatResolution());
+                    gpu.failed = gpu.id == 0;  // sin descriptores o memoria: no insistir cada frame
+                    gpu.retry_after = main_start + std::chrono::seconds(1);
+                    data->markAll();
+                } else if (!gpu.pending) {
+                    const float size = std::max(comp.size, 1.0f);
+                    const float dx = std::max({origin.x - eye.x, 0.0f, eye.x - (origin.x + size)});
+                    const float dz = std::max({origin.z - eye.z, 0.0f, eye.z - (origin.z + size)});
+                    wanted.push_back({dx * dx + dz * dz, &gpu});
+                } else {
+                    TerrainPrepare& p = *gpu.pending;
+                    if (!p.job->done()) {
+                        ++preparing;
+                    } else if (p.prepared == nullptr) {
+                        gpu.failed = true;  // no se pudo preparar: no insistir cada frame
+                        gpu.retry_after = main_start + std::chrono::seconds(1);
+                        gpu.pending.reset();
+                    } else if (!renderer.preparedTerrainReady(p.prepared)) {
+                        ++preparing;  // la copia aun no termino en la GPU
+                    } else {
+                        if (!budget) budget.emplace(g_stream_budget_ms.get());
+                        if (budget->spend()) {
+                            // O(1): sets de descriptores y alta en el mapa.
+                            const std::uint32_t id = renderer.adoptTerrain(p.prepared);
+                            if (id != 0) {  // 0 = sin sitio ahora: se reintenta el frame siguiente
+                                gpu.id = id;
+                                gpu.pending.reset();
+                                ++terrain_gpu_stats_.adopted;
+                                terrain_gpu_stats_.bytes +=
+                                    static_cast<std::size_t>(gpu.resolution) * gpu.resolution * 4u +
+                                    static_cast<std::size_t>(gpu.splat_resolution) * gpu.splat_resolution * 8u;
+                            }
+                        }
+                    }
+                }
             }
             if (gpu.id == 0) continue;
+            // Solo lo que cambio de verdad (esculpir, pintar, coser bordes): lo
+            // anterior ya iba en el snapshot preparado.
             if (const terrain::DirtyRegion r = data->takeDirtyHeights(); r.valid()) {
-                renderer.updateTerrainHeights(gpu.id, data->heights().data(), static_cast<std::uint32_t>(r.x0),
+                renderer.updateTerrainHeights(gpu.id, std::as_const(*data).heights().data(), static_cast<std::uint32_t>(r.x0),
                                               static_cast<std::uint32_t>(r.y0), static_cast<std::uint32_t>(r.x1 - r.x0 + 1),
                                               static_cast<std::uint32_t>(r.y1 - r.y0 + 1));
+                terrain_gpu_stats_.bytes += static_cast<std::size_t>(r.x1 - r.x0 + 1) * static_cast<std::size_t>(r.y1 - r.y0 + 1) * 4u;
             }
             if (const terrain::DirtyRegion r = data->takeDirtySplat(); r.valid()) {
-                renderer.updateTerrainSplat(gpu.id, data->splat0().data(), data->splat1().data(),
+                renderer.updateTerrainSplat(gpu.id, std::as_const(*data).splat0().data(), std::as_const(*data).splat1().data(),
                                             static_cast<std::uint32_t>(r.x0), static_cast<std::uint32_t>(r.y0),
                                             static_cast<std::uint32_t>(r.x1 - r.x0 + 1),
                                             static_cast<std::uint32_t>(r.y1 - r.y0 + 1));
+                terrain_gpu_stats_.bytes += static_cast<std::size_t>(r.x1 - r.x0 + 1) * static_cast<std::size_t>(r.y1 - r.y0 + 1) * 8u;
             }
-            gfx::TerrainDesc desc;
-            desc.origin = e.worldPosition();
+            gfx::TerrainDesc& desc = gpu.desc;
+            desc.origin = origin;
             desc.size = std::max(comp.size, 1.0f);
             desc.max_height = std::max(comp.height, 0.01f);
             desc.cast_shadows = comp.cast_shadows;
             desc.lod_distance = comp.lod_distance;
-            for (const terrain::TerrainLayer& layer : comp.layers) {
-                if (desc.layers.size() >= gfx::kMaxTerrainLayers) break;
-                gfx::TerrainLayerDesc l;
-                if (!layer.albedo.empty()) l.albedo = assets_.database().root() / std::filesystem::path(layer.albedo);
-                if (!layer.normal.empty()) l.normal = assets_.database().root() / std::filesystem::path(layer.normal);
-                l.tiling = layer.tiling;
-                l.roughness = layer.roughness;
-                l.metallic = layer.metallic;
-                l.normal_strength = layer.normal_strength;
-                l.tint = layer.tint;
-                desc.layers.push_back(std::move(l));
+            // Las rutas de las capas solo cuando cambian (antes: cada frame).
+            if (const std::uint64_t lh = layersHash(comp.layers); lh != gpu.layers_hash) {
+                gpu.layers_hash = lh;
+                desc.layers.clear();
+                for (const terrain::TerrainLayer& layer : comp.layers) {
+                    if (desc.layers.size() >= gfx::kMaxTerrainLayers) break;
+                    gfx::TerrainLayerDesc l;
+                    if (!layer.albedo.empty()) l.albedo = assets_.database().root() / std::filesystem::path(layer.albedo);
+                    if (!layer.normal.empty()) l.normal = assets_.database().root() / std::filesystem::path(layer.normal);
+                    l.tiling = layer.tiling;
+                    l.roughness = layer.roughness;
+                    l.metallic = layer.metallic;
+                    l.normal_strength = layer.normal_strength;
+                    l.tint = layer.tint;
+                    desc.layers.push_back(std::move(l));
+                }
             }
             // Hierba: el componente en la misma entidad.
-            if (const foliage::Grass* grass = e.tryGet<foliage::Grass>()) desc.grass = grass->desc();
+            const foliage::Grass* grass = e.tryGet<foliage::Grass>();
+            desc.grass = grass != nullptr ? grass->desc() : gfx::GrassDesc{};
             environment::applyToGrass(environment_frame_, desc.grass);  // viento, estacion y nieve
             renderer.setTerrainDesc(gpu.id, desc);
         }
     }
+    // Lanzar preparaciones nuevas (las mas cercanas primero) sin pasar del tope.
+    if (!wanted.empty()) {
+        const auto slots = static_cast<std::size_t>(std::max(g_terrain_prepares.get() - preparing, 0));
+        if (slots < wanted.size()) {
+            std::partial_sort(wanted.begin(), wanted.begin() + static_cast<std::ptrdiff_t>(slots), wanted.end(),
+                              [](const Want& a, const Want& b) { return a.distance2 < b.distance2; });
+            wanted.resize(slots);
+        }
+        gfx::VulkanRenderer* target = &renderer;
+        for (const Want& w : wanted) {
+            TerrainGpu& gpu = *w.gpu;
+            // Hilo principal: el snapshot (O(1) si el streamer ya lo hizo para
+            // esta version). Lo cambiado hasta ahora va dentro: se olvida.
+            std::shared_ptr<const terrain::TerrainSnapshot> snapshot = gpu.data->snapshot();
+            gpu.data->takeDirtyHeights();
+            gpu.data->takeDirtySplat();
+            if (!snapshot || !snapshot->heights) {
+                gpu.failed = true;
+                gpu.retry_after = main_start + std::chrono::seconds(1);
+                continue;
+            }
+            auto prepare = std::make_shared<TerrainPrepare>();
+            // El job solo ve el snapshot inmutable y su TerrainPrepare (nunca
+            // el mundo ni los datos vivos). Se suelta siempre en el principal
+            // (draining_terrains_), nunca dentro del job.
+            prepare->job = jobs::schedule(
+                [prepare_raw = prepare.get(), snapshot = std::move(snapshot), target]() {
+                    prepare_raw->prepared = target->prepareTerrainAsync(terrainPixels(*snapshot));
+                },
+                nullptr, jobs::Priority::Normal);
+            gpu.pending = std::move(prepare);
+            ++preparing;
+        }
+    }
+    terrain_gpu_stats_.preparing = preparing;
     // Lo que aparta la hierba: los cuerpos fisicos que se mueven y los
     // personajes cerca de la camara (hasta 32, los mas cercanos).
     // Sin terreno no hay hierba que apartar: ni se buscan. Y solo se miran los
@@ -2349,12 +2687,15 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
     }
     for (auto it = terrains_.begin(); it != terrains_.end();) {
         if (alive.count(it->first) == 0) {
-            renderer.destroyTerrain(it->second.id);
+            if (it->second.id != 0) renderer.destroyTerrain(it->second.id);
+            dropTerrainPrepare(std::move(it->second.pending));  // se suelta al terminar su copia
             it = terrains_.erase(it);
         } else {
             ++it;
         }
     }
+    terrain_gpu_stats_.main_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - main_start).count();
 }
 
 void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
@@ -2372,6 +2713,14 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
     renderer.setModelStreaming(g_gpu_residency.get(), g_min_pixels.get(), g_idle_seconds.get());
     renderer.setTextureStreaming(g_texture_mips.get(), g_texture_bias.get());
     renderer.setDynamicProbes(g_dynamic_probes.get(), static_cast<std::uint32_t>(g_probes_per_frame.get()));
+    {
+        gfx::VulkanRenderer::ReflectionProbeLimits probe_limits;
+        probe_limits.face_interval = static_cast<std::uint32_t>(std::max(g_probe_face_interval.get(), 0));
+        probe_limits.min_seconds = g_probe_min_seconds.get();
+        probe_limits.draw_distance = g_probe_draw_distance.get();
+        probe_limits.terrain = g_probe_terrain.get();
+        renderer.setReflectionProbeLimits(probe_limits);
+    }
     // Materiales guardados desde el editor: factores en vivo o variantes rehechas.
     if (!rebuild_materials_.empty() || !live_materials_.empty()) {
         CR_PROFILE_SCOPE("Cambios de materiales");

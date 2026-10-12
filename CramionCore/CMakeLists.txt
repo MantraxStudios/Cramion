@@ -217,10 +217,29 @@ target_link_libraries(CramionCore
 )
 
 if(WIN32)
-    target_link_libraries(CramionCore PRIVATE ws2_32 winmm winhttp)
+    # bcrypt: bytes aleatorios del sistema (net/Encoding: claves y mascaras de WebSocket).
+    target_link_libraries(CramionCore PRIVATE ws2_32 winmm winhttp bcrypt)
 elseif(ANDROID)
     # miniaudio (AAudio/OpenSL por dlopen) y el log del sistema.
     target_link_libraries(CramionCore PRIVATE android log OpenSLES dl)
+endif()
+# Hilos de las conexiones WebSocket (sesion, lector, vigilante).
+find_package(Threads REQUIRED)
+target_link_libraries(CramionCore PRIVATE Threads::Threads)
+# wss:// en Linux: OpenSSL del sistema (libssl-dev). Sin el, ws:// funciona y
+# wss:// da un error claro. Windows usa WinHTTP y Android SSLSocket (JNI).
+if(UNIX AND NOT APPLE AND NOT ANDROID)
+    option(CRAMION_WITH_OPENSSL "wss:// en Linux (OpenSSL del sistema)" ON)
+    if(CRAMION_WITH_OPENSSL)
+        find_package(OpenSSL 1.1.1 QUIET)
+    endif()
+    if(CRAMION_WITH_OPENSSL AND OpenSSL_FOUND)
+        target_link_libraries(CramionCoreObjects PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        target_link_libraries(CramionCore PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        target_compile_definitions(CramionCoreObjects PRIVATE CRAMION_HAS_OPENSSL=1)
+    else()
+        message(STATUS "Cramion: sin OpenSSL -> wss:// no disponible en Linux (ws:// si)")
+    endif()
 endif()
 
 # Android: solo las librerias (el juego); pruebas y herramientas son de PC.
@@ -297,6 +316,17 @@ if(WIN32)
     target_compile_options(CramionHttpTests PRIVATE -Wall -Wextra)
 endif()
 
+# WebSocket: el protocolo sin red (tramas, saludo, base64, SHA-1, UTF-8) y las
+# conexiones contra un servidor local (tests/WsTestServer.h). Tambien en Linux.
+add_executable(CramionWsProtocolTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/WsProtocolTests.cpp")
+target_include_directories(CramionWsProtocolTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(CramionWsProtocolTests PRIVATE Cramion::Core)
+target_compile_options(CramionWsProtocolTests PRIVATE -Wall -Wextra)
+add_executable(CramionWebSocketTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/WebSocketTests.cpp")
+target_include_directories(CramionWebSocketTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(CramionWebSocketTests PRIVATE Cramion::Core $<$<PLATFORM_ID:Windows>:ws2_32> $<$<PLATFORM_ID:Windows>:bcrypt>)
+target_compile_options(CramionWebSocketTests PRIVATE -Wall -Wextra)
+
 add_executable(CramionScriptingTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ScriptingTests.cpp")
 target_link_libraries(CramionScriptingTests PRIVATE Cramion::Core)
 target_compile_options(CramionScriptingTests PRIVATE -Wall -Wextra)
@@ -351,7 +381,9 @@ file(GLOB CRAMION_API_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests
 foreach(test_source IN LISTS CRAMION_API_TESTS)
     get_filename_component(test_name "${test_source}" NAME_WE)
     add_executable(CramionApi${test_name} "${test_source}")
-    target_link_libraries(CramionApi${test_name} PRIVATE Cramion::Core)
+    # tests/: cabeceras comunes de las pruebas (WsTestServer.h).
+    target_include_directories(CramionApi${test_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_link_libraries(CramionApi${test_name} PRIVATE Cramion::Core $<$<PLATFORM_ID:Windows>:ws2_32>)
     target_compile_options(CramionApi${test_name} PRIVATE -Wall -Wextra)
 endforeach()
 

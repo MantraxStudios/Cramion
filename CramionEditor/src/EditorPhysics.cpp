@@ -111,6 +111,25 @@ const char* queryName(int query) {
     return query >= 0 && query < 5 ? kNames[query] : "?";
 }
 
+// Teselas de los TerrainGrid cerca de la camara, de la camara principal y de
+// cada StreamingSource, cargadas ya (como el juego exportado antes de la
+// fisica): si no, el jugador cae al vacio hasta que llega el streaming.
+void loadTerrainAround(ecs::World& world, terrain::TerrainStreamer& streamer, terrain::TerrainStore& store,
+                       const Vec3& viewer) {
+    streamer.loadNow(world, store, viewer);
+    std::vector<Vec3> points;
+    world.forEachDepthFirst([&](ecs::Entity e) {
+        if (const ecs::Camera* camera = e.tryGet<ecs::Camera>(); camera != nullptr && camera->is_main && e.activeInHierarchy()) {
+            points.push_back(e.worldPosition());
+        }
+    });
+    for (const entt::entity h : world.registry().view<worldpart::StreamingSource>()) {
+        const ecs::Entity e = world.wrap(h);
+        if (e.activeInHierarchy()) points.push_back(e.worldPosition());
+    }
+    for (const Vec3& p : points) streamer.loadNow(world, store, p);
+}
+
 }  // namespace
 
 // -----------------------------------------------------------------------------
@@ -154,6 +173,9 @@ void EditorApp::enterPlay() {
     // Buscando el casco (Play on VR) en otro hilo: hasta que acabe, nada de
     // Play (los scripts leerian el XrSystem a medio crear).
     if (!has_project_ || playing() || xrConnecting()) return;
+    // Como el PIE de Unreal: los Blueprints con cambios se compilan y se
+    // guardan antes (si no, el juego correria su version vieja).
+    saveBlueprintsBeforePlay();
     // Se juega la escena: primero se vuelve a su pestana (el frame que viene).
     if (active_workspace_ != 0 || world_workspace_ != 0) {
         pending_workspace_ = 0;
@@ -178,7 +200,11 @@ void EditorApp::enterPlay() {
     // celdas en disco ya estan en el mundo (se cargan al abrir la escena).
     world_partition_.setSceneFile(scene_path_, true);
     world_partition_.begin(world_, scene_.camera().position());
+    // El terreno bajo el jugador antes de la fisica (no cae al vacio).
+    loadTerrainAround(world_, terrain_streamer_, terrain_store_, scene_.camera().position());
     physics_.start(world_);
+    // La colision de las teselas se hace en otro hilo: lista antes del primer paso.
+    physics_.flushPendingTerrain();
     effectsEnterPlay();  // VFX, fisica 2D y repeticiones (EditorEffects.cpp)
     nav_.resetAgents();
     crowds_.begin(world_);  // multitudes (CrowdSpawner) antes de los scripts
@@ -221,7 +247,9 @@ void EditorApp::enterPlay() {
         preferred_view_ = kGameSlot;
         play_switched_view_ = true;  // al parar, vuelve la Escena
     }
-    play_state_ = PlayState::Playing;
+    // Pausa pedida sin Play mientras se volvia a la pestana de la escena.
+    play_state_ = pending_pause_ ? PlayState::Paused : PlayState::Playing;
+    pending_pause_ = false;
     play_time_ = 0.0f;
     step_requests_ = 0;
     event_log_.clear();
@@ -269,6 +297,11 @@ void EditorApp::exitPlay() {
         renderer_.setOcclusionCullingEnabled(play_graphics_->occlusion_culling);
         renderer_.setCascadeDebug(play_graphics_->cascade_debug);
         play_graphics_.reset();
+    }
+    // Scene.load cargo la iluminacion horneada de otro nivel: vuelve la de la escena.
+    if (play_lighting_changed_) {
+        play_lighting_changed_ = false;
+        loadSceneLighting();
     }
     physics_.start(world_);
     cinematics_.reset();
@@ -333,6 +366,11 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         std::string error;
         nav_.clear();  // otro nivel: otra malla
         stopVoxels();
+        // World Partition y multitudes del nivel anterior fuera (si no, sus
+        // celdas descargadas volverian dentro del nivel nuevo). Sin restaurar:
+        // al parar vuelve el mundo entero con el snapshot.
+        crowds_.end(world_);
+        world_partition_.end(world_, false);
         const ecs::DVec3 origin_before = world_.origin();
         if (!ecs::loadScene(world_, next, &error)) {
             std::cerr << "[Scene.load] " << next.string() << ": " << error << "\n";
@@ -343,8 +381,18 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         clearSelection();
         const std::u8string stem = next.stem().u8string();
         scripts_.setSceneName(std::string(stem.begin(), stem.end()));
+        // Iluminacion horneada del nivel nuevo (al parar vuelve la de la escena).
+        loadSceneLighting(next);
+        play_lighting_changed_ = true;
+        // Celdas en disco del nivel nuevo: no estan en el mundo (como en el
+        // juego, begin las registra descargadas y las lee al acercarse).
+        world_partition_.setSceneFile(next, false);
+        world_partition_.begin(world_, scene_.camera().position());
+        loadTerrainAround(world_, terrain_streamer_, terrain_store_, scene_.camera().position());
         physics_.start(world_);
+        physics_.flushPendingTerrain();  // colision de las teselas del nivel nuevo, ya
         effectsEnterPlay();  // fisica 2D del nivel nuevo
+        crowds_.begin(world_);  // multitudes del nivel nuevo antes de los scripts
         startVoxels();
         audio_.start(world_);
         scripts_.start(world_);
@@ -369,8 +417,15 @@ void EditorApp::togglePause() {
     } else if (play_state_ == PlayState::Paused) {
         play_state_ = PlayState::Playing;
     } else {
+        // Pausa sin Play: se entra en Play (con su snapshot, para deshacer al
+        // parar) y se pausa. Si enterPlay lo deja para el frame que viene
+        // (otra pestana), se pausa al entrar.
         enterPlay();
-        play_state_ = PlayState::Paused;
+        if (playing()) {
+            play_state_ = PlayState::Paused;
+        } else if (pending_play_) {
+            pending_pause_ = true;
+        }
     }
 }
 
@@ -391,6 +446,23 @@ void EditorApp::updatePhysics(float delta_seconds) {
                 xr_rig_.updateCollisions(world_);  // el Jugador VR no choca con lo que se coge
                 steps = physics_.update(world_, delta_seconds, true);
             }
+            // Aviso (como mucho uno cada 5 s) cuando la fisica tira tiempo por
+            // max_substeps: el juego va mas lento que el reloj (Time::time()).
+            {
+                static float dropped_window = 0.0f;  // segundos perdidos desde el ultimo aviso
+                static float since_warning = 5.0f;   // segundos reales desde el ultimo aviso
+                dropped_window += physics_.takeDroppedTime();
+                since_warning += delta_seconds;
+                // Umbral de 0,25 s: un tiron suelto (el primer frame de Play) no avisa.
+                if (dropped_window > 0.25f && since_warning >= 5.0f) {
+                    std::cout << "AVISO: la fisica se ralentiza: ha perdido " << dropped_window
+                              << " s de simulacion (frames lentos, Pasos maximos por frame = "
+                              << physics_settings_.max_substeps
+                              << "). Sube max_substeps en Ajustes de fisica o mejora los FPS." << std::endl;
+                    dropped_window = 0.0f;
+                    since_warning = 0.0f;
+                }
+            }
             particles_.update(world_, delta_seconds, &physics_);
             updateScriptsAndAudio(delta_seconds, steps);
             break;
@@ -403,7 +475,10 @@ void EditorApp::updatePhysics(float delta_seconds) {
                 particles_.update(world_, fixed, &physics_);
                 updateScriptsAndAudio(fixed, 1);
             } else {
-                physics_.update(world_, 0.0f, false);
+                // simulate = true con delta 0: no avanza (sin pasos) pero no
+                // borra los Character Controller ni los ragdolls (con false se
+                // destruirian y al seguir se recrearian desde cero).
+                physics_.update(world_, 0.0f, true);
             }
             break;
         case PlayState::Edit: {

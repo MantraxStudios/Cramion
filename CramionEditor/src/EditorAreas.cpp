@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 namespace cramion::editor {
 
@@ -84,7 +85,76 @@ void bringToFront(ImGuiWindow* window) {
     list.push_front(window);
 }
 
+// La ventana acoplada de un hijo (los menus y popups no cuentan).
+ImGuiWindow* dockedWindowOf(ImGuiWindow* window) {
+    while (window != nullptr && !window->DockIsActive && (window->Flags & ImGuiWindowFlags_ChildWindow) &&
+           !(window->Flags & ImGuiWindowFlags_Popup)) {
+        window = window->ParentWindow;
+    }
+    return window;
+}
+
+// Acoplada detras de otra en su area (no se ve).
+bool hiddenBehindInArea(ImGuiWindow* window) {
+    window = dockedWindowOf(window);
+    if (window == nullptr || !window->DockIsActive || window->DockNode == nullptr) return false;
+    const ImVector<ImGuiWindow*>& list = window->DockNode->Windows;
+    return !list.empty() && list[0] != window;
+}
+
+// Acoplada en un dockspace que se dibuja este frame (o flotante a la vista).
+// Las de los dockspaces de otras pestanas (vivos con KeepAliveOnly) no:
+// ponerlas delante cambiaria el area de esa pestana sin verse.
+bool inActiveDockspace(ImGuiWindow* window) {
+    if (window == nullptr || window->DockNode == nullptr) return false;
+    return ImGui::DockNodeGetRootNode(window->DockNode)->LastFrameActive == ImGui::GetFrameCount();
+}
+
+// Intercambia dos ventanas acopladas en areas distintas (como "intercambiar
+// areas" de Blender) sin sacarlas del acoplado. Con DockBuilderDockWindow no
+// se puede: SetWindowDock quita la ventana de su nodo en el acto y, si se
+// queda vacio, ImGui lo borra (y con el, el area). Aqui se cambian los
+// punteros dentro de los dos nodos, que nunca se quedan vacios. Solo entre
+// nodos del mismo anfitrion y sin barra de pestanas (las areas no tienen);
+// si no, devuelve false y no toca nada. Llamar al principio del frame, antes
+// de dibujar el dockspace y las ventanas.
+bool swapDockedWindows(ImGuiWindow* a, ImGuiWindow* b) {
+    if (a == nullptr || b == nullptr || a == b) return false;
+    ImGuiDockNode* node_a = a->DockNode;
+    ImGuiDockNode* node_b = b->DockNode;
+    if (node_a == nullptr || node_b == nullptr || node_a == node_b) return false;
+    if (node_a->HostWindow == nullptr || node_a->HostWindow != node_b->HostWindow) return false;
+    if (node_a->TabBar != nullptr || node_b->TabBar != nullptr) return false;
+    ImGuiWindow** slot_a = node_a->Windows.find(a);
+    ImGuiWindow** slot_b = node_b->Windows.find(b);
+    if (slot_a == node_a->Windows.end() || slot_b == node_b->Windows.end()) return false;
+    *slot_a = b;
+    *slot_b = a;
+    std::swap(a->DockNode, b->DockNode);
+    std::swap(a->DockId, b->DockId);
+    std::swap(a->DockOrder, b->DockOrder);
+    if (node_a->VisibleWindow == a) node_a->VisibleWindow = b;
+    if (node_b->VisibleWindow == b) node_b->VisibleWindow = a;
+    if (node_a->SelectedTabId == a->TabId) node_a->SelectedTabId = b->TabId;
+    if (node_b->SelectedTabId == b->TabId) node_b->SelectedTabId = a->TabId;
+    node_a->WantHiddenTabBarUpdate = true;
+    node_b->WantHiddenTabBarUpdate = true;
+    return true;
+}
+
 }  // namespace
+
+bool EditorApp::workspaceDrawsArea(AreaEditor editor) const {
+    switch (activeWorkspaceKind()) {
+        case WorkspaceKind::Scene: return true;
+        // drawBlueprintWorkspace solo dibuja su Vista 3D con beginArea (los
+        // demas paneles del Blueprint son suyos).
+        case WorkspaceKind::Blueprint: return editor == AreaEditor::Scene;
+        // Prefab: Escena, Jerarquia, Propiedades, Proyecto y Consola (los de
+        // titulo propio en cada pestana).
+        default: return info(editor).per_workspace;
+    }
+}
 
 std::string EditorApp::areaTitle(AreaEditor editor) const {
     const AreaInfo& a = info(editor);
@@ -97,7 +167,18 @@ bool EditorApp::beginArea(AreaEditor editor, bool* p_open, ImGuiWindowFlags flag
     ImGuiWindowClass area_class;
     area_class.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_NoTabBar;
     ImGui::SetNextWindowClass(&area_class);
+    // Al cambiar de pestana (espacio de trabajo) vuelven a aparecer todas
+    // las areas, tambien los editores que estan detras: sin esto cada una se
+    // llevaba el foco al aparecer y promoteFocusedArea ponia delante la
+    // ultima (Cinematica en vez de Proyecto, Ambiente en vez de Objeto...).
+    // Un SetNextWindowFocus explicito sigue funcionando.
+    if (ImGui::GetFrameCount() - workspace_switch_frame_ <= 1) flags |= ImGuiWindowFlags_NoFocusOnAppearing;
     const bool open = ImGui::Begin(title.c_str(), p_open, flags | ImGuiWindowFlags_MenuBar);
+    // Todo lo de dentro del area, con el ID de su editor y su pestana (el
+    // titulo lleva el sufijo de la pestana). No cambia el ID de la ventana ni
+    // su acoplado. Siempre (tambien si Begin devuelve false): lo quita
+    // endArea, antes de End.
+    ImGui::PushID(title.c_str());
     area_stack_.push_back(AreaFrame{editor, false});
     ImGuiWindow* window = ImGui::GetCurrentWindow();
 
@@ -105,8 +186,16 @@ bool EditorApp::beginArea(AreaEditor editor, bool* p_open, ImGuiWindowFlags flag
     // de su nodo. (Lo que se suelta en un area o se abre desde Ventana recibe
     // el foco y lo pone delante promoteFocusedArea.)
     const ImGuiID node = window->DockNode != nullptr ? window->DockNode->ID : 0;
+    // Al aparecer: delante si es la que su area tenia elegida. Al arrancar,
+    // SelectedTabId es aun el del .ini (Selected=): asi vuelve el editor que
+    // el usuario dejo en cada area (sin pestanas ImGui no guarda el orden y
+    // pondria delante la primera que se dibuja). Despues coincide con la de
+    // delante y no cambia nada.
+    if (window->Appearing && window->DockNode != nullptr && window->DockNode->SelectedTabId == window->TabId) {
+        bringToFront(window);
+    }
     if (const auto it = area_front_.find(window->ID); it != area_front_.end() && node != 0) {
-        if (it->second == 0 || it->second == node) {
+        if (it->second.node == 0 || it->second.node == node) {
             bringToFront(window);
             area_front_.erase(it);
         }
@@ -133,6 +222,7 @@ void EditorApp::endArea() {
     const AreaFrame frame = area_stack_.back();
     area_stack_.pop_back();
     if (frame.child) ImGui::EndChild();
+    ImGui::PopID();  // el de beginArea (despues del hijo, antes de End)
     // Esquinas redondeadas del area (encima de su contenido), como Blender.
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->DockIsActive && window->DockTabIsVisible) {
@@ -143,26 +233,94 @@ void EditorApp::endArea() {
 }
 
 void EditorApp::promoteFocusedArea() {
-    ImGuiWindow* window = ImGui::GetCurrentContext()->NavWindow;
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    // Recien cambiada la pestana: el foco era de una ventana de la otra
+    // pestana, que ya no se dibuja (las areas aparecen sin llevarselo, ver
+    // beginArea). Vuelve a la ventana que lo tenia en esta pestana; si no se
+    // puede, a ninguna (nunca a un editor oculto detras en su area). Apuntada
+    // como ya vista: no es un foco nuevo y no se trae delante.
+    // Tambien si se lo llevo al aparecer una ventana que no es un area
+    // (Navegacion, Pintar...) acoplada detras de otra: no es una eleccion.
+    ImGuiWindow* nav_docked = dockedWindowOf(g.NavWindow);
+    const bool stray_focus = g.NavWindow == nullptr || !g.NavWindow->Active ||
+                             (nav_docked != nullptr && nav_docked->Appearing && hiddenBehindInArea(nav_docked));
+    if (g.FrameCount - workspace_switch_frame_ <= 1 && stray_focus) {
+        ImGuiWindow* target = workspace_restore_focus_ != 0 ? ImGui::FindWindowByID(workspace_restore_focus_) : nullptr;
+        if (target != nullptr && (!target->Active || hiddenBehindInArea(target) ||
+                                  (target->DockIsActive && !inActiveDockspace(target)))) {
+            target = nullptr;
+        }
+        if (target != nullptr || g.NavWindow != nullptr) ImGui::FocusWindow(target);
+        last_focused_window_ = g.NavWindow != nullptr ? g.NavWindow->ID : 0;
+        last_focused_was_popup_ = false;
+    }
+    ImGuiWindow* window = g.NavWindow;
     const ImGuiID id = window != nullptr ? window->ID : 0;
     if (id == last_focused_window_) return;  // solo cuando cambia el foco
+    const bool is_popup = window != nullptr && (window->Flags & ImGuiWindowFlags_Popup) != 0;
+    const bool from_popup = last_focused_was_popup_;
+    if (is_popup && !from_popup) focus_before_popup_ = last_focused_window_;
     last_focused_window_ = id;
+    last_focused_was_popup_ = is_popup;
+    // Al cerrarse un menu o popup ImGui devuelve el foco a la ventana que lo
+    // tenia: no es un foco nuevo y no se trae delante (desharia el cambio de
+    // tipo de editor elegido en ese menu). Un clic en otra area, o una
+    // ventana enfocada desde el menu, si cuentan.
+    if (from_popup && id == focus_before_popup_) return;
     // De un hijo a su ventana acoplada (los menus y popups no cuentan).
-    while (window != nullptr && !window->DockIsActive && (window->Flags & ImGuiWindowFlags_ChildWindow) &&
-           !(window->Flags & ImGuiWindowFlags_Popup)) {
-        window = window->ParentWindow;
-    }
+    window = dockedWindowOf(window);
     if (window == nullptr || !window->DockIsActive || window->DockNode == nullptr) return;
+    // Oculta en el diseno de otra pestana (p. ej. Terminal acoplada en la
+    // Escena y abierta desde el Prefab): no se toca esa area.
+    if (!inActiveDockspace(window)) return;
+    // La que tiene el foco en esta pestana: vuelve a tenerlo al volver a ella.
+    workspace_focus_[active_workspace_] = window->ID;
     if (!window->DockNode->IsNoTabBar()) return;
     bringToFront(window);
 }
 
 void EditorApp::showAreaEditor(AreaEditor editor) {
-    area_front_[ImHashStr(areaTitle(editor).c_str())] = 0;
+    area_front_[ImHashStr(areaTitle(editor).c_str())] = AreaFrontRequest{0, ImGui::GetFrameCount()};
 }
 
 void EditorApp::switchArea(AreaEditor from, AreaEditor to) {
-    if (from == to) return;
+    if (from == to || !workspaceDrawsArea(to)) return;
+    // Se aplica al principio del frame siguiente (applyPendingAreaSwitch):
+    // a mitad de frame el popup que se cierra devuelve el foco al area de
+    // antes y las ventanas de este frame ya estan dibujadas.
+    pending_area_switch_.from = from;
+    pending_area_switch_.to = to;
+    pending_area_switch_.workspace = active_workspace_;
+    pending_area_switch_.valid = true;
+}
+
+// Como en Blender, el area donde se hizo clic pasa a mostrar el editor
+// elegido:
+// - ya esta en esta area (detras): delante y con el foco;
+// - esta solo en otra area: se intercambian las dos areas;
+// - esta en otra area con mas editores: viene a esta (la otra sigue con los
+//   suyos);
+// - no existe o esta cerrado: se abre ya acoplado en esta area, delante.
+// Un area flotante no cambia: el editor elegido se trae delante donde este.
+void EditorApp::applyPendingAreaSwitch() {
+    // Peticiones de "ponla delante" que nadie recogio en unos frames (la
+    // ventana no se dibujo: otra pestana, o un editor que no se dibuja): fuera.
+    const int frame = ImGui::GetFrameCount();
+    for (auto it = area_front_.begin(); it != area_front_.end();) {
+        if (frame - it->second.frame > 10) {
+            it = area_front_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (!pending_area_switch_.valid) return;
+    const PendingAreaSwitch request = pending_area_switch_;
+    pending_area_switch_ = PendingAreaSwitch{};
+    // Otra pestana desde que se pidio: los titulos ya no son los de entonces.
+    if (request.workspace != active_workspace_) return;
+    const AreaEditor from = request.from;
+    const AreaEditor to = request.to;
+    if (from == to || !workspaceDrawsArea(to)) return;
     // Que se dibuje (los que tienen casilla en Ventana).
     switch (to) {
         case AreaEditor::Game: show_game_ = true; break;
@@ -187,45 +345,72 @@ void EditorApp::switchArea(AreaEditor from, AreaEditor to) {
     ImGuiWindow* from_window = ImGui::FindWindowByName(from_title.c_str());
     ImGuiWindow* to_window = ImGui::FindWindowByName(to_title.c_str());
     const ImGuiID to_id = ImHashStr(to_title.c_str());
+    const auto front = [&](ImGuiID window_id, ImGuiID node_id) {
+        area_front_[window_id] = AreaFrontRequest{node_id, frame};
+    };
+    // El foco al editor elegido, y apuntado como ya visto: promoteFocusedArea
+    // no debe tomarlo por un foco nuevo (ni volver a poner delante el de antes).
+    const auto focus = [&](ImGuiWindow* window) {
+        if (window == nullptr) return;
+        ImGui::FocusWindow(window);
+        last_focused_window_ = window->ID;
+        last_focused_was_popup_ = false;
+        workspace_focus_[active_workspace_] = window->ID;
+    };
     if (from_window == nullptr || from_window->DockNode == nullptr) {
         // Area flotante: el otro editor, al frente (donde este).
-        area_front_[to_id] = 0;
-        if (to_window != nullptr) ImGui::FocusWindow(to_window);
+        front(to_id, 0);
+        focus(to_window);
         return;
     }
     ImGuiDockNode* node = from_window->DockNode;
     if (to_window != nullptr && to_window->DockNode == node) {
         bringToFront(to_window);
+        focus(to_window);
         return;
     }
-    // Esta solo en otra area: no se saca de alli (ImGui borraria esa area y
-    // el editor que quedase sin sitio saldria flotando); se le da el foco
-    // para que se vea donde esta.
     if (to_window != nullptr && to_window->DockNode != nullptr && to_window->DockNode->Windows.Size <= 1) {
-        ImGui::FocusWindow(to_window);
+        // Esta solo en otra area: se intercambian las dos (sacarlo de alli con
+        // DockBuilderDockWindow dejaria ese nodo vacio e ImGui lo borraria).
+        ImGuiDockNode* other = to_window->DockNode;
+        if (swapDockedWindows(from_window, to_window)) {
+            bringToFront(to_window);
+            bringToFront(from_window);
+            front(to_id, node->ID);
+            front(from_window->ID, other->ID);
+        }
+        // Si no se pudo (otro anfitrion, nodo con pestanas): como antes, el
+        // foco donde esta.
+        focus(to_window);
         return;
     }
-    // Si no, viene a esta area y se pone delante (el de antes queda detras:
-    // nunca se queda un area vacia).
+    // Si no (en otra area con mas editores, cerrado o sin crear), viene a
+    // esta area y se pone delante (el de antes queda detras: nunca se queda
+    // un area vacia).
     ImGui::DockBuilderDockWindow(to_title.c_str(), node->ID);
-    area_front_[to_id] = node->ID;
-    if (to_window != nullptr) ImGui::FocusWindow(to_window);
+    front(to_id, node->ID);
+    focus(to_window);
 }
 
 void EditorApp::drawAreaTypeButton(AreaEditor editor) {
     const AreaInfo& current = info(editor);
     if (bl::editorTypeButton("##area_type", current.glyph, current.label)) ImGui::OpenPopup("##area_type_menu");
     if (ImGui::BeginPopup("##area_type_menu")) {
-        const WorkspaceKind kind = activeWorkspaceKind();
         static const char* const kGroups[] = {"General", "Datos", "Herramientas"};
         for (int group = 0; group < 3; ++group) {
+            // Solo los editores que dibuja esta pestana (en un prefab, los
+            // suyos; en un Blueprint, su Vista 3D); sin grupos vacios.
+            bool any = false;
+            for (std::size_t i = 0; i < kAreaCount && !any; ++i) {
+                any = kAreas[i].group == group && workspaceDrawsArea(static_cast<AreaEditor>(i));
+            }
+            if (!any) continue;
             ImGui::SeparatorText(kGroups[group]);
             for (std::size_t i = 0; i < kAreaCount; ++i) {
                 const auto e = static_cast<AreaEditor>(i);
                 const AreaInfo& a = kAreas[i];
                 if (a.group != group) continue;
-                // En un prefab solo estan los suyos.
-                if (kind != WorkspaceKind::Scene && !a.per_workspace) continue;
+                if (!workspaceDrawsArea(e)) continue;
                 ImGui::PushID(static_cast<int>(i));
                 const ImVec2 p = ImGui::GetCursorScreenPos();
                 const float h = ImGui::GetTextLineHeight();
@@ -285,6 +470,7 @@ void EditorApp::drawWorkspaceTabs(float right_limit) {
     static constexpr ImU32 kScriptColor = IM_COL32(120, 200, 130, 255);
     static constexpr ImU32 kGraphColor = IM_COL32(200, 140, 255, 255);
     static constexpr ImU32 kMachineColor = IM_COL32(255, 175, 80, 255);
+    static constexpr ImU32 kBlueprintColor = IM_COL32(80, 150, 255, 255);
     int clicked = -1;
     int close = -1;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 4.0f));
@@ -303,6 +489,10 @@ void EditorApp::drawWorkspaceTabs(float right_limit) {
             dirty = loaded ? dirty_ : ws.dirty;
             prefix = "Prefab: ";
             accent = kPrefabColor;
+        } else if (ws.kind == WorkspaceKind::Blueprint) {
+            dirty = blueprintDirty(ws.id);
+            prefix = "Blueprint: ";
+            accent = kBlueprintColor;
         } else if (ws.kind == WorkspaceKind::StateMachine) {
             prefix = "Máquina: ";
             accent = kMachineColor;
@@ -350,7 +540,11 @@ void EditorApp::drawWorkspaceTabs(float right_limit) {
         ImGui::SetItemTooltip("Más espacios de trabajo abiertos");
         if (ImGui::BeginPopup("##more_workspaces")) {
             for (const Workspace& ws : workspaces_) {
+                // Dos pestanas pueden llamarse igual (Player.cpp de dos
+                // carpetas, un prefab y un Blueprint "Enemy"): ID por pestana.
+                ImGui::PushID(ws.id);
                 if (ImGui::MenuItem(ws.name.c_str(), nullptr, ws.id == active_workspace_)) clicked = ws.id;
+                ImGui::PopID();
             }
             ImGui::EndPopup();
         }
@@ -360,8 +554,7 @@ void EditorApp::drawWorkspaceTabs(float right_limit) {
     if (clicked >= 0) requestWorkspace(clicked);
     if (close >= 0) {
         const Workspace* ws = findWorkspace(close);
-        const bool dirty = ws != nullptr && ws->kind == WorkspaceKind::Prefab &&
-                           (close == world_workspace_ ? dirty_ : ws->dirty);
+        const bool dirty = ws != nullptr && prefabLikeDirty(close);
         if (dirty) {
             workspace_close_ask_ = close;
             workspace_close_popup_ = true;

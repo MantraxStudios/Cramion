@@ -1,258 +1,713 @@
 <!doctype html>
-<html lang="es" class="dark scroll-smooth">
+<html lang="es" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cramion Engine</title>
   <meta name="description" content="Cramion: motor de juegos para Windows y Android con renderizador diferido en Vulkan, editor de escenas, física, terreno, agua y scripting en C++.">
-  <meta name="theme-color" content="#09090b">
+  <meta name="theme-color" content="#232323">
+  <meta property="og:title" content="Cramion Engine">
+  <meta property="og:description" content="Un motor de juegos 3D para Windows, con su editor. Render en Vulkan, física con Jolt y scripting en C++. Gratis para hacer y vender tus juegos.">
+  <meta property="og:image" content="img/bg-poster.jpg">
   <link rel="icon" href="img/icon.png">
   <script>
-    // Tema antes de pintar (oscuro por defecto; el mismo que el manual).
-    try { const t = localStorage.getItem("cramion-theme"); if (t === "light") document.documentElement.classList.remove("dark"); } catch (e) {}
+    // Tema antes de pintar (oscuro por defecto, como el editor; el mismo que el manual).
+    document.documentElement.classList.add("js");
+    try { const t = localStorage.getItem("cramion-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <style type="text/tailwindcss">
-    /* Tokens de shadcn/ui (zinc), claro y oscuro. */
-    @custom-variant dark (&:where(.dark, .dark *));
-    @theme {
-      --color-background: var(--background);
-      --color-foreground: var(--foreground);
-      --color-card: var(--card);
-      --color-muted: var(--muted);
-      --color-muted-foreground: var(--muted-foreground);
-      --color-accent: var(--accent);
-      --color-primary: var(--primary);
-      --color-primary-foreground: var(--primary-foreground);
-      --color-border: var(--border);
-      --color-brand: var(--brand);
-      --color-donate: #ffc439;
-      --color-donate-foreground: #003087;
-      --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
-      --font-mono: "Geist Mono", ui-monospace, monospace;
-      --radius-lg: 0.625rem;
-      --radius-xl: 0.875rem;
-    }
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="preload" as="image" href="img/bg-poster.jpg">
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <style>
+    /* Colores del editor (CramionEditor/src/Theme.h, estilo Blender):
+       grises #161616 #232323 #2b2b2b #303030 #3d3d3d #545454, acento #4772b3,
+       activo naranja #ffaf29, ejes X #ff3352 Y #8bdc00 Z #2890ff, estrella del logo #00b4ff. */
     :root {
-      --background: #ffffff; --foreground: #09090b; --card: #ffffff; --muted: #f4f4f5; --muted-foreground: #71717a;
-      --accent: #f4f4f5; --primary: #18181b; --primary-foreground: #fafafa; --border: #e4e4e7; --brand: #0284c7;
-    }
-    .dark {
-      --background: #09090b; --foreground: #fafafa; --card: #0c0c0e; --muted: #18181b; --muted-foreground: #a1a1aa;
-      --accent: #1c1c20; --primary: #fafafa; --primary-foreground: #18181b; --border: #27272a; --brand: #38bdf8;
+      --gap: #161616; --bg0: #232323; --bg1: #2b2b2b; --bg2: #303030; --panel: #3d3d3d; --field: #545454;
+      --blue: #4772b3; --blue-hover: #5680c2; --blue-active: #3a5f99; --selection: #334d80;
+      --orange: #ffaf29; --orange-deep: #f18800; --ok: #5cc480; --error: #d64040;
+      --axis-x: #ff3352; --axis-y: #8bdc00; --axis-z: #2890ff; --star: #00b4ff;
+
+      --background: #1d1d1d; --section-alt: #232323; --foreground: #e5e5e5;
+      --card: #2b2b2b; --card-2: #303030; --muted: #303030; --muted-foreground: #a0a0a0; --faint: #949494;
+      --accent: #3a3a3a; --border: #383838; --border-strong: #4a4a4a; --input: #1a1a1a;
+      --primary: var(--blue); --primary-hover: var(--blue-hover); --primary-foreground: #fff;
+      --link: #8fb0e6; --brand-soft: rgb(71 114 179 / .18); --ring: #5680c2;
+      --code-bg: #1d1d1d; --code-fg: #e8c08a; --pre-bg: #1a1a1a; --pre-fg: #dcdcdc;
+      --donate: #ffc439; --donate-hover: #ffd466; --donate-fg: #003087;
+      --header-bg: rgb(35 35 35 / .82);
+      --shadow: 0 1px 0 rgb(255 255 255 / .04) inset, 0 20px 48px -24px rgb(0 0 0 / .75);
+      --hl-keyword: #7fa6e8; --hl-type: #5fc9d8; --hl-string: #9fd46a; --hl-number: #ffaf29;
+      --hl-comment: #8c8c8c; --hl-func: #e6d07a; --hl-meta: #d08ae0;
+      --radius-sm: 6px; --radius: 10px; --radius-lg: 14px;
+      --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+      --wrap: 1200px;
       color-scheme: dark;
     }
-    body { background: var(--background); color: var(--foreground); overflow-x: hidden; }
-    .hljs { background: transparent !important; padding: 0 !important; }
-    ::selection { background: rgb(56 189 248 / .25); }
-    /* En la capa de componentes: las utilidades (hidden, sm:inline-flex...) mandan sobre ellas. */
-    @layer components {
-      .link { @apply font-medium underline decoration-border underline-offset-4 hover:decoration-foreground; }
-      .btn { @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg px-5 text-sm font-medium whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-muted-foreground; }
-      .btn-sm { @apply h-9 px-3.5; }
-      .btn-primary { @apply bg-primary text-primary-foreground hover:opacity-90; }
-      .btn-outline { @apply border border-border bg-background hover:bg-accent; }
-      .btn-ghost { @apply hover:bg-accent; }
-      .btn-donate { @apply bg-donate font-semibold text-donate-foreground hover:bg-[#ffd466]; }
-      .icon-btn { @apply inline-flex size-9 items-center justify-center rounded-lg hover:bg-accent; }
-      .card { @apply rounded-xl border border-border bg-card; }
-      .badge { @apply inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-xs text-muted-foreground; }
-      .code-inline { @apply rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[0.85em] text-foreground; }
+    :root[data-theme="light"] {
+      --background: #f5f5f5; --section-alt: #ececec; --foreground: #1c1c1c;
+      --card: #ffffff; --card-2: #fafafa; --muted: #ececec; --muted-foreground: #5c5c5c; --faint: #686868;
+      --accent: #e4e4e4; --border: #dcdcdc; --border-strong: #c6c6c6; --input: #ffffff;
+      --primary-hover: var(--blue-active); --link: #2f5aa0; --brand-soft: rgb(71 114 179 / .12); --ring: #4772b3;
+      --code-bg: #ececec; --code-fg: #9a4a00;
+      --header-bg: rgb(255 255 255 / .86);
+      --shadow: 0 1px 2px rgb(0 0 0 / .05), 0 20px 40px -24px rgb(0 0 0 / .3);
+      color-scheme: light;
     }
-    details > summary { list-style: none; }
-    details > summary::-webkit-details-marker { display: none; }
-    details[open] .chev { transform: rotate(180deg); }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 72px; -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0; background: var(--background); color: var(--foreground);
+      font: 15px/1.65 var(--sans); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+      overflow-x: hidden;
+    }
+    ::selection { background: var(--selection); color: #fff; }
+    img, video { display: block; max-width: 100%; }
+    a { color: inherit; }
+    button { font: inherit; color: inherit; }
+    svg { flex-shrink: 0; }
+    :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
+    .ic { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .ic-sm { width: 16px; height: 16px; }
+    .wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 24px; }
+    .skip { position: absolute; left: 12px; top: -48px; z-index: 100; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--blue); color: #fff; text-decoration: none; }
+    .skip:focus { top: 12px; }
+    code, .code { font: 500 .86em/1.4 var(--mono); padding: 1px 6px; border-radius: 4px; background: var(--code-bg); color: var(--code-fg); border: 1px solid var(--border); overflow-wrap: anywhere; }
+    .link { color: var(--link); font-weight: 500; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--link) 40%, transparent); }
+    .link:hover { text-decoration-color: var(--link); }
+    .muted { color: var(--muted-foreground); }
+    .min-w-0 { min-width: 0; }
+    .fg { color: var(--foreground); }
+
+    /* --- Botones -------------------------------------------------------- */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      height: 42px; padding: 0 18px; border-radius: var(--radius-sm); border: 1px solid transparent;
+      font-size: 14.5px; font-weight: 550; line-height: 1; white-space: nowrap; text-decoration: none; cursor: pointer;
+      transition: background .15s, border-color .15s, color .15s, transform .15s, box-shadow .15s;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn-sm { height: 34px; padding: 0 13px; font-size: 13.5px; }
+    .btn-lg { height: 48px; padding: 0 22px; font-size: 15.5px; }
+    .btn-primary { background: var(--primary); color: #fff; border-color: rgb(255 255 255 / .1); box-shadow: 0 1px 0 rgb(255 255 255 / .14) inset, 0 10px 24px -10px rgb(71 114 179 / .9); }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-outline { background: var(--muted); border-color: var(--border-strong); color: var(--foreground); }
+    .btn-outline:hover { background: var(--accent); border-color: var(--field); }
+    .btn-glass { background: rgb(255 255 255 / .08); border-color: rgb(255 255 255 / .18); color: #fff; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+    .btn-glass:hover { background: rgb(255 255 255 / .14); }
+    .btn-donate { background: var(--donate); color: var(--donate-fg); font-weight: 650; }
+    .btn-donate:hover { background: var(--donate-hover); }
+    .icon-btn {
+      display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px;
+      border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); cursor: pointer; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .icon-btn:hover { background: var(--accent); color: var(--foreground); }
+
+    /* --- Cabecera ------------------------------------------------------- */
+    .site-header {
+      position: sticky; top: 0; z-index: 50; background: var(--header-bg);
+      backdrop-filter: saturate(160%) blur(14px); -webkit-backdrop-filter: saturate(160%) blur(14px);
+      border-bottom: 1px solid var(--border);
+    }
+    .site-header::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; opacity: .4; pointer-events: none;
+      background: linear-gradient(90deg, transparent, var(--axis-x) 20%, var(--axis-y) 50%, var(--axis-z) 80%, transparent);
+    }
+    .nav { display: flex; align-items: center; gap: 20px; height: 60px; }
+    .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; letter-spacing: -0.01em; text-decoration: none; flex-shrink: 0; }
+    .brand img { width: 28px; height: 28px; }
+    :root[data-theme="light"] .brand img, :root[data-theme="light"] .foot-brand img { background: var(--bg0); border-radius: 7px; padding: 2px; }
+    .nav-links { display: flex; gap: 2px; font-size: 14px; }
+    .nav-links a { padding: 7px 11px; border-radius: var(--radius-sm); color: var(--muted-foreground); text-decoration: none; transition: color .15s, background .15s; }
+    .nav-links a:hover { color: var(--foreground); background: var(--accent); }
+    .nav-right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+    .theme-btn .i-sun { display: none; }
+    :root[data-theme="dark"] .theme-btn .i-sun { display: block; }
+    :root[data-theme="dark"] .theme-btn .i-moon { display: none; }
+    .menu-btn { display: none; }
+    .mobile-menu { border-top: 1px solid var(--border); }
+    .mobile-menu[hidden] { display: none; }
+    .mobile-menu .wrap { display: grid; gap: 2px; padding-top: 10px; padding-bottom: 14px; }
+    .mobile-menu a:not(.btn) { padding: 10px 12px; border-radius: var(--radius-sm); text-decoration: none; }
+    .mobile-menu a:not(.btn):hover { background: var(--accent); }
+    .mobile-menu .btn { margin-top: 8px; }
+
+    /* --- Inicio con el video del motor ----------------------------------- */
+    .hero { position: relative; isolation: isolate; overflow: hidden; min-height: min(86vh, 820px); display: flex; align-items: center; background: #111; color: #fff; }
+    .hero video, .hero .poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -2; }
+    .hero::before {
+      content: ""; position: absolute; inset: 0; z-index: -1;
+      background:
+        linear-gradient(90deg, rgb(22 22 22 / .94) 0%, rgb(22 22 22 / .78) 38%, rgb(22 22 22 / .25) 70%, rgb(22 22 22 / .1) 100%),
+        linear-gradient(0deg, var(--background) 0%, rgb(22 22 22 / 0) 28%);
+    }
+    .hero .wrap { width: 100%; padding-top: 72px; padding-bottom: 110px; }
+    .hero-copy { max-width: 640px; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 10px; max-width: 100%;
+      padding: 4px 14px 4px 4px; border-radius: 999px; font-size: 13px; text-decoration: none;
+      background: rgb(255 255 255 / .07); border: 1px solid rgb(255 255 255 / .16); color: #d6d6d6;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); transition: border-color .15s;
+    }
+    .pill:hover { border-color: var(--orange); }
+    .pill b { flex-shrink: 0; padding: 3px 9px; border-radius: 999px; background: var(--orange); color: #1c1c1c; font-weight: 650; font-size: 12px; }
+    .pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hero h1 { margin: 22px 0 0; font-size: clamp(36px, 6vw, 64px); line-height: 1.04; font-weight: 800; letter-spacing: -0.035em; }
+    .hero h1 em { font-style: normal; background: linear-gradient(90deg, #8fb0e6, var(--star)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .hero .lead { margin: 22px 0 0; font-size: 17.5px; line-height: 1.65; color: #c9c9c9; max-width: 590px; }
+    .hero .lead code { background: rgb(0 0 0 / .35); border-color: rgb(255 255 255 / .14); color: #f0cf9c; }
+    .hero .ctas { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+    .hero .meta { margin: 26px 0 0; font: 500 12px/1.6 var(--mono); color: #a0a0a0; letter-spacing: .01em; }
+    .hud {
+      position: absolute; right: 24px; bottom: 76px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end;
+      font: 500 11.5px/1 var(--mono); color: #cfcfcf;
+    }
+    .hud span { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: var(--radius-sm); background: rgb(35 35 35 / .72); border: 1px solid rgb(255 255 255 / .1); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+    .hud .rec { width: 7px; height: 7px; border-radius: 99px; background: var(--axis-x); box-shadow: 0 0 0 3px rgb(255 51 82 / .25); }
+    .hud .gizmo { gap: 3px; }
+    .hud .gizmo i { width: 14px; height: 3px; border-radius: 2px; }
+
+    /* --- Cifras --------------------------------------------------------- */
+    .facts { position: relative; z-index: 2; margin-top: -54px; }
+    .facts ul {
+      list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, 1fr);
+      background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow); overflow: hidden;
+    }
+    .facts li { padding: 20px 22px; border-left: 1px solid var(--border); min-width: 0; }
+    .facts li:first-child { border-left: 0; }
+    .facts b { display: block; font-size: 19px; font-weight: 700; letter-spacing: -0.02em; }
+    .facts small { display: block; margin-top: 2px; font-size: 13px; color: var(--muted-foreground); }
+    .facts li:nth-child(1) b { color: var(--axis-x); }
+    .facts li:nth-child(2) b { color: var(--axis-y); }
+    .facts li:nth-child(3) b { color: var(--axis-z); }
+    .facts li:nth-child(4) b { color: var(--orange); }
+    .facts li:nth-child(5) b { color: var(--star); }
+    :root[data-theme="light"] .facts li:nth-child(2) b { color: #5a9a00; }
+    :root[data-theme="light"] .facts li:nth-child(4) b { color: var(--orange-deep); }
+    :root[data-theme="light"] .facts li:nth-child(5) b { color: #0089c4; }
+
+    /* --- Secciones ------------------------------------------------------ */
+    section { scroll-margin-top: 64px; }
+    .section { padding: 104px 0; }
+    .section.alt { background: var(--section-alt); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin: 0; font: 600 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--link); }
+    .eyebrow::before { content: ""; width: 18px; height: 2px; border-radius: 2px; background: var(--orange); }
+    .section h2 { margin: 14px 0 0; font-size: clamp(28px, 4vw, 42px); line-height: 1.12; font-weight: 750; letter-spacing: -0.03em; }
+    .section-head { max-width: 720px; }
+    .section-head p { margin: 16px 0 0; font-size: 16.5px; color: var(--muted-foreground); }
+    .section-head.row { max-width: none; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px 32px; }
+    .section-head.row > div { max-width: 720px; }
+
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); min-width: 0; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--muted); font: 500 12px/1 var(--mono); color: var(--muted-foreground); }
+
+    /* Caracteristicas */
+    .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 52px; }
+    .feature { position: relative; padding: 26px; transition: border-color .2s, transform .2s, box-shadow .2s; overflow: hidden; }
+    .feature:hover { border-color: var(--border-strong); transform: translateY(-2px); box-shadow: var(--shadow); }
+    .feature::before { content: ""; position: absolute; left: 0; top: 0; right: 0; height: 2px; background: var(--c, var(--blue)); opacity: 0; transition: opacity .2s; }
+    .feature:hover::before { opacity: 1; }
+    .feature .fi {
+      display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; border-radius: var(--radius);
+      background: color-mix(in srgb, var(--c, var(--blue)) 16%, transparent); color: var(--c, var(--blue));
+      border: 1px solid color-mix(in srgb, var(--c, var(--blue)) 35%, transparent);
+    }
+    .feature .fi .ic { width: 20px; height: 20px; }
+    .feature h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 18px 0 0; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+    .feature h3 small { font: 500 11.5px/1 var(--mono); color: var(--faint); }
+    .feature p { margin: 10px 0 0; font-size: 14px; line-height: 1.65; color: var(--muted-foreground); }
+
+    /* Galeria */
+    .gallery { display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-rows: 210px; gap: 12px; margin-top: 52px; }
+    .shot { position: relative; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card); cursor: zoom-in; }
+    .shot.w2 { grid-column: span 2; }
+    .shot.h2 { grid-row: span 2; }
+    .shot img { width: 100%; height: 100%; object-fit: cover; transition: transform .5s ease; }
+    .shot:hover img { transform: scale(1.04); }
+    .shot figcaption, .shot .cap {
+      position: absolute; left: 0; right: 0; bottom: 0; padding: 28px 14px 12px; text-align: left;
+      font-size: 13px; color: #eee; background: linear-gradient(0deg, rgb(0 0 0 / .78), transparent);
+      opacity: .92; transition: opacity .2s;
+    }
+    .lightbox { width: min(1200px, 94vw); max-width: none; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--bg1); color: #e5e5e5; overflow: hidden; }
+    .lightbox::backdrop { background: rgb(10 10 10 / .85); backdrop-filter: blur(4px); }
+    .lightbox img { width: 100%; max-height: 80vh; object-fit: contain; background: #111; }
+    .lightbox .lb-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 10px 10px 16px; font-size: 14px; color: #c9c9c9; }
+    .lightbox .icon-btn { color: #c9c9c9; }
+    .lightbox .icon-btn:hover { background: #3d3d3d; color: #fff; }
+
+    /* Plantillas */
+    .templates { display: grid; grid-template-columns: 1fr 2fr; gap: 40px; margin-top: 88px; }
+    .templates h3 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+    .templates > div > p { margin: 10px 0 0; color: var(--muted-foreground); }
+    .tpl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .tpl { padding: 16px 18px; font-size: 14px; }
+    .tpl b { display: block; font-weight: 600; }
+    .tpl span { color: var(--muted-foreground); }
+
+    /* C++ */
+    .split { display: grid; grid-template-columns: 1fr 1.05fr; gap: 56px; align-items: center; }
+    .split p { color: var(--muted-foreground); }
+    .split .btns { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
+    .editor {
+      border: 1px solid #3a3a3a; border-radius: var(--radius-lg); background: var(--pre-bg); overflow: hidden; box-shadow: var(--shadow); min-width: 0;
+    }
+    .editor-tabs { display: flex; align-items: stretch; background: #232323; border-bottom: 1px solid #161616; font: 500 12px/1 var(--mono); color: #a0a0a0; }
+    .editor-tabs span { display: inline-flex; align-items: center; gap: 8px; padding: 11px 14px; }
+    .editor-tabs .on { background: #1a1a1a; color: #e5e5e5; box-shadow: inset 0 2px 0 var(--orange); }
+    .editor-tabs .dot { width: 8px; height: 8px; border-radius: 2px; background: var(--blue); }
+    .editor-tabs .lang { margin-left: auto; color: #949494; }
+    .editor pre { margin: 0; padding: 20px 22px; overflow-x: auto; font: 13px/1.75 var(--mono); color: var(--pre-fg); tab-size: 4; }
+    .editor pre code { font: inherit; padding: 0; background: none; border: 0; color: inherit; }
+    .editor-status { display: flex; justify-content: space-between; gap: 12px; padding: 7px 14px; background: var(--blue); color: #fff; font: 500 11.5px/1.3 var(--mono); }
+    .hljs { background: transparent !important; color: var(--pre-fg); }
+    .hljs-keyword, .hljs-literal { color: var(--hl-keyword); }
+    .hljs-type, .hljs-built_in, .hljs-title.class_ { color: var(--hl-type); }
+    .hljs-string { color: var(--hl-string); }
+    .hljs-number { color: var(--hl-number); }
+    .hljs-comment { color: var(--hl-comment); font-style: italic; }
+    .hljs-title, .hljs-title.function_ { color: var(--hl-func); }
+    .hljs-meta, .hljs-meta .hljs-keyword, .hljs-meta .hljs-string { color: var(--hl-meta); }
+
+    /* Novedades */
+    .news { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 48px; }
+    .news .card { padding: 26px; }
+    .news .wide { grid-column: span 2; }
+    .news .tag { margin: 0; font: 600 11.5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--link); }
+    .news h3 { margin: 10px 0 0; font-size: 19px; font-weight: 650; letter-spacing: -0.015em; }
+    .news p { margin: 10px 0 0; font-size: 14px; color: var(--muted-foreground); }
+    .news ul { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 32px; margin: 16px 0 0; padding: 0; list-style: none; font-size: 14px; color: var(--muted-foreground); }
+    .news li, .changes li { position: relative; padding-left: 18px; }
+    .news li::before, .changes li::before { content: ""; position: absolute; left: 2px; top: .62em; width: 6px; height: 6px; border-radius: 2px; background: var(--blue); }
+    .news .btn { margin-top: 20px; }
+    .older-title { margin: 72px 0 0; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+    .accordion { margin-top: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; background: var(--card); }
+    .accordion details + details { border-top: 1px solid var(--border); }
+    .accordion summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; cursor: pointer; list-style: none; transition: background .15s; }
+    .accordion summary::-webkit-details-marker { display: none; }
+    .accordion summary:hover { background: var(--accent); }
+    .accordion summary .v { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; margin-right: 12px; padding: 4px 8px; border-radius: var(--radius-sm); background: var(--muted); border: 1px solid var(--border-strong); font: 600 13px/1 var(--mono); }
+    .accordion summary .s { font-size: 14px; color: var(--muted-foreground); }
+    .accordion details[open] summary .v { background: var(--selection); border-color: var(--blue); color: #fff; }
+    .accordion .chev { transition: transform .2s; color: var(--faint); }
+    .accordion details[open] .chev { transform: rotate(180deg); }
+    .accordion .body { padding: 4px 20px 22px; font-size: 14px; color: var(--muted-foreground); }
+    .changes { margin: 16px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+    .changes .fg { font-weight: 600; }
+    .figs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .figs .w2 { grid-column: span 2; }
+    .figs figure { margin: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card-2); }
+    .figs figcaption { padding: 7px 12px; font-size: 12.5px; border-top: 1px solid var(--border); }
+    .accordion .more { display: inline-block; margin-top: 16px; }
+
+    /* Documentacion */
+    .docs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 48px; }
+    .doc-link { display: flex; align-items: flex-start; gap: 14px; padding: 18px 20px; text-decoration: none; transition: border-color .15s, background .15s; }
+    .doc-link:hover { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 6%, var(--card)); }
+    .doc-link .fi { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-sm); background: var(--brand-soft); color: var(--link); flex-shrink: 0; }
+    .doc-link b { display: block; font-weight: 600; }
+    .doc-link small { display: block; margin-top: 2px; font-size: 13px; color: var(--muted-foreground); }
+    .doc-link .arr { margin-left: auto; align-self: center; color: var(--faint); transition: transform .15s, color .15s; }
+    .doc-link:hover .arr { transform: translateX(3px); color: var(--link); }
+
+    /* Descargar */
+    .download { display: grid; grid-template-columns: 1fr 1.15fr; gap: 16px; }
+    .dl-main {
+      position: relative; padding: 34px; overflow: hidden;
+      background: radial-gradient(ellipse 80% 70% at 100% 0%, rgb(71 114 179 / .25), transparent 70%), var(--card);
+    }
+    .dl-main h2 { margin-top: 14px; font-size: clamp(26px, 3.4vw, 34px); }
+    .dl-main > p { margin: 14px 0 0; color: var(--muted-foreground); }
+    .dl-main .btn { margin-top: 26px; }
+    .dl-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+    .callout { margin-top: 22px; padding: 14px 16px; border-radius: var(--radius); font-size: 14px; color: var(--muted-foreground); background: rgb(255 175 41 / .07); border: 1px solid rgb(255 175 41 / .28); border-left: 3px solid var(--orange); }
+    .support { margin-top: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card-2); }
+    .support p { margin: 0; }
+    .support .t { display: flex; align-items: center; gap: 8px; font-weight: 650; }
+    .support .t .ic { color: var(--axis-x); }
+    .support .d { margin-top: 4px; font-size: 14px; color: var(--muted-foreground); }
+    .support .btn { margin-top: 12px; }
+    .zip { overflow: hidden; }
+    .zip-head { display: flex; align-items: center; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 14px; background: var(--card-2); }
+    .zip-head .ic { color: var(--link); }
+    .zip-scroll { overflow-x: auto; }
+    .zip table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .zip td { padding: 12px 20px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .zip tr:last-child td { border-bottom: 0; }
+    .zip td:first-child { white-space: nowrap; font: 500 13px/1.6 var(--mono); color: var(--foreground); }
+    .zip td:last-child { color: var(--muted-foreground); }
+    .zip tr:hover td { background: color-mix(in srgb, var(--blue) 6%, transparent); }
+    .zip .req td:first-child { font-family: var(--sans); font-weight: 600; font-size: 14px; }
+
+    /* Codigo fuente */
+    .source { display: grid; grid-template-columns: 1fr 2fr; gap: 40px; }
+    .source h2 { margin: 14px 0 0; font-size: 28px; }
+    .source .card { padding: 26px; color: var(--muted-foreground); }
+    .source .card p { margin: 0; }
+    .source .card p + p { margin-top: 14px; font-size: 14px; }
+
+    /* Apoyo */
+    .cta {
+      position: relative; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 24px;
+      padding: 40px; border-radius: var(--radius-lg); border: 1px solid var(--border); overflow: hidden;
+      background:
+        radial-gradient(ellipse 50% 140% at 100% 50%, rgb(255 175 41 / .14), transparent 70%),
+        radial-gradient(ellipse 40% 120% at 0% 50%, rgb(71 114 179 / .18), transparent 70%),
+        var(--card);
+    }
+    .cta h2 { margin: 0; font-size: clamp(24px, 3vw, 30px); font-weight: 750; letter-spacing: -0.025em; }
+    .cta p { margin: 8px 0 0; max-width: 560px; color: var(--muted-foreground); }
+    .cta .btns { display: flex; flex-wrap: wrap; gap: 10px; }
+
+    /* Pie */
+    .site-footer { border-top: 1px solid var(--border); background: var(--section-alt); }
+    .foot { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 32px; padding-top: 56px; padding-bottom: 40px; font-size: 14px; }
+    .foot-brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; }
+    .foot-brand img { width: 26px; height: 26px; }
+    .foot p { margin: 12px 0 0; color: var(--muted-foreground); max-width: 320px; }
+    .foot h4 { margin: 0 0 12px; font: 600 11.5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+    .foot nav { display: grid; gap: 8px; }
+    .foot nav a { color: var(--muted-foreground); text-decoration: none; }
+    .foot nav a:hover { color: var(--foreground); }
+    .foot-bottom { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; padding-top: 20px; padding-bottom: 28px; border-top: 1px solid var(--border); font: 500 12px/1.6 var(--mono); color: var(--faint); }
+    .axis { display: inline-flex; gap: 4px; align-items: center; }
+    .axis i { width: 16px; height: 3px; border-radius: 2px; }
+
+    /* Aparicion suave al entrar en pantalla (solo con JS: sin el, todo se ve). */
+    .js .reveal { opacity: 0; transform: translateY(14px); transition: opacity .6s ease, transform .6s ease; }
+    .reveal.in { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .js .reveal { opacity: 1; transform: none; transition: none; }
+      .feature, .shot img, .btn { transition: none; }
+    }
+
+    /* --- Pantallas medianas y pequenas ---------------------------------- */
+    @media (max-width: 1080px) {
+      .nav-links { display: none; }
+      .menu-btn { display: inline-flex; }
+      .features { grid-template-columns: 1fr 1fr; }
+      .facts ul { grid-template-columns: repeat(3, 1fr); }
+      .facts li:nth-child(4) { border-left: 0; }
+      .facts li:nth-child(n+4) { border-top: 1px solid var(--border); }
+      .split, .download, .templates, .source { grid-template-columns: 1fr; gap: 32px; }
+      .gallery { grid-template-columns: repeat(2, 1fr); grid-auto-rows: 190px; }
+      .docs { grid-template-columns: 1fr 1fr; }
+      .foot { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 680px) {
+      .wrap { padding: 0 16px; }
+      .nav { gap: 10px; height: 56px; }
+      .hide-sm { display: none !important; }
+      .hero { min-height: 0; }
+      .hero::before { background: linear-gradient(0deg, var(--background) 0%, rgb(22 22 22 / .82) 30%, rgb(22 22 22 / .7) 100%); }
+      .hero .wrap { padding-top: 56px; padding-bottom: 92px; }
+      .hero .lead { font-size: 16px; }
+      .hero .ctas .btn { flex: 1 1 100%; }
+      .hud { left: 16px; right: 16px; bottom: 52px; justify-content: flex-start; }
+      .hud .hide-xs { display: none; }
+      .facts { margin-top: -36px; }
+      .facts ul { grid-template-columns: 1fr 1fr; }
+      .facts li { padding: 16px; border-left: 0; border-top: 1px solid var(--border); }
+      .facts li:nth-child(even) { border-left: 1px solid var(--border); }
+      .facts li:first-child, .facts li:nth-child(2) { border-top: 0; }
+      .facts li:nth-child(5) { grid-column: span 2; border-left: 0; }
+      .section { padding: 72px 0; }
+      .features, .tpl-grid, .news, .news ul, .docs, .figs { grid-template-columns: 1fr; }
+      .news .wide, .figs .w2 { grid-column: auto; }
+      .feature { padding: 22px; }
+      .gallery { grid-template-columns: 1fr 1fr; grid-auto-rows: 130px; gap: 8px; }
+      .shot.w2 { grid-column: span 2; }
+      .shot.h2 { grid-row: span 1; }
+      .shot figcaption, .shot .cap { display: none; }
+      .accordion summary { padding: 14px 16px; }
+      .accordion summary .s { display: block; margin-top: 6px; }
+      .accordion .body { padding: 4px 16px 18px; }
+      .dl-main { padding: 24px; }
+      .dl-main .btn { width: 100%; }
+      .zip td { padding: 10px 14px; }
+      .cta { padding: 26px; }
+      .cta .btns, .cta .btn { width: 100%; }
+      .foot { grid-template-columns: 1fr; gap: 28px; }
+    }
+    @media print {
+      :root, :root[data-theme="light"], :root[data-theme="dark"] {
+        --background: #fff; --section-alt: #fff; --foreground: #111; --card: #fff; --card-2: #fff; --muted: #f2f2f2;
+        --muted-foreground: #444; --faint: #555; --border: #ccc; --border-strong: #bbb; --link: #2f5aa0;
+        --code-bg: #f2f2f2; --code-fg: #6a3a00; color-scheme: light;
+      }
+      .site-header, .hero video, .hud, .lightbox, .menu-btn, .skip { display: none !important; }
+      .js .reveal { opacity: 1; transform: none; }
+      body { background: #fff; color: #111; }
+      .hero { min-height: 0; background: none; }
+      .hero::before, .hero .poster { display: none; }
+      .hero, .hero .lead, .hero .meta, .hero .pill { color: #111 !important; }
+      .hero h1 em { background: none; color: #111; }
+    }
   </style>
 </head>
-<body class="font-sans text-[15px] leading-relaxed antialiased">
+<body>
+  <a class="skip" href="#contenido">Saltar al contenido</a>
+
+  <!-- Iconos (se usan con <use href="#i-...">) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-discord" viewBox="0 0 24 24"><path d="M8.5 16.5c-2 .6-3.6 0-3.6 0C3.7 13 4 9 5.4 6.6 6.8 5.6 8.5 5.3 8.5 5.3l.6 1.2c1.9-.4 3.9-.4 5.8 0l.6-1.2s1.7.3 3.1 1.3C20 9 20.3 13 19.1 16.5c0 0-1.6.6-3.6 0l-.8-1.3"/><circle cx="9.5" cy="12" r="1"/><circle cx="14.5" cy="12" r="1"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></symbol>
+    <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></symbol>
+    <symbol id="i-cube" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></symbol>
+    <symbol id="i-sunrise" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2"/></symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M12 14l4-4"/><path d="M3.3 17a9 9 0 1 1 17.4 0"/><path d="M3.3 17h17.4"/></symbol>
+    <symbol id="i-mountain" viewBox="0 0 24 24"><path d="m3 20 6-11 4 7 2-3 6 7H3Z"/><circle cx="17" cy="6" r="2"/></symbol>
+    <symbol id="i-atom" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1.5"/><ellipse cx="12" cy="12" rx="10" ry="4"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(120 12 12)"/></symbol>
+    <symbol id="i-bone" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2"/><path d="M12 7v6M8 21l4-8 4 8M7 10h10"/></symbol>
+    <symbol id="i-gamepad" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="11" rx="5"/><path d="M7 11v3M5.5 12.5h3"/><circle cx="16" cy="11.5" r=".8"/><circle cx="18" cy="13.5" r=".8"/></symbol>
+    <symbol id="i-network" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="5" rx="1"/><rect x="2" y="17" width="6" height="5" rx="1"/><rect x="16" y="17" width="6" height="5" rx="1"/><path d="M12 7v5M5 17v-2.5h14V17"/></symbol>
+    <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 4v4M9 13v1M15 13v1M2 14h2M20 14h2"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5L5 20"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="M3 8l9 5 9-5M12 13v8"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4v16l13-8L7 4Z"/></symbol>
+    <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+  </svg>
 
   <!-- Cabecera -->
-  <header class="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-md">
-    <nav class="mx-auto flex h-14 max-w-6xl items-center gap-6 px-4 sm:px-6">
-      <a href="#" class="flex shrink-0 items-center gap-2.5 font-semibold">
-        <img src="img/icon.png" alt="" class="size-6 rounded-md bg-zinc-950 p-0.5 dark:bg-transparent dark:p-0"> Cramion
-      </a>
-      <div class="hidden gap-6 text-sm text-muted-foreground lg:flex">
-        <a href="#motor" class="hover:text-foreground">Características</a>
-        <a href="#scripting" class="hover:text-foreground">C++</a>
-        <a href="#novedades" class="hover:text-foreground">Novedades</a>
-        <a href="manual/index.html" class="hover:text-foreground">Documentación</a>
-        <a href="manual/licencia.html" class="hover:text-foreground">Licencia</a>
-      </div>
-      <div class="ml-auto flex items-center gap-1.5">
-        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="icon-btn hidden sm:inline-flex" aria-label="Discord" title="Discord">
-          <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 16.5c-2 .6-3.6 0-3.6 0C3.7 13 4 9 5.4 6.6 6.8 5.6 8.5 5.3 8.5 5.3l.6 1.2c1.9-.4 3.9-.4 5.8 0l.6-1.2s1.7.3 3.1 1.3C20 9 20.3 13 19.1 16.5c0 0-1.6.6-3.6 0l-.8-1.3"/><circle cx="9.5" cy="12" r="1"/><circle cx="14.5" cy="12" r="1"/></svg>
-        </a>
-        <button id="theme" class="icon-btn" aria-label="Cambiar entre tema claro y oscuro" title="Tema">
-          <svg class="size-[18px] dark:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg>
-          <svg class="hidden size-[18px] dark:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  <header class="site-header">
+    <div class="wrap nav">
+      <a href="#" class="brand" aria-label="Cramion, inicio"><img src="img/icon.png" alt="" width="28" height="28">Cramion</a>
+      <nav class="nav-links" aria-label="Secciones">
+        <a href="#motor">Características</a>
+        <a href="#galeria">Galería</a>
+        <a href="#scripting">C++</a>
+        <a href="#novedades">Novedades</a>
+        <a href="manual/index.html">Documentación</a>
+        <a href="manual/licencia.html">Licencia</a>
+      </nav>
+      <div class="nav-right">
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="icon-btn hide-sm" aria-label="Discord" title="Discord"><svg class="ic"><use href="#i-discord"/></svg></a>
+        <button id="theme" class="icon-btn theme-btn" aria-label="Cambiar entre tema claro y oscuro" title="Tema">
+          <svg class="ic i-moon"><use href="#i-moon"/></svg><svg class="ic i-sun"><use href="#i-sun"/></svg>
         </button>
-        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm hidden sm:inline-flex">
-          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Donar
-        </a>
-        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="icon-btn text-rose-500 sm:hidden" aria-label="Donar con PayPal" title="Donar">
-          <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>
-        </a>
-        <a href="#descargar" class="btn btn-primary btn-sm hidden min-[420px]:inline-flex">Descargar</a>
-        <button id="menu" class="icon-btn lg:hidden" aria-label="Menú" aria-expanded="false" aria-controls="mobile-menu">
-          <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-        </button>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm hide-sm"><svg class="ic ic-sm"><use href="#i-heart"/></svg>Donar</a>
+        <a href="#descargar" class="btn btn-primary btn-sm"><svg class="ic ic-sm"><use href="#i-download"/></svg>Descargar</a>
+        <button id="menu" class="icon-btn menu-btn" aria-label="Menú" aria-expanded="false" aria-controls="mobile-menu"><svg class="ic"><use href="#i-menu"/></svg></button>
       </div>
-    </nav>
-    <div id="mobile-menu" class="hidden border-t border-border lg:hidden">
-      <div class="mx-auto grid max-w-6xl gap-1 px-4 py-3 text-sm sm:px-6">
-        <a href="#motor" class="rounded-md px-3 py-2 hover:bg-accent">Características</a>
-        <a href="#scripting" class="rounded-md px-3 py-2 hover:bg-accent">C++</a>
-        <a href="#novedades" class="rounded-md px-3 py-2 hover:bg-accent">Novedades</a>
-        <a href="manual/index.html" class="rounded-md px-3 py-2 hover:bg-accent">Documentación</a>
-        <a href="manual/licencia.html" class="rounded-md px-3 py-2 hover:bg-accent">Licencia</a>
-        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="rounded-md px-3 py-2 hover:bg-accent">Discord</a>
-        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate mt-2">Donar con PayPal</a>
+    </div>
+    <div id="mobile-menu" class="mobile-menu" hidden>
+      <div class="wrap">
+        <a href="#motor">Características</a>
+        <a href="#galeria">Galería</a>
+        <a href="#scripting">C++</a>
+        <a href="#novedades">Novedades</a>
+        <a href="manual/index.html">Documentación</a>
+        <a href="manual/licencia.html">Licencia</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate"><svg class="ic ic-sm"><use href="#i-heart"/></svg>Donar con PayPal</a>
       </div>
     </div>
   </header>
 
-  <main>
-    <!-- Inicio -->
-    <section class="relative overflow-hidden border-b border-border">
-      <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_60%_50%_at_50%_0%,rgb(56_189_248/0.12),transparent)]"></div>
-      <div class="relative mx-auto grid max-w-6xl gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[1fr_1.1fr] lg:items-center lg:py-24">
-        <div class="min-w-0">
-          <a href="#novedades" class="badge hover:text-foreground">
-            <span class="font-medium text-foreground">Nuevo en la 2.3</span> Android en casi todos los móviles, gama baja más rápida y VR
-            <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-          </a>
-          <h1 class="mt-6 text-4xl font-bold leading-[1.08] tracking-tight sm:text-5xl lg:text-6xl">
-            Un motor de juegos 3D para Windows, con su editor.
-          </h1>
-          <p class="mt-6 max-w-xl text-lg text-muted-foreground">
+  <main id="contenido">
+    <!-- Inicio: el video del motor de fondo -->
+    <section class="hero" aria-labelledby="hero-title">
+      <img class="poster" src="img/bg-poster.jpg" alt="" aria-hidden="true">
+      <video id="hero-video" autoplay muted loop playsinline preload="auto" poster="img/bg-poster.jpg" aria-hidden="true">
+        <source src="bg-web.mp4" type="video/mp4">
+      </video>
+      <div class="wrap">
+        <div class="hero-copy">
+          <a href="#novedades" class="pill"><b>Nuevo en la 2.4.8</b><span>Blueprints de actor, cliente WebSocket y hierba realista</span></a>
+          <h1 id="hero-title">Un motor de juegos 3D para Windows, <em>con su editor.</em></h1>
+          <p class="lead">
             Montas la escena en el editor, escribes el juego en C++ y le das a Play. Render en Vulkan (1.3, o desde 1.0 en Android), física con Jolt,
-            terreno, agua, navegación, animación con IK y exportación a un <span class="code-inline">.exe</span>.
+            terreno, agua, navegación, animación con IK y exportación a un <code>.exe</code>.
             Gratis para hacer y vender tus juegos, sin regalías.
           </p>
-          <div class="mt-8 flex flex-wrap gap-3">
-            <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary">
-              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Descargar para Windows
+          <div class="ctas">
+            <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary btn-lg">
+              <svg class="ic"><use href="#i-download"/></svg>Descargar para Windows
             </a>
-            <a href="manual/index.html" class="btn btn-outline">Leer la documentación</a>
+            <a href="manual/index.html" class="btn btn-glass btn-lg"><svg class="ic"><use href="#i-book"/></svg>Leer la documentación</a>
           </div>
-          <p class="mt-6 font-mono text-xs text-muted-foreground">2.3 · Windows 10/11 x64 · Android (64 y 32 bits) · realidad virtual · Vulkan · ≈161 MB</p>
+          <p class="meta">2.4.8 · Windows 10/11 x64 · Android (64 y 32 bits) · realidad virtual · Vulkan</p>
         </div>
-
-        <figure class="card min-w-0 overflow-hidden shadow-2xl shadow-black/20">
-          <div class="flex items-center gap-2 border-b border-border px-4 py-2.5">
-            <span class="size-2.5 rounded-full bg-[#ff5f57]"></span><span class="size-2.5 rounded-full bg-[#febc2e]"></span><span class="size-2.5 rounded-full bg-[#28c840]"></span>
-            <span class="ml-2 truncate font-mono text-[11px] text-muted-foreground">Escena · Main — Lit · Free Aspect</span>
-          </div>
-          <video id="hero-video" class="aspect-video w-full object-cover" autoplay muted loop playsinline preload="auto" poster="img/bg-poster.jpg">
-            <source src="bg-web.mp4" type="video/mp4">
-          </video>
-          <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Capturado en el motor, en tiempo real.</figcaption>
-        </figure>
+      </div>
+      <div class="hud" aria-hidden="true">
+        <span><i class="rec"></i>Capturado en el motor, en tiempo real.</span>
+        <span class="hide-xs">Escena · Main — Lit · Free Aspect</span>
+        <span class="gizmo hide-xs"><i style="background:var(--axis-x)"></i><i style="background:var(--axis-y)"></i><i style="background:var(--axis-z)"></i></span>
       </div>
     </section>
 
+    <!-- Cifras -->
+    <div class="facts">
+      <div class="wrap">
+        <ul>
+          <li><b>Vulkan 1.3</b><small>Render diferido con PBR</small></li>
+          <li><b>Jolt</b><small>Física, vehículos y ragdolls</small></li>
+          <li><b>C++20</b><small>Scripts con recarga en caliente</small></li>
+          <li><b>Win · Android · VR</b><small>Exporta tu juego</small></li>
+          <li><b>Sin regalías</b><small>Gratis para hacer y vender</small></li>
+        </ul>
+      </div>
+    </div>
+
     <!-- Motor -->
-    <section id="motor" class="scroll-mt-16 border-b border-border">
-      <div class="mx-auto max-w-6xl px-4 py-20 sm:px-6">
-        <div class="max-w-2xl">
-          <p class="text-sm font-medium text-brand">Características</p>
-          <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Todo lo de un juego completo</h2>
-          <p class="mt-4 text-muted-foreground">
-            Un solo motor escrito en C++20. Lo que sigue es lo que hay hoy, no una hoja de ruta. Cada punto tiene su página en la
-            <a href="manual/index.html" class="link text-foreground">documentación</a>.
-          </p>
+    <section id="motor" class="section">
+      <div class="wrap">
+        <div class="section-head reveal">
+          <p class="eyebrow">Características</p>
+          <h2>Todo lo de un juego completo</h2>
+          <p>Un solo motor escrito en C++20. Lo que sigue es lo que hay hoy, no una hoja de ruta. Cada punto tiene su página en la
+            <a href="manual/index.html" class="link">documentación</a>.</p>
         </div>
 
-        <div class="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <article id="render" class="card p-6">
-            <h3 class="font-semibold">Render <span class="ml-1 font-mono text-xs font-normal text-muted-foreground">Vulkan 1.3</span></h3>
-            <p class="mt-2 text-sm text-muted-foreground">Diferido con PBR y materiales de Disney. Cielo físico con día y noche que ilumina y refleja (IBL), sombras en cascada con caché, sombras de contacto y de luces locales, SSAO y SSGI, luz volumétrica, nubes y niebla por altura. Noches con visión nocturna, luna, estrellas y Vía Láctea. Bloom, auto-exposición, TAA, FSR 1, FSR 3.1 y DLSS 4 (inestables), volúmenes de post-procesado, relieve teselado y Render Textures.</p>
+        <div class="features">
+          <article id="render" class="card feature reveal" style="--c: var(--star)">
+            <span class="fi"><svg class="ic"><use href="#i-sunrise"/></svg></span>
+            <h3>Render <small>Vulkan 1.3</small></h3>
+            <p>Diferido con PBR y materiales de Disney. Cielo físico con día y noche que ilumina y refleja (IBL), sombras en cascada con caché, sombras de contacto y de luces locales, SSAO y SSGI, luz volumétrica, nubes y niebla por altura. Noches con visión nocturna, luna, estrellas y Vía Láctea. Bloom, auto-exposición, TAA, FSR 1, FSR 3.1 y DLSS 4 (inestables), volúmenes de post-procesado, relieve teselado y Render Textures.</p>
           </article>
-          <article class="card p-6">
-            <h3 class="font-semibold">Rendimiento</h3>
-            <p class="mt-2 text-sm text-muted-foreground">LODs automáticos, static batching, occlusion culling y recorte por clústeres en la GPU, y un presupuesto de frame que baja lo que menos se nota para llegar a tus FPS. Escenas de unos 10 millones de triángulos; bosques de millones de árboles y hierba dibujados en la GPU.</p>
+          <article class="card feature reveal" style="--c: var(--orange)">
+            <span class="fi"><svg class="ic"><use href="#i-gauge"/></svg></span>
+            <h3>Rendimiento</h3>
+            <p>LODs automáticos, static batching, occlusion culling y recorte por clústeres en la GPU, y un presupuesto de frame que baja lo que menos se nota para llegar a tus FPS. Escenas de unos 10 millones de triángulos; bosques de millones de árboles y hierba dibujados en la GPU.</p>
           </article>
-          <article class="card p-6">
-            <h3 class="font-semibold">Mundo</h3>
-            <p class="mt-2 text-sm text-muted-foreground">Generador de mundos con erosión, ríos, lagos y mar; terreno para esculpir y pintar; océano, lagos y ríos con olas; hierba que reacciona a la física; árboles, casas y aldeas procedurales; NavMesh en tiempo real; mundos de bloques infinitos y pintar prefabs.</p>
+          <article class="card feature reveal" style="--c: var(--axis-y)">
+            <span class="fi"><svg class="ic"><use href="#i-mountain"/></svg></span>
+            <h3>Mundo</h3>
+            <p>Generador de mundos con erosión, ríos, lagos y mar; terreno para esculpir y pintar; océano, lagos y ríos con olas; hierba que reacciona a la física; árboles, casas y aldeas procedurales; NavMesh en tiempo real; mundos de bloques infinitos y pintar prefabs.</p>
           </article>
-          <article class="card p-6">
-            <h3 class="font-semibold">Física y audio</h3>
-            <p class="mt-2 text-sm text-muted-foreground">Jolt: cuerpos rígidos, colliders, triggers, raycasts, vehículos con motor y marchas, ragdolls, telas que ondean con el viento y cuerpos blandos. Sonido 3D con oclusión por paredes, eco, filtros y zonas de reverberación.</p>
+          <article class="card feature reveal" style="--c: var(--axis-z)">
+            <span class="fi"><svg class="ic"><use href="#i-atom"/></svg></span>
+            <h3>Física y audio</h3>
+            <p>Jolt: cuerpos rígidos, colliders, triggers, raycasts, vehículos con motor y marchas, ragdolls, telas que ondean con el viento y cuerpos blandos. Sonido 3D con oclusión por paredes, eco, filtros y zonas de reverberación.</p>
           </article>
-          <article class="card p-6">
-            <h3 class="font-semibold">Animación</h3>
-            <p class="mt-2 text-sm text-muted-foreground">Animator con Blend Trees 1D y 2D y fundidos inerciales; IK de humanos y animales; Phys Bones, sockets, huesos editables y retargeting de humanoides; cinemáticas con línea de tiempo. Importa FBX, glTF, OBJ y DAE.</p>
+          <article class="card feature reveal" style="--c: var(--axis-x)">
+            <span class="fi"><svg class="ic"><use href="#i-bone"/></svg></span>
+            <h3>Animación</h3>
+            <p>Animator con Blend Trees 1D y 2D y fundidos inerciales; IK de humanos y animales; Phys Bones, sockets, huesos editables y retargeting de humanoides; cinemáticas con línea de tiempo. Importa FBX, glTF, OBJ y DAE.</p>
           </article>
-          <article class="card p-6">
-            <h3 class="font-semibold">Editor</h3>
-            <p class="mt-2 text-sm text-muted-foreground">Paneles acoplables, vistas Escena, Juego y 2D, pestañas para prefabs y scripts, prefabs enlazados, editor de scripts con IntelliSense, Shader Graph, VFX Graph, Visual Scripting, Behavior Trees y diálogos con nodos, Git y pruebas automáticas dentro del editor, interfaz de juego y exportación a Windows y Android. Hub con plantillas y actualizador con SHA-256.</p>
+          <article class="card feature reveal" style="--c: var(--blue-hover)">
+            <span class="fi"><svg class="ic"><use href="#i-window"/></svg></span>
+            <h3>Editor</h3>
+            <p>Paneles acoplables, vistas Escena, Juego y 2D, pestañas para prefabs y scripts, prefabs enlazados, editor de scripts con IntelliSense, Shader Graph, VFX Graph, Visual Scripting, Behavior Trees y diálogos con nodos, Git y pruebas automáticas dentro del editor, interfaz de juego y exportación a Windows y Android. Hub con plantillas y actualizador con SHA-256.</p>
           </article>
-          <article class="card p-6">
-            <h3 class="font-semibold">Entrada y VR</h3>
-            <p class="mt-2 text-sm text-muted-foreground">Input Actions como el Enhanced Input de Unreal: teclado, ratón, mando, táctil y mandos de VR, con contextos, modificadores y triggers. Realidad virtual con OpenXR (SteamVR, Meta Quest Link, WMR) en el juego y en el Play del editor.</p>
+          <article class="card feature reveal" style="--c: var(--ok)">
+            <span class="fi"><svg class="ic"><use href="#i-gamepad"/></svg></span>
+            <h3>Entrada y VR</h3>
+            <p>Input Actions como el Enhanced Input de Unreal: teclado, ratón, mando, táctil y mandos de VR, con contextos, modificadores y triggers. Realidad virtual con OpenXR (SteamVR, Meta Quest Link, WMR) en el juego y en el Play del editor.</p>
           </article>
-          <article class="card p-6">
-            <h3 class="font-semibold">Red</h3>
-            <p class="mt-2 text-sm text-muted-foreground">Multijugador por UDP (ENet) desde los scripts: crear partida y unirse por IP, mensajes, objetos y variables sincronizados, entrar tarde. Peticiones HTTPS con el certificado comprobado y JSON.</p>
+          <article class="card feature reveal" style="--c: var(--orange-deep)">
+            <span class="fi"><svg class="ic"><use href="#i-network"/></svg></span>
+            <h3>Red</h3>
+            <p>Multijugador por UDP (ENet) desde los scripts: crear partida y unirse por IP, mensajes, objetos y variables sincronizados, entrar tarde. Peticiones HTTPS con el certificado comprobado y JSON.</p>
           </article>
-          <article class="card p-6">
-            <h3 class="font-semibold">IA en el editor</h3>
-            <p class="mt-2 text-sm text-muted-foreground">Terminal integrada con Claude Code ya conectado al editor, y servidor MCP: Claude, Cursor o Copilot crean escenas, scripts y materiales, prueban en Play y miran capturas dentro del editor.</p>
+          <article class="card feature reveal" style="--c: #b58cf0">
+            <span class="fi"><svg class="ic"><use href="#i-bot"/></svg></span>
+            <h3>IA en el editor</h3>
+            <p>Terminal integrada con Claude Code ya conectado al editor, y servidor MCP: Claude, Cursor o Copilot crean escenas, scripts y materiales, prueban en Play y miran capturas dentro del editor.</p>
           </article>
         </div>
 
-        <div class="mt-16 grid gap-8 lg:grid-cols-[1fr_2fr]">
-          <div>
-            <h3 class="text-xl font-semibold tracking-tight">Plantillas</h3>
-            <p class="mt-2 text-sm text-muted-foreground">Todas llevan el juego a la vista, en scripts de C++, para leerlo y cambiarlo.</p>
+        <div class="templates">
+          <div class="reveal">
+            <p class="eyebrow">Plantillas</p>
+            <h3 style="margin-top:14px">Empieza con un juego hecho</h3>
+            <p>Todas llevan el juego a la vista, en scripts de C++, para leerlo y cambiarlo.</p>
+            <a href="manual/plantillas.html" class="btn btn-outline btn-sm" style="margin-top:20px">Las plantillas en la documentación<svg class="ic ic-sm"><use href="#i-arrow"/></svg></a>
           </div>
-          <div class="grid gap-3 text-sm sm:grid-cols-2">
-            <p class="card p-4"><span class="font-medium">Tercera persona avanzada.</span> <span class="text-muted-foreground">Locomotion Pack de Mixamo con Blend Tree 2D, giros en el sitio, salto sincronizado e IK.</span></p>
-            <p class="card p-4"><span class="font-medium">MMO RPG.</span> <span class="text-muted-foreground">Combate, misiones, inventario, tienda, un jefe y jugadores simulados.</span></p>
-            <p class="card p-4"><span class="font-medium">Online.</span> <span class="text-muted-foreground">Partida por red con chat, marcador y física compartida.</span></p>
-            <p class="card p-4"><span class="font-medium">Mundo abierto.</span> <span class="text-muted-foreground">Isla de 8 × 8 km con unos 2 millones de árboles.</span></p>
-            <p class="card p-4"><span class="font-medium">Mundo de bloques.</span> <span class="text-muted-foreground">Supervivencia con crafteo, hambre y guardado.</span></p>
-            <p class="card p-4"><span class="font-medium">Criaturas.</span> <span class="text-muted-foreground">Un perro con IK en las cuatro patas, Phys Bones y ragdoll.</span></p>
-            <p class="card p-4"><span class="font-medium">Plataformas 2D.</span> <span class="text-muted-foreground">Pixel art con tilemap de Rule Tiles, física 2D, sprites animados y monedas.</span></p>
-            <p class="card p-4"><span class="font-medium">Coches.</span> <span class="text-muted-foreground">Un coche con motor, marchas y suspensión en una pista con rampas.</span></p>
+          <div class="tpl-grid">
+            <p class="card tpl reveal"><b>Tercera persona avanzada.</b> <span>Locomotion Pack de Mixamo con Blend Tree 2D, giros en el sitio, salto sincronizado e IK.</span></p>
+            <p class="card tpl reveal"><b>MMO RPG.</b> <span>Combate, misiones, inventario, tienda, un jefe y jugadores simulados.</span></p>
+            <p class="card tpl reveal"><b>Online.</b> <span>Partida por red con chat, marcador y física compartida.</span></p>
+            <p class="card tpl reveal"><b>Mundo abierto.</b> <span>Isla de 8 × 8 km con unos 2 millones de árboles.</span></p>
+            <p class="card tpl reveal"><b>Mundo de bloques.</b> <span>Supervivencia con crafteo, hambre y guardado.</span></p>
+            <p class="card tpl reveal"><b>Criaturas.</b> <span>Un perro con IK en las cuatro patas, Phys Bones y ragdoll.</span></p>
+            <p class="card tpl reveal"><b>Plataformas 2D.</b> <span>Pixel art con tilemap de Rule Tiles, física 2D, sprites animados y monedas.</span></p>
+            <p class="card tpl reveal"><b>Coches.</b> <span>Un coche con motor, marchas y suspensión en una pista con rampas.</span></p>
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- Galeria -->
+    <section id="galeria" class="section alt">
+      <div class="wrap">
+        <div class="section-head row reveal">
+          <div>
+            <p class="eyebrow">Galería</p>
+            <h2>Capturado en el motor</h2>
+            <p>Imágenes de las escenas de las versiones 1.3 a 2.4, tal y como salen en el editor: la nueva iluminación, la hierba, los bosques y la nueva interfaz.</p>
+          </div>
+          <a href="manual/mundo-procedural.html" class="btn btn-outline btn-sm">Mundo procedural<svg class="ic ic-sm"><use href="#i-arrow"/></svg></a>
+        </div>
+        <div class="gallery" id="gallery">
+          <button class="shot w2 h2" type="button"><img src="img/CramionEditor_ucGQ9NhRfo.jpg" alt="Césped denso con la nueva iluminación, a la sombra de los árboles" loading="lazy"><span class="cap">Nueva iluminación: césped denso con luz y sombra entre los árboles</span></button>
+          <button class="shot w2" type="button"><img src="img/CramionEditor_ejy9ipCqYc.jpg" alt="Bosque con niebla volumétrica y profundidad de campo" loading="lazy"><span class="cap">Bosque con niebla volumétrica y profundidad de campo</span></button>
+          <button class="shot w2" type="button"><img src="img/CramionEditor_dxtp2ekjlG.jpg" alt="Hierba alta bajo los árboles con rayos de luz y niebla" loading="lazy"><span class="cap">Hierba alta, sombras de los árboles y niebla</span></button>
+          <button class="shot w2" type="button"><img src="img/CramionEditor_SegU4MOPzp.jpg" alt="Copas de robles, pinos y sauces vistas desde arriba" loading="lazy"><span class="cap">Copas de los árboles desde arriba</span></button>
+          <button class="shot w2" type="button"><img src="img/CramionEditor_YWpw1JWIOd.jpg" alt="Camino entre árboles con la luz direccional seleccionada en el editor" loading="lazy"><span class="cap">Luz del sol entre los árboles, en el editor</span></button>
+          <button class="shot w2" type="button"><img src="img/CramionEditor_YQhQMgAYGg.png" alt="La nueva interfaz del editor de Cramion con la Jerarquía, el Inspector, Proyecto y la Consola" loading="lazy"><span class="cap">Nueva interfaz del editor: Jerarquía, Propiedades, Proyecto y Consola</span></button>
+          <button class="shot w2 h2" type="button"><img src="img/v20-lago.jpg" alt="Lago entre abedules y robles con hierba en matas" loading="lazy"><span class="cap">Lago entre abedules y robles: trazado de rayos, cortezas nuevas y hierba en matas</span></button>
+          <button class="shot" type="button"><img src="img/v20-cabana.jpg" alt="Cabaña entre robles con la luz del sol entre los troncos" loading="lazy"><span class="cap">Cabaña en el bosque</span></button>
+          <button class="shot" type="button"><img src="img/v19-oceano.jpg" alt="Océano con oleaje FFT" loading="lazy"><span class="cap">Océano con oleaje FFT</span></button>
+          <button class="shot w2" type="button"><img src="img/v19-fuego.jpg" alt="Incendio con llamas y una columna de humo volumétrica" loading="lazy"><span class="cap">Incendio con llamas y humo volumétricos</span></button>
+          <button class="shot" type="button"><img src="img/v20-especies.jpg" alt="Abetos, sauce y palmeras procedurales" loading="lazy"><span class="cap">Abetos y sauce a contraluz</span></button>
+          <button class="shot" type="button"><img src="img/v20-rio.jpg" alt="Río que baja entre pinos y abedules hacia las montañas" loading="lazy"><span class="cap">Río en cuesta entre pinos</span></button>
+          <button class="shot w2" type="button"><img src="img/v20-aldea.jpg" alt="Aldea procedural entre abedules, robles y pinos con hierba alta" loading="lazy"><span class="cap">Aldea entre los árboles</span></button>
+          <button class="shot" type="button"><img src="img/mundo-bosque.jpg" alt="Bosque procedural" loading="lazy"><span class="cap">Árboles procedurales con corteza de placas y racimos de hojas</span></button>
+          <button class="shot" type="button"><img src="img/mundo-hierba.jpg" alt="Hierba de cerca" loading="lazy"><span class="cap">Hierba a ras de suelo</span></button>
+          <button class="shot w2" type="button"><img src="img/newlightday.png" alt="Escena de prueba de día en el editor de Cramion" loading="lazy"><span class="cap">De día: sol, cielo físico y nubes</span></button>
+          <button class="shot w2" type="button"><img src="img/newlightnight.png" alt="La misma escena de noche, con luna y una farola" loading="lazy"><span class="cap">De noche: luna, estrellas y una farola</span></button>
+        </div>
+      </div>
+      <dialog id="lightbox" class="lightbox" aria-label="Captura ampliada">
+        <img id="lb-img" alt="">
+        <div class="lb-bar"><span id="lb-cap"></span><button class="icon-btn" id="lb-close" aria-label="Cerrar"><svg class="ic"><use href="#i-x"/></svg></button></div>
+      </dialog>
     </section>
 
     <!-- C++ -->
-    <section id="scripting" class="scroll-mt-16 border-b border-border">
-      <div class="mx-auto grid max-w-6xl gap-12 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:items-center">
-        <div class="min-w-0">
-          <p class="text-sm font-medium text-brand">Scripting</p>
-          <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">El juego se escribe en C++</h2>
-          <p class="mt-4 text-muted-foreground">
-            Un script es una clase con <span class="code-inline">start</span>, <span class="code-inline">update</span>,
-            <span class="code-inline">onTriggerEnter</span> y lo que necesites, en su <span class="code-inline">.h</span> y su
-            <span class="code-inline">.cpp</span>. Sus <span class="code-inline">Property&lt;T&gt;</span> salen en el Inspector
+    <section id="scripting" class="section">
+      <div class="wrap split">
+        <div class="min-w-0 reveal">
+          <p class="eyebrow">Scripting</p>
+          <h2>El juego se escribe en C++</h2>
+          <p style="margin-top:18px">
+            Un script es una clase con <code>start</code>, <code>update</code>,
+            <code>onTriggerEnter</code> y lo que necesites, en su <code>.h</code> y su
+            <code>.cpp</code>. Sus <code>Property&lt;T&gt;</code> salen en el Inspector
             (números, objetos de la escena, prefabs, sonidos, listas...) y se arrastra al objeto como en Unity.
           </p>
-          <p class="mt-4 text-muted-foreground">
+          <p>
             El editor trae el compilador y el IntelliSense (clang): no hay que instalar nada. La API cubre entidades, física,
-            navegación, audio, interfaz, animación e IK, gráficos, <a href="manual/cpp-network.html" class="link text-foreground">red</a>
-            y <a href="manual/cpp-http.html" class="link text-foreground">HTTPS</a>. Corre aislado en otro proceso: si un script
+            navegación, audio, interfaz, animación e IK, gráficos, <a href="manual/cpp-network.html" class="link">red</a>
+            y <a href="manual/cpp-http.html" class="link">HTTPS</a>. Corre aislado en otro proceso: si un script
             falla, el motor sigue y te dice el archivo y la línea.
           </p>
-          <a href="manual/primer-script.html" class="btn btn-outline mt-8">Tu primer script</a>
-          <a href="manual/cpp-script.html" class="btn btn-outline mt-8 ml-2">API de C++</a>
-        </div>
-        <div class="min-w-0 overflow-hidden rounded-xl border border-border bg-[#0c0c0e]">
-          <div class="flex items-center justify-between border-b border-white/10 px-4 py-2.5 font-mono text-xs text-zinc-400">
-            <span class="truncate">Assets/Scripts/Jugador.cpp</span><span>C++20</span>
+          <div class="btns">
+            <a href="manual/primer-script.html" class="btn btn-primary">Tu primer script<svg class="ic ic-sm"><use href="#i-arrow"/></svg></a>
+            <a href="manual/cpp-script.html" class="btn btn-outline"><svg class="ic ic-sm"><use href="#i-code"/></svg>API de C++</a>
           </div>
-          <pre class="overflow-x-auto p-5 text-[13px] leading-relaxed text-zinc-200"><code class="language-cpp">#include "Jugador.h"
+        </div>
+        <div class="editor reveal">
+          <div class="editor-tabs"><span class="on"><i class="dot"></i>Jugador.cpp</span><span>Jugador.h</span><span class="lang">C++20</span></div>
+          <pre><code class="language-cpp">#include "Jugador.h"
 
 void Jugador::update(float dt) {
     const Vec3 mover{Input::axis("Horizontal"), 0.0f,
@@ -271,244 +726,228 @@ void Jugador::onTriggerEnter(Entity other) {
 }
 
 CRAMION_SCRIPT(Jugador)</code></pre>
+          <div class="editor-status"><span>Assets/Scripts/Jugador.cpp</span><span>Ctrl+S compila y recarga</span></div>
         </div>
       </div>
     </section>
 
     <!-- Novedades -->
-    <section id="novedades" class="scroll-mt-16 border-b border-border">
-      <div class="mx-auto max-w-6xl px-4 py-20 sm:px-6">
-        <div class="flex flex-wrap items-end justify-between gap-4">
+    <section id="novedades" class="section alt">
+      <div class="wrap">
+        <div class="section-head row reveal">
           <div>
-            <p class="text-sm font-medium text-brand">Novedades</p>
-            <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Cramion 2.3: Android en casi todos los móviles</h2>
-            <p class="mt-3 max-w-2xl text-muted-foreground">Un modo compatible del render para cualquier GPU de móvil con Vulkan, móviles de 32 bits, PC de gama baja mucho más rápidos, trazado de rayos sin hormigueo y la realidad virtual como en Unity.</p>
+            <p class="eyebrow">Novedades</p>
+            <h2>Cramion 2.4.8: Blueprints, WebSocket y hierba realista</h2>
+            <p>Blueprints de actor con un editor de nodos al estilo de Unreal, cliente WebSocket para los scripts, hierba y árboles con volumen, y un mundo que se carga en otros hilos con un presupuesto por frame.</p>
           </div>
           <span class="badge">octubre de 2026</span>
         </div>
 
-        <div class="mt-10 grid gap-4 sm:grid-cols-2">
-          <div class="card min-w-0 p-6 sm:col-span-2">
-            <p class="text-xs font-medium uppercase tracking-wide text-brand">Android</p>
-            <p class="mt-2 text-lg font-semibold">Funciona en casi todos los móviles</p>
-            <ul class="mt-3 grid gap-x-8 gap-y-2 text-sm text-muted-foreground sm:grid-cols-2">
-              <li>Modo compatible del render desde Vulkan 1.0: Adreno, Mali, PowerVR y Xclipse. Antes pedía Vulkan 1.3.</li>
-              <li>Móviles de 32 bits (Android Go y gama baja) y Android 8.0 o superior.</li>
-              <li>Las texturas DDS funcionan también en las GPU que no las leen (Mali, PowerVR).</li>
-              <li>Se dibuja a la resolución que el móvil puede mover: 720p en Baja, 900p en Media, 1080p en Alta; la pantalla la escala sin coste.</li>
-              <li>Sombras y texturas a la medida del teléfono, y el presupuesto adaptativo funciona también en GPU sin timestamps.</li>
-              <li>Probado emulando los perfiles Android de Vulkan 2021 y 2022 con las capas de validación: sin errores.</li>
+        <div class="news">
+          <div class="card wide reveal">
+            <p class="tag">Blueprints</p>
+            <h3>Blueprints de actor y editor de nodos estilo Unreal</h3>
+            <ul>
+              <li>Un Blueprint es un prefab con su Event Graph: se crea desde un modelo (doble clic), desde un prefab o vacío.</li>
+              <li>Pestaña propia: Componentes, Mi Blueprint, Detalles, Ventana gráfica, Event Graph y Resultados de compilación.</li>
+              <li>Reroutes, minimapa, comentarios, alinear, búsqueda sensible al contexto y conversión automática de tipos.</li>
+              <li>Deshacer y <span class="fg">Compilar (F7)</span>; antes de Play se compilan y guardan los Blueprints con cambios.</li>
+              <li>56 nodos nuevos: Switch, For Loop with Break, MultiGate, texto, listas, Line Trace, componentes y más.</li>
+              <li>Las variables expuestas del Blueprint salen en el Inspector.</li>
             </ul>
-            <a href="manual/exportar.html" class="btn btn-outline btn-sm mt-4">Exportar a Android en la documentación</a>
+            <a href="manual/blueprints.html" class="btn btn-outline btn-sm">Blueprints en la documentación<svg class="ic ic-sm"><use href="#i-arrow"/></svg></a>
           </div>
-          <div class="card min-w-0 p-6">
-            <p class="text-xs font-medium uppercase tracking-wide text-brand">Rendimiento</p>
-            <p class="mt-2 text-lg font-semibold">PC de gama baja mucho más rápidos</p>
-            <p class="mt-2 text-sm text-muted-foreground">Las sombras del sol ya no se redibujan si nada se mueve y en gama baja se intercalan las cascadas; la GI, el SSAO, los reflejos y los rayos de luz apagados ya no cuestan. Bistro con el preset Bajo: de 5,24 a 1,66 ms de GPU.</p>
+          <div class="card reveal">
+            <p class="tag">Red</p>
+            <h3>Cliente WebSocket</h3>
+            <p><code>ws://</code> y <code>wss://</code> desde los scripts de C++ (<code>WsClient</code>) y el Visual Scripting (<em>On WebSocket</em>), en Windows, Linux y Android. Reconexión automática, heartbeat opcional y <code>wss://</code> con certificado obligatorio.</p>
+            <a href="manual/websocket.html" class="btn btn-outline btn-sm">WebSocket en la documentación<svg class="ic ic-sm"><use href="#i-arrow"/></svg></a>
           </div>
-          <div class="card min-w-0 p-6">
-            <p class="text-xs font-medium uppercase tracking-wide text-brand">Trazado de rayos</p>
-            <p class="mt-2 text-lg font-semibold">Sin hormigueo sobre los objetos</p>
-            <p class="mt-2 text-sm text-muted-foreground">Las sombras y los reflejos por rayos se filtran en el tiempo y en el espacio, y sus rayos salen de la cara real del triángulo. Con la imagen quieta, los píxeles que cambian pasan del 0,61 % al 0,03 %.</p>
+          <div class="card reveal">
+            <p class="tag">Vegetación</p>
+            <h3>Hierba y árboles con volumen</h3>
+            <p>Hojas de hierba redondeadas con su propio sombreado (translucidez y brillo), auto-sombra dentro del césped y el suelo con el color de la hierba. Árboles con hojas mate, auto-sombra de la copa y sombras cercanas con la malla de detalle en Alto y Ultra.</p>
           </div>
-          <div class="card min-w-0 p-6 sm:col-span-2">
-            <p class="text-xs font-medium uppercase tracking-wide text-brand">Realidad virtual</p>
-            <p class="mt-2 text-lg font-semibold">VR como en Unity</p>
-            <ul class="mt-3 grid gap-x-8 gap-y-2 text-sm text-muted-foreground sm:grid-cols-2">
-              <li><span class="text-foreground">Play on VR</span> al lado de Play: conecta el casco sin reabrir el editor.</li>
-              <li>Una cámara por ojo a la resolución del casco, con TAA, rayos y reflejos por ojo.</li>
-              <li>Coger y lanzar con las manos: XR Interactor y XR Grabbable con física.</li>
-              <li>UI en el mundo: paneles en la escena que se usan con el rayo y el gatillo.</li>
-              <li>Jugador VR en primera persona con física, de pie o sentado.</li>
-              <li>Plantilla de VR con su script de C++.</li>
+          <div class="card wide reveal">
+            <p class="tag">Rendimiento</p>
+            <h3>Un mundo que se carga en otros hilos</h3>
+            <ul>
+              <li>Teselas del terreno leídas y cosidas fuera del hilo principal, que solo las integra con un presupuesto de milisegundos.</li>
+              <li>Colliders del terreno, navegación y subidas a la GPU en segundo plano.</li>
+              <li>Celdas del World Partition leídas, parseadas y escritas en otros hilos.</li>
+              <li>El servidor dedicado carga alrededor de cada jugador y del punto de aparición.</li>
+              <li>Filtrado anisotrópico y sesgo de mips en los ajustes gráficos.</li>
+              <li>Muchos fallos corregidos: niebla, nubes, escalones entre teselas, pausa, referencias al duplicar y la interfaz.</li>
             </ul>
-            <a href="manual/realidad-virtual.html" class="btn btn-outline btn-sm mt-4">Realidad virtual en la documentación</a>
+            <a href="manual/novedades-24.html#v248" class="btn btn-outline btn-sm">Todas las novedades de la 2.4.8<svg class="ic ic-sm"><use href="#i-arrow"/></svg></a>
           </div>
         </div>
 
-        <h3 class="mt-16 text-lg font-semibold tracking-tight">Versiones anteriores</h3>
-        <div class="mt-4 divide-y divide-border rounded-xl border border-border">
-          <details id="novedades-22" class="group">
-            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
-              <span><span class="font-semibold">2.2</span> <span class="ml-2 text-sm text-muted-foreground">Pies en el suelo rehechos, Insights y audio</span></span>
-              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
-            </summary>
-            <div class="px-5 pb-5 text-sm text-muted-foreground">
-              <ul class="list-disc space-y-2 pl-5">
-                <li><span class="text-foreground">Pies en el suelo, rehechos.</span> Humanos y animales: los pies ya no flotan, en escaleras no se meten en los escalones, la cadera no salta al subir un escalón, las rodillas siempre se doblan hacia delante y en el aire el IK se aparta solo.</li>
-                <li><span class="text-foreground">Insights.</span> Perfilador de CPU con árbol de zonas, percentiles del frame, tirones capturados solos y capturas <span class="code-inline">.crtrace</span> para Perfetto, también en el juego exportado.</li>
-                <li><span class="text-foreground">Presupuestos automáticos.</span> LOD de animación, presupuesto de partículas y voces de audio virtuales.</li>
-                <li><span class="text-foreground">Audio que se para.</span> Al dar Stop ya no siguen sonando la lluvia, el viento ni la reverberación, y pausar el Play pausa el audio.</li>
-                <li><span class="text-foreground">Animación.</span> <span class="code-inline">crossFade</span> como el de Unity, FBX solo de animación y retargeting de BVH sin pies flotando.</li>
+        <h3 class="older-title">Versiones anteriores</h3>
+        <div class="accordion">
+          <details id="novedades-23">
+            <summary><span><span class="v">2.3</span><span class="s">Android en casi todos los móviles, gama baja más rápida y VR</span></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <ul class="changes">
+                <li><span class="fg">Android.</span> Modo compatible del render desde Vulkan 1.0 (Adreno, Mali, PowerVR y Xclipse), móviles de 32 bits y Android 8.0 o superior.</li>
+                <li><span class="fg">PC de gama baja.</span> Las sombras del sol ya no se redibujan si nada se mueve y lo apagado ya no cuesta. Bistro con el preset Bajo: de 5,24 a 1,66 ms de GPU.</li>
+                <li><span class="fg">Trazado de rayos sin hormigueo.</span> Con la imagen quieta, los píxeles que cambian pasan del 0,61 % al 0,03 %.</li>
+                <li><span class="fg">VR como en Unity.</span> Play on VR, una cámara por ojo, coger y lanzar con las manos, UI en el mundo y plantilla de VR.</li>
               </ul>
-              <a href="manual/esqueletos.html#ik" class="link mt-4 inline-block text-foreground">IK de pies en la documentación</a>
+              <a href="manual/exportar.html" class="link more">Exportar a Android en la documentación</a>
             </div>
           </details>
-          <details id="novedades-21" class="group">
-            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
-              <span><span class="font-semibold">2.1</span> <span class="ml-2 text-sm text-muted-foreground">Grafos de nodos, 2D, scripts en C++ y luz realista (incluye la 2.0)</span></span>
-              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
-            </summary>
-            <div class="px-5 pb-5 text-sm text-muted-foreground">
-              <div class="grid gap-3 sm:grid-cols-2">
-                <figure class="card overflow-hidden sm:col-span-2"><img src="img/v20-lago.jpg" alt="Lago entre abedules y robles con hierba en matas" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Lago entre abedules y robles: trazado de rayos, cortezas nuevas y hierba en matas</figcaption></figure>
-                <figure class="card overflow-hidden"><img src="img/v20-cabana.jpg" alt="Cabaña entre robles con la luz del sol entre los troncos" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Cabaña en el bosque</figcaption></figure>
-                <figure class="card overflow-hidden"><img src="img/v20-especies.jpg" alt="Abetos, sauce y palmeras procedurales" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Abetos y sauce a contraluz</figcaption></figure>
-                <figure class="card overflow-hidden"><img src="img/v20-rio.jpg" alt="Río que baja entre pinos y abedules hacia las montañas" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Río en cuesta entre pinos</figcaption></figure>
-                <figure class="card overflow-hidden"><img src="img/v20-aldea.jpg" alt="Aldea procedural entre abedules, robles y pinos con hierba alta" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Aldea entre los árboles</figcaption></figure>
+          <details id="novedades-22">
+            <summary><span><span class="v">2.2</span><span class="s">Pies en el suelo rehechos, Insights y audio</span></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <ul class="changes">
+                <li><span class="fg">Pies en el suelo, rehechos.</span> Humanos y animales: los pies ya no flotan, en escaleras no se meten en los escalones, la cadera no salta al subir un escalón, las rodillas siempre se doblan hacia delante y en el aire el IK se aparta solo.</li>
+                <li><span class="fg">Insights.</span> Perfilador de CPU con árbol de zonas, percentiles del frame, tirones capturados solos y capturas <code>.crtrace</code> para Perfetto, también en el juego exportado.</li>
+                <li><span class="fg">Presupuestos automáticos.</span> LOD de animación, presupuesto de partículas y voces de audio virtuales.</li>
+                <li><span class="fg">Audio que se para.</span> Al dar Stop ya no siguen sonando la lluvia, el viento ni la reverberación, y pausar el Play pausa el audio.</li>
+                <li><span class="fg">Animación.</span> <code>crossFade</code> como el de Unity, FBX solo de animación y retargeting de BVH sin pies flotando.</li>
+              </ul>
+              <a href="manual/esqueletos.html#ik" class="link more">IK de pies en la documentación</a>
+            </div>
+          </details>
+          <details id="novedades-21">
+            <summary><span><span class="v">2.1</span><span class="s">Grafos de nodos, 2D, scripts en C++ y luz realista (incluye la 2.0)</span></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="figs">
+                <figure class="w2"><img src="img/v20-lago.jpg" alt="Lago entre abedules y robles con hierba en matas" loading="lazy"><figcaption>Lago entre abedules y robles: trazado de rayos, cortezas nuevas y hierba en matas</figcaption></figure>
+                <figure><img src="img/v20-cabana.jpg" alt="Cabaña entre robles con la luz del sol entre los troncos" loading="lazy"><figcaption>Cabaña en el bosque</figcaption></figure>
+                <figure><img src="img/v20-especies.jpg" alt="Abetos, sauce y palmeras procedurales" loading="lazy"><figcaption>Abetos y sauce a contraluz</figcaption></figure>
+                <figure><img src="img/v20-rio.jpg" alt="Río que baja entre pinos y abedules hacia las montañas" loading="lazy"><figcaption>Río en cuesta entre pinos</figcaption></figure>
+                <figure><img src="img/v20-aldea.jpg" alt="Aldea procedural entre abedules, robles y pinos con hierba alta" loading="lazy"><figcaption>Aldea entre los árboles</figcaption></figure>
               </div>
-              <ul class="mt-4 list-disc space-y-2 pl-5">
-                <li><span class="text-foreground">Grafos de nodos para todo.</span> Shader Graph con vista previa, VFX Graph con partículas enteras en la GPU, Visual Scripting como los Blueprints con depuración en vivo, Behavior Trees con pizarra y diálogos ramificados.</li>
-                <li><span class="text-foreground">2D.</span> Sprites y Sprite Editor, animación por fotogramas, tilemaps con Rule Tiles, luces 2D, física 2D propia y la plantilla Plataformas 2D.</li>
-                <li><span class="text-foreground">Juego.</span> Partidas guardadas, localización con plurales, repeticiones y killcams, Motion Matching, destrucción con trozos de Voronoi y vehículos completos.</li>
-                <li><span class="text-foreground">Iluminación horneada.</span> Luz rebotada en volúmenes de sondas: casi gratis en Android y en PCs sin trazado de rayos.</li>
-                <li><span class="text-foreground">Flujo de trabajo.</span> Git dentro del editor, pruebas automáticas (Test Runner y <span class="code-inline">--run-tests</span>), Steam y recarga en caliente de C++ que conserva el estado.</li>
-                <li><span class="text-foreground">De la 2.0: scripts en C++.</span> Propiedades en el Inspector, compilador incluido, IntelliSense de clangd y scripts aislados en otro proceso.</li>
-                <li><span class="text-foreground">De la 2.0: luz y vegetación.</span> Terreno y árboles en los rayos, sombras del sol por rayos, AgX, autoenfoque, árboles y hierba realistas, streaming de modelos, modelado como ProBuilder y Character Controller.</li>
+              <ul class="changes">
+                <li><span class="fg">Grafos de nodos para todo.</span> Shader Graph con vista previa, VFX Graph con partículas enteras en la GPU, Visual Scripting como los Blueprints con depuración en vivo, Behavior Trees con pizarra y diálogos ramificados.</li>
+                <li><span class="fg">2D.</span> Sprites y Sprite Editor, animación por fotogramas, tilemaps con Rule Tiles, luces 2D, física 2D propia y la plantilla Plataformas 2D.</li>
+                <li><span class="fg">Juego.</span> Partidas guardadas, localización con plurales, repeticiones y killcams, Motion Matching, destrucción con trozos de Voronoi y vehículos completos.</li>
+                <li><span class="fg">Iluminación horneada.</span> Luz rebotada en volúmenes de sondas: casi gratis en Android y en PCs sin trazado de rayos.</li>
+                <li><span class="fg">Flujo de trabajo.</span> Git dentro del editor, pruebas automáticas (Test Runner y <code>--run-tests</code>), Steam y recarga en caliente de C++ que conserva el estado.</li>
+                <li><span class="fg">De la 2.0: scripts en C++.</span> Propiedades en el Inspector, compilador incluido, IntelliSense de clangd y scripts aislados en otro proceso.</li>
+                <li><span class="fg">De la 2.0: luz y vegetación.</span> Terreno y árboles en los rayos, sombras del sol por rayos, AgX, autoenfoque, árboles y hierba realistas, streaming de modelos, modelado como ProBuilder y Character Controller.</li>
               </ul>
-              <a href="manual/shader-graph.html" class="link mt-4 inline-block text-foreground">Grafos de nodos en la documentación</a>
+              <a href="manual/shader-graph.html" class="link more">Grafos de nodos en la documentación</a>
             </div>
           </details>
-          <details id="novedades-19" class="group">
-            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
-              <span><span class="font-semibold">1.9</span> <span class="ml-2 text-sm text-muted-foreground">Fuego, líquidos, clima e IA</span></span>
-              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
-            </summary>
-            <div class="px-5 pb-5 text-sm text-muted-foreground">
-              <div class="grid gap-3 sm:grid-cols-2">
-                <figure class="card overflow-hidden"><img src="img/v19-fuego.jpg" alt="Incendio con llamas y una columna de humo volumétrica" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Incendio con llamas y humo volumétricos</figcaption></figure>
-                <figure class="card overflow-hidden"><img src="img/v19-oceano.jpg" alt="Océano con oleaje FFT" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Océano con oleaje FFT</figcaption></figure>
+          <details id="novedades-19">
+            <summary><span><span class="v">1.9</span><span class="s">Fuego, líquidos, clima e IA</span></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="figs">
+                <figure><img src="img/v19-fuego.jpg" alt="Incendio con llamas y una columna de humo volumétrica" loading="lazy"><figcaption>Incendio con llamas y humo volumétricos</figcaption></figure>
+                <figure><img src="img/v19-oceano.jpg" alt="Océano con oleaje FFT" loading="lazy"><figcaption>Océano con oleaje FFT</figcaption></figure>
               </div>
-              <ul class="mt-4 list-disc space-y-2 pl-5">
-                <li><span class="text-foreground">Ambiente y clima.</span> Como Enviro Sky: clima con transiciones, hora y fecha con el sol y la luna reales, estaciones, viento, rayos con truenos, lluvia y nieve que se acumulan, y sonido ambiente.</li>
-                <li><span class="text-foreground">Fuego.</span> Incendios que se propagan por la hierba y el bosque según el viento y la pendiente, con llamas y humo volumétricos.</li>
-                <li><span class="text-foreground">Líquidos.</span> Agua, miel, lava, barro, sangre, aceite y ácido de partículas en la GPU que chocan, salpican y hacen flotar los objetos.</li>
-                <li><span class="text-foreground">Océano FFT.</span> Oleaje como el de Crest, ríos con corriente y una vista bajo el agua nueva.</li>
-                <li><span class="text-foreground">Máquinas de estados.</span> IA como los State Graphs de Bolt, en su propia pestaña y en vivo durante el Play. Y un editor renovado.</li>
+              <ul class="changes">
+                <li><span class="fg">Ambiente y clima.</span> Como Enviro Sky: clima con transiciones, hora y fecha con el sol y la luna reales, estaciones, viento, rayos con truenos, lluvia y nieve que se acumulan, y sonido ambiente.</li>
+                <li><span class="fg">Fuego.</span> Incendios que se propagan por la hierba y el bosque según el viento y la pendiente, con llamas y humo volumétricos.</li>
+                <li><span class="fg">Líquidos.</span> Agua, miel, lava, barro, sangre, aceite y ácido de partículas en la GPU que chocan, salpican y hacen flotar los objetos.</li>
+                <li><span class="fg">Océano FFT.</span> Oleaje como el de Crest, ríos con corriente y una vista bajo el agua nueva.</li>
+                <li><span class="fg">Máquinas de estados.</span> IA como los State Graphs de Bolt, en su propia pestaña y en vivo durante el Play. Y un editor renovado.</li>
               </ul>
-              <a href="manual/fuego.html" class="link mt-4 inline-block text-foreground">Fuego, líquidos y clima en la documentación</a>
+              <a href="manual/fuego.html" class="link more">Fuego, líquidos y clima en la documentación</a>
             </div>
           </details>
-          <details id="novedades-18" class="group">
-            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
-              <span><span class="font-semibold">1.8</span> <span class="ml-2 text-sm text-muted-foreground">Mundo procedural</span></span>
-              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
-            </summary>
-            <div class="px-5 pb-5 text-sm text-muted-foreground">
-              <div class="grid gap-3 sm:grid-cols-2">
-                <figure class="card overflow-hidden"><img src="img/mundo-casa.jpg" alt="Casa de campo procedural entre árboles generados" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Casa de campo, hierba y bosque generados</figcaption></figure>
-                <figure class="card overflow-hidden"><img src="img/mundo-aldea.jpg" alt="Aldea junto al río vista desde arriba" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Aldea junto al río</figcaption></figure>
+          <details id="novedades-18">
+            <summary><span><span class="v">1.8</span><span class="s">Mundo procedural</span></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="figs">
+                <figure><img src="img/mundo-casa.jpg" alt="Casa de campo procedural entre árboles generados" loading="lazy"><figcaption>Casa de campo, hierba y bosque generados</figcaption></figure>
+                <figure><img src="img/mundo-aldea.jpg" alt="Aldea junto al río vista desde arriba" loading="lazy"><figcaption>Aldea junto al río</figcaption></figure>
               </div>
-              <ul class="mt-4 list-disc space-y-2 pl-5">
-                <li><span class="text-foreground">Generador de terreno.</span> Un mundo entero en un segundo: isla, archipiélago, continente, cordilleras o cañones, con erosión por lluvia, ríos que bajan hasta el mar, lagos, océano y 8 capas con texturas realistas.</li>
-                <li><span class="text-foreground">Hierba en la GPU.</span> Millones de briznas con viento y translucidez que se apartan y se aplastan cuando pasa algo con física.</li>
-                <li><span class="text-foreground">Árboles procedurales.</span> Pino, abeto, roble, abedul, palmera y sauce con tronco y ramas de verdad. Nunca crecen en el agua.</li>
-                <li><span class="text-foreground">Casas y aldeas.</span> Cabañas de troncos, de tablas, casitas de piedra y casas de campo listas para el juego.</li>
-                <li><span class="text-foreground">Bajo el agua en todas partes.</span> En el océano, los lagos y los ríos, solo donde de verdad hay agua.</li>
+              <ul class="changes">
+                <li><span class="fg">Generador de terreno.</span> Un mundo entero en un segundo: isla, archipiélago, continente, cordilleras o cañones, con erosión por lluvia, ríos que bajan hasta el mar, lagos, océano y 8 capas con texturas realistas.</li>
+                <li><span class="fg">Hierba en la GPU.</span> Millones de briznas con viento y translucidez que se apartan y se aplastan cuando pasa algo con física.</li>
+                <li><span class="fg">Árboles procedurales.</span> Pino, abeto, roble, abedul, palmera y sauce con tronco y ramas de verdad. Nunca crecen en el agua.</li>
+                <li><span class="fg">Casas y aldeas.</span> Cabañas de troncos, de tablas, casitas de piedra y casas de campo listas para el juego.</li>
+                <li><span class="fg">Bajo el agua en todas partes.</span> En el océano, los lagos y los ríos, solo donde de verdad hay agua.</li>
               </ul>
-              <a href="manual/mundo-procedural.html" class="link mt-4 inline-block text-foreground">Mundo procedural en la documentación</a>
+              <a href="manual/mundo-procedural.html" class="link more">Mundo procedural en la documentación</a>
             </div>
           </details>
-          <details id="novedades-17" class="group">
-            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
-              <span><span class="font-semibold">1.7</span> <span class="ml-2 text-sm text-muted-foreground">Materiales de Disney</span></span>
-              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
-            </summary>
-            <div class="px-5 pb-5 text-sm text-muted-foreground">
-              <ul class="list-disc space-y-2 pl-5">
-                <li><span class="text-foreground">Materiales de Disney.</span> El modelo de Burley (el de Unreal, Unity HDRP y el Principled BSDF de Blender): difuso de Burley en todos los materiales y un modelo por material.</li>
-                <li><span class="text-foreground">Barniz.</span> Una capa brillante encima con su propio reflejo: coches, madera barnizada, fibra de carbono.</li>
-                <li><span class="text-foreground">Tela.</span> Brillo suave en los bordes para ropa, terciopelo y musgo.</li>
-                <li><span class="text-foreground">Piel y hojas.</span> Subsurface y translucidez: a contraluz la luz atraviesa las hojas y las orejas, según su grosor.</li>
-                <li><span class="text-foreground">Metal cepillado.</span> Brillo y reflejos anisótropos con dirección.</li>
-                <li><span class="text-foreground">Vidrio con refracción.</span> Índice de refracción, grosor, tinte y esmerilado por rugosidad.</li>
+          <details id="novedades-17">
+            <summary><span><span class="v">1.7</span><span class="s">Materiales de Disney</span></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <ul class="changes">
+                <li><span class="fg">Materiales de Disney.</span> El modelo de Burley (el de Unreal, Unity HDRP y el Principled BSDF de Blender): difuso de Burley en todos los materiales y un modelo por material.</li>
+                <li><span class="fg">Barniz.</span> Una capa brillante encima con su propio reflejo: coches, madera barnizada, fibra de carbono.</li>
+                <li><span class="fg">Tela.</span> Brillo suave en los bordes para ropa, terciopelo y musgo.</li>
+                <li><span class="fg">Piel y hojas.</span> Subsurface y translucidez: a contraluz la luz atraviesa las hojas y las orejas, según su grosor.</li>
+                <li><span class="fg">Metal cepillado.</span> Brillo y reflejos anisótropos con dirección.</li>
+                <li><span class="fg">Vidrio con refracción.</span> Índice de refracción, grosor, tinte y esmerilado por rugosidad.</li>
               </ul>
-              <a href="manual/materiales.html#disney" class="link mt-4 inline-block text-foreground">Los modelos en la documentación</a>
+              <a href="manual/materiales.html#disney" class="link more">Los modelos en la documentación</a>
             </div>
           </details>
-          <details id="novedades-16" class="group">
-            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
-              <span><span class="font-semibold">1.6</span> <span class="ml-2 text-sm text-muted-foreground">Relieve teselado y donaciones</span></span>
-              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
-            </summary>
-            <div class="px-5 pb-5 text-sm text-muted-foreground">
-              <ul class="list-disc space-y-2 pl-5">
-                <li><span class="text-foreground">Relieve teselado.</span> Con un mapa de altura, el material puede partir la malla cerca de la cámara y subir cada vértice de verdad: silueta, sombras y oclusión reales, como el displacement de Unreal.</li>
-                <li><span class="text-foreground">Auto-sombra del parallax.</span> Las piedras y grietas del relieve se hacen sombra entre ellas con el sol.</li>
-                <li><span class="text-foreground">Parallax en los shaders propios.</span> Los <span class="code-inline">.crshader</span> con mapa de altura tienen el mismo relieve que el material estándar.</li>
-                <li><span class="text-foreground">Donaciones.</span> Botón de PayPal en el Hub y en la web, para quien quiera apoyar el motor. Sigue siendo gratis.</li>
+          <details id="novedades-16">
+            <summary><span><span class="v">1.6</span><span class="s">Relieve teselado y donaciones</span></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <ul class="changes">
+                <li><span class="fg">Relieve teselado.</span> Con un mapa de altura, el material puede partir la malla cerca de la cámara y subir cada vértice de verdad: silueta, sombras y oclusión reales, como el displacement de Unreal.</li>
+                <li><span class="fg">Auto-sombra del parallax.</span> Las piedras y grietas del relieve se hacen sombra entre ellas con el sol.</li>
+                <li><span class="fg">Parallax en los shaders propios.</span> Los <code>.crshader</code> con mapa de altura tienen el mismo relieve que el material estándar.</li>
+                <li><span class="fg">Donaciones.</span> Botón de PayPal en el Hub y en la web, para quien quiera apoyar el motor. Sigue siendo gratis.</li>
               </ul>
-              <a href="manual/materiales.html#relieve" class="link mt-4 inline-block text-foreground">Relieve en la documentación</a>
+              <a href="manual/materiales.html#relieve" class="link more">Relieve en la documentación</a>
             </div>
           </details>
-          <details id="novedades-15" class="group">
-            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
-              <span><span class="font-semibold">1.5</span> <span class="ml-2 text-sm text-muted-foreground">Licencia nueva</span></span>
-              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
-            </summary>
-            <div class="px-5 pb-5 text-sm text-muted-foreground">
-              <ul class="list-disc space-y-2 pl-5">
-                <li><span class="text-foreground">Licencia nueva.</span> El editor sigue siendo gratis, y los juegos que hagas con él son tuyos: los vendes donde quieras, sin regalías. Lo que no se permite es vender, revender o resubir el motor.</li>
-                <li><span class="text-foreground">Código fuente bajo licencia.</span> Ya no es público: se entrega con una licencia de código fuente que se pide por correo.</li>
-                <li><span class="text-foreground">Para todas las versiones.</span> Desde el 30 de septiembre de 2026 la licencia nueva vale también para la 1.4 y las anteriores.</li>
-                <li><span class="text-foreground">Créditos en orden.</span> El zip trae la licencia, la política de marca y las licencias de todas las librerías que usa.</li>
+          <details id="novedades-15">
+            <summary><span><span class="v">1.5</span><span class="s">Licencia nueva</span></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <ul class="changes">
+                <li><span class="fg">Licencia nueva.</span> El editor sigue siendo gratis, y los juegos que hagas con él son tuyos: los vendes donde quieras, sin regalías. Lo que no se permite es vender, revender o resubir el motor.</li>
+                <li><span class="fg">Código fuente bajo licencia.</span> Ya no es público: se entrega con una licencia de código fuente que se pide por correo.</li>
+                <li><span class="fg">Para todas las versiones.</span> Desde el 30 de septiembre de 2026 la licencia nueva vale también para la 1.4 y las anteriores.</li>
+                <li><span class="fg">Créditos en orden.</span> El zip trae la licencia, la política de marca y las licencias de todas las librerías que usa.</li>
               </ul>
-              <a href="manual/licencia.html" class="link mt-4 inline-block text-foreground">Leer la licencia</a>
+              <a href="manual/licencia.html" class="link more">Leer la licencia</a>
             </div>
           </details>
-          <details id="novedades-14" class="group">
-            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
-              <span><span class="font-semibold">1.4</span> <span class="ml-2 text-sm text-muted-foreground">DataPacks y mesh shaders</span></span>
-              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
-            </summary>
-            <div class="px-5 pb-5 text-sm text-muted-foreground">
-              <ul class="list-disc space-y-2 pl-5">
-                <li><span class="text-foreground">DataPacks.</span> Como los AssetBundles de Unity: escenas enteras u objetos con todo lo que usan en un <span class="code-inline">.datapack</span>, sin el ejecutable. Niveles descargables, DLC, mods o skins que el juego carga en marcha con <span class="code-inline">DataPack.loadScene</span> y <span class="code-inline">DataPack.instantiate</span>.</li>
-                <li><span class="text-foreground">Empaquetar con un clic derecho.</span> Sobre un objeto de la Jerarquía, o una escena desde el menú Archivo, en segundo plano con barra de progreso.</li>
-                <li><span class="text-foreground">Sombras por rayos para muchas luces.</span> Farolas, antorchas y focos con sombras trazadas y penumbra según el tamaño de la lámpara. ~0,5 ms con 16 luces.</li>
-                <li><span class="text-foreground">Mesh shaders.</span> Sombras del sol y geometría por meshlets: de 56 a 61 FPS en una escena grande, con la misma imagen.</li>
-                <li><span class="text-foreground">Opacity micromaps y SER.</span> El follaje recortado se resuelve en el hardware de rayos y el path tracing puede reordenar los hilos por material.</li>
-                <li><span class="text-foreground">Play como Unity.</span> Elige si al dar Play se salta a la pestaña Juego o se queda en la vista actual.</li>
-                <li><span class="text-foreground">IntelliSense.</span> DataPack, Screen, XR y lo que faltaba de Input, con su ayuda.</li>
-                <li><span class="text-foreground">Corregido.</span> El plano lejano de la cámara, y el color de lo que alumbra una farola de noche.</li>
+          <details id="novedades-14">
+            <summary><span><span class="v">1.4</span><span class="s">DataPacks y mesh shaders</span></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <ul class="changes">
+                <li><span class="fg">DataPacks.</span> Como los AssetBundles de Unity: escenas enteras u objetos con todo lo que usan en un <code>.datapack</code>, sin el ejecutable. Niveles descargables, DLC, mods o skins que el juego carga en marcha con <code>DataPack.loadScene</code> y <code>DataPack.instantiate</code>.</li>
+                <li><span class="fg">Empaquetar con un clic derecho.</span> Sobre un objeto de la Jerarquía, o una escena desde el menú Archivo, en segundo plano con barra de progreso.</li>
+                <li><span class="fg">Sombras por rayos para muchas luces.</span> Farolas, antorchas y focos con sombras trazadas y penumbra según el tamaño de la lámpara. ~0,5 ms con 16 luces.</li>
+                <li><span class="fg">Mesh shaders.</span> Sombras del sol y geometría por meshlets: de 56 a 61 FPS en una escena grande, con la misma imagen.</li>
+                <li><span class="fg">Opacity micromaps y SER.</span> El follaje recortado se resuelve en el hardware de rayos y el path tracing puede reordenar los hilos por material.</li>
+                <li><span class="fg">Play como Unity.</span> Elige si al dar Play se salta a la pestaña Juego o se queda en la vista actual.</li>
+                <li><span class="fg">IntelliSense.</span> DataPack, Screen, XR y lo que faltaba de Input, con su ayuda.</li>
+                <li><span class="fg">Corregido.</span> El plano lejano de la cámara, y el color de lo que alumbra una farola de noche.</li>
               </ul>
-              <a href="manual/datapacks.html" class="link mt-4 inline-block text-foreground">DataPacks en la documentación</a>
+              <a href="manual/datapacks.html" class="link more">DataPacks en la documentación</a>
             </div>
           </details>
-          <details id="novedades-13" class="group">
-            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
-              <span><span class="font-semibold">1.3</span> <span class="ml-2 text-sm text-muted-foreground">Noches realistas y terminal con IA</span></span>
-              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
-            </summary>
-            <div class="px-5 pb-5 text-sm text-muted-foreground">
-              <div class="grid gap-3 sm:grid-cols-2">
-                <figure class="card overflow-hidden"><img src="img/newlightday.png" alt="Escena de prueba de día en el editor de Cramion" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Día</figcaption></figure>
-                <figure class="card overflow-hidden"><img src="img/newlightnight.png" alt="La misma escena de noche, con luna y una farola" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Noche · misma escena, sin tocar nada más</figcaption></figure>
+          <details id="novedades-13">
+            <summary><span><span class="v">1.3</span><span class="s">Noches realistas y terminal con IA</span></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="figs">
+                <figure><img src="img/newlightday.png" alt="Escena de prueba de día en el editor de Cramion" loading="lazy"><figcaption>Día</figcaption></figure>
+                <figure><img src="img/newlightnight.png" alt="La misma escena de noche, con luna y una farola" loading="lazy"><figcaption>Noche · misma escena, sin tocar nada más</figcaption></figure>
               </div>
-              <ul class="mt-4 list-disc space-y-2 pl-5">
-                <li><span class="text-foreground">Noches realistas.</span> Visión nocturna del ojo (efecto Purkinje), luna con mares y halo, estrellas de colores y la Vía Láctea.</li>
-                <li><span class="text-foreground">Terminal con IA en el editor.</span> Consolas con pestañas y un botón que abre Claude Code ya conectado al editor por MCP. También PowerShell, CMD, Codex y Gemini.</li>
-                <li><span class="text-foreground">Luces dentro de su lámpara.</span> Una luz dentro de la bombilla o del poste ya no queda tapada por ellos.</li>
-                <li><span class="text-foreground">Sombras más rápidas.</span> En escenas con mucha hierba, de 39 a 58 FPS en Play.</li>
-                <li><span class="text-foreground">AMD FSR 3.1 y NVIDIA DLSS 4</span> (inestables). Escalado temporal de los fabricantes.</li>
-                <li><span class="text-foreground">Color más fiel.</span> Salida con la curva sRGB exacta: sombras profundas, no lavadas.</li>
+              <ul class="changes">
+                <li><span class="fg">Noches realistas.</span> Visión nocturna del ojo (efecto Purkinje), luna con mares y halo, estrellas de colores y la Vía Láctea.</li>
+                <li><span class="fg">Terminal con IA en el editor.</span> Consolas con pestañas y un botón que abre Claude Code ya conectado al editor por MCP. También PowerShell, CMD, Codex y Gemini.</li>
+                <li><span class="fg">Luces dentro de su lámpara.</span> Una luz dentro de la bombilla o del poste ya no queda tapada por ellos.</li>
+                <li><span class="fg">Sombras más rápidas.</span> En escenas con mucha hierba, de 39 a 58 FPS en Play.</li>
+                <li><span class="fg">AMD FSR 3.1 y NVIDIA DLSS 4</span> (inestables). Escalado temporal de los fabricantes.</li>
+                <li><span class="fg">Color más fiel.</span> Salida con la curva sRGB exacta: sombras profundas, no lavadas.</li>
               </ul>
             </div>
           </details>
-          <details id="novedades-12" class="group">
-            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
-              <span><span class="font-semibold">1.2</span> <span class="ml-2 text-sm text-muted-foreground">Realidad virtual, Android y telas</span></span>
-              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
-            </summary>
-            <div class="px-5 pb-5 text-sm text-muted-foreground">
-              <ul class="list-disc space-y-2 pl-5">
-                <li><span class="text-foreground">Realidad virtual.</span> OpenXR con cualquier casco de PC: XR Origin con cámara y mandos, botones en Input Actions y <span class="code-inline">XR::</span> en C++.</li>
-                <li><span class="text-foreground">Input Actions como Unreal.</span> Acciones Bool, float, Vec2 y Vec3 con muchas teclas, contextos, modificadores y triggers.</li>
-                <li><span class="text-foreground">Telas y cuerpos blandos.</span> Cortinas y banderas que ondean con el viento; gelatinas y pelotas de goma.</li>
-                <li><span class="text-foreground">IntelliSense completo.</span> Toda la API, tipos por tus variables y la firma de cada función.</li>
-                <li><span class="text-foreground">Android.</span> Exporta a APK, AAB (Google Play) y OBB, con controles táctiles diseñados en el editor, mando y orientación.</li>
-                <li><span class="text-foreground">Render.</span> Preset ultra realista, agua con espuma, sombras del sol con penumbra real, nubes con sus sombras, path tracing, motion blur y profundidad de campo.</li>
-                <li><span class="text-foreground">Animación.</span> Transiciones inerciales como Unreal y pies bloqueados que no patinan.</li>
+          <details id="novedades-12">
+            <summary><span><span class="v">1.2</span><span class="s">Realidad virtual, Android y telas</span></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <ul class="changes">
+                <li><span class="fg">Realidad virtual.</span> OpenXR con cualquier casco de PC: XR Origin con cámara y mandos, botones en Input Actions y <code>XR::</code> en C++.</li>
+                <li><span class="fg">Input Actions como Unreal.</span> Acciones Bool, float, Vec2 y Vec3 con muchas teclas, contextos, modificadores y triggers.</li>
+                <li><span class="fg">Telas y cuerpos blandos.</span> Cortinas y banderas que ondean con el viento; gelatinas y pelotas de goma.</li>
+                <li><span class="fg">IntelliSense completo.</span> Toda la API, tipos por tus variables y la firma de cada función.</li>
+                <li><span class="fg">Android.</span> Exporta a APK, AAB (Google Play) y OBB, con controles táctiles diseñados en el editor, mando y orientación.</li>
+                <li><span class="fg">Render.</span> Preset ultra realista, agua con espuma, sombras del sol con penumbra real, nubes con sus sombras, path tracing, motion blur y profundidad de campo.</li>
+                <li><span class="fg">Animación.</span> Transiciones inerciales como Unreal y pies bloqueados que no patinan.</li>
               </ul>
             </div>
           </details>
@@ -516,41 +955,62 @@ CRAMION_SCRIPT(Jugador)</code></pre>
       </div>
     </section>
 
-    <!-- Descargar -->
-    <section id="descargar" class="scroll-mt-16 border-b border-border">
-      <div class="mx-auto grid max-w-6xl gap-6 px-4 py-20 sm:px-6 lg:grid-cols-[1fr_1.2fr]">
-        <div class="card min-w-0 p-6 sm:p-8">
-          <p class="text-sm font-medium text-brand">Descargar</p>
-          <h2 class="mt-2 text-3xl font-bold tracking-tight">Cramion 2.3 para Windows</h2>
-          <p class="mt-4 text-muted-foreground">Descomprime y abre <span class="code-inline">CramionEditor.exe</span>. El motor avisa de las versiones nuevas y se actualiza solo.</p>
-          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary mt-6 w-full sm:w-auto">
-            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Cramion-win64.zip · ≈161 MB
-          </a>
-          <div class="mt-6 rounded-lg border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
-            La única descarga oficial es esta, y es gratis. Si alguien te vende Cramion, no es oficial: avisa en el
-            <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="link text-foreground">Discord</a>.
+    <!-- Documentacion -->
+    <section id="documentacion" class="section">
+      <div class="wrap">
+        <div class="section-head row reveal">
+          <div>
+            <p class="eyebrow">Documentación</p>
+            <h2>Aprende el motor paso a paso</h2>
+            <p>El editor, la referencia de todos los componentes con cada propiedad, la API de C++ y scripts de ejemplo listos para copiar.</p>
           </div>
-          <div class="mt-6 rounded-lg border border-border p-4">
-            <p class="flex items-center gap-2 font-semibold">
-              <svg class="size-4 text-rose-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion
-            </p>
-            <p class="mt-1 text-sm text-muted-foreground">El motor es gratis y lo seguirá siendo. Si te sirve, una donación ayuda a seguir añadiendo cosas.</p>
-            <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm mt-3">Donar con PayPal</a>
+          <a href="manual/index.html" class="btn btn-outline btn-sm">Todo el manual<svg class="ic ic-sm"><use href="#i-arrow"/></svg></a>
+        </div>
+        <div class="docs">
+          <a href="manual/primer-script.html" class="card doc-link reveal"><span class="fi"><svg class="ic"><use href="#i-play"/></svg></span><span><b>Tu primer script</b><small>Crea un script, engánchalo y dale a Play.</small></span><svg class="ic ic-sm arr"><use href="#i-arrow"/></svg></a>
+          <a href="manual/editor-interfaz.html" class="card doc-link reveal"><span class="fi"><svg class="ic"><use href="#i-window"/></svg></span><span><b>El editor</b><small>Paneles, herramientas, materiales y render.</small></span><svg class="ic ic-sm arr"><use href="#i-arrow"/></svg></a>
+          <a href="manual/componentes.html" class="card doc-link reveal"><span class="fi"><svg class="ic"><use href="#i-cube"/></svg></span><span><b>Componentes</b><small>Cada componente con todas sus propiedades.</small></span><svg class="ic ic-sm arr"><use href="#i-arrow"/></svg></a>
+          <a href="manual/cpp-script.html" class="card doc-link reveal"><span class="fi"><svg class="ic"><use href="#i-code"/></svg></span><span><b>API de C++</b><small>La referencia completa del SDK.</small></span><svg class="ic ic-sm arr"><use href="#i-arrow"/></svg></a>
+          <a href="manual/ejemplo-girar.html" class="card doc-link reveal"><span class="fi"><svg class="ic"><use href="#i-spark"/></svg></span><span><b>Ejemplos</b><small>Scripts completos de C++ listos para copiar.</small></span><svg class="ic ic-sm arr"><use href="#i-arrow"/></svg></a>
+          <a href="manual/exportar.html" class="card doc-link reveal"><span class="fi"><svg class="ic"><use href="#i-export"/></svg></span><span><b>Exportar</b><small>Tu juego para Windows y Android.</small></span><svg class="ic ic-sm arr"><use href="#i-arrow"/></svg></a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Descargar -->
+    <section id="descargar" class="section alt">
+      <div class="wrap download">
+        <div class="card dl-main reveal">
+          <p class="eyebrow">Descargar</p>
+          <h2>Cramion 2.4.8 para Windows</h2>
+          <p>Descomprime y abre <code>CramionEditor.exe</code>. El motor avisa de las versiones nuevas y se actualiza solo.</p>
+          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary btn-lg">
+            <svg class="ic"><use href="#i-download"/></svg>Cramion-win64.zip
+          </a>
+          <div class="dl-meta"><span class="badge">Windows 10/11 x64</span><span class="badge">Vulkan 1.3</span><span class="badge">Gratis</span></div>
+          <div class="callout">
+            La única descarga oficial es esta, y es gratis. Si alguien te vende Cramion, no es oficial: avisa en el
+            <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="link">Discord</a>.
+          </div>
+          <div class="support">
+            <p class="t"><svg class="ic ic-sm"><use href="#i-heart"/></svg>Apoya Cramion</p>
+            <p class="d">El motor es gratis y lo seguirá siendo. Si te sirve, una donación ayuda a seguir añadiendo cosas.</p>
+            <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm">Donar con PayPal</a>
           </div>
         </div>
-        <div class="card min-w-0 overflow-hidden">
-          <div class="border-b border-border px-5 py-3 text-sm font-medium">Contenido del zip</div>
-          <div class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <tbody class="divide-y divide-border">
-                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">CramionEditor.exe</td><td class="px-5 py-3 text-muted-foreground">editor de escenas</td></tr>
-                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">CramionPlayer.exe</td><td class="px-5 py-3 text-muted-foreground">base de los juegos exportados</td></tr>
-                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">CramionUpdater.exe</td><td class="px-5 py-3 text-muted-foreground">actualizador</td></tr>
-                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">cramion.exe</td><td class="px-5 py-3 text-muted-foreground">demo de render</td></tr>
-                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">shaders/</td><td class="px-5 py-3 text-muted-foreground">SPIR-V compilado</td></tr>
-                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">*.dll</td><td class="px-5 py-3 text-muted-foreground">AMD FSR 3.1 y NVIDIA DLSS 4</td></tr>
-                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">android/</td><td class="px-5 py-3 text-muted-foreground">runtime para exportar a Android</td></tr>
-                <tr><td class="px-5 py-3 font-medium whitespace-nowrap">Requisitos</td><td class="px-5 py-3 text-muted-foreground">Windows 10/11 x64 y una GPU con Vulkan 1.3. Las escenas de demostración no van incluidas.</td></tr>
+        <div class="card zip reveal">
+          <div class="zip-head"><svg class="ic"><use href="#i-box"/></svg>Contenido del zip</div>
+          <div class="zip-scroll">
+            <table>
+              <tbody>
+                <tr><td>CramionEditor.exe</td><td>editor de escenas</td></tr>
+                <tr><td>CramionPlayer.exe</td><td>base de los juegos exportados</td></tr>
+                <tr><td>CramionUpdater.exe</td><td>actualizador</td></tr>
+                <tr><td>cramion.exe</td><td>demo de render</td></tr>
+                <tr><td>shaders/</td><td>SPIR-V compilado</td></tr>
+                <tr><td>*.dll</td><td>AMD FSR 3.1 y NVIDIA DLSS 4</td></tr>
+                <tr><td>android/</td><td>runtime para exportar a Android</td></tr>
+                <tr class="req"><td>Requisitos</td><td>Windows 10/11 x64 y una GPU con Vulkan 1.3. Las escenas de demostración no van incluidas.</td></tr>
               </tbody>
             </table>
           </div>
@@ -559,73 +1019,131 @@ CRAMION_SCRIPT(Jugador)</code></pre>
     </section>
 
     <!-- Codigo fuente -->
-    <section id="codigo" class="scroll-mt-16 border-b border-border">
-      <div class="mx-auto grid max-w-6xl gap-6 px-4 py-20 sm:px-6 lg:grid-cols-[1fr_2fr]">
-        <div>
-          <h2 class="text-2xl font-bold tracking-tight">Código fuente</h2>
-          <p class="mt-3 text-muted-foreground">Para hacer juegos no hace falta: el zip trae el editor completo.</p>
+    <section id="codigo" class="section">
+      <div class="wrap source">
+        <div class="reveal">
+          <p class="eyebrow">Código fuente</p>
+          <h2>Código fuente</h2>
+          <p class="muted">Para hacer juegos no hace falta: el zip trae el editor completo.</p>
         </div>
-        <div class="card min-w-0 space-y-4 p-6 text-muted-foreground">
-          <p>El código fuente de Cramion se entrega solo con una <span class="font-medium text-foreground">licencia de código fuente</span>. Para pedirla, escribe a
-            <a href="mailto:tupapienrakion1234@gmail.com?subject=Licencia%20de%20c%C3%B3digo%20fuente%20de%20Cramion" class="link break-all text-foreground">tupapienrakion1234@gmail.com</a>
+        <div class="card reveal">
+          <p>El código fuente de Cramion se entrega solo con una <span class="fg" style="font-weight:600">licencia de código fuente</span>. Para pedirla, escribe a
+            <a href="mailto:tupapienrakion1234@gmail.com?subject=Licencia%20de%20c%C3%B3digo%20fuente%20de%20Cramion" class="link" style="word-break:break-all">tupapienrakion1234@gmail.com</a>
             contando quién eres y para qué lo necesitas.</p>
-          <p class="text-sm">Tener el código sin esa licencia no da permiso para usarlo, compilarlo ni compartirlo. Detalles en la <a href="manual/licencia.html" class="link text-foreground">licencia</a>.</p>
+          <p>Tener el código sin esa licencia no da permiso para usarlo, compilarlo ni compartirlo. Detalles en la <a href="manual/licencia.html" class="link">licencia</a>.</p>
         </div>
       </div>
     </section>
 
     <!-- Apoyo -->
-    <section class="border-b border-border">
-      <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
-        <div class="flex flex-col items-start justify-between gap-6 rounded-xl border border-border bg-gradient-to-br from-muted to-card p-8 sm:flex-row sm:items-center">
+    <section class="section" style="padding-top:0">
+      <div class="wrap">
+        <div class="cta reveal">
           <div>
-            <h2 class="text-2xl font-bold tracking-tight">Cramion es gratis</h2>
-            <p class="mt-2 max-w-xl text-muted-foreground">Hacer y vender juegos con él no cuesta nada. Si te sirve, puedes apoyar el desarrollo con una donación.</p>
+            <h2>Cramion es gratis</h2>
+            <p>Hacer y vender juegos con él no cuesta nada. Si te sirve, puedes apoyar el desarrollo con una donación.</p>
           </div>
-          <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate shrink-0">
-            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Donar con PayPal
-          </a>
+          <div class="btns">
+            <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary"><svg class="ic ic-sm"><use href="#i-download"/></svg>Descargar</a>
+            <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate"><svg class="ic ic-sm"><use href="#i-heart"/></svg>Donar con PayPal</a>
+          </div>
         </div>
       </div>
     </section>
   </main>
 
-  <footer>
-    <div class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-10 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
-      <div class="flex items-center gap-2"><img src="img/icon.png" alt="" class="size-5"> Cramion Engine · CramionFX · CramionCore · CramionEditor</div>
-      <nav class="flex flex-wrap gap-x-5 gap-y-2">
-        <a href="manual/index.html" class="hover:text-foreground">Documentación</a>
-        <a href="manual/licencia.html" class="hover:text-foreground">Licencia</a>
-        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-foreground">Discord</a>
-        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="hover:text-foreground">Donar</a>
-      </nav>
+  <footer class="site-footer">
+    <div class="wrap foot">
+      <div>
+        <span class="foot-brand"><img src="img/icon.png" alt="" width="26" height="26">Cramion Engine</span>
+        <p>Un motor de juegos 3D para Windows, con su editor. Gratis para hacer y vender tus juegos, sin regalías.</p>
+      </div>
+      <div>
+        <h4>Motor</h4>
+        <nav aria-label="Motor">
+          <a href="#motor">Características</a>
+          <a href="#galeria">Galería</a>
+          <a href="#novedades">Novedades</a>
+          <a href="#descargar">Descargar</a>
+        </nav>
+      </div>
+      <div>
+        <h4>Documentación</h4>
+        <nav aria-label="Documentación">
+          <a href="manual/index.html">Manual</a>
+          <a href="manual/primer-script.html">Tu primer script</a>
+          <a href="manual/cpp-script.html">API de C++</a>
+          <a href="manual/licencia.html">Licencia</a>
+        </nav>
+      </div>
+      <div>
+        <h4>Comunidad</h4>
+        <nav aria-label="Comunidad">
+          <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
+          <a href="https://paypal.me/evan2025" target="_blank" rel="noopener">Donar</a>
+          <a href="#codigo">Código fuente</a>
+        </nav>
+      </div>
+    </div>
+    <div class="wrap foot-bottom">
+      <span>Cramion Engine · CramionFX · CramionCore · CramionEditor</span>
+      <span class="axis" aria-hidden="true"><i style="background:var(--axis-x)"></i><i style="background:var(--axis-y)"></i><i style="background:var(--axis-z)"></i></span>
     </div>
   </footer>
 
-  <script>hljs.highlightAll();</script>
   <script>
+    // Resaltado del codigo (highlight.js llega con defer).
+    addEventListener("DOMContentLoaded", () => { if (window.hljs) hljs.highlightAll(); });
+
     // Tema claro / oscuro (se recuerda; el mismo que usa el manual).
+    const root = document.documentElement;
     document.getElementById("theme").addEventListener("click", () => {
-      const dark = document.documentElement.classList.toggle("dark");
-      try { localStorage.setItem("cramion-theme", dark ? "dark" : "light"); } catch (e) {}
+      root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      try { localStorage.setItem("cramion-theme", root.dataset.theme); } catch (e) {}
     });
+
     // Menu del movil.
     const menu = document.getElementById("menu"), panel = document.getElementById("mobile-menu");
-    menu.addEventListener("click", () => {
-      const open = panel.classList.toggle("hidden") === false;
-      menu.setAttribute("aria-expanded", String(open));
-    });
-    panel.querySelectorAll("a").forEach(a => a.addEventListener("click", () => panel.classList.add("hidden")));
+    const setMenu = open => { panel.hidden = !open; menu.setAttribute("aria-expanded", String(open)); };
+    menu.addEventListener("click", () => setMenu(panel.hidden));
+    panel.querySelectorAll("a").forEach(a => a.addEventListener("click", () => setMenu(false)));
+    addEventListener("keydown", e => { if (e.key === "Escape") setMenu(false); });
+
     // Enlaces a una version anterior (#novedades-17...): abre su desplegable.
-    const openHash = () => { const d = document.querySelector(location.hash + "[open], " + location.hash); if (d && d.tagName === "DETAILS") d.open = true; };
-    if (/^#novedades-\d+$/.test(location.hash)) openHash();
-    window.addEventListener("hashchange", () => { if (/^#novedades-\d+$/.test(location.hash)) openHash(); });
-    // Con "reducir movimiento" del sistema, el video queda quieto.
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      const video = document.getElementById("hero-video");
+    const openHash = () => {
+      if (!/^#novedades-\d+$/.test(location.hash)) return;
+      const d = document.querySelector(location.hash);
+      if (d && d.tagName === "DETAILS") { d.open = true; d.scrollIntoView(); }
+    };
+    openHash();
+    addEventListener("hashchange", openHash);
+
+    // Con "reducir movimiento" del sistema, el video queda quieto (se ve el poster).
+    const video = document.getElementById("hero-video");
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
       video.removeAttribute("autoplay");
       video.pause();
+      video.style.display = "none";
     }
+
+    // Aparicion suave de las secciones.
+    const items = document.querySelectorAll(".reveal");
+    if ("IntersectionObserver" in window) {
+      const io = new IntersectionObserver(entries => entries.forEach(e => {
+        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+      }), { rootMargin: "0px 0px -8% 0px" });
+      items.forEach(el => io.observe(el));
+    } else items.forEach(el => el.classList.add("in"));
+
+    // Galeria: ampliar una captura.
+    const lb = document.getElementById("lightbox"), lbImg = document.getElementById("lb-img"), lbCap = document.getElementById("lb-cap");
+    document.querySelectorAll("#gallery .shot").forEach(b => b.addEventListener("click", () => {
+      const img = b.querySelector("img");
+      lbImg.src = img.src; lbImg.alt = img.alt; lbCap.textContent = b.querySelector(".cap").textContent;
+      if (lb.showModal) lb.showModal(); else window.open(img.src, "_blank");
+    }));
+    document.getElementById("lb-close").addEventListener("click", () => lb.close());
+    lb.addEventListener("click", e => { if (e.target === lb) lb.close(); });
   </script>
 </body>
 </html>

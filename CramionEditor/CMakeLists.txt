@@ -117,12 +117,18 @@ target_compile_definitions(CramionEditor PRIVATE
     CRAMION_EDITOR_ICON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos"
     CRAMION_EDITOR_LOGO_SOURCE="${CMAKE_SOURCE_DIR}/assets/icon.png"
     CRAMION_VERSION_STRING="${CRAMION_VERSION_FULL}")
-add_custom_command(TARGET CramionEditor POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos" "${CMAKE_BINARY_DIR}/editor_icons"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/assets/icon.png" "${CMAKE_BINARY_DIR}/editor_icons/logo.png"
-    COMMENT "Copiando los iconos del editor")
+# assets/ no esta en el repositorio: si falta, se avisa y el editor sale sin iconos.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos" AND EXISTS "${CMAKE_SOURCE_DIR}/assets/icon.png")
+    add_custom_command(TARGET CramionEditor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos" "${CMAKE_BINARY_DIR}/editor_icons"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/assets/icon.png" "${CMAKE_BINARY_DIR}/editor_icons/logo.png"
+        COMMENT "Copiando los iconos del editor")
+else()
+    message(WARNING "Cramion: faltan CramionEditor/assets/gizmos o assets/icon.png; "
+                    "el editor se compila sin iconos (ver README.md, seccion Requisitos).")
+endif()
 
 target_compile_options(CramionEditor PRIVATE
     -Wall
@@ -204,10 +210,12 @@ target_compile_definitions(CramionPlayer PRIVATE
     CRAMION_EDITOR_LOGO_SOURCE="${CMAKE_SOURCE_DIR}/assets/icon.png")
 cramionfx_deploy(CramionPlayer)
 # El banner del motor junto a los ejecutables (lo copia la exportacion).
-add_custom_command(TARGET CramionPlayer POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/assets/bannerintro.png" "${CMAKE_BINARY_DIR}/player_banner.png"
-    COMMENT "Banner del juego exportado")
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/bannerintro.png")
+    add_custom_command(TARGET CramionPlayer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/assets/bannerintro.png" "${CMAKE_BINARY_DIR}/player_banner.png"
+        COMMENT "Banner del juego exportado")
+endif()
 add_dependencies(CramionEditor CramionPlayer)
 
 # --- CramionMcp.exe: puente MCP por stdio (Claude Desktop y otros) hacia el ---

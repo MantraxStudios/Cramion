@@ -27,3 +27,13 @@
         Si un método falla (puntero nulo, excepción, bucle sin fin...) la Consola muestra el archivo y la línea, ese script
         se desactiva hasta el siguiente Play y el resto sigue.
       </p>
+      <p>
+        En una <a href="recarga.html">recarga en caliente</a> (o si el proceso de los scripts se reinicia tras un fallo) los
+        callbacks del proceso anterior se olvidan, pero lo que vive en el motor sigue: por ejemplo las conexiones
+        <a href="websocket.html#recarga">WebSocket</a> siguen abiertas. Recupéralas por su nombre y vuelve a escuchar en
+        <code>onAfterReload</code>:
+      </p>
+      <pre><code class="language-cpp">void Chat::onAfterReload(const Value&amp;) {
+    ws_.attach("mmo");   // WsClient: la misma conexion, sin reconectar
+    ws_.onMessage([this](const Value&amp; ev) { mostrar(ev["text"].asString()); });
+}</code></pre>

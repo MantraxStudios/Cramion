@@ -1006,6 +1006,7 @@ void EditorApp::drawApiConsole() {
         } else {
             std::string output;
             const bool ok = scripts_.run(api_console_, &output, &world_);
+            commit();  // fuera de Play, lo que cambio (destroy, parent...) se puede deshacer
             (ok ? std::cout : std::cerr) << "[API] > " << api_console_ << (output.empty() ? "" : "  ->  ") << output << "\n";
         }
         api_console_.clear();

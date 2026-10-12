@@ -416,6 +416,8 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
     };
 
     materials_.reserve(material_count);
+    material_views_.assign(material_count, std::vector<vk::ImageView>(SkinnedPass::kMaterialBindingCount));
+    material_sampler_revision_ = pass.samplerRevision();
     for (std::uint32_t m = 0; m < material_count; ++m) {
         const asset::MaterialData& material = model.materials[m];
 
@@ -475,6 +477,7 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
             infos[t].sampler = *pass.sampler();
             infos[t].imageView = *textures_[textures[t]]->view();
             infos[t].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            material_views_[m][t] = infos[t].imageView;
         }
 
         std::array<vk::WriteDescriptorSet, SkinnedPass::kMaterialBindingCount> writes{};
@@ -648,6 +651,32 @@ void SkinnedModel::setMaterialImage(const VulkanDevice& device, const SkinnedPas
     write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
     write.setImageInfo(info);
     device.handle().updateDescriptorSets(write, nullptr);
+    if (material < material_views_.size() && binding < material_views_[material].size()) {
+        material_views_[material][binding] = view;
+    }
+}
+
+void SkinnedModel::refreshSampler(const VulkanDevice& device, const SkinnedPass& pass) {
+    const std::uint32_t count = SkinnedPass::materialBindingCount();
+    std::vector<vk::DescriptorImageInfo> infos;
+    std::vector<vk::WriteDescriptorSet> writes;
+    infos.reserve(static_cast<std::size_t>(material_sets_.size()) * count);
+    writes.reserve(infos.capacity());
+    for (std::size_t m = 0; m < material_sets_.size() && m < material_views_.size(); ++m) {
+        for (std::uint32_t t = 0; t < count && t < material_views_[m].size(); ++t) {
+            if (!material_views_[m][t]) continue;
+            infos.push_back(vk::DescriptorImageInfo{*pass.sampler(), material_views_[m][t],
+                                                    vk::ImageLayout::eShaderReadOnlyOptimal});
+            vk::WriteDescriptorSet write{};
+            write.dstSet = *material_sets_[m];
+            write.dstBinding = t;
+            write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            write.setImageInfo(infos.back());  // reservado: la direccion no cambia
+            writes.push_back(write);
+        }
+    }
+    if (!writes.empty()) device.handle().updateDescriptorSets(writes, nullptr);
+    material_sampler_revision_ = pass.samplerRevision();
 }
 
 void SkinnedModel::destroy() {
@@ -659,6 +688,8 @@ void SkinnedModel::destroy() {
     meshlet_ranges_.clear();
     closed_.clear();
     material_sets_.clear();
+    material_views_.clear();
+    material_sampler_revision_ = 0;
     pool_ = nullptr;
     textures_.clear();
     materials_.clear();

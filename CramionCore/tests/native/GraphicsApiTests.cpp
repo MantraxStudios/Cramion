@@ -25,6 +25,11 @@ public:
         values_["shadow_quality"] = std::string("high");
         values_["save"] = std::string("opcion que se llama como una funcion");
         values_["gpu"] = std::string("Falsa 3000");  // solo lectura
+        // Texturas (Graphics.setTextureQuality / setTextureFiltering / setTextureLodBias).
+        values_["texture_quality"] = std::string("auto");
+        values_["texture_filtering"] = std::string("auto");  // texto o numero, como el del editor
+        values_["texture_filtering_active"] = 8.0;           // solo lectura
+        values_["texture_lod_bias"] = 0.0;
     }
 
     std::vector<GraphicsOption> options() const override {
@@ -33,9 +38,11 @@ public:
             GraphicsOption o;
             o.key = key;
             o.value = value;
-            o.writable = key != "gpu";
+            o.writable = key != "gpu" && key != "texture_filtering_active";
             o.description = "opcion " + key;
             if (key == "shadow_quality") o.choices = {"low", "medium", "high"};
+            if (key == "texture_quality") o.choices = {"auto", "low", "medium", "high", "ultra", "max"};
+            if (key == "texture_filtering") o.choices = {"auto", "off", "2x", "4x", "8x", "16x"};
             out.push_back(o);
         }
         return out;
@@ -46,11 +53,12 @@ public:
             error = "no existe la opcion '" + key + "'";
             return false;
         }
-        if (key == "gpu") {
+        if (key == "gpu" || key == "texture_filtering_active") {
             error = "es de solo lectura";
             return false;
         }
-        if (it->second.index() != value.index()) {
+        // El filtrado admite "16x" o 16 (como RendererGraphicsHost).
+        if (it->second.index() != value.index() && key != "texture_filtering") {
             error = "tipo equivocado";
             return false;
         }
@@ -122,6 +130,78 @@ void testWithoutHost() {
           "listas vacias sin host");
     check(t.call("Graphics.getAll").isObject() && t.call("Graphics.getAll").fields().empty(), "Graphics.getAll vacio");
     check(!t.call("Graphics.save").truthy(), "Graphics.save sin host: false");
+    t.log.clear();
+    check(!t.call("Graphics.setTextureQuality", {Value("high")}).truthy() && t.logged("no permite cambiar"),
+          "Graphics.setTextureQuality sin host avisa y da false");
+    t.log.clear();
+    check(!t.call("Graphics.setTextureFiltering", {Value(16)}).truthy() && t.logged("no permite cambiar"),
+          "Graphics.setTextureFiltering sin host avisa y da false");
+    check(t.call("Graphics.textureQuality").isNil() && t.call("Graphics.textureFiltering").isNil() &&
+              t.call("Graphics.textureLodBias").isNil(),
+          "texturas sin host: nil");
+    check(t.call("Graphics.textureQualityLevels").size() == 0 && t.call("Graphics.textureFilteringLevels").size() == 0,
+          "niveles de texturas sin host: listas vacias");
+}
+
+void testTextures() {
+    std::printf("Graphics: texturas\n");
+    ApiFixture t;
+    FakeGraphicsHost host;
+    t.scripts.setGraphics(&host);
+
+    // Calidad (lado maximo de lo que se carga despues).
+    check(t.call("Graphics.textureQuality").asString() == "auto", "Graphics.textureQuality()");
+    check(t.call("Graphics.setTextureQuality", {Value("high")}).truthy() &&
+              std::get<std::string>(host.values_["texture_quality"]) == "high" &&
+              t.call("Graphics.textureQuality").asString() == "high",
+          "Graphics.setTextureQuality(\"high\") llega al host");
+    const Value quality_levels = t.call("Graphics.textureQualityLevels");
+    check(quality_levels.size() == 6 && quality_levels[0].asString() == "auto" &&
+              quality_levels[5].asString() == "max",
+          "Graphics.textureQualityLevels: los choices del host");
+    t.log.clear();
+    check(!t.call("Graphics.setTextureQuality", {Value(5)}).truthy() &&
+              t.logged("Graphics.texture_quality: tipo equivocado"),
+          "Graphics.setTextureQuality con un valor que el host no acepta avisa");
+    t.log.clear();
+    check(!t.call("Graphics.setTextureQuality").truthy() && t.logged("Graphics.texture_quality: el valor debe ser"),
+          "Graphics.setTextureQuality() sin valor avisa");
+
+    // Filtrado anisotropico: numero o nombre; textureFiltering() es el que esta en uso.
+    check(t.call("Graphics.setTextureFiltering", {Value(16)}).truthy() &&
+              std::get<double>(host.values_["texture_filtering"]) == 16.0,
+          "Graphics.setTextureFiltering(16)");
+    check(t.call("Graphics.setTextureFiltering", {Value("off")}).truthy() &&
+              std::get<std::string>(host.values_["texture_filtering"]) == "off",
+          "Graphics.setTextureFiltering(\"off\")");
+    check(t.call("Graphics.textureFiltering").asNumber() == 8.0,
+          "Graphics.textureFiltering(): el anisotropico en uso (texture_filtering_active)");
+    const Value filtering_levels = t.call("Graphics.textureFilteringLevels");
+    check(filtering_levels.size() == 6 && filtering_levels[1].asString() == "off" &&
+              filtering_levels[5].asString() == "16x",
+          "Graphics.textureFilteringLevels");
+    t.log.clear();
+    t.set("Graphics.texture_filtering_active", Value(2));
+    check(t.logged("Graphics.texture_filtering_active: es de solo lectura"),
+          "texture_filtering_active es de solo lectura");
+
+    // Sesgo de los mips.
+    check(t.call("Graphics.setTextureLodBias", {Value(0.5)}).truthy() &&
+              std::get<double>(host.values_["texture_lod_bias"]) == 0.5 &&
+              t.call("Graphics.textureLodBias").asNumber() == 0.5,
+          "Graphics.setTextureLodBias(0.5) / textureLodBias()");
+
+    // Lo registrado manda: Graphics.textureQuality es la funcion; la opcion
+    // sigue por su clave (Graphics.texture_quality).
+    check(t.get("Graphics.texture_quality").asString() == "high", "Graphics.texture_quality (dinamica) sigue valiendo");
+
+    // Por el puente de los scripts de C++ (Graphics::setTextureFiltering(4)).
+    json r = t.bridge({{"fn", "Graphics.setTextureFiltering"}, {"args", {4}}});
+    check(r["ok"] == true && r["result"] == true && std::get<double>(host.values_["texture_filtering"]) == 4.0,
+          "Graphics.setTextureFiltering(4) por el puente");
+    r = t.bridge({{"fn", "Graphics.textureQuality"}, {"args", json::array()}});
+    check(r["ok"] == true && r["result"] == "high", "Graphics.textureQuality() por el puente");
+    t.scripts.setGraphics(nullptr);
 }
 
 void testHost() {
@@ -273,6 +353,7 @@ void testPost() {
 int main() {
     testWithoutHost();
     testHost();
+    testTextures();
     testPost();
     return finish();
 }

@@ -60,11 +60,57 @@ void copyError(char* out, int size, const std::string& text) {
 cppproto::Writer g_batch;
 std::uint32_t g_batch_count = 0;
 
-// Callbacks dados a la API (UI, Network.on, Input.bindAction...).
+// Callbacks dados a la API (UI, Network.on, Input.bindAction...). Cada uno
+// recuerda el script que lo dio (el que se estaba ejecutando) y se borra al
+// destruir ese script: si no, el proceso llamaria a un objeto ya borrado.
+struct CallbackEntry {
+    std::shared_ptr<Callback> fn;
+    Script* owner = nullptr;
+};
 std::uint64_t g_session = 0;
 std::uint32_t g_next_callback = 1;
-std::unordered_map<std::uint64_t, std::shared_ptr<Callback>> g_callbacks;
+std::unordered_map<std::uint64_t, CallbackEntry> g_callbacks;
 std::unordered_map<const Callback*, std::uint64_t> g_callback_ids;
+// El script que se esta ejecutando (y, mientras se construye uno, la lista
+// donde van los ids que da su constructor, que aun no tiene puntero).
+Script* g_current_script = nullptr;
+std::vector<std::uint64_t>* g_unowned = nullptr;
+
+// Marca el script en curso mientras dura (y deja el anterior al salir).
+struct CurrentScript {
+    Script* prev;
+    std::vector<std::uint64_t>* prev_unowned;
+    explicit CurrentScript(Script* s, std::vector<std::uint64_t>* unowned = nullptr)
+        : prev(g_current_script), prev_unowned(g_unowned) {
+        g_current_script = s;
+        g_unowned = unowned;
+    }
+    ~CurrentScript() {
+        g_current_script = prev;
+        g_unowned = prev_unowned;
+    }
+    CurrentScript(const CurrentScript&) = delete;
+    CurrentScript& operator=(const CurrentScript&) = delete;
+};
+
+void eraseCallback(std::uint64_t id) {
+    const auto it = g_callbacks.find(id);
+    if (it == g_callbacks.end()) return;
+    g_callback_ids.erase(it->second.fn.get());
+    g_callbacks.erase(it);
+}
+
+void eraseCallbacksOf(const Script* owner) {
+    if (owner == nullptr) return;
+    for (auto it = g_callbacks.begin(); it != g_callbacks.end();) {
+        if (it->second.owner == owner) {
+            g_callback_ids.erase(it->second.fn.get());
+            it = g_callbacks.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
 }  // namespace
 
 void registerClass(const char* name, const char* file, Factory factory) { classes().push_back({name, file != nullptr ? file : "", factory}); }
@@ -100,9 +146,14 @@ std::uint64_t registerCallback(const std::shared_ptr<Callback>& fn) {
     if (!fn) return 0;
     const auto known = g_callback_ids.find(fn.get());
     if (known != g_callback_ids.end()) return known->second;
-    const std::uint64_t id = (g_session << 32) | g_next_callback++;
-    g_callbacks[id] = fn;
+    // Los 32 bits altos son el proceso sin el bit 63, que es de los callbacks
+    // locales del motor (NativeApi::kLocalCallbackBase); el proceso compara igual.
+    std::uint32_t n = g_next_callback++;
+    if (n == 0) n = g_next_callback++;  // el 0 es "sin callback"
+    const std::uint64_t id = ((g_session & 0x7FFFFFFFull) << 32) | n;
+    g_callbacks[id] = CallbackEntry{fn, g_current_script};
     g_callback_ids[fn.get()] = id;
+    if (g_current_script == nullptr && g_unowned != nullptr) g_unowned->push_back(id);
     return id;
 }
 
@@ -168,7 +219,10 @@ CRAMION_EXPORT int cramion_describe(char* out, int size, char* error, int error_
     bool first_class = true;
     for (const auto& c : detail::classes()) {
         std::string props = "[";
+        // Una instancia de usar y tirar: lo que registre su constructor se borra.
+        std::vector<std::uint64_t> unowned;
         try {
+            const detail::CurrentScript scope(nullptr, &unowned);
             std::unique_ptr<Script> s(c.factory());
             bool first = true;
             for (const detail::PropertyBase* p : ScriptAccess::properties(*s)) {
@@ -181,6 +235,7 @@ CRAMION_EXPORT int cramion_describe(char* out, int size, char* error, int error_
         } catch (...) {
             detail::copyError(error, error_size, c.name + ": excepcion en el constructor");
         }
+        for (const std::uint64_t id : unowned) detail::eraseCallback(id);
         props += "]";
         if (!first_class) json += ",";
         first_class = false;
@@ -199,10 +254,28 @@ CRAMION_EXPORT int cramion_describe(char* out, int size, char* error, int error_
 CRAMION_EXPORT void* cramion_create(const char* cls, std::uint64_t entity, const char* values_json, char* error, int error_size) {
     for (const auto& c : detail::classes()) {
         if (c.name != cls) continue;
+        // Lo que registre el constructor (aun sin puntero) pasa al script al
+        // terminar; si algo falla, se borra.
+        std::vector<std::uint64_t> unowned;
         try {
-            std::unique_ptr<Script> script(c.factory());
-            ScriptAccess::setup(*script, entity, Value::parse(values_json != nullptr ? values_json : "{}"));
-            detail::flush();
+            std::unique_ptr<Script> script;
+            {
+                const detail::CurrentScript creating(nullptr, &unowned);
+                script.reset(c.factory());
+            }
+            for (const std::uint64_t id : unowned) {
+                const auto it = detail::g_callbacks.find(id);
+                if (it != detail::g_callbacks.end()) it->second.owner = script.get();
+            }
+            unowned.clear();
+            const detail::CurrentScript scope(script.get());
+            try {
+                ScriptAccess::setup(*script, entity, Value::parse(values_json != nullptr ? values_json : "{}"));
+                detail::flush();
+            } catch (...) {
+                detail::eraseCallbacksOf(script.get());
+                throw;
+            }
             detail::liveScripts().push_back(script.get());
             return script.release();
         } catch (const std::exception& e) {
@@ -210,6 +283,7 @@ CRAMION_EXPORT void* cramion_create(const char* cls, std::uint64_t entity, const
         } catch (...) {
             detail::copyError(error, error_size, "excepcion desconocida en el constructor");
         }
+        for (const std::uint64_t id : unowned) detail::eraseCallback(id);
         return nullptr;
     }
     return nullptr;
@@ -218,6 +292,7 @@ CRAMION_EXPORT void* cramion_create(const char* cls, std::uint64_t entity, const
 CRAMION_EXPORT int cramion_call(void* instance, std::uint32_t event, const cppproto::EventArgs* args, char* error,
                                 int error_size) {
     auto* s = static_cast<Script*>(instance);
+    const detail::CurrentScript scope(s);
     if (args != nullptr) detail::g_event = *args;
     const float dt = args != nullptr ? args->delta_time : 0.0f;
     Collision c{};
@@ -260,11 +335,14 @@ CRAMION_EXPORT int cramion_call(void* instance, std::uint32_t event, const cpppr
 
 CRAMION_EXPORT int cramion_callback(std::uint64_t id, const char* args_json, char* error, int error_size) {
     const auto it = detail::g_callbacks.find(id);
-    if (it == detail::g_callbacks.end()) return 0;  // de una sesion anterior
+    if (it == detail::g_callbacks.end()) return 0;  // de una sesion anterior o de un script ya destruido
+    // Copia: el callback puede registrar otros (rehash) o borrarse a si mismo.
+    const std::shared_ptr<Callback> fn = it->second.fn;
+    const detail::CurrentScript scope(it->second.owner);
     int result = 0;
     try {
         const Value args = Value::parse(args_json != nullptr ? args_json : "[]");
-        (*it->second)(args.items());
+        (*fn)(args.items());
     } catch (const std::exception& e) {
         detail::copyError(error, error_size, std::string("excepcion en un callback: ") + e.what());
         result = 1;
@@ -281,6 +359,7 @@ CRAMION_EXPORT int cramion_callback(std::uint64_t id, const char* args_json, cha
 
 CRAMION_EXPORT int cramion_message(void* instance, const char* method, const char* value_json, char* error, int error_size) {
     auto* s = static_cast<Script*>(instance);
+    const detail::CurrentScript scope(s);
     try {
         s->onMessage(method != nullptr ? method : "", Value::parse(value_json != nullptr ? value_json : "null"));
         detail::flush();
@@ -301,6 +380,7 @@ CRAMION_EXPORT int cramion_snapshot(void* instance, char* out, int size, char* e
     static void* last_instance = nullptr;
     static std::string last_json;
     auto* s = static_cast<Script*>(instance);
+    const detail::CurrentScript scope(s);
     if (last_instance != instance) {
         last_json.clear();
         try {
@@ -329,6 +409,7 @@ CRAMION_EXPORT int cramion_snapshot(void* instance, char* out, int size, char* e
 
 CRAMION_EXPORT int cramion_restore(void* instance, const char* snapshot_json, char* error, int error_size) {
     auto* s = static_cast<Script*>(instance);
+    const detail::CurrentScript scope(s);
     try {
         const Value snap = Value::parse(snapshot_json != nullptr ? snapshot_json : "{}");
         const Value& props = snap["props"];
@@ -349,10 +430,18 @@ CRAMION_EXPORT int cramion_restore(void* instance, const char* snapshot_json, ch
 
 CRAMION_EXPORT void cramion_destroy(void* instance) {
     auto& live = detail::liveScripts();
-    live.erase(std::remove(live.begin(), live.end(), static_cast<Script*>(instance)), live.end());
+    auto* s = static_cast<Script*>(instance);
+    live.erase(std::remove(live.begin(), live.end(), s), live.end());
+    detail::eraseCallbacksOf(s);
+    // Lo que registre el destructor tampoco sobrevive al script.
+    std::vector<std::uint64_t> unowned;
     try {
-        delete static_cast<Script*>(instance);
+        {
+            const detail::CurrentScript scope(nullptr, &unowned);
+            delete s;
+        }
         detail::flush();
     } catch (...) {
     }
+    for (const std::uint64_t id : unowned) detail::eraseCallback(id);
 }

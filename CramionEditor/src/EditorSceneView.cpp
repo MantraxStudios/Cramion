@@ -292,6 +292,10 @@ void EditorApp::saveViewSettings() const {
 void EditorApp::drawSceneView() {
     if (focus_scene_) {
         ImGui::SetNextWindowFocus();
+        // Delante en su area ya (no solo por promoteFocusedArea, que en el
+        // frame de un cambio de pestana o del arranque ignora el foco de una
+        // ventana que aparece oculta detras).
+        showAreaEditor(AreaEditor::Scene);
         focus_scene_ = false;
         preferred_view_ = kSceneSlot;
     }

@@ -169,8 +169,17 @@ void registerTransform(Runtime& rt) {
              {"", "Vec3 a la derecha", "Vec3"});
     property(rt, "up", [&rt](api::Call& c) -> api::Value { return rt.selfEntity(c).up(); }, {},
              {"", "Vec3 hacia arriba", "Vec3"});
-    property(rt, "parent", [&rt](api::Call& c) -> api::Value { return rt.entityValue(rt.selfEntity(c).parent()); }, {},
-             {"", "el padre (no valida si no tiene)", "Entity"});
+    // Asignarlo emparenta conservando la posicion en el mundo (como arrastrar
+    // en la Jerarquia); nil lo deja en la raiz. Un ciclo es un error.
+    property(rt, "parent", [&rt](api::Call& c) -> api::Value { return rt.entityValue(rt.selfEntity(c).parent()); },
+             [&rt](api::Call& c) -> api::Value {
+                 ecs::Entity x = rt.selfEntity(c);
+                 const ecs::Entity p = rt.entityArg(c, 0);
+                 if (!x.setParent(p, true)) throw api::Error("no puede ser hijo de si mismo ni de un descendiente suyo");
+                 return {};
+             },
+             {"", "el padre (no valida si no tiene); asignarlo emparenta conservando la posicion en el mundo (nil = raiz)",
+              "Entity"});
 
     method(rt, "translate",
            [&rt](api::Call& c) -> api::Value {

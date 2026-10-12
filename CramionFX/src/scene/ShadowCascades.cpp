@@ -55,8 +55,14 @@ void ShadowCascades::update(const Camera& camera, const DirectionalLight& sun,
         const float split_far = distribution_ * logarithmic + (1.0f - distribution_) * uniform;
 
         // --- 2) Las 8 esquinas de esta seccion del frustum, en el mundo ---
+        // Camara ortografica: la seccion es una caja (la misma que su
+        // proyeccion), no un tronco de piramide.
+        const float ortho_half_width = camera.orthoSize() * camera.aspectRatio();
         const Mat4 section_projection =
-            core::perspective(camera.fovY(), camera.aspectRatio(), split_near, split_far);
+            camera.orthographic()
+                ? core::orthographic(-ortho_half_width, ortho_half_width, -camera.orthoSize(),
+                                     camera.orthoSize(), split_near, split_far)
+                : core::perspective(camera.fovY(), camera.aspectRatio(), split_near, split_far);
         const Mat4 inverse_view_projection = core::inverse(section_projection * camera_view);
 
         std::array<Vec3, 8> corners{};

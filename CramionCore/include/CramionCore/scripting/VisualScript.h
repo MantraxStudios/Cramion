@@ -33,13 +33,16 @@
 
 #include <CramionFX/core/Math.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace cramion::ecs {
 class PropertyVisitor;
+class Entity;
 }
 
 namespace cramion::vscript {
@@ -60,6 +63,7 @@ struct Pin {
     std::string name;
     PinType type = PinType::Any;
     std::string value;  // valor por defecto de una entrada sin enlace ("5", "true", "hola", "1 2 3")
+    std::vector<std::string> options;  // valores de un pin tipo enum (los pone el catalogo; no se guardan)
 };
 
 struct Node {
@@ -73,6 +77,9 @@ struct Node {
     std::string comment;  // texto de un nodo comentario (o nota de cualquier nodo)
     core::Vec2 size{};    // comentario: tamano de la caja
     bool breakpoint = false;  // punto de ruptura (solo en el editor; tambien se guarda)
+    // Se guardan solo si no son el valor por defecto.
+    bool disabled = false;            // desactivado: deja pasar la ejecucion (primera salida exec)
+    std::uint32_t comment_color = 0;  // RGBA, 0 = defecto
 
     int input(const std::string& name) const;   // indice o -1
     int output(const std::string& name) const;
@@ -128,6 +135,10 @@ struct NodeInfo {
     bool event = false;       // sin entrada exec; empieza una cadena
     bool pure = false;        // sin pines exec
     bool latent = false;      // espera (Delay): sigue en otro frame
+    // Pines que el usuario puede anadir mas alla del catalogo (Switch, MultiGate,
+    // Make Array, Format Text...): graphFromJson conserva los guardados, como Sequence.
+    bool dynamic_inputs = false;
+    bool dynamic_outputs = false;
     std::vector<Pin> inputs;
     std::vector<Pin> outputs;
 };
@@ -141,6 +152,17 @@ std::string nodeTitle(const Node& node);
 // Color de la cabecera por categoria (r, g, b en 0..1).
 core::Vec3 nodeColor(const Node& node);
 
+// --- Objeto hijo por ruta (nodo "entity.child", Node::fn = la ruta) ------------
+// Ruta de `e` desde `root`: nombres separados por '/' ("Cuerpo/Malla"); si
+// hay hermanos con el mismo nombre, el 2.o en adelante lleva su numero
+// ("Hueso[2]"). '/', '[', ']' y '\' dentro de un nombre van con '\'.
+// Vacia si `e` es `root` o no esta debajo de el.
+std::string entityChildPath(const ecs::Entity& root, const ecs::Entity& e);
+// El objeto de esa ruta debajo de `root` (invalido si no existe).
+ecs::Entity resolveEntityChildPath(const ecs::Entity& root, const std::string& path);
+// Nombre del ultimo tramo ("Hueso [2]"), el que se ve en el nodo.
+std::string entityChildPathName(const std::string& path);
+
 // Nodo que llama a una funcion de la API ("Tabla.funcion", "Entity:metodo")
 // o lee/escribe una propiedad ("Entity.position": `set` = escribir).
 // `doc_args`: los argumentos tal como los documenta el autocompletado
@@ -151,6 +173,39 @@ Node makeCallNode(const std::string& callee, const std::string& doc_args, const 
 Node makePropertyNode(const std::string& callee, bool set, const std::string& description = {}, core::Vec2 position = {});
 // Las funciones que solo leen (get..., is..., has..., find...) se crean puras.
 bool looksPure(const std::string& callee);
+
+// --- Aspecto y busqueda por contexto (editor) ----------------------------------
+enum class NodeLook : std::uint8_t { Default, Event, Function, Pure, Flow, Compact, Variable, Reroute, Comment };
+NodeLook nodeLook(const Node& node);
+const char* nodeSymbol(const Node& node);   // Compact: "+", "-", "×", "÷", "==", "AND"...; "" si no
+
+// Bit i = PinType i (Exec incluido) presente en entradas/salidas, para la busqueda por contexto.
+std::uint32_t inputTypeMask(const Node& node);
+std::uint32_t outputTypeMask(const Node& node);
+
+// Conversion que el editor inserta cuando connect() falla solo por tipos: "conv.int_to_float"...
+std::optional<std::string> conversionKind(PinType from, PinType to);
+
+// "bool"/"booleano" -> Bool, "numero" -> Float, "texto" -> String, "Vec3" -> Vector,
+// "Entity" -> Entity; "objeto", "valor", "Quat", "Mesh", handles, "lista de X" y
+// texto libre -> Any; "X o nil" -> X; vacio -> Exec-sin-salida (Any).
+PinType typeFromDocText(const std::string& returns);
+
+struct ApiNodeTemplate {
+    std::string category;     // "API: Entity"
+    std::string title;        // "Entity:moveTo" / "Get Entity.position"
+    std::string keywords;
+    std::string description;
+    Node node;                // pines tipados (Doc.args + Doc.returns); pure segun looksPure / getter
+};
+// Una por Function/Method, Get por Property y Set solo si es escribible (Entry::assign).
+// Se construye una vez por NativeApi (cache por puntero). En el editor:
+// scripting::ScriptSystem::apiRegistry().
+const std::vector<ApiNodeTemplate>& apiNodeTemplates(const scripting::api::NativeApi& api);
+
+// Format Text (str.format): los {nombre} del texto, en orden y sin repetir. El
+// editor pone una entrada por cada uno (despues de "Formato").
+std::vector<std::string> formatTextArguments(const std::string& format);
 
 // --- Archivo -------------------------------------------------------------------
 // En el texto, un enlace puede nombrar los pines ("out": "Verdadero") o dar
@@ -168,11 +223,12 @@ Graph exampleGraph();
 struct NodeError {
     int node = 0;  // 0 = del grafo entero
     std::string message;
+    bool warning = false;  // aviso: no impide ejecutar (p. ej. tipos de un nodo de la API)
 };
 
 struct CompileResult {
-    bool ok = false;
-    std::vector<NodeError> errors;
+    bool ok = false;                // sin errores (los avisos no cuentan)
+    std::vector<NodeError> errors;  // errores y avisos
 };
 // Comprueba el grafo (tipos de nodo, variables, enlaces, numeros, ciclos):
 // el editor ensena los errores sobre sus nodos y un grafo con errores no se

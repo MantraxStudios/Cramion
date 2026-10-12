@@ -126,6 +126,14 @@ public:
     // color, negra en la emision). Sin frames en vuelo que usen el set.
     void setMaterialImage(const VulkanDevice& device, const SkinnedPass& pass, std::uint32_t material,
                           std::uint32_t binding, vk::ImageView view);
+    // Vuelve a escribir todos los sets de material con el sampler actual de la
+    // pasada (otro filtrado de texturas: SkinnedPass::setTextureFiltering). Sin
+    // frames en vuelo que usen los sets.
+    void refreshSampler(const VulkanDevice& device, const SkinnedPass& pass);
+    // La revision del sampler de la pasada con la que se escribieron los sets
+    // (SkinnedPass::samplerRevision; uno creado en otro hilo antes de cambiar
+    // el filtrado trae la de antes: installModel lo rehace).
+    std::uint64_t materialSamplerRevision() const { return material_sampler_revision_; }
 
     // --- Meshlets (mesh shaders) ---
     // Cada submalla (cluster) de cada LOD partida en meshlets de hasta 64
@@ -174,6 +182,9 @@ private:
     // El pool debe sobrevivir a los sets: se declara antes.
     vk::raii::DescriptorPool pool_{nullptr};
     std::vector<vk::raii::DescriptorSet> material_sets_;
+    // La imagen de cada hueco de cada set (para reescribirlos con otro sampler).
+    std::vector<std::vector<vk::ImageView>> material_views_;
+    std::uint64_t material_sampler_revision_ = 0;
 
     VulkanBuffer meshlets_;
     VulkanBuffer meshlet_vertices_;

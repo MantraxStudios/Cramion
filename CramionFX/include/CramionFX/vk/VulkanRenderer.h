@@ -35,6 +35,7 @@
 #include "CramionFX/vk/ShadowMap.h"
 #include "CramionFX/vk/SkinnedModel.h"
 #include "CramionFX/vk/SkinnedPass.h"
+#include "CramionFX/vk/TextureFiltering.h"
 #include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
 #include "CramionFX/vk/VulkanDevice.h"
@@ -261,6 +262,13 @@ public:
     std::uint32_t shadowResolution() const { return shadow_map_.resolution(); }
     // Lado maximo de las texturas de los modelos en uso (0 = sin limite).
     std::uint32_t textureSizeLimit() const { return desiredTextureSize(); }
+    // Filtrado de las texturas que se pide (GraphicsSettings::texture_filtering
+    // y texture_lod_bias, o el del perfil): se aplica al empezar el frame.
+    TextureFiltering textureFiltering() const { return desiredTextureFiltering(); }
+    // Anisotropico con texture_filtering = 0 (segun el perfil del PC).
+    std::uint32_t autoTextureAnisotropy() const;
+    // El maximo de la GPU (1 si no admite anisotropico).
+    std::uint32_t maxTextureAnisotropy() const;
     // Objetos de menos de un pixel que no se dibujaron el ultimo frame.
     std::uint32_t culledSmallActors() const { return culled_small_; }
     // Resolucion a la que se dibuja la escena (la de pantalla por la escala).
@@ -348,6 +356,8 @@ public:
             shadow_map_dirty_ = true;
             settings_dirty_ = true;
         }
+        // Otro anisotropico con texture_filtering = 0 (el del movil).
+        texture_filtering_dirty_ = true;
     }
     int mobileProfile() const { return mobile_level_; }
     PostProcessSettings mobilePost(PostProcessSettings p) const {
@@ -647,6 +657,18 @@ public:
         probe_enabled_ = enabled;
     }
     bool reflectionProbeEnabled() const { return probe_enabled_; }
+    // Coste de la sonda (CVars render.probe.*). Cada cara es casi otro frame
+    // entero, asi que en una GPU floja o con un mundo grande se limita cada
+    // cuanto se captura y hasta donde se dibuja. 0 = automatico segun el
+    // nivel de la GPU (Bajo / Medio / Alto / Ultra).
+    struct ReflectionProbeLimits {
+        std::uint32_t face_interval = 0;  // frames entre una cara y la siguiente
+        float min_seconds = 0.0f;         // segundos minimos entre capturas completas
+        float draw_distance = 0.0f;       // metros: lo mas lejano queda como cielo
+        bool terrain = true;              // false: el terreno no entra en la captura
+    };
+    void setReflectionProbeLimits(const ReflectionProbeLimits& limits) { probe_limits_ = limits; }
+    const ReflectionProbeLimits& reflectionProbeLimits() const { return probe_limits_; }
     // Oclusion del cielo vista desde arriba (sin trazado de rayos): el
     // sotobosque y lo que esta bajo tejados no reciben todo el cielo aunque lo
     // que los tapa no salga en pantalla.
@@ -713,6 +735,35 @@ public:
     // Mapa de alturas `resolution` x `resolution` (0..1) y pesos de las capas
     // `splat_resolution`^2 (dos RGBA8). Devuelve un identificador (0 = error).
     std::uint32_t createTerrain(std::uint32_t resolution, std::uint32_t splat_resolution);
+    // Streaming sin tirones (ver TerrainPass): prepareTerrainAsync desde un
+    // hilo de trabajo (crea las imagenes y envia su copia sin esperar);
+    // en el principal, cuando preparedTerrainReady, adoptTerrain (O(1); 0 =
+    // reintentar en otro frame). nullptr = no se pudo preparar.
+    std::shared_ptr<PreparedTerrain> prepareTerrainAsync(const TerrainPixels& pixels) const {
+        return terrain_pass_.prepareTerrainAsync(pixels);
+    }
+    bool preparedTerrainReady(const std::shared_ptr<PreparedTerrain>& prepared) const {
+        return TerrainPass::preparedTerrainReady(prepared);
+    }
+    std::uint32_t adoptTerrain(const std::shared_ptr<PreparedTerrain>& prepared);
+    // Tope de bytes por frame de las subidas del terreno (0 = sin tope).
+    // CVar stream.UploadMBPerFrame.
+    void setTerrainUploadBudget(std::size_t bytes_per_frame) { terrain_pass_.setUploadBudget(bytes_per_frame); }
+    std::size_t terrainUploadBytes() const { return terrain_pass_.lastUploadBytes(); }
+    std::size_t terrainPendingUploadBytes() const { return terrain_pass_.pendingUploadBytes(); }
+    // Bloques de hierba compartidos por las teselas cercanas (0 = uno por
+    // tesela). CVar render.terrain.GrassPool.
+    void setGrassPoolSize(std::uint32_t blocks) { terrain_pass_.setGrassPoolSize(blocks); }
+    // Texturas de las capas leidas en segundo plano. CVar render.terrain.AsyncLayers.
+    void setTerrainAsyncLayers(bool async) { terrain_pass_.setAsyncLayers(async); }
+    // Malla y color del terreno de la escena de rayos calculados en segundo
+    // plano (la escena se rehace cuando estan). CVar render.rt.AsyncTerrain.
+    void setRayTracingAsyncTerrain(bool async) { rt_async_terrain_ = async; }
+    // Quien ejecuta las tareas en segundo plano de CramionFX (el sistema de
+    // jobs de CramionCore). Sin el, un hilo propio. Al arrancar.
+    void setTaskScheduler(TaskScheduler scheduler) { device_.setTaskScheduler(std::move(scheduler)); }
+    // Envios a la GPU sin esperar aun en vuelo (estadisticas).
+    std::size_t gpuAsyncInFlight() const { return device_.asyncInFlight(); }
     void destroyTerrain(std::uint32_t id);
     void setTerrainDesc(std::uint32_t id, const TerrainDesc& desc) { terrain_pass_.setDesc(id, desc); }
     // Lo que aparta la hierba: xyz = centro, w = radio (hasta 32).
@@ -759,12 +810,19 @@ public:
     VoxelStats voxelStats() const { return voxel_pass_.stats(); }
 
     // --- Vegetacion instanciada (FoliagePass.h): millones de arboles ---
+    // Sin parar la GPU (los buffers de antes se retiran unos frames).
     void setFoliage(const std::vector<FoliageInstance>& instances) {
         foliage_pass_.setInstances(instances);
         staticGeometryChanged();
     }
+    // Lo mismo en segundo plano: los buffers se crean y suben en otra tarea
+    // (submitAsync) y se cambian por los de antes cuando la GPU los tiene
+    // (unos frames despues). Las instancias se comparten, sin copiar.
+    void setFoliageAsync(std::shared_ptr<const std::vector<FoliageInstance>> instances) {
+        foliage_pass_.setInstancesAsync(std::move(instances));
+    }
     void clearFoliage() {
-        if (!foliage_pass_.empty()) {
+        if (!foliage_pass_.empty() || foliage_pass_.asyncPending()) {
             foliage_pass_.clear();
             staticGeometryChanged();
         }
@@ -951,6 +1009,11 @@ private:
 
     // Sonda de reflexion: si toca (re)capturarla, empieza o sigue la captura.
     bool probeCaptureDue(const scene::Scene& scene);
+    // Limites efectivos de la sonda (los de probe_limits_, o los del nivel de
+    // la GPU si valen 0).
+    std::uint64_t probeFaceInterval() const;
+    float probeMinSeconds() const;
+    float probeDrawDistance() const;
     // Todo lo que cambia la luz que ve la sonda, salvo la direccion del sol
     // (esa tiene su propio umbral): colores e intensidades, luces locales y
     // los interruptores que cambian el aspecto de la escena.
@@ -1340,6 +1403,9 @@ private:
     bool rt_scene_dirty_ = true;            // hay que (re)construirla antes de trazar
     bool rt_model_edit_pending_ = false;    // uploadModel cambio un modelo que ven los rayos
     std::chrono::steady_clock::time_point rt_model_edit_time_{};
+    // Ultima reconstruccion de la escena de rayos (los terrenos que entran y
+    // salen en streaming no la rehacen mas de una vez cada pocos segundos).
+    std::chrono::steady_clock::time_point rt_scene_build_time_{};
     std::chrono::steady_clock::time_point rt_idle_since_{};  // desde cuando no se usa
     bool rt_idle_ = false;
     std::uint32_t rt_targets_key_ = 0;      // rayTargetsKey() con el que se crearon los destinos
@@ -1368,8 +1434,28 @@ private:
         std::uint32_t texture_size = 0;
         std::vector<RayTracing::Vertex> vertices;
         std::vector<std::vector<std::uint8_t>> albedo;
+        std::chrono::steady_clock::time_point job_time{};  // ultima tarea lanzada (esculpir: 4 por segundo)
     };
     std::vector<RtTerrainCache> rt_terrain_cache_;
+    // Malla / color de un terreno calculandose en segundo plano (de su copia
+    // de la CPU compartida e inmutable): se pasa a rt_terrain_cache_ cuando
+    // termina. Una tarea como mucho por terreno.
+    struct RtTerrainJob {
+        std::uint32_t id = 0;
+        std::uint32_t cells = 0;
+        std::uint32_t texture_size = 0;
+        std::uint64_t height_revision = 0;
+        std::uint64_t look_revision = 0;
+        bool want_vertices = false;
+        bool want_albedo = false;
+        std::atomic<bool> ready{false};
+        std::vector<RayTracing::Vertex> vertices;   // los escribe la tarea
+        std::vector<std::vector<std::uint8_t>> albedo;
+    };
+    std::unordered_map<std::uint32_t, std::shared_ptr<RtTerrainJob>> rt_terrain_jobs_;
+    bool rt_async_terrain_ = true;
+    // Pasa lo terminado a la cache y lanza lo que falte (hilo principal).
+    void updateRtTerrainCache(const std::vector<TerrainPass::RayTracingSource>& sources);
     std::array<std::int32_t, FoliagePass::kSpecies> rt_species_extra_{-1, -1, -1};
     std::uint64_t rt_species_revision_ = ~0ull;
     std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> rt_tree_grid_;
@@ -1706,6 +1792,9 @@ private:
     std::uint64_t probe_next_face_frame_ = 0;
     // Posicion de la camara el frame anterior, para saber si va despacio.
     core::Vec3 probe_last_camera_{};
+    // CVars render.probe.* y segundos desde que empezo la ultima captura.
+    ReflectionProbeLimits probe_limits_{};
+    float probe_since_capture_ = 0.0f;
 
     // Llama a `draw(submesh_index)` con las submallas opacas del actor que
     // tocan el volumen. Devuelve cuantas.
@@ -1980,6 +2069,14 @@ private:
     bool want_shadow_cache_ = false;
     std::uint64_t shadow_cache_used_frame_ = 0;
     void applyShadowCache();
+    // Filtrado de las texturas de los materiales (anisotropico y sesgo de los
+    // mips): al empezar el frame (drawFrame), con la GPU parada, se rehacen
+    // los samplers de las pasadas y los sets que los usan. El primer frame
+    // pone el del perfil (las pasadas se crean con 8x).
+    bool texture_filtering_dirty_ = true;
+    TextureFiltering applied_texture_filtering_{};
+    TextureFiltering desiredTextureFiltering() const;
+    void applyTextureFiltering();
 };
 
 }  // namespace cramion::gfx

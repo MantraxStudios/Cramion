@@ -108,21 +108,39 @@ ecs::Entity EditorApp::terrainUnderMouse(float x, float y, Vec3* point) const {
 // Deshacer de los trazos
 // -----------------------------------------------------------------------------
 
-void EditorApp::pushTerrainUndo(const std::string& path, std::shared_ptr<terrain::TerrainData> before) {
-    const std::shared_ptr<terrain::TerrainData> current = terrain_store_.findPath(path);
-    if (!before || !current) return;
-    TerrainUndo step;
-    step.path = path;
-    step.before = std::move(before);
-    step.after = std::make_shared<terrain::TerrainData>(*current);
+void EditorApp::pushTerrainUndo(const std::string& path, std::shared_ptr<terrain::TerrainData> before,
+                                std::vector<std::pair<std::string, std::shared_ptr<terrain::TerrainData>>> others) {
+    // Cada tesela tocada: su antes y su despues (las que ya no estan, fuera).
+    std::vector<TerrainUndo> parts;
+    const auto add = [&](const std::string& p, std::shared_ptr<terrain::TerrainData> b) {
+        const std::shared_ptr<terrain::TerrainData> current = terrain_store_.findPath(p);
+        if (!b || !current) return;
+        TerrainUndo part;
+        part.path = p;
+        part.before = std::move(b);
+        part.after = std::make_shared<terrain::TerrainData>(*current);
+        parts.push_back(std::move(part));
+    };
+    add(path, std::move(before));
+    for (auto& [p, b] : others) add(p, std::move(b));
+    if (parts.empty()) return;
+    // Un solo paso de deshacer: la primera y las demas enlazadas.
+    TerrainUndo step = std::move(parts.front());
+    for (std::size_t i = 1; i < parts.size(); ++i) step.linked.push_back(std::move(parts[i]));
     terrain_undo_.push_back(std::move(step));
     undo_kinds_.push_back('T');
     // Una accion nueva: no se puede rehacer nada.
     redo_.clear();
     terrain_redo_.clear();
     redo_kinds_.clear();
-    // Tope de memoria: 30 trazos.
-    while (terrain_undo_.size() > 30) {
+    // Tope de memoria: 30 trazos y 30 copias de teselas (un trazo que cruza
+    // bordes guarda varias). El ultimo se queda siempre.
+    const auto copies = [&]() {
+        std::size_t n = 0;
+        for (const TerrainUndo& s : terrain_undo_) n += 1 + s.linked.size();
+        return n;
+    };
+    while (terrain_undo_.size() > 1 && (terrain_undo_.size() > 30 || copies() > 30)) {
         terrain_undo_.pop_front();
         const auto it = std::find(undo_kinds_.begin(), undo_kinds_.end(), 'T');
         if (it != undo_kinds_.end()) undo_kinds_.erase(it);
@@ -132,11 +150,35 @@ void EditorApp::pushTerrainUndo(const std::string& path, std::shared_ptr<terrain
 }
 
 void EditorApp::applyTerrainSnapshot(const std::string& path, const terrain::TerrainData& snapshot) {
-    if (const std::shared_ptr<terrain::TerrainData> data = terrain_store_.findPath(path)) {
-        *data = snapshot;
-        data->markAll();
-        data->commitCollision();
+    std::shared_ptr<terrain::TerrainData> data = terrain_store_.findPath(path);
+    if (!data) {
+        // La tesela ya se solto (el streaming la descargo): sus datos vuelven
+        // al almacen, con cambios sin guardar. Al cargarse otra vez usa estos
+        // (no el archivo) y se guardan al soltarla o al guardar la escena.
+        data = std::make_shared<terrain::TerrainData>();
+        terrain_store_.put(path, data);
     }
+    const std::uint64_t previous = data->version();
+    *data = snapshot;
+    // Todo cambiado y con cambios (la copia trae el "guardado" de cuando se
+    // tomo). La version nunca baja: render, fisica y cosido de teselas la
+    // comparan con la que ya vieron.
+    const int last = static_cast<int>(data->resolution()) - 1;
+    const int last_splat = static_cast<int>(data->splatResolution()) - 1;
+    data->markSplat(0, 0, last_splat, last_splat);
+    do {
+        data->markHeights(0, 0, last, last);
+    } while (data->version() <= previous);
+    data->commitCollision();
+}
+
+void EditorApp::applyTerrainUndo(const TerrainUndo& step, bool after) {
+    const auto apply = [&](const TerrainUndo& part) {
+        const std::shared_ptr<terrain::TerrainData>& snapshot = after ? part.after : part.before;
+        if (snapshot) applyTerrainSnapshot(part.path, *snapshot);
+    };
+    apply(step);
+    for (const TerrainUndo& part : step.linked) apply(part);
 }
 
 // -----------------------------------------------------------------------------
@@ -152,6 +194,7 @@ bool EditorApp::drawTerrainTool(float delta_seconds) {
         if (terrain_stroke_) {
             terrain_stroke_ = false;
             terrain_stroke_before_.reset();
+            terrain_stroke_others_.clear();
         }
         return false;
     }
@@ -159,6 +202,46 @@ bool EditorApp::drawTerrainTool(float delta_seconds) {
     if (!data) return false;
     ImGuiIO& io = ImGui::GetIO();
     const Vec3 origin = entity.worldPosition();
+
+    // Si es una tesela de un Terreno grande, las demas teselas cargadas de la
+    // misma rejilla tambien: el pincel cruza los bordes sin dejar escalon.
+    struct Piece {
+        const terrain::Terrain* comp;
+        std::shared_ptr<terrain::TerrainData> data;
+        Vec3 origin;
+    };
+    std::vector<Piece> pieces;
+    pieces.push_back({comp, data, origin});
+    if (const terrain::TerrainTile* own = entity.tryGet<terrain::TerrainTile>()) {
+        for (const entt::entity h : world_.registry().view<terrain::Terrain, terrain::TerrainTile>()) {
+            if (h == entity.handle()) continue;
+            const ecs::Entity e = world_.wrap(h);
+            if (e.get<terrain::TerrainTile>().grid != own->grid || !e.activeInHierarchy()) continue;
+            const terrain::Terrain& c = e.get<terrain::Terrain>();
+            if (std::shared_ptr<terrain::TerrainData> d = terrain_store_.find(c)) pieces.push_back({&c, std::move(d), e.worldPosition()});
+        }
+    }
+    // Distancia en el suelo (XZ) de un punto al cuadrado de una pieza.
+    const auto distanceTo = [](const Piece& p, float x, float z) {
+        const float dx = std::max({p.origin.x - x, 0.0f, x - (p.origin.x + p.comp->size)});
+        const float dz = std::max({p.origin.z - z, 0.0f, z - (p.origin.z + p.comp->size)});
+        return std::sqrt(dx * dx + dz * dz);
+    };
+    // La pieza bajo (x, z); si ninguna, la activa.
+    const auto pieceAt = [&](float x, float z) -> const Piece& {
+        for (const Piece& p : pieces) {
+            if (distanceTo(p, x, z) <= 0.0f) return p;
+        }
+        return pieces.front();
+    };
+    // Antes de tocar una vecina en este trazo, su copia para deshacer.
+    const auto rememberBefore = [&](const Piece& p) {
+        if (p.data == data) return;
+        for (const auto& [path, before] : terrain_stroke_others_) {
+            if (path == p.comp->data) return;
+        }
+        terrain_stroke_others_.emplace_back(p.comp->data, std::make_shared<terrain::TerrainData>(*p.data));
+    };
 
     // Radio con [ y ].
     if (view_hovered_ && !io.WantTextInput) {
@@ -171,7 +254,18 @@ bool EditorApp::drawTerrainTool(float delta_seconds) {
     Vec3 direction{};
     bool on_terrain = false;
     if (view_hovered_ && mouseRay(io.MousePos.x, io.MousePos.y, origin_ray, direction)) {
-        on_terrain = terrain::raycast(*data, *comp, origin, origin_ray, direction, 5000.0f, hit);
+        // El impacto mas cercano entre las piezas.
+        float best = 1e30f;
+        for (const Piece& p : pieces) {
+            Vec3 point{};
+            if (!terrain::raycast(*p.data, *p.comp, p.origin, origin_ray, direction, 5000.0f, point)) continue;
+            const float distance = core::length(point - origin_ray);
+            if (distance < best) {
+                best = distance;
+                hit = point;
+                on_terrain = true;
+            }
+        }
     }
 
     // --- Previsualizacion: el circulo del pincel sobre el relieve ---
@@ -184,7 +278,8 @@ bool EditorApp::drawTerrainTool(float delta_seconds) {
                 const float a = static_cast<float>(i) / kSegments * 2.0f * core::kPi;
                 const float x = hit.x + std::cos(a) * radius;
                 const float z = hit.z + std::sin(a) * radius;
-                const Vec3 p{x, terrain::heightAt(*data, *comp, origin, x, z) + 0.05f, z};
+                const Piece& piece = pieceAt(x, z);
+                const Vec3 p{x, terrain::heightAt(*piece.data, *piece.comp, piece.origin, x, z) + 0.05f, z};
                 if (i > 0) overlayLine(previous, p, color);
                 previous = p;
             }
@@ -196,7 +291,9 @@ bool EditorApp::drawTerrainTool(float delta_seconds) {
         if (!ramp && terrain_brush_.falloff > 0.02f) {
             ring(radius * (1.0f - terrain_brush_.falloff), (color & 0x00FFFFFFu) | 0x80000000u);
         }
-        overlayLine(hit, hit + terrain::normalAt(*data, *comp, origin, hit.x, hit.z) * std::max(radius * 0.3f, 0.5f), color);
+        const Piece& under = pieceAt(hit.x, hit.z);
+        overlayLine(hit, hit + terrain::normalAt(*under.data, *under.comp, under.origin, hit.x, hit.z) * std::max(radius * 0.3f, 0.5f),
+                    color);
     }
     // La rampa: su primer punto y la linea hasta el raton.
     if (ramp && terrain_ramp_started_) {
@@ -216,11 +313,29 @@ bool EditorApp::drawTerrainTool(float delta_seconds) {
                 terrain_ramp_start_ = hit;
                 terrain_ramp_started_ = true;
             } else {
-                auto before = std::make_shared<terrain::TerrainData>(*data);
-                if (terrain::applyRamp(*data, *comp, origin, terrain_ramp_start_, hit, terrain_brush_)) {
-                    data->commitCollision();
-                    pushTerrainUndo(comp->data, std::move(before));
+                // Las piezas que toca la rampa (su caja en el suelo con el ancho).
+                const float half = terrain_brush_.ramp_width * 0.5f;
+                const float min_x = std::min(terrain_ramp_start_.x, hit.x) - half;
+                const float max_x = std::max(terrain_ramp_start_.x, hit.x) + half;
+                const float min_z = std::min(terrain_ramp_start_.z, hit.z) - half;
+                const float max_z = std::max(terrain_ramp_start_.z, hit.z) + half;
+                std::shared_ptr<terrain::TerrainData> main_before;
+                std::vector<std::pair<std::string, std::shared_ptr<terrain::TerrainData>>> others;
+                for (const Piece& p : pieces) {
+                    if (p.origin.x > max_x || p.origin.x + p.comp->size < min_x || p.origin.z > max_z ||
+                        p.origin.z + p.comp->size < min_z) {
+                        continue;
+                    }
+                    auto before = std::make_shared<terrain::TerrainData>(*p.data);
+                    if (!terrain::applyRamp(*p.data, *p.comp, p.origin, terrain_ramp_start_, hit, terrain_brush_)) continue;
+                    p.data->commitCollision();
+                    if (p.data == data) {
+                        main_before = std::move(before);
+                    } else {
+                        others.emplace_back(p.comp->data, std::move(before));
+                    }
                 }
+                if (main_before || !others.empty()) pushTerrainUndo(comp->data, std::move(main_before), std::move(others));
                 terrain_ramp_started_ = false;
             }
         }
@@ -232,18 +347,31 @@ bool EditorApp::drawTerrainTool(float delta_seconds) {
     if (clicked && !terrain_stroke_) {
         terrain_stroke_ = true;
         terrain_stroke_before_ = std::make_shared<terrain::TerrainData>(*data);
+        terrain_stroke_others_.clear();
     }
     if (terrain_stroke_) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             if (on_terrain) {
-                terrain::applyBrush(*data, *comp, origin, hit, terrain_brush_, std::min(delta_seconds, 0.05f), io.KeyShift);
+                // Cada pieza que pisa el circulo del pincel (las coordenadas
+                // son del mundo: el relieve sigue de una tesela a otra).
+                for (const Piece& p : pieces) {
+                    if (distanceTo(p, hit.x, hit.z) > terrain_brush_.radius) continue;
+                    rememberBefore(p);
+                    terrain::applyBrush(*p.data, *p.comp, p.origin, hit, terrain_brush_, std::min(delta_seconds, 0.05f),
+                                        io.KeyShift);
+                }
                 dirty_ = true;
             }
         } else {
-            // Fin del trazo: colision al dia y un paso de deshacer.
+            // Fin del trazo: colision al dia y un paso de deshacer (con todas
+            // las teselas tocadas; el streaming cose luego sus bordes).
             terrain_stroke_ = false;
             data->commitCollision();
-            pushTerrainUndo(comp->data, std::move(terrain_stroke_before_));
+            for (const auto& [path, before] : terrain_stroke_others_) {
+                if (const std::shared_ptr<terrain::TerrainData> other = terrain_store_.findPath(path)) other->commitCollision();
+            }
+            pushTerrainUndo(comp->data, std::move(terrain_stroke_before_), std::move(terrain_stroke_others_));
+            terrain_stroke_others_.clear();
         }
     }
     return view_hovered_ && (on_terrain || terrain_stroke_);

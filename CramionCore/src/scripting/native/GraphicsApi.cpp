@@ -190,6 +190,18 @@ api::Value getGraphicsOption(Runtime& rt, const std::string& key) {
     return {};
 }
 
+// Los valores posibles de una opcion (los da el host).
+api::Value graphicsChoices(Runtime& rt, const std::string& key) {
+    api::Value::Array list;
+    if (rt.graphics == nullptr) return api::Value(std::move(list));
+    for (const GraphicsOption& o : rt.graphics->options()) {
+        if (o.key != key) continue;
+        for (const std::string& choice : o.choices) list.emplace_back(choice);
+        break;
+    }
+    return api::Value(std::move(list));
+}
+
 }  // namespace
 
 void registerGraphicsApi(Runtime& rt) {
@@ -292,6 +304,30 @@ void registerGraphicsApi(Runtime& rt) {
         }
         return true;
     }, {"", "guarda la configuracion del jugador (juego exportado)", "bool"});
+
+    // Texturas: atajos con nombre para el menu de opciones (lo mismo que
+    // Graphics.set("texture_quality" / "texture_filtering" / "texture_lod_bias")).
+    n.function("Graphics.setTextureQuality", [&rt](api::Call& c) -> api::Value {
+        return setGraphicsOption(rt, "texture_quality", c.arg(0));
+    }, {"\"high\"", "calidad de las texturas: auto, low, medium, high, ultra o max (para lo que se carga despues)",
+        "bool"});
+    n.function("Graphics.textureQuality", [&rt](api::Call&) { return getGraphicsOption(rt, "texture_quality"); },
+               {"", "calidad de las texturas elegida (auto, low... o custom)", "texto"});
+    n.function("Graphics.textureQualityLevels", [&rt](api::Call&) { return graphicsChoices(rt, "texture_quality"); },
+               {"", "calidades de textura posibles", "lista de texto"});
+    n.function("Graphics.setTextureFiltering", [&rt](api::Call& c) -> api::Value {
+        return setGraphicsOption(rt, "texture_filtering", c.arg(0));
+    }, {"16", "filtrado anisotropico: 0 = auto, 1 = apagado, 2, 4, 8 o 16 (o \"auto\", \"off\", \"16x\"); al momento",
+        "bool"});
+    n.function("Graphics.textureFiltering", [&rt](api::Call&) { return getGraphicsOption(rt, "texture_filtering_active"); },
+               {"", "anisotropico en uso (1 = apagado; con auto, el del perfil del PC)", "numero"});
+    n.function("Graphics.textureFilteringLevels", [&rt](api::Call&) { return graphicsChoices(rt, "texture_filtering"); },
+               {"", "filtrados posibles (auto, off, 2x, 4x, 8x, 16x)", "lista de texto"});
+    n.function("Graphics.setTextureLodBias", [&rt](api::Call& c) -> api::Value {
+        return setGraphicsOption(rt, "texture_lod_bias", c.arg(0));
+    }, {"0.5", "sesgo de los mipmaps (-1..2): negativo = mas nitidas, positivo = mas suaves; al momento", "bool"});
+    n.function("Graphics.textureLodBias", [&rt](api::Call&) { return getGraphicsOption(rt, "texture_lod_bias"); },
+               {"", "sesgo de los mipmaps", "numero"});
 
     // Post-procesado global: Graphics.post.bloom = false,
     // Graphics.getPost("exposure_compensation"), Graphics.postKeys().

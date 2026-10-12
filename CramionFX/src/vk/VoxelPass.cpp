@@ -83,17 +83,7 @@ void VoxelPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
     pool_info.setPoolSizes(size);
     pool_ = vk::raii::DescriptorPool(device.handle(), pool_info);
 
-    vk::SamplerCreateInfo sampler{};
-    sampler.magFilter = vk::Filter::eLinear;
-    sampler.minFilter = vk::Filter::eLinear;
-    sampler.mipmapMode = vk::SamplerMipmapMode::eLinear;
-    sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = vk::SamplerAddressMode::eRepeat;
-    sampler.maxLod = VK_LOD_CLAMP_NONE;
-    if (device.physicalDevice().getFeatures().samplerAnisotropy) {
-        sampler.anisotropyEnable = VK_TRUE;
-        sampler.maxAnisotropy = std::min(16.0f, device.physicalDevice().getProperties().limits.maxSamplerAnisotropy);
-    }
-    sampler_ = vk::raii::Sampler(device.handle(), sampler);
+    createSampler(device);
 
     createPipelines(device, gbuffer_formats, depth_format, shadow_format);
 
@@ -107,6 +97,26 @@ void VoxelPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
     quad_indices_ = VulkanBuffer::createDeviceLocal(device, indices.data(), indices.size() * sizeof(std::uint32_t),
                                                     vk::BufferUsageFlagBits::eIndexBuffer);
     staging_.resize(frames_in_flight);
+}
+
+// Repetido, trilineal y con el filtrado de la configuracion grafica.
+void VoxelPass::createSampler(const VulkanDevice& device) {
+    vk::SamplerCreateInfo sampler{};
+    sampler.magFilter = vk::Filter::eLinear;
+    sampler.minFilter = vk::Filter::eLinear;
+    sampler.mipmapMode = vk::SamplerMipmapMode::eLinear;
+    sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = vk::SamplerAddressMode::eRepeat;
+    sampler.maxLod = VK_LOD_CLAMP_NONE;
+    applyTextureFiltering(sampler, device.physicalDevice(), filtering_);
+    sampler_ = vk::raii::Sampler(device.handle(), sampler);
+}
+
+void VoxelPass::setTextureFiltering(const TextureFiltering& filtering) {
+    if (filtering == filtering_) return;
+    filtering_ = filtering;
+    if (device_ == nullptr || !*sampler_) return;
+    createSampler(*device_);
+    if (*set_ && *albedo_.view) writeSet(*device_);
 }
 
 void VoxelPass::destroy() {
@@ -340,6 +350,10 @@ void VoxelPass::setTextures(std::uint32_t size, const std::vector<VoxelTextureLa
         allocate.setSetLayouts(*set_layout_);
         set_ = std::move(vk::raii::DescriptorSets(device.handle(), allocate).front());
     }
+    writeSet(device);
+}
+
+void VoxelPass::writeSet(const VulkanDevice& device) {
     const vk::DescriptorImageInfo a{*sampler_, *albedo_.view, vk::ImageLayout::eShaderReadOnlyOptimal};
     const vk::DescriptorImageInfo n{*sampler_, *normal_.view, vk::ImageLayout::eShaderReadOnlyOptimal};
     const vk::DescriptorImageInfo m{*sampler_, *material_.view, vk::ImageLayout::eShaderReadOnlyOptimal};

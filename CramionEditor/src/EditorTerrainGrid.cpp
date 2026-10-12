@@ -13,6 +13,8 @@
 
 #include "Dialogs.h"
 
+#include <CramionCore/cvar/CVar.h>
+
 #include <imgui.h>
 
 #include <algorithm>
@@ -47,7 +49,23 @@ void EditorApp::updateTerrainStreaming() {
     pollGridImport();
     // En el editor, la camara; en Play, tambien las Fuentes de carga. Lo
     // esculpido se guarda al soltar la tesela (en Play se queda en memoria).
+    // Los presupuestos (ms por frame en el hilo principal, teselas en vuelo,
+    // MB subidos por frame) son CVars del streamer: stream.MainBudgetMs,
+    // stream.MaxInFlight, stream.UploadMBPerFrame.
+    const auto start = std::chrono::steady_clock::now();
+    // Bytes por frame para subir terrenos a la GPU (cambios y teselas nuevas).
+    static cvar::CVarBase* upload_mb = nullptr;
+    static std::uint64_t upload_version = ~0ull;
+    if (upload_mb == nullptr) upload_mb = cvar::Registry::instance().find("stream.UploadMBPerFrame");
+    if (upload_mb != nullptr && upload_mb->version() != upload_version) {
+        upload_version = upload_mb->version();
+        double mb = 16.0;
+        if (!cvar::detail::parseNumber(upload_mb->toString(), mb)) mb = 16.0;
+        renderer_.setTerrainUploadBudget(static_cast<std::size_t>(std::max(mb, 0.25) * 1024.0 * 1024.0));
+    }
     terrain_streamer_.update(world_, terrain_store_, scene_.camera().position(), playing(), !playing());
+    frame_streaming_ms_ +=
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
 }
 
 void EditorApp::startGridImport(ecs::Entity grid_entity, terrain::Heightmap map, const terrain::GridImportOptions& options) {
@@ -57,7 +75,10 @@ void EditorApp::startGridImport(ecs::Entity grid_entity, terrain::Heightmap map,
     job->progress = std::make_shared<terrain::GridImportProgress>();
     const terrain::TerrainGrid grid = grid_entity.get<terrain::TerrainGrid>();
     job->folder = grid.folder;
-    // Lo que haya cargado de esta rejilla se suelta (se va a reescribir).
+    // Lo que haya cargado de esta rejilla se suelta (se va a reescribir) y no
+    // se vuelve a leer hasta que acabe: el streaming abriendo los archivos a
+    // la vez que el otro hilo los escribe hace fallar el rename en Windows.
+    terrain_streamer_.pauseFolder(grid.folder, true);
     terrain_streamer_.clear(world_, terrain_store_, false);
     for (int z = 0; z < grid.tiles_z; ++z) {
         for (int x = 0; x < grid.tiles_x; ++x) terrain_store_.release(terrain::tilePath(grid, x, z));
@@ -84,6 +105,7 @@ void EditorApp::pollGridImport() {
             for (int x = 0; x < g.tiles_x; ++x) terrain_store_.release(terrain::tilePath(g, x, z));
         }
     }
+    terrain_streamer_.pauseFolder(grid_import_->folder, false);
     if (error.empty()) {
         pushToast("Terreno importado", std::to_string(grid_import_->progress->total.load()) + " teselas en " + grid_import_->folder);
         refreshDatabase();
@@ -164,7 +186,11 @@ void EditorApp::drawTerrainGridInspector(ecs::Entity entity) {
     ImGui::SetItemTooltip("Pasa un terreno normal (el del Generador, por ejemplo) a las teselas, ampliado al tamano del mundo.");
     if (ImGui::BeginPopup("grid_from_terrain")) {
         for (const ecs::Entity& e : sources) {
-            if (!ImGui::MenuItem(e.name().c_str())) continue;
+            // Id por entidad: los terrenos suelen llamarse todos "Terreno".
+            ImGui::PushID(static_cast<int>(entt::to_integral(e.handle())));
+            const bool picked = ImGui::MenuItem(e.name().c_str());
+            ImGui::PopID();
+            if (!picked) continue;
             const terrain::Terrain& t = e.get<terrain::Terrain>();
             if (const std::shared_ptr<terrain::TerrainData> data = terrain_store_.get(t)) {
                 grid.height = t.height;  // la misma escala de alturas

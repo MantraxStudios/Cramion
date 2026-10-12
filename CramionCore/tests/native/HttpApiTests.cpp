@@ -2,6 +2,7 @@
 // query, la validacion de las peticiones y la entrega de las respuestas a su
 // funcion. En Linux no hay HTTP: cada peticion valida vuelve con el error
 // "HTTP no disponible en esta plataforma" (asi se prueba el camino entero).
+// En Windows (WinHTTP) las peticiones salen de verdad: ver failedWithReason.
 
 #include "ApiTest.h"
 
@@ -33,6 +34,26 @@ const json* waitFor(ApiFixture& t, Calls& calls, std::uint64_t id) {
     }
     return nullptr;
 }
+
+// Sin WinHTTP (Linux) la peticion vuelve con "HTTP no disponible en esta
+// plataforma". En Windows va de verdad a la red: example.com responde 404/405
+// (o, sin Internet, un error de WinHTTP). En los dos casos ok = false y
+// res.error explica por que.
+#if defined(_WIN32)
+bool failedWithReason(const json& res) {
+    return res["ok"] == false && res["error"].is_string() && !res["error"].get<std::string>().empty();
+}
+bool hasResponseShape(const json& res) {
+    return res["ok"] == false && res["status"].is_number() && res["body"].is_string() && res["headers"].is_object() &&
+           res["time"].is_number();
+}
+#else
+bool failedWithReason(const json& res) { return res["error"] == "HTTP no disponible en esta plataforma"; }
+bool hasResponseShape(const json& res) {
+    return res["ok"] == false && res["status"] == 0 && res["body"] == "" && res["headers"].is_object() &&
+           res["time"].is_number();
+}
+#endif
 
 }  // namespace
 
@@ -129,10 +150,8 @@ int main() {
     check(r1 != nullptr && r1->is_array() && r1->size() == 1, "la funcion recibe la respuesta");
     if (r1 != nullptr && r1->is_array() && !r1->empty()) {
         const json& res = (*r1)[0];
-        check(res["ok"] == false && res["status"] == 0 && res["body"] == "" && res["headers"].is_object() &&
-                  res["time"].is_number(),
-              "res = {ok, status, body, time, headers}");
-        check(res["error"] == "HTTP no disponible en esta plataforma", "res.error dice por que fallo");
+        check(hasResponseShape(res), "res = {ok, status, body, time, headers}");
+        check(failedWithReason(res), "res.error dice por que fallo");
     }
     Value body = Value::object();
     body.set("puntos", 10);
@@ -151,7 +170,7 @@ int main() {
                                  {{"$f", 3}}}}});
     check(req["ok"] == true && req["result"].is_number(), "Http.request por el puente (metodo en minusculas)");
     const json* r3 = waitFor(t, calls, 3);
-    check(r3 != nullptr && (*r3)[0]["error"] == "HTTP no disponible en esta plataforma", "su respuesta llega a la funcion");
+    check(r3 != nullptr && failedWithReason((*r3)[0]), "su respuesta llega a la funcion");
     const json bad_method = t.bridge({{"fn", "Http.request"},
                                       {"args", {{{"url", "https://example.com/"}, {"method", "BAD METHOD"}}, {{"$f", 4}}}}});
     const json* r4 = bad_method["ok"] == true ? waitFor(t, calls, 4) : nullptr;

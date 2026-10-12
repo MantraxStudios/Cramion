@@ -82,6 +82,17 @@ float sphereExit(vec3 origin, vec3 direction, float radius) {
     return discriminant < 0.0 ? -1.0 : -b + sqrt(discriminant);
 }
 
+// Distancia a la esfera desde fuera (entrada del rayo); -1 si no la toca o
+// queda detras.
+float sphereEnter(vec3 origin, vec3 direction, float radius) {
+    float b = dot(origin, direction);
+    float c = dot(origin, origin) - radius * radius;
+    float discriminant = b * b - c;
+    if (discriminant < 0.0) return -1.0;
+    float t = -b - sqrt(discriminant);
+    return t >= 0.0 ? t : -1.0;
+}
+
 float heightFraction(vec3 planet_position) {
     return clamp((length(planet_position) - kEarthRadius - cloudBottom()) /
                  (cloudTop() - cloudBottom()), 0.0, 1.0);
@@ -227,14 +238,33 @@ void main() {
     // La escena esta en el origen del planeta, a ras de suelo.
     vec3 origin = vec3(camera.position.x, kEarthRadius + max(camera.position.y, 0.0) + 2.0,
                        camera.position.z);
-    // Mirando hacia abajo el rayo choca con el suelo antes que con la capa.
-    if (direction.y < -0.01) {
-        out_clouds = vec4(0.0, 0.0, 0.0, 1.0);
-        return;
+    // Tramo del rayo dentro de la capa segun donde este la camara. Antes solo
+    // se miraba desde debajo de la base: dentro o encima de la capa la salida
+    // de la esfera de la base quedaba detras (o antes que la de la cima) y las
+    // nubes desaparecian.
+    float bottom_radius = kEarthRadius + cloudBottom();
+    float top_radius = kEarthRadius + cloudTop();
+    float height = length(origin);
+    float t_start;
+    float t_end;
+    if (height < bottom_radius) {
+        // Debajo: mirando hacia abajo el rayo choca con el suelo antes que con
+        // la capa.
+        if (direction.y < -0.01) {
+            out_clouds = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
+        t_start = sphereExit(origin, direction, bottom_radius);
+        t_end = sphereExit(origin, direction, top_radius);
+    } else {
+        // Dentro (desde la camara) o encima (desde la entrada a la cima).
+        t_start = height <= top_radius ? 0.0 : sphereEnter(origin, direction, top_radius);
+        t_end = sphereExit(origin, direction, top_radius);
+        // Hacia abajo la capa acaba en la base (debajo esta el suelo).
+        float bottom_hit = sphereEnter(origin, direction, bottom_radius);
+        if (bottom_hit >= 0.0) t_end = min(t_end, bottom_hit);
     }
-
-    float t_start = sphereExit(origin, direction, kEarthRadius + cloudBottom());
-    float t_end = min(sphereExit(origin, direction, kEarthRadius + cloudTop()), kMaxDistance);
+    t_end = min(t_end, kMaxDistance);
     if (t_start < 0.0 || t_start >= t_end) {
         out_clouds = vec4(0.0, 0.0, 0.0, 1.0);
         return;

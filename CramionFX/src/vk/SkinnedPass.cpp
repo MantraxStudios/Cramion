@@ -42,13 +42,9 @@ vk::PipelineShaderStageCreateInfo stage(vk::ShaderStageFlagBits flag,
     return info;
 }
 
-}  // namespace
-
-void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
-                         vk::Format shadow_format, vk::Format hdr_format) {
-    destroy();
-
-    // --- Muestreador de las texturas: trilineal y repetido ---
+// Muestreador de las texturas de los materiales: trilineal y repetido, con el
+// anisotropico y el sesgo de los mips de la configuracion grafica.
+vk::raii::Sampler createMaterialSampler(const VulkanDevice& device, const TextureFiltering& filtering) {
     vk::SamplerCreateInfo sampler_info{};
     sampler_info.magFilter = vk::Filter::eLinear;
     sampler_info.minFilter = vk::Filter::eLinear;
@@ -57,7 +53,28 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     sampler_info.addressModeV = vk::SamplerAddressMode::eRepeat;
     sampler_info.addressModeW = vk::SamplerAddressMode::eRepeat;
     sampler_info.maxLod = VK_LOD_CLAMP_NONE;
-    sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
+    applyTextureFiltering(sampler_info, device.physicalDevice(), filtering);
+    return vk::raii::Sampler(device.handle(), sampler_info);
+}
+
+}  // namespace
+
+bool SkinnedPass::setTextureFiltering(const VulkanDevice& device, const TextureFiltering& filtering) {
+    if (filtering == filtering_) return false;
+    filtering_ = filtering;
+    if (!*sampler_) return false;
+    sampler_ = createMaterialSampler(device, filtering_);
+    ++sampler_revision_;
+    return true;
+}
+
+void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
+                         vk::Format shadow_format, vk::Format hdr_format) {
+    destroy();
+
+    // --- Muestreador de las texturas ---
+    sampler_ = createMaterialSampler(device, filtering_);
+    ++sampler_revision_;
 
     // --- Set 0: camara + huesos + lluvia (mapa y parametros) ---
     // Camara y clima tambien en fragmentos y vertices: los shaders de

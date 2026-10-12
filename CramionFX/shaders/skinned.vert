@@ -77,7 +77,11 @@ void main() {
     // si va con la matriz directa.
     mat3 normal_to_world = mat3(cross(to_world[1], to_world[2]), cross(to_world[2], to_world[0]),
                                 cross(to_world[0], to_world[1]));
-    if (determinant(to_world) < 0.0) normal_to_world = -normal_to_world;  // espejo
+    // Sin girarla con determinante < 0 (espejo): los cofactores ya la dejan
+    // del lado del orden de los vertices, que con escala negativa sale al
+    // reves; el raster no cambia la cara delantera, asi que esa cara se ve
+    // como trasera y el fragment (!gl_FrontFacing) la gira hacia fuera. Girarla
+    // aqui tambien la dejaba mirando hacia dentro (doble giro).
     v_normal = normal_to_world * in_normal;
     v_tangent = vec4(to_world * in_tangent.xyz, in_tangent.w);
     v_uv = in_uv;

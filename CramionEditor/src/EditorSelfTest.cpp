@@ -1181,6 +1181,71 @@ void vertex(inout Vertex v) {
             closeWorkspace(workspaces_.back().id, false);
             check(workspaces_.size() == 1, "cerrar la pestana del prefab", f);
             self_test_wait_ = 5;
+            self_test_step_ = 629;  // Blueprint de actor (630-634) y luego el 64
+            break;
+        }
+        // --- Blueprint de actor: crearlo, editarlo y que su instancia se actualice ---
+        case 630: {
+            returnToSceneWorkspace();
+            check(createActorBlueprint({}, assets::AssetType::Unknown, "BP_Prueba", 0, false), "crear un Blueprint de actor vacio", f);
+            self_test_prefab_ = {};
+            for (const Workspace& ws : workspaces_) {
+                if (ws.kind == WorkspaceKind::Blueprint) self_test_prefab_ = ws.prefab;
+            }
+            check(self_test_prefab_.valid(), "el Blueprint tiene su pestana", f);
+            self_test_wait_ = 12;
+            break;
+        }
+        case 631: {
+            check(activeWorkspaceKind() == WorkspaceKind::Blueprint, "se abre la pestana Blueprint", f);
+            const ecs::Entity root = prefabStageRoot();
+            check(root.valid() && root.has<vscript::VisualScript>() && !root.get<vscript::VisualScript>().graph.empty(),
+                  "la raiz del Blueprint lleva su Event Graph", f);
+            const BlueprintEditorState* bp = activeBlueprint();
+            std::error_code error;
+            check(bp != nullptr && !bp->graph.path.empty() && std::filesystem::exists(bp->graph.path, error),
+                  "el .crgraph existe y esta abierto en la pestana", f);
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_blueprint.png");
+            requestWorkspace(0);
+            self_test_wait_ = 12;
+            break;
+        }
+        case 632: {
+            check(activeWorkspaceKind() == WorkspaceKind::Scene, "del Blueprint se vuelve a la Escena", f);
+            const ecs::Entity instance = instantiatePrefabAsset(self_test_prefab_, {}, Vec3{-3.0f, 0.5f, 0.0f});
+            check(instance.valid() && instance.has<vscript::VisualScript>(), "una instancia del Blueprint en la escena", f);
+            flushCommit();
+            openPrefabWorkspace(self_test_prefab_);  // un Blueprint va a su pestana Blueprint
+            self_test_wait_ = 12;
+            break;
+        }
+        case 633: {
+            check(activeWorkspaceKind() == WorkspaceKind::Blueprint, "abrir el prefab de un Blueprint lleva a su pestana", f);
+            ecs::Entity piece = createEntity(1, {});
+            piece.setName("Pieza BP");
+            check(piece.valid() && piece.parent() == prefabStageRoot(), "lo creado va dentro de la raiz del Blueprint", f);
+            commit();
+            check(saveBlueprintWorkspace(), "Guardar el Blueprint", f);
+            check(!blueprintDirty(active_workspace_), "y queda sin cambios", f);
+            requestWorkspace(0);
+            self_test_wait_ = 12;
+            break;
+        }
+        case 634: {
+            const std::vector<ecs::Entity> instances = ecs::prefabInstances(world_, self_test_prefab_);
+            bool updated = false;
+            for (const ecs::Entity e : instances) {
+                for (const entt::entity child : e.children()) updated = updated || world_.wrap(child).name() == "Pieza BP";
+            }
+            check(instances.size() == 1 && updated, "la instancia de la escena recibe la pieza nueva", f);
+            int blueprint_tab = -1;
+            for (const Workspace& ws : workspaces_) {
+                if (ws.kind == WorkspaceKind::Blueprint) blueprint_tab = ws.id;
+            }
+            if (blueprint_tab >= 0) closeWorkspace(blueprint_tab, false);
+            check(blueprint_editors_.empty() && workspaces_.size() == 1, "cerrar la pestana Blueprint", f);
+            self_test_step_ = 63;  // sigue en el 64
+            self_test_wait_ = 5;
             break;
         }
         // --- Plantilla MMO RPG: crearla, jugarla y capturar su interfaz ---

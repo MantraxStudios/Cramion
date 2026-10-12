@@ -293,6 +293,45 @@ void WaterPass::createOceanImage(const VulkanDevice& device, OceanImage& out, vk
     out.storage = vk::raii::ImageView(device.handle(), view_info);
 }
 
+// Repetir (cada cascada es periodica), trilineal y anisotropico (el de la
+// configuracion grafica): de cerca nitido y a lo lejos la media (sin parpadeo).
+void WaterPass::createOceanSampler(const VulkanDevice& device) {
+    vk::SamplerCreateInfo sampler_info{};
+    sampler_info.magFilter = vk::Filter::eLinear;
+    sampler_info.minFilter = vk::Filter::eLinear;
+    sampler_info.mipmapMode = vk::SamplerMipmapMode::eLinear;
+    sampler_info.addressModeU = vk::SamplerAddressMode::eRepeat;
+    sampler_info.addressModeV = vk::SamplerAddressMode::eRepeat;
+    sampler_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+    sampler_info.maxLod = static_cast<float>(ocean_mips_);
+    applyTextureFiltering(sampler_info, device.physicalDevice(), TextureFiltering{filtering_.anisotropy, 0.0f});
+    ocean_sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
+}
+
+void WaterPass::setTextureFiltering(const TextureFiltering& filtering) {
+    if (filtering.anisotropy == filtering_.anisotropy) {
+        filtering_ = filtering;
+        return;
+    }
+    filtering_ = filtering;
+    if (device_ == nullptr || !*ocean_sampler_) return;
+    createOceanSampler(*device_);
+    for (std::size_t i = 0; i < sets_.size(); ++i) {
+        const std::array<vk::DescriptorImageInfo, 2> ocean_infos = {{
+            {*ocean_sampler_, *displacement_.sampled, vk::ImageLayout::eShaderReadOnlyOptimal},
+            {*ocean_sampler_, *derivatives_.sampled, vk::ImageLayout::eShaderReadOnlyOptimal},
+        }};
+        std::array<vk::WriteDescriptorSet, 2> writes{};
+        for (std::uint32_t b = 0; b < 2; ++b) {
+            writes[b].dstSet = *sets_[i];
+            writes[b].dstBinding = 2 + b;
+            writes[b].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            writes[b].setImageInfo(ocean_infos[b]);
+        }
+        device_->handle().updateDescriptorSets(writes, nullptr);
+    }
+}
+
 void WaterPass::createOcean(const VulkanDevice& device) {
     ocean_mips_ = 0;
     for (std::uint32_t s = kOceanResolution; s > 0; s >>= 1) ++ocean_mips_;
@@ -302,22 +341,7 @@ void WaterPass::createOcean(const VulkanDevice& device) {
     createOceanImage(device, displacement_, kOceanFormat, kOceanCascades, ocean_mips_, usage);
     createOceanImage(device, derivatives_, kOceanFormat, kOceanCascades, ocean_mips_, usage);
 
-    // Repetir (cada cascada es periodica), trilineal y anisotropico: de cerca
-    // nitido y a lo lejos la media (sin parpadeo).
-    vk::SamplerCreateInfo sampler_info{};
-    sampler_info.magFilter = vk::Filter::eLinear;
-    sampler_info.minFilter = vk::Filter::eLinear;
-    sampler_info.mipmapMode = vk::SamplerMipmapMode::eLinear;
-    sampler_info.addressModeU = vk::SamplerAddressMode::eRepeat;
-    sampler_info.addressModeV = vk::SamplerAddressMode::eRepeat;
-    sampler_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
-    sampler_info.maxLod = static_cast<float>(ocean_mips_);
-    if (device.physicalDevice().getFeatures().samplerAnisotropy) {
-        sampler_info.anisotropyEnable = VK_TRUE;
-        sampler_info.maxAnisotropy =
-            std::min(8.0f, device.physicalDevice().getProperties().limits.maxSamplerAnisotropy);
-    }
-    ocean_sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
+    createOceanSampler(device);
 
     // Computo: un solo shader con cuatro modos (espectro, filas, columnas, montaje).
     const std::array<vk::DescriptorType, 4> fft_bindings = {

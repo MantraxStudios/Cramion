@@ -36,6 +36,7 @@ struct LightingEditorState {
     gfx::BakedLighting result;
     lighting::BakeStats stats;
     std::filesystem::path target;
+    std::filesystem::path scene;  // la escena horneada (si se cambia de escena, no se aplica a la otra)
     bool auto_volume = false;
 
     ~LightingEditorState() {
@@ -52,10 +53,14 @@ LightingEditorState& EditorApp::lightingEditor() {
 }
 
 void EditorApp::loadSceneLighting() {
+    loadSceneLighting(scene_path_);
+}
+
+void EditorApp::loadSceneLighting(const std::filesystem::path& scene) {
     gfx::BakedLighting data;
     gfx::LightingMode mode = gfx::LightingMode::Realtime;
-    if (!scene_path_.empty()) {
-        const std::filesystem::path file = lighting::bakedLightingFile(scene_path_);
+    if (!scene.empty()) {
+        const std::filesystem::path file = lighting::bakedLightingFile(scene);
         std::string error;
         if (std::filesystem::exists(file) && !lighting::loadBakedLighting(file, data, mode, &error)) {
             std::cerr << "[Iluminacion] " << error << "\n";
@@ -100,6 +105,7 @@ void EditorApp::startLightingBake() {
     st.ok = false;
     st.error.clear();
     st.target = lighting::bakedLightingFile(scene_path_);
+    st.scene = scene_path_;
     if (st.thread.joinable()) st.thread.join();
     LightingEditorState* state = &st;
     std::shared_ptr<lighting::BakeProgress> progress = st.progress;
@@ -125,8 +131,17 @@ void EditorApp::drawLightingWindow() {
         if (st.ok) {
             std::string error;
             if (lighting::saveBakedLighting(st.target, st.result, gfx::LightingMode::Baked, &error)) {
-                renderer_.setBakedLighting(st.result);
-                renderer_.setLightingMode(gfx::LightingMode::Baked);
+                // Se guarda siempre, pero solo se aplica si sigue abierta la
+                // escena horneada y no se esta en Play (al parar, exitPlay
+                // recarga el .crbake de la escena abierta).
+                if (st.scene == scene_path_) {
+                    if (playing()) {
+                        play_lighting_changed_ = true;
+                    } else {
+                        renderer_.setBakedLighting(st.result);
+                        renderer_.setLightingMode(gfx::LightingMode::Baked);
+                    }
+                }
                 refreshDatabase();
                 char text[160];
                 std::snprintf(text, sizeof(text), "%zu sondas, %zu triángulos, %.1f s%s", st.stats.probes, st.stats.triangles,
@@ -151,8 +166,10 @@ void EditorApp::drawLightingWindow() {
     static const char* kModes[] = {"Tiempo real (SSGI / rayos)", "Horneada (sondas)"};
     if (ImGui::Combo("Modo", &mode, kModes, 2)) {
         renderer_.setLightingMode(static_cast<gfx::LightingMode>(mode));
-        // Se guarda con el horneado (si lo hay).
-        if (!scene_path_.empty() && !renderer_.bakedLighting().empty()) {
+        // Se guarda con el horneado (si lo hay). No si lo cargado no es el
+        // .crbake de la escena (Scene.load en Play, u horneado nuevo que
+        // espera a parar): se escribiria lo de otro nivel o el viejo.
+        if (!scene_path_.empty() && !renderer_.bakedLighting().empty() && !play_lighting_changed_) {
             lighting::saveBakedLighting(lighting::bakedLightingFile(scene_path_), renderer_.bakedLighting(),
                                         static_cast<gfx::LightingMode>(mode));
         }
@@ -254,13 +271,16 @@ void EditorApp::configureLightingBake(int rays, int bounces, float spacing) {
 std::string EditorApp::lightingStateJson() {
     LightingEditorState& st = lightingEditor();
     const gfx::BakedLighting& baked = renderer_.bakedLighting();
+    // El hilo del horneado escribe st.error: solo se lee cuando ya no corre
+    // (o ya acabo: finished se publica despues de escribirlo).
+    const bool error_ready = !st.running || st.finished.load();
     nlohmann::json out{{"baking", st.running},
                        {"progress", st.progress ? st.progress->fraction.load() : 0.0f},
                        {"mode", renderer_.lightingMode() == gfx::LightingMode::Baked ? "baked" : "realtime"},
                        {"active", renderer_.bakedGiActive()},
                        {"volumes", baked.volumes.size()},
                        {"probes", baked.probes.size() / gfx::kBakedProbeVec4},
-                       {"last_error", st.error}};
+                       {"last_error", error_ready ? st.error : std::string()}};
     return out.dump();
 }
 

@@ -71,6 +71,19 @@ std::uint32_t textureSizeFor(HardwareTier tier) {
     return 4096;
 }
 
+// Anisotropico: en una GPU de escritorio 16x apenas cuesta (lo hace el
+// hardware de texturas); en las integradas y las de poca memoria se queda
+// en 4x, que ya quita casi todo el borroso de los suelos en angulo.
+std::uint32_t anisotropyFor(HardwareTier tier) {
+    switch (tier) {
+        case HardwareTier::Low: return 4;
+        case HardwareTier::Medium: return 8;
+        case HardwareTier::High: return 16;
+        case HardwareTier::Ultra: return 16;
+    }
+    return 8;
+}
+
 FrameBudget::FrameBudget() {
     for (auto& row : learned_) row.fill(-1.0f);
 }

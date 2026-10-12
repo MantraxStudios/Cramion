@@ -74,6 +74,10 @@ enum class Glyph : int {
     Object,
     Light,
     Grid,
+    // Blueprints (panel Componentes)
+    Bone,
+    Blueprint,
+    Mesh,
     Count
 };
 

@@ -22,6 +22,7 @@
 
 #include "CramionCore/navigation/Navigation.h"
 
+#include "CramionCore/cvar/CVar.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/terrain/Terrain.h"
@@ -66,8 +67,14 @@ constexpr float kBig = 1.0e7f;
 // no relanza sus baldosas en cada frame).
 constexpr std::size_t kSettleTriangles = 20000;
 constexpr float kSettleSeconds = 0.2f;
-// Tiempo del hilo principal por frame para juntar geometria de baldosas.
+// Tiempo del hilo principal por frame para juntar geometria de baldosas (los
+// terrenos, con nav.AsyncTerrainGather, se juntan en los hilos de fondo).
 constexpr double kGatherBudgetMs = 4.0;
+
+cvar::CVar<bool> g_async_terrain_gather("nav.AsyncTerrainGather", true,
+                                        "Los triangulos de los terrenos de cada baldosa se sacan en los hilos de "
+                                        "la navegacion (de un snapshot de las alturas), no en el hilo principal",
+                                        cvar::Saved);
 // Por encima del suelo al dibujar la malla (como el DrawOffset de Unreal).
 constexpr float kDrawOffset = 0.06f;
 
@@ -147,8 +154,9 @@ struct Source {
     std::unordered_map<TileKey, std::vector<int>> buckets;
     float bucket_tile = 0.0f;
     float bucket_border = 0.0f;
-    // Terrain.
-    std::shared_ptr<const terrain::TerrainData> terrain;
+    // Terrain: snapshot inmutable de las alturas (se toma en el hilo
+    // principal al cambiar la fuente; lo leen los hilos de fondo).
+    std::shared_ptr<const terrain::TerrainSnapshot> terrain;
     Mat4 world = Mat4::identity();
     float terrain_size = 0.0f;
     float terrain_height = 0.0f;
@@ -168,6 +176,58 @@ struct Modifier {
     NavArea area = NavArea::Block;
 };
 
+// Un terreno que toca una baldosa: se convierte en triangulos en el hilo de
+// fondo (solo lee el snapshot, inmutable).
+struct TerrainPiece {
+    std::shared_ptr<const terrain::TerrainSnapshot> snapshot;
+    Mat4 world = Mat4::identity();
+    float size = 0.0f;
+    float height = 0.0f;
+};
+
+// Triangulos de un terreno dentro de `area` (mundo). `nav_cell` = cell_size de
+// la navegacion (muestras mas finas no aportan nada). Pura: vale en cualquier hilo.
+void gatherTerrainPiece(const TerrainPiece& piece, const Aabb& area, float nav_cell, TriangleSoup& out) {
+    if (!piece.snapshot || !piece.snapshot->heights) return;
+    const std::vector<float>& heights = *piece.snapshot->heights;
+    const int res = static_cast<int>(piece.snapshot->resolution);
+    if (res < 3 || piece.size <= 0.0f ||
+        heights.size() < static_cast<std::size_t>(res) * static_cast<std::size_t>(res)) {
+        return;
+    }
+    const float cell = piece.size / static_cast<float>(res - 1);
+    const int stride = std::max(1, static_cast<int>(std::floor(nav_cell / cell)));
+    // Zona en coordenadas locales del terreno.
+    const Mat4 inverse = core::inverse(piece.world);
+    Aabb local;
+    for (int i = 0; i < 4; ++i) {
+        local.add(transformPoint(inverse, Vec3{(i & 1) ? area.max.x : area.min.x, 0.0f, (i & 2) ? area.max.z : area.min.z}));
+    }
+    const int x0 = std::clamp(static_cast<int>(std::floor(local.min.x / cell)) - stride, 0, res - 1);
+    const int x1 = std::clamp(static_cast<int>(std::ceil(local.max.x / cell)) + stride, 0, res - 1);
+    const int z0 = std::clamp(static_cast<int>(std::floor(local.min.z / cell)) - stride, 0, res - 1);
+    const int z1 = std::clamp(static_cast<int>(std::ceil(local.max.z / cell)) + stride, 0, res - 1);
+    // En los vertices de la rejilla la bilineal de TerrainData::sample es la
+    // muestra misma: se lee directamente.
+    const auto point = [&](int i, int j) {
+        i = std::min(i, res - 1);
+        j = std::min(j, res - 1);
+        const float h = heights[static_cast<std::size_t>(j) * static_cast<std::size_t>(res) + static_cast<std::size_t>(i)] *
+                        piece.height;
+        return transformPoint(piece.world, Vec3{static_cast<float>(i) * cell, h, static_cast<float>(j) * cell});
+    };
+    for (int j = z0; j < z1; j += stride) {
+        for (int i = x0; i < x1; i += stride) {
+            const Vec3 p00 = point(i, j);
+            const Vec3 p01 = point(i, j + stride);
+            const Vec3 p10 = point(i + stride, j);
+            const Vec3 p11 = point(i + stride, j + stride);
+            out.addTriangle(p00, p01, p10);
+            out.addTriangle(p10, p01, p11);
+        }
+    }
+}
+
 // --- Trabajo de una baldosa (se copia al hilo) --------------------------------
 
 struct TileJob {
@@ -178,6 +238,10 @@ struct TileJob {
     float bmin[3]{};
     float bmax[3]{};
     TriangleSoup geometry;
+    // Terrenos que tocan la baldosa: sus triangulos se suman a `geometry` en
+    // el hilo de fondo (en `terrain_area`, la baldosa con su borde).
+    std::vector<TerrainPiece> terrains;
+    Aabb terrain_area;
     std::vector<Aabb> volumes;
     std::vector<Modifier> modifiers;
 };
@@ -579,6 +643,10 @@ struct NavigationSystem::Impl {
                         job = std::move(jobs.front());
                         jobs.pop_front();
                     }
+                    for (const TerrainPiece& piece : job->terrains) {
+                        gatherTerrainPiece(piece, job->terrain_area, job->settings.cell_size, job->geometry);
+                    }
+                    job->terrains.clear();  // suelta los snapshots
                     TileResult r = buildTile(*job);
                     std::lock_guard lock(mutex);
                     results.push_back(r);
@@ -764,7 +832,7 @@ struct NavigationSystem::Impl {
         if (terrain_data) {
             const terrain::Terrain& t = e.get<terrain::Terrain>();
             src.kind = Source::Kind::Terrain;
-            src.terrain = terrain_data;
+            src.terrain = terrain_data->snapshot();  // hilo principal
             src.terrain_size = t.size;
             src.terrain_height = t.height;
             for (int i = 0; i < 8; ++i) {
@@ -856,8 +924,9 @@ struct NavigationSystem::Impl {
         }
     }
 
-    // Geometria de una baldosa (area con borde en [lo, hi] del mundo).
-    void gather(TileKey key, const Aabb& area, TriangleSoup& out) {
+    // Geometria de una baldosa (area con borde en [lo, hi] del mundo). Con
+    // `terrains`, los terrenos no se triangulan aqui: se apuntan para el hilo.
+    void gather(TileKey key, const Aabb& area, TriangleSoup& out, std::vector<TerrainPiece>* terrains = nullptr) {
         for (auto& [handle, src] : sources) {
             if (!src.bounds.overlapsXz(area)) continue;
             // Triangulos (primitivas y mallas).
@@ -877,7 +946,12 @@ struct NavigationSystem::Impl {
                 }
             }
             if (src.kind == Source::Kind::Terrain && src.terrain) {
-                gatherTerrain(src, area, out);
+                TerrainPiece piece{src.terrain, src.world, src.terrain_size, src.terrain_height};
+                if (terrains != nullptr) {
+                    terrains->push_back(std::move(piece));
+                } else {
+                    gatherTerrainPiece(piece, area, settings.cell_size, out);
+                }
             } else if (src.kind == Source::Kind::Plane) {
                 const Vec3& n = src.plane_normal;
                 if (std::abs(n.y) < 0.2f) continue;  // plano casi vertical: nada transitable
@@ -895,42 +969,6 @@ struct NavigationSystem::Impl {
                     out.addTriangle(c00, c10, c01);
                     out.addTriangle(c10, c11, c01);
                 }
-            }
-        }
-    }
-
-    void gatherTerrain(const Source& src, const Aabb& area, TriangleSoup& out) {
-        const terrain::TerrainData& data = *src.terrain;
-        const int res = static_cast<int>(data.resolution());
-        if (res < 3 || src.terrain_size <= 0.0f) return;
-        const float cell = src.terrain_size / static_cast<float>(res - 1);
-        // Muestras mas finas que la celda de la navegacion no aportan nada.
-        const int stride = std::max(1, static_cast<int>(std::floor(settings.cell_size / cell)));
-        // Zona en coordenadas locales del terreno.
-        const Mat4 inverse = core::inverse(src.world);
-        Aabb local;
-        for (int i = 0; i < 4; ++i) {
-            local.add(transformPoint(inverse, Vec3{(i & 1) ? area.max.x : area.min.x, 0.0f, (i & 2) ? area.max.z : area.min.z}));
-        }
-        const int x0 = std::clamp(static_cast<int>(std::floor(local.min.x / cell)) - stride, 0, res - 1);
-        const int x1 = std::clamp(static_cast<int>(std::ceil(local.max.x / cell)) + stride, 0, res - 1);
-        const int z0 = std::clamp(static_cast<int>(std::floor(local.min.z / cell)) - stride, 0, res - 1);
-        const int z1 = std::clamp(static_cast<int>(std::ceil(local.max.z / cell)) + stride, 0, res - 1);
-        const float inv = 1.0f / static_cast<float>(res - 1);
-        const auto point = [&](int i, int j) {
-            i = std::min(i, res - 1);
-            j = std::min(j, res - 1);
-            const float h = data.sample(static_cast<float>(i) * inv, static_cast<float>(j) * inv) * src.terrain_height;
-            return transformPoint(src.world, Vec3{static_cast<float>(i) * cell, h, static_cast<float>(j) * cell});
-        };
-        for (int j = z0; j < z1; j += stride) {
-            for (int i = x0; i < x1; i += stride) {
-                const Vec3 p00 = point(i, j);
-                const Vec3 p01 = point(i, j + stride);
-                const Vec3 p10 = point(i + stride, j);
-                const Vec3 p11 = point(i + stride, j + stride);
-                out.addTriangle(p00, p01, p10);
-                out.addTriangle(p10, p01, p11);
             }
         }
     }
@@ -1203,7 +1241,8 @@ struct NavigationSystem::Impl {
             Aabb area;
             area.add(Vec3{job->bmin[0] - border, ymin, job->bmin[2] - border});
             area.add(Vec3{job->bmax[0] + border, ymax, job->bmax[2] + border});
-            gather(key, area, job->geometry);
+            job->terrain_area = area;
+            gather(key, area, job->geometry, g_async_terrain_gather.get() ? &job->terrains : nullptr);
             for (const auto& [handle, m] : modifiers) {
                 if (m.bounds.overlapsXz(area)) job->modifiers.push_back(m);
             }
@@ -1248,7 +1287,15 @@ struct NavigationSystem::Impl {
             }
             tile.has_data = true;
             tile.bytes = static_cast<std::size_t>(r.size);
-            buildTileDebug(ref, tile);
+            // Los triangulos para dibujar solo se hacen si alguien dibuja la
+            // malla (debugMesh -> rebuildDebug, que rehace todas); aqui solo lo
+            // que pide stats().
+            const dtMeshTile* added = navmesh->getTileByRef(ref);
+            tile.polygons = added != nullptr && added->header != nullptr ? added->header->polyCount : 0;
+            tile.triangles.clear();
+            tile.areas.clear();
+            tile.edges.clear();
+            debug_dirty = true;
         }
     }
 

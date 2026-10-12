@@ -16,6 +16,7 @@
 #include "CramionCore/physics/Particles.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
+#include "CramionCore/terrain/Terrain.h"
 
 #include <cmath>
 #include <cstdio>
@@ -897,6 +898,59 @@ void testFitColliders() {
           "malla plana: caja fina (no de grosor 0)");
 }
 
+// Collider de terreno en un hilo de fondo (physics.AsyncTerrain): la primera
+// sincronizacion tras start() lo crea al momento; despues de un cambio el
+// cuerpo viejo sigue hasta que llega el nuevo, y flushPendingTerrain() lo trae.
+void testAsyncTerrain() {
+    std::printf("Terreno en segundo plano\n");
+    ecs::World world;
+    ecs::Entity e = world.create("Terreno");
+    e.setWorldPosition(Vec3{-16.0f, 0.0f, -16.0f});
+    terrain::Terrain& t = e.add<terrain::Terrain>();
+    t.size = 32.0f;
+    t.height = 10.0f;
+    auto data = std::make_shared<terrain::TerrainData>();
+    data->create(33, 32, 0.0f);
+    data->commitCollision();
+
+    PhysicsSystem physics;
+    physics.setTerrainProvider([&](ecs::Entity entity) -> std::shared_ptr<const terrain::TerrainData> {
+        return entity.has<terrain::Terrain>() ? data : nullptr;
+    });
+    physics.start(world);
+    physics.update(world, 1.0f / 60.0f, false);
+    RaycastHit hit;
+    check(physics.raycast(Vec3{0.0f, 50.0f, 0.0f}, Vec3{0.0f, -1.0f, 0.0f}, 100.0f, hit) && hit.entity == e &&
+              std::abs(hit.point.y) < 0.05f,
+          "tras start() el terreno tiene collider en la primera sincronizacion");
+
+    // Todo a 0.5 (5 m) y se confirma el trazo.
+    for (float& h : data->heights()) h = 0.5f;
+    data->markAll();
+    data->commitCollision();
+    physics.update(world, 1.0f / 60.0f, false);
+    check(physics.raycast(Vec3{0.0f, 50.0f, 0.0f}, Vec3{0.0f, -1.0f, 0.0f}, 100.0f, hit) && hit.entity == e,
+          "mientras se rehace sigue habiendo suelo (el cuerpo viejo o ya el nuevo)");
+    physics.flushPendingTerrain();
+    check(physics.pendingTerrainCount() <= 1, "flushPendingTerrain termina los colliders pendientes");
+    physics.update(world, 1.0f / 60.0f, false);
+    check(physics.pendingTerrainCount() == 0, "y la siguiente sincronizacion los mete");
+    check(physics.raycast(Vec3{0.0f, 50.0f, 0.0f}, Vec3{0.0f, -1.0f, 0.0f}, 100.0f, hit) && hit.entity == e &&
+              std::abs(hit.point.y - 5.0f) < 0.05f,
+          "el collider nuevo tiene las alturas nuevas");
+
+    // Otro cambio y la entidad desaparece antes de que llegue: se cancela sin dejar nada.
+    for (float& h : data->heights()) h = 0.2f;
+    data->markAll();
+    data->commitCollision();
+    physics.update(world, 1.0f / 60.0f, false);
+    world.destroy(e);
+    physics.update(world, 1.0f / 60.0f, false);
+    check(physics.pendingTerrainCount() == 0 && !physics.raycast(Vec3{0.0f, 50.0f, 0.0f}, Vec3{0.0f, -1.0f, 0.0f}, 100.0f, hit),
+          "al borrar el terreno se cancela su collider pendiente");
+    physics.stop();
+}
+
 int main() {
     testIgnoreCollision();
     testCharacterController();
@@ -911,6 +965,7 @@ int main() {
     testCloth();
     testSoftBody();
     testFitColliders();
+    testAsyncTerrain();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

@@ -477,6 +477,20 @@ Entity RenderSync::skinnedEntity(World& world, Entity e, const std::string* bone
     return {};
 }
 
+int RenderSync::socketBone(entt::entity socket, const asset::ModelData& data, const std::string& bone) {
+    SocketBone& cached = socket_bones_[socket];
+    if (cached.model == &data && cached.bone == bone && cached.node >= 0 &&
+        static_cast<std::size_t>(cached.node) < data.nodes.size() &&
+        data.nodes[static_cast<std::size_t>(cached.node)].name == cached.node_name) {
+        return cached.node;
+    }
+    cached.model = &data;
+    cached.bone = bone;
+    cached.node = findBone(data, bone);
+    cached.node_name = cached.node >= 0 ? data.nodes[static_cast<std::size_t>(cached.node)].name : std::string{};
+    return cached.node;
+}
+
 void RenderSync::updateSockets(World& world, scene::Scene& scene) {
     drive_sockets_.clear();
     std::vector<entt::entity> moved;
@@ -499,12 +513,18 @@ void RenderSync::updateSockets(World& world, scene::Scene& scene) {
         Entity source;
         if (const auto it = socket_sources_.find(h); it != socket_sources_.end()) {
             const Entity cached = world.wrap(it->second);
-            if (world.valid(it->second) && skinnedEntity(world, cached, &socket.bone) == cached) source = cached;
+            // El hueso con la cache de nodos (findBone por nombre cada frame cuesta).
+            if (world.valid(it->second) && skinnedEntity(world, cached, nullptr) == cached) {
+                const auto anim = animations_.find(cached.handle());
+                const asset::ModelData* model = anim != animations_.end() ? anim->second.animator.model() : nullptr;
+                if (model != nullptr && socketBone(h, *model, socket.bone) >= 0) source = cached;
+            }
         }
         if (!source.valid()) {
             for (Entity a = s.parent(); a.valid() && !source.valid(); a = a.parent()) source = skinnedEntity(world, a, &socket.bone);
             if (!source.valid()) {
                 socket_sources_.erase(h);
+                socket_bones_.erase(h);
                 continue;
             }
             socket_sources_[h] = source.handle();
@@ -515,7 +535,7 @@ void RenderSync::updateSockets(World& world, scene::Scene& scene) {
         }
         AnimationState& state = animations_[source.handle()];
         const asset::ModelData* data = state.animator.model();
-        const int node = data != nullptr ? findBone(*data, socket.bone) : -1;
+        const int node = data != nullptr ? socketBone(h, *data, socket.bone) : -1;
         if (node < 0 || static_cast<std::size_t>(node) >= state.animator.globals().size()) continue;
         const Mat4 bone_world = source.worldMatrix() * state.animator.globals()[static_cast<std::size_t>(node)];
         const Mat4 m = withoutScale(bone_world) *

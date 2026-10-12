@@ -1086,12 +1086,30 @@ void EditorApp::drawModelingWindow() {
         ImGui::BeginDisabled(others.empty());
         if (ImGui::Button("Combinar", ImVec2(button, 0.0f))) {
             const Mat4 to_local = core::inverse(e.worldMatrix());
+            // Un antecesor del activo no se combina: borrarlo borraria el activo.
+            const auto ancestor_of_e = [&](ecs::Entity o) {
+                for (ecs::Entity p = e.parent(); p.valid(); p = p.parent()) {
+                    if (p == o) return true;
+                }
+                return false;
+            };
+            std::vector<Uuid> doomed;
             for (ecs::Entity o : others) {
+                if (ancestor_of_e(o)) continue;
                 ops::append(mesh, o.get<modeling::EditableMesh>().mesh, to_local * o.worldMatrix());
-                world_.destroy(o);
+                doomed.push_back(o.uuid());
             }
             selectOnly(e.uuid());
             modelingCommit(*em, "Combinar objetos");
+            // Se borran al final: destruir entidades mueve los EditableMesh en
+            // memoria y `em` / `mesh` dejarian de valer. Este frame ya no se
+            // usan (se sale del panel).
+            for (const Uuid& id : doomed) {
+                if (ecs::Entity o = world_.find(id); o.valid()) world_.destroy(o);
+            }
+            ImGui::EndDisabled();
+            ImGui::End();
+            return;
         }
         ImGui::SetItemTooltip("Mete en este (el activo) las mallas de los otros seleccionados");
         ImGui::SameLine();

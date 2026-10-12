@@ -167,7 +167,7 @@ void EditorApp::drawTerrainGeneratorWindow() {
         ImGui::Checkbox("Hierba (GPU)", &terrain_gen_grass_);
         ImGui::SetItemTooltip("Millones de briznas alrededor de la cámara, con viento y que se apartan con la física.");
         if (terrain_gen_grass_) {
-            slider("Briznas por m2", &terrain_gen_grass_density_, 5.0f, 150.0f, "%.0f", nullptr);
+            slider("Briznas por m2", &terrain_gen_grass_density_, 20.0f, 2000.0f, "%.0f", nullptr);
         }
         ImGui::Checkbox("Árboles", &terrain_gen_trees_);
         if (terrain_gen_trees_) {

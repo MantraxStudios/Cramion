@@ -20,7 +20,9 @@
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/modeling/EditableMesh.h"
 #include "CramionCore/audio/Audio.h"
+#include "CramionCore/cvar/CVar.h"
 #include "CramionCore/input/InputActions.h"
+#include "CramionCore/jobs/JobSystem.h"
 #include "CramionCore/physics/Cloth.h"
 #include "CramionCore/physics/Destruction.h"
 #include "CramionCore/physics/Particles.h"
@@ -41,6 +43,7 @@
 #include <Jolt/Geometry/AABox.h>
 #include <Jolt/Geometry/Plane.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Collision/BroadPhase/BroadPhaseQuery.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/CastResult.h>
@@ -75,6 +78,7 @@
 #include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
@@ -84,6 +88,8 @@
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -382,6 +388,99 @@ bool sameScale(const Vec3& a, const Vec3& b) {
     };
     return close(a.x, b.x) && close(a.y, b.y) && close(a.z, b.z);
 }
+
+// --- Colliders de terreno en segundo plano ---
+
+cvar::CVar<bool> g_async_terrain("physics.AsyncTerrain", true,
+                                 "Rehacer el collider de los terrenos (campo de alturas) en un hilo de fondo: el "
+                                 "cuerpo viejo se queda hasta que llega el nuevo",
+                                 cvar::Saved);
+cvar::CVar<float> g_async_terrain_budget_ms("physics.AsyncTerrainBudgetMs", 1.0f,
+                                            "Tiempo del hilo principal por frame para meter colliders de terreno "
+                                            "terminados (siempre entra al menos uno)",
+                                            cvar::Saved, 0.0f, 50.0f);
+cvar::CVar<int> g_async_terrain_wait_frames("physics.AsyncTerrainMaxWaitFrames", 3,
+                                            "Frames que se espera al collider de una tesela sin suelo con algo "
+                                            "movil encima antes de hacerlo en el hilo principal",
+                                            cvar::Saved, 0, 600);
+cvar::CVar<bool> g_defer_mesh_load("physics.DeferMeshLoad", true,
+                                   "Los MeshCollider de modelos sin cargar piden el modelo en segundo plano (el "
+                                   "cuerpo llega unos frames despues) en vez de leerlo del disco en el frame",
+                                   cvar::Saved);
+cvar::CVar<int> g_defer_mesh_frames("physics.DeferMeshMaxFrames", 120,
+                                    "Frames que un MeshCollider espera a su modelo antes de leerlo del disco",
+                                    cvar::Saved, 0, 100000);
+
+// Campo de alturas de Jolt de un terreno. Puro: solo lee el snapshot
+// (inmutable), asi que vale en un hilo de fondo. Jolt quiere 2^n muestras: se
+// remuestrea (res - 1) cubriendo todo el terreno.
+JPH::RefConst<JPH::Shape> makeTerrainShape(const terrain::TerrainSnapshot& snapshot, float height, float size,
+                                           const JPH::PhysicsMaterial* material, std::string& error) {
+    if (snapshot.resolution < 3 || !snapshot.heights) {
+        error = "sin alturas";
+        return nullptr;
+    }
+    const std::uint32_t samples = std::max<std::uint32_t>(snapshot.resolution - 1, 4);
+    std::vector<float> heights;
+    terrain::resampleForCollision(snapshot, height, samples, heights);
+    if (heights.size() < static_cast<std::size_t>(samples) * samples) {
+        error = "remuestreo incompleto";
+        return nullptr;
+    }
+    const float cell = size / static_cast<float>(samples - 1);
+    JPH::HeightFieldShapeSettings settings(heights.data(), JPH::Vec3::sZero(), JPH::Vec3(cell, 1.0f, cell), samples);
+    settings.mMaterials.push_back(material);
+    const JPH::ShapeSettings::ShapeResult result = settings.Create();
+    if (result.HasError()) {
+        error = result.GetError().c_str();
+        return nullptr;
+    }
+    return result.Get();
+}
+
+// Un collider de terreno que se esta haciendo. Lo comparten el job y el hilo
+// principal (nunca `this`): si la fisica se destruye, el job termina solo.
+// Lo calcula quien lo reclame primero (state 0 -> 1): el job o, como red de
+// seguridad, el hilo principal.
+struct TerrainBuild {
+    std::atomic<int> state{0};  // 0 en cola, 1 calculandose, 2 terminado
+    jobs::Cancel cancel = std::make_shared<jobs::CancelToken>();
+    std::shared_ptr<const terrain::TerrainSnapshot> snapshot;
+    float height = 0.0f;
+    float size = 0.0f;
+    JPH::RefConst<JPH::PhysicsMaterial> material;
+    // Solo se leen con done() == true.
+    JPH::RefConst<JPH::Shape> shape;
+    std::string error;
+
+    bool run() {
+        int expected = 0;
+        if (!state.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) return false;
+        if (!cancel->cancelled.load(std::memory_order_acquire) && snapshot) {
+            shape = makeTerrainShape(*snapshot, height, size, material.GetPtr(), error);
+        }
+        snapshot.reset();  // las alturas ya no hacen falta
+        state.store(2, std::memory_order_release);
+        return true;
+    }
+    bool done() const { return state.load(std::memory_order_acquire) == 2; }
+    // Hilo principal: lo termina ya (lo calcula aqui o espera al hilo que lo
+    // esta calculando, que ya va por la mitad).
+    void finishNow() {
+        if (run()) return;
+        while (!done()) std::this_thread::yield();
+    }
+};
+
+// Hay algun cuerpo movil (dinamico, cinematico o la capsula de un personaje)?
+class AnyBodyCollector final : public JPH::CollideShapeBodyCollector {
+public:
+    void AddHit(const JPH::BodyID&) override {
+        found = true;
+        ForceEarlyOut();
+    }
+    bool found = false;
+};
 
 }  // namespace
 
@@ -1382,8 +1481,25 @@ struct PhysicsSystem::Impl {
     ecs::World* world = nullptr;
     std::vector<entt::entity> sync_candidates;
     std::uint64_t sync_generation = 0;
+    // Colliders de terreno haciendose en segundo plano (physics.AsyncTerrain).
+    // El cuerpo viejo (si hay) sigue en `entries` hasta el cambio.
+    struct PendingTerrain {
+        std::uint64_t key = 0;  // firma + terrain_key con que se lanzo (si cambia, se tira)
+        std::shared_ptr<TerrainBuild> build;
+        int frames = 0;         // frames esperando
+        std::uint64_t seen = 0;  // ultima sincronizacion en que seguia haciendo falta
+    };
+    std::unordered_map<entt::entity, PendingTerrain> pending_terrain;
+    // La proxima sincronizacion lo hace todo al momento (terrenos y modelos de
+    // los MeshCollider): al empezar y tras flushPendingTerrain().
+    bool sync_blocking = true;
+    // Modelos de MeshCollider pedidos en segundo plano: sincronizacion en que
+    // se pidieron (pasado physics.DeferMeshMaxFrames se leen del disco).
+    std::unordered_map<Uuid, std::uint64_t> deferred_models;
     float accumulator = 0.0f;
     std::uint64_t steps = 0;
+    double simulated_time = 0.0;  // segundos simulados desde start() (suma de los pasos fijos)
+    float dropped_time = 0.0f;    // segundos perdidos por max_substeps o frames largos (takeDroppedTime)
     float step_ms = 0.0f;
     std::vector<PhysicsEvent> events;
     std::vector<ContactDebug> contact_points;
@@ -1482,9 +1598,40 @@ struct PhysicsSystem::Impl {
         return renderer != nullptr ? renderer->mesh.get() : nullptr;
     }
     // Lo que identifica la malla del MeshCollider (si cambia, se rehace).
-    const void* meshIdentity(ecs::Entity entity) const {
+    const void* meshIdentity(ecs::Entity entity) {
         if (const ecs::Mesh* runtime = runtimeMeshOf(entity)) return runtime;
-        return meshOf(entity);
+        return bodyMeshOf(entity);
+    }
+
+    // Como meshOf, para crear cuerpos en sync: un modelo que aun no esta en
+    // memoria se pide en segundo plano (requestModel) y, mientras llega, el
+    // cuerpo se hace sin esa malla; al llegar cambia meshIdentity y se rehace.
+    // Sin leer el disco en el frame. Pasados physics.DeferMeshMaxFrames (o con
+    // sync_blocking) se lee como siempre (loadModel). meshIdentity y
+    // collectShapes pasan los dos por aqui: deciden lo mismo en el mismo frame.
+    const asset::ModelData* bodyMeshOf(ecs::Entity entity) {
+        const ecs::MeshRenderer* renderer = entity.tryGet<ecs::MeshRenderer>();
+        if (renderer == nullptr || !renderer->model.valid()) return nullptr;
+        if (mesh_provider) {
+            if (const asset::ModelData* data = mesh_provider(entity)) return data;
+        }
+        if (asset_manager == nullptr) return nullptr;
+        const Uuid& uuid = renderer->model.uuid;
+        std::shared_ptr<const assets::ModelAsset> model;
+        if (asset_manager->isLoaded(uuid)) {
+            if (!deferred_models.empty()) deferred_models.erase(uuid);
+        } else if (!sync_blocking && g_defer_mesh_load) {
+            const auto [it, inserted] = deferred_models.try_emplace(uuid, sync_generation);
+            if (sync_generation - it->second <= static_cast<std::uint64_t>(std::max(0, g_defer_mesh_frames.get()))) {
+                model = asset_manager->requestModel(uuid);
+                if (!model && !asset_manager->loadFailed(uuid)) return nullptr;  // llega en otro frame
+            }
+        }
+        if (!model) model = asset_manager->loadModel(uuid);
+        if (model && renderer->part >= 0 && static_cast<std::size_t>(renderer->part) < model->parts.size()) {
+            return model->parts[static_cast<std::size_t>(renderer->part)].get();
+        }
+        return nullptr;
     }
 
     JPH::RefConst<JPH::Shape> runtimeMeshShape(const ecs::Mesh& mesh, bool convex, const JPH::PhysicsMaterial* material,
@@ -1606,8 +1753,11 @@ struct PhysicsSystem::Impl {
 
     // Formas de los colliders de la entidad (en su espacio local, sin escala),
     // separadas en solidas y triggers.
+    // `terrain_shape`: si no es nulo, el campo de alturas ya hecho (en un hilo
+    // de fondo) en vez de calcularlo aqui; *terrain_shape nulo = sin el.
     void collectShapes(ecs::Entity entity, BodyType type, std::vector<ShapePart>& solid,
-                       std::vector<ShapePart>& sensor, const void*& mesh_used) {
+                       std::vector<ShapePart>& sensor, const void*& mesh_used,
+                       const JPH::RefConst<JPH::Shape>* terrain_shape = nullptr) {
         const std::string& name = entity.name();
         const auto add = [&](const ColliderMaterial& m, JPH::RefConst<JPH::Shape> shape, const Vec3& position,
                              const Quat& rotation) {
@@ -1653,7 +1803,7 @@ struct PhysicsSystem::Impl {
             add(mesh->material, runtimeMeshShape(runtime, convex, materialFor(mesh->material), name), Vec3{}, Quat{});
             mesh_used = &runtime;
         } else if (const MeshCollider* mesh = entity.tryGet<MeshCollider>()) {
-            if (const asset::ModelData* data = meshOf(entity)) {
+            if (const asset::ModelData* data = bodyMeshOf(entity)) {
                 bool convex = mesh->convex;
                 if (!convex && type == BodyType::Dynamic) {
                     warnOnce(entity.handle(), name,
@@ -1670,28 +1820,21 @@ struct PhysicsSystem::Impl {
         if (const terrain::Terrain* t = entity.tryGet<terrain::Terrain>(); t != nullptr && t->collision && terrain_provider) {
             if (type == BodyType::Dynamic) {
                 warnOnce(entity.handle(), name, "un terreno no puede ser dinamico (se ignora su colision)");
+            } else if (terrain_shape != nullptr) {
+                // Hecho en un hilo de fondo (syncTerrainAsync).
+                if (*terrain_shape != nullptr) solid.push_back(ShapePart{*terrain_shape, Vec3{}, Quat{}});
             } else if (const std::shared_ptr<const terrain::TerrainData> data = terrain_provider(entity);
                        data && data->resolution() >= 3) {
-                // Jolt quiere 2^n muestras: se remuestrea (res - 1) cubriendo todo el terreno.
-                const std::uint32_t samples = std::max<std::uint32_t>(data->resolution() - 1, 4);
-                std::vector<float> heights(static_cast<std::size_t>(samples) * samples);
-                for (std::uint32_t y = 0; y < samples; ++y) {
-                    for (std::uint32_t x = 0; x < samples; ++x) {
-                        heights[static_cast<std::size_t>(y) * samples + x] =
-                            data->sample(static_cast<float>(x) / static_cast<float>(samples - 1),
-                                         static_cast<float>(y) / static_cast<float>(samples - 1)) * t->height;
-                    }
-                }
-                const float cell = t->size / static_cast<float>(samples - 1);
                 ColliderMaterial material;
                 material.friction = t->friction;
-                JPH::HeightFieldShapeSettings settings(heights.data(), JPH::Vec3::sZero(), JPH::Vec3(cell, 1.0f, cell), samples);
-                settings.mMaterials.push_back(materialFor(material));
-                const auto result = settings.Create();
-                if (result.HasError()) {
-                    std::cerr << "[Fisica] " << name << ": terreno no valido (" << result.GetError().c_str() << ")\n";
+                std::string error;
+                const std::shared_ptr<const terrain::TerrainSnapshot> snapshot = data->snapshot();
+                JPH::RefConst<JPH::Shape> shape =
+                    snapshot ? makeTerrainShape(*snapshot, t->height, t->size, materialFor(material), error) : nullptr;
+                if (shape == nullptr) {
+                    std::cerr << "[Fisica] " << name << ": terreno no valido (" << error << ")\n";
                 } else {
-                    solid.push_back(ShapePart{result.Get(), Vec3{}, Quat{}});
+                    solid.push_back(ShapePart{std::move(shape), Vec3{}, Quat{}});
                 }
             }
         }
@@ -2394,7 +2537,17 @@ struct PhysicsSystem::Impl {
         if (!mesh.body.IsInvalid()) body_entities.erase(mesh.body.GetIndexAndSequenceNumber());
     }
 
-    void buildEntry(ecs::Entity entity, BodyEntry& entry, bool simulate) {
+    // Velocidad que conserva un dinamico al rehacer su cuerpo en Play (p. ej.
+    // cambia la escala): sin ella se perderia y se volveria a aplicar la
+    // initial_velocity del Rigidbody.
+    struct KeptVelocity {
+        JPH::Vec3 linear = JPH::Vec3::sZero();
+        JPH::Vec3 angular = JPH::Vec3::sZero();
+    };
+
+    // `terrain_shape`: el campo de alturas ya hecho (ver collectShapes).
+    void buildEntry(ecs::Entity entity, BodyEntry& entry, bool simulate, const KeptVelocity* kept = nullptr,
+                    const JPH::RefConst<JPH::Shape>* terrain_shape = nullptr) {
         const std::string& name = entity.name();
         const Rigidbody* rb = entity.tryGet<Rigidbody>();
         entry.type = rb != nullptr ? rb->type : BodyType::Static;
@@ -2405,7 +2558,7 @@ struct PhysicsSystem::Impl {
         std::vector<ShapePart> solid_parts;
         std::vector<ShapePart> sensor_parts;
         entry.mesh = nullptr;
-        collectShapes(entity, entry.type, solid_parts, sensor_parts, entry.mesh);
+        collectShapes(entity, entry.type, solid_parts, sensor_parts, entry.mesh, terrain_shape);
         JPH::RefConst<JPH::Shape> solid = combine(solid_parts, entry.scale, name);
         const JPH::RefConst<JPH::Shape> sensor = combine(sensor_parts, entry.scale, name);
         // Vehiculo: centro de masas desplazado (mas bajo = vuelca menos).
@@ -2464,7 +2617,12 @@ struct PhysicsSystem::Impl {
                 if (rb->lock_rotation_y) dofs &= ~JPH::EAllowedDOFs::RotationY;
                 if (rb->lock_rotation_z) dofs &= ~JPH::EAllowedDOFs::RotationZ;
                 s.mAllowedDOFs = dofs;
-                if (simulate) {
+                if (kept != nullptr) {
+                    // Cuerpo rehecho en Play: sigue con la velocidad que llevaba.
+                    s.mLinearVelocity = kept->linear;
+                    s.mAngularVelocity = kept->angular;
+                } else if (simulate) {
+                    // Solo al crearse: la velocidad inicial del Rigidbody.
                     s.mLinearVelocity = toJolt(rb->initial_velocity);
                     s.mAngularVelocity = toJolt(rb->initial_angular_velocity);
                 }
@@ -2488,6 +2646,135 @@ struct PhysicsSystem::Impl {
         }
     }
 
+    // Entidad cuyo unico collider es el terreno (lo demas sigue el camino de siempre).
+    static bool terrainOnly(Pools& pools, entt::entity handle) {
+        const terrain::Terrain* t = Pools::find(pools.terrain, handle);
+        if (t == nullptr || !t->collision) return false;
+        if (pools.box.contains(handle) || pools.sphere.contains(handle) || pools.capsule.contains(handle) ||
+            pools.mesh.contains(handle) || pools.plane.contains(handle)) {
+            return false;
+        }
+        const Rigidbody* rb = Pools::find(pools.rigidbody, handle);
+        return rb == nullptr || rb->type != BodyType::Dynamic;
+    }
+
+    // Hay algo que se mueve (cuerpos moviles o personajes) sobre la tesela de
+    // terreno con esquina `corner`? Una consulta a la broadphase: barata.
+    bool bodiesOver(const Vec3& corner, float size, float height) const {
+        if (!system) return false;
+        const float lo_y = corner.y - 50.0f;
+        const float hi_y = corner.y + std::max(height, 0.0f) + 500.0f;
+        const JPH::AABox box(JPH::Vec3(corner.x, lo_y, corner.z), JPH::Vec3(corner.x + size, hi_y, corner.z + size));
+        AnyBodyCollector collector;
+        system->GetBroadPhaseQuery().CollideAABox(box, collector, JPH::SpecifiedBroadPhaseLayerFilter(broadphase::kMoving),
+                                                  JPH::ObjectLayerFilter());
+        if (collector.found) return true;
+        for (const auto& [handle, c] : characters) {
+            const Vec3& p = c.position;
+            if (p.x >= corner.x && p.x <= corner.x + size && p.z >= corner.z && p.z <= corner.z + size && p.y >= lo_y &&
+                p.y <= hi_y) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Collider de un terreno en segundo plano (physics.AsyncTerrain):
+    //   - Snapshot de las alturas aqui (hilo principal) y un job que remuestrea
+    //     y crea el HeightFieldShape (Jolt lo permite fuera del PhysicsSystem).
+    //   - Mientras, el cuerpo viejo se queda. Si cambia la clave (otro trazo,
+    //     otros ajustes), el job viejo se cancela y se lanza otro.
+    //   - Al terminar se mete con un presupuesto por frame (crear el cuerpo con
+    //     la forma ya hecha es barato).
+    //   - Red de seguridad: una tesela SIN collider con algo movil encima que
+    //     sigue esperando tras physics.AsyncTerrainMaxWaitFrames se hace ya.
+    //   - sync_blocking (al empezar, flushPendingTerrain): todo al momento.
+    void syncTerrainAsync(ecs::Entity entity, std::unordered_map<entt::entity, BodyEntry>::iterator it,
+                          std::uint64_t signature, std::uint64_t terrain_key, const core::Mat4& world_matrix,
+                          const terrain::TerrainData& data, const terrain::Terrain& t, bool simulate,
+                          std::optional<jobs::FrameBudget>& budget) {
+        const entt::entity handle = entity.handle();
+        const std::uint64_t key = (signature * 0x9E3779B97F4A7C15ull) ^ terrain_key;
+        const bool has_collider = it != entries.end() && !it->second.solid.IsInvalid();
+        const Vec3 corner{world_matrix.m[3][0], world_matrix.m[3][1], world_matrix.m[3][2]};
+
+        auto pit = pending_terrain.find(handle);
+        if (pit == pending_terrain.end() || pit->second.key != key) {
+            if (pit != pending_terrain.end()) {
+                pit->second.build->cancel->cancelled.store(true, std::memory_order_release);
+            }
+            auto build = std::make_shared<TerrainBuild>();
+            build->snapshot = data.snapshot();  // hilo principal: inmutable desde aqui
+            build->height = t.height;
+            build->size = t.size;
+            ColliderMaterial material;
+            material.friction = t.friction;
+            build->material = materialFor(material);
+            if (sync_blocking) {
+                build->run();  // al momento, en este hilo
+            } else {
+                // Prisa si no hay suelo todavia o algo se mueve encima.
+                const bool urgent = !has_collider || bodiesOver(corner, t.size, t.height);
+                jobs::schedule([build]() { build->run(); }, nullptr,
+                               urgent ? jobs::Priority::High : jobs::Priority::Normal);
+            }
+            PendingTerrain& fresh = pending_terrain[handle];
+            fresh = PendingTerrain{};
+            fresh.key = key;
+            fresh.build = std::move(build);
+            pit = pending_terrain.find(handle);
+        }
+        PendingTerrain& pending = pit->second;
+        pending.seen = sync_generation;
+
+        bool forced = sync_blocking;
+        if (!pending.build->done()) {
+            ++pending.frames;
+            if (sync_blocking) {
+                pending.build->finishNow();
+            } else if (!has_collider && pending.frames > g_async_terrain_wait_frames.get() &&
+                       bodiesOver(corner, t.size, t.height)) {
+                std::cerr << "[Fisica] " << entity.name()
+                          << ": collider del terreno sin terminar con algo encima: se hace ya\n";
+                pending.build->finishNow();
+                forced = true;
+            } else {
+                return;  // sigue el cuerpo viejo (o ninguno)
+            }
+        }
+        if (!forced) {
+            if (!budget) budget.emplace(static_cast<double>(g_async_terrain_budget_ms.get()));
+            if (!budget->spend()) return;  // el siguiente frame
+        }
+
+        // Terminado: se cambia el cuerpo viejo por el nuevo en este mismo frame.
+        const JPH::RefConst<JPH::Shape> shape = pending.build->shape;
+        if (shape == nullptr && !pending.build->error.empty()) {
+            std::cerr << "[Fisica] " << entity.name() << ": terreno no valido (" << pending.build->error << ")\n";
+        }
+        pending_terrain.erase(pit);
+
+        Vec3 position{};
+        Quat rotation{};
+        Vec3 scale{};
+        ecs::decomposeMatrix(world_matrix, position, rotation, scale);
+        if (it != entries.end()) {
+            destroyEntry(it->second);
+        } else {
+            it = entries.emplace(handle, BodyEntry{}).first;
+        }
+        BodyEntry& entry = it->second;
+        entry.seen = sync_generation;
+        entry.entity = handle;
+        entry.signature = signature;
+        entry.terrain_key = terrain_key;
+        entry.matrix = world_matrix;
+        entry.position = position;
+        entry.rotation = Quat{};  // el terreno no gira ni escala: solo su esquina cuenta
+        entry.scale = Vec3{1.0f, 1.0f, 1.0f};
+        buildEntry(entity, entry, simulate, nullptr, &shape);
+    }
+
     void sync(ecs::World& w, bool simulate) {
         world = &w;
         entt::registry& registry = w.registry();
@@ -2507,6 +2794,8 @@ struct PhysicsSystem::Impl {
 
         ++sync_generation;
         Pools pools(registry);
+        std::optional<jobs::FrameBudget> terrain_budget;  // se crea al meter el primer collider de terreno
+        const bool async_terrain = g_async_terrain.get();
         for (const entt::entity handle : candidates) {
             const ecs::Entity entity = w.wrap(handle);
             if (!pools.active(handle)) continue;
@@ -2539,6 +2828,14 @@ struct PhysicsSystem::Impl {
             const bool same_shape = it != entries.end() && it->second.signature == signature &&
                                     (!has_mesh || mesh_now == it->second.mesh) &&
                                     it->second.terrain_key == terrain_key;
+            // Terreno (solo su campo de alturas) que hay que rehacer: en un hilo
+            // de fondo; el cuerpo viejo sigue hasta que llegue el nuevo.
+            if (!same_shape && async_terrain && terrain_key != 0 && terrainOnly(pools, handle) &&
+                terrain_data->resolution() >= 3) {
+                syncTerrainAsync(entity, it, signature, terrain_key, world_matrix, *terrain_data, *terrain_comp, simulate,
+                                 terrain_budget);
+                continue;
+            }
             // Lo normal: nada cambio (ni forma ni matriz). Sin descomponer nada.
             if (same_shape && std::memcmp(&it->second.matrix, &world_matrix, sizeof(core::Mat4)) == 0) continue;
 
@@ -2554,7 +2851,13 @@ struct PhysicsSystem::Impl {
             }
             const bool rebuild = !same_shape || !sameScale(it->second.scale, scale);
             if (rebuild) {
+                std::optional<KeptVelocity> kept;
                 if (it != entries.end()) {
+                    // En Play un dinamico que se rehace conserva su velocidad.
+                    if (simulate && it->second.type == BodyType::Dynamic && !it->second.solid.IsInvalid()) {
+                        kept = KeptVelocity{bodies().GetLinearVelocity(it->second.solid),
+                                            bodies().GetAngularVelocity(it->second.solid)};
+                    }
                     destroyEntry(it->second);
                 } else {
                     it = entries.emplace(handle, BodyEntry{}).first;
@@ -2568,7 +2871,7 @@ struct PhysicsSystem::Impl {
                 entry.position = position;
                 entry.rotation = rotation;
                 entry.scale = scale;
-                buildEntry(entity, entry, simulate);
+                buildEntry(entity, entry, simulate, kept ? &*kept : nullptr);
                 continue;
             }
 
@@ -2601,6 +2904,17 @@ struct PhysicsSystem::Impl {
                 ++it;
             }
         }
+        // Colliders de terreno que ya no hacen falta (entidad borrada, sin
+        // colision, o volvio a lo que ya tenia): se cancelan; el job termina solo.
+        for (auto it = pending_terrain.begin(); it != pending_terrain.end();) {
+            if (it->second.seen != sync_generation) {
+                it->second.build->cancel->cancelled.store(true, std::memory_order_release);
+                it = pending_terrain.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        sync_blocking = false;
         if (overrides_dirty) rebuildLayerIncludes();
         syncVehicles(w);
     }
@@ -2823,6 +3137,7 @@ struct PhysicsSystem::Impl {
         applyVehicleInputs(dt);
         system->Update(dt, std::max(settings.collision_steps, 1), temp_allocator.get(), job_system.get());
         ++steps;
+        simulated_time += static_cast<double>(dt);
         capturePoses();
         captureRagdolls();
         captureCloths();
@@ -3389,10 +3704,15 @@ void PhysicsSystem::start(ecs::World& world) {
     d.applySettings();
     d.accumulator = 0.0f;
     d.steps = 0;
+    d.simulated_time = 0.0;
+    d.dropped_time = 0.0f;
     d.events.clear();
     d.contact_points.clear();
     d.pairs.clear();
     d.warned.clear();
+    // La primera sincronizacion crea todo al momento (como siempre): nada cae
+    // por un suelo que aun se esta haciendo en otro hilo.
+    d.sync_blocking = true;
     for (auto& [key, mesh] : d.static_meshes) {
         mesh.body = JPH::BodyID();
         d.createStaticBody(mesh);
@@ -3427,6 +3747,12 @@ void PhysicsSystem::stop() {
         }
     }
     d.entries.clear();
+    // Los colliders de terreno a medias se cancelan (sus jobs terminan solos).
+    for (auto& [handle, pending] : d.pending_terrain) {
+        pending.build->cancel->cancelled.store(true, std::memory_order_release);
+    }
+    d.pending_terrain.clear();
+    d.deferred_models.clear();
     for (auto& [key, mesh] : d.static_meshes) d.destroyStaticBody(mesh);  // los datos se quedan
     d.body_entities.clear();
     d.layer_overrides.clear();
@@ -3485,7 +3811,7 @@ void PhysicsSystem::shiftOrigin(const core::Vec3& offset) {
         c.position = c.position - offset;
         c.previous_position = c.previous_position - offset;
         c.current_position = c.current_position - offset;
-        // Su inner body se mueve con los demas cuerpos (abajo).
+        // SetPosition ya recoloca su inner body (abajo se salta).
         if (c.character) c.character->SetPosition(c.character->GetPosition() - JPH::RVec3(toJolt(offset)));
     }
     for (auto& [handle, ragdoll] : d.ragdolls) {
@@ -3510,12 +3836,14 @@ void PhysicsSystem::shiftOrigin(const core::Vec3& offset) {
     d.queries.clear();
     if (d.system == nullptr) return;
     // Todos los cuerpos (tambien los de las mallas estaticas y las ruedas):
-    // SetPosition conserva la velocidad y no los despierta.
+    // SetPosition conserva la velocidad y no los despierta. Los inner body de
+    // los personajes ya se movieron con su CharacterVirtual (arriba).
     JPH::BodyIDVector ids;
     d.system->GetBodies(ids);
     JPH::BodyInterface& bodies = d.bodies();
     const JPH::Vec3 delta = toJolt(offset);
     for (const JPH::BodyID& id : ids) {
+        if (d.isInnerBody(id)) continue;
         bodies.SetPosition(id, bodies.GetPosition(id) - JPH::RVec3(delta), JPH::EActivation::DontActivate);
     }
 }
@@ -3532,6 +3860,19 @@ bool PhysicsSystem::running() const {
     return impl_->system != nullptr;
 }
 
+void PhysicsSystem::flushPendingTerrain() {
+    Impl& d = *impl_;
+    // Bloquea: los que van en un job se terminan aqui (o se espera al hilo que
+    // los calcula). Se meten en la siguiente sincronizacion (update), que
+    // ademas hace al momento los terrenos y modelos nuevos (sync_blocking).
+    for (auto& [handle, pending] : d.pending_terrain) pending.build->finishNow();
+    d.sync_blocking = true;
+}
+
+std::size_t PhysicsSystem::pendingTerrainCount() const {
+    return impl_->pending_terrain.size();
+}
+
 int PhysicsSystem::update(ecs::World& world, float delta_seconds, bool simulate) {
     Impl& d = *impl_;
     if (!d.system) return 0;
@@ -3546,14 +3887,18 @@ int PhysicsSystem::update(ecs::World& world, float delta_seconds, bool simulate)
     int steps = 0;
     if (simulate) {
         const float step = d.settings.fixed_step;
-        d.accumulator += std::clamp(delta_seconds, 0.0f, 0.25f);
+        const float clamped = std::clamp(delta_seconds, 0.0f, 0.25f);
+        d.dropped_time += std::max(delta_seconds - clamped, 0.0f);
+        d.accumulator += clamped;
         while (d.accumulator >= step && steps < d.settings.max_substeps) {
             d.stepOnce(world);
             d.accumulator -= step;
             ++steps;
         }
         // Si el frame fue demasiado largo, la simulacion se ralentiza en vez
-        // de acumular retraso.
+        // de acumular retraso. Lo que se tira se apunta (takeDroppedTime) para
+        // que el editor avise en la consola.
+        if (d.accumulator > step) d.dropped_time += d.accumulator - step;
         d.accumulator = std::min(d.accumulator, step);
         d.writeBack(world, d.accumulator / step);
         d.writeCharacters(world, d.accumulator / step);
@@ -3577,13 +3922,25 @@ void PhysicsSystem::singleStep(ecs::World& world) {
     d.events.clear();
     d.sync(world, true);
     d.syncCharacters(world, true);
+    d.syncRagdolls(world, true);  // como en update(): sin esto el ragdoll no avanza
     d.syncCloths(world, true);
     d.syncSoftBodies(world, true);
     d.stepOnce(world);
     d.writeBack(world, 1.0f);
     d.writeCharacters(world, 1.0f);
+    d.writeRagdolls(world, 1.0f);
     d.writeCloths(1.0f);
     d.writeSoftBodies(world, 1.0f);
+}
+
+double PhysicsSystem::simulatedTime() const {
+    return impl_->simulated_time;
+}
+
+float PhysicsSystem::takeDroppedTime() {
+    const float dropped = impl_->dropped_time;
+    impl_->dropped_time = 0.0f;
+    return dropped;
 }
 
 // --- Consultas ---------------------------------------------------------------

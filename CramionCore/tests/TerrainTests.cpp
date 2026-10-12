@@ -4,6 +4,7 @@
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/foliage/Foliage.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/jobs/JobSystem.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/terrain/HeightmapImport.h"
@@ -19,10 +20,14 @@
 #include <CramionFX/asset/TreeGenerator.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <mutex>
+#include <vector>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <thread>
 
@@ -266,6 +271,17 @@ void testFoliage() {
                 static_cast<unsigned long long>(hills.candidates), static_cast<unsigned long long>(hills.rejected));
     check(on_ground, "apoyados en el terreno");
     check(dry && hills.rejected > 0, "ninguno bajo el mar ni en laderas empinadas");
+    {
+        // Lo mismo leyendo un snapshot inmutable (la siembra en otro hilo)
+        // en vez de los datos vivos: el mismo bosque, arbol por arbol.
+        std::vector<foliage::FoliageGround> snap_ground{{nullptr, t, ground[0].origin, data->snapshot()}};
+        const foliage::FoliageResult from_snapshot = foliage::generateFoliage(f, Vec3{0, 0, 0}, snap_ground);
+        bool same = from_snapshot.instances.size() == hills.instances.size();
+        for (std::size_t i = 0; same && i < hills.instances.size(); ++i) {
+            same = std::memcmp(&from_snapshot.instances[i], &hills.instances[i], sizeof(hills.instances[i])) == 0;
+        }
+        check(same, "sembrar sobre un snapshot del terreno da el mismo bosque");
+    }
 
     // Millones: 12,65 km x 12,65 km (16.000 ha) a 250/ha = 4 millones.
     foliage::Foliage big;
@@ -742,6 +758,9 @@ void testGrid() {
 
     check(pump(Vec3{5000.0f, 0.0f, 5000.0f}, 0), "lejos: todas fuera");
     check(store.loadedCount() == 0, "y sus datos sueltos de la memoria");
+    // Al soltarla se guarda en el hilo de IO (stream.AsyncTerrain): esperar.
+    store.flushSaves();
+    check(store.savingCount() == 0, "las escrituras en otro hilo terminan");
     TerrainData saved;
     check(saved.load(root / tilePath(grid, 1, 0)) && saved.heights()[10 * 33] == 0.9f,
           "lo esculpido se guardo al soltarla (editor)");
@@ -774,12 +793,135 @@ void dumpTextures(const char* folder) {
     std::printf("texturas en %s\n", folder);
 }
 
+// Fotos inmutables (TerrainSnapshot) con copia al escribir, remuestreo para
+// la colision y guardar en otro hilo.
+void testSnapshot() {
+    std::printf("Fotos del terreno (otros hilos)\n");
+    TerrainData d;
+    d.create(33, 16);
+    const auto s1 = d.snapshot();
+    const auto s2 = d.snapshot();
+    check(s1 && s1 == s2, "sin cambios, la misma foto (guardada por version)");
+    const TerrainData& cd = d;
+    check(s1->heights.get() == &cd.heights() && s1->splat0.get() == &cd.splat0(), "la foto no copia los datos");
+    check(s1->resolution == 33 && s1->splat_resolution == 16 && s1->version == d.version(), "con su resolucion y version");
+
+    d.heights()[0] = 0.5f;
+    d.markHeights(0, 0, 0, 0);
+    check((*s1->heights)[0] == 0.0f, "escribir despues no cambia la foto (copia al escribir)");
+    const auto s3 = d.snapshot();
+    check(s3 != s1 && (*s3->heights)[0] == 0.5f && s3->version > s1->version, "la foto nueva tiene el cambio");
+    check(s3->splat0 == s1->splat0, "la pintura sin cambios se sigue compartiendo");
+
+    if (std::uint8_t* w = d.weightPtr(1, 0, 0)) *w = 200;
+    d.markSplat(0, 0, 0, 0);
+    const auto s4 = d.snapshot();
+    check(s4 != s3 && s4->splat_version > s3->splat_version && (*s3->splat0)[1] == 0 && (*s4->splat0)[1] == 200,
+          "pintar: foto nueva, la vieja intacta");
+
+    TerrainData copy = d;
+    copy.heights()[1] = 0.7f;
+    check(cd.heights()[1] == 0.0f && copy.heights()[1] == 0.7f, "una copia (deshacer) no comparte las escrituras");
+
+    std::vector<float> resampled;
+    resampleForCollision(*s4, 10.0f, 32, resampled);
+    bool same = resampled.size() == 32u * 32u;
+    for (std::uint32_t y = 0; same && y < 32; y += 7) {
+        for (std::uint32_t x = 0; x < 32; x += 5) {
+            const float expected = d.sample(static_cast<float>(x) / 31.0f, static_cast<float>(y) / 31.0f) * 10.0f;
+            same = same && std::abs(resampled[static_cast<std::size_t>(y) * 32 + x] - expected) < 1e-6f;
+        }
+    }
+    check(same, "remuestreo para la colision igual que sample()");
+
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "cramion_snapshot_test";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    check(saveTerrainSnapshot(*s4, root / "foto.crterrain"), "guardar una foto");
+    TerrainData back;
+    check(back.load(root / "foto.crterrain") && back.heights()[0] == 0.5f && back.weight(1, 0, 0) == 200, "y leerla");
+
+    TerrainStore store;
+    store.setRoot(root);
+    auto data = std::make_shared<TerrainData>();
+    data->create(33, 16);
+    data->heights()[5] = 0.25f;
+    data->markHeights(5, 0, 5, 0);
+    store.put("t.crterrain", data);
+    store.saveAsync("t.crterrain", data);
+    check(store.pendingSave("t.crterrain") && !store.findPath("t.crterrain"), "guardar en otro hilo: sale del almacen");
+    check(store.takeSaving("t.crterrain") == data, "volver a pedirla mientras se escribe da los mismos datos");
+    store.flushSaves();
+    TerrainData written;
+    check(!store.pendingSave("t.crterrain") && written.load(root / "t.crterrain") && written.heights()[5] == 0.25f,
+          "la escritura termina con lo de la foto");
+    check(!data->unsaved(), "y los datos quedan como guardados");
+    fs::remove_all(root, ec);
+}
+
+// Prioridades, esperar solo lo propio, cancelacion y presupuesto por frame.
+void testJobs() {
+    std::printf("Job system\n");
+    const int workers_before = jobs::workerCount();
+    jobs::setWorkerCount(1);  // un hilo: orden determinista
+    std::atomic<bool> gate{false};
+    const jobs::JobHandle blocker = jobs::schedule([&gate] {
+        while (!gate.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    });
+    // Que el hilo coja el bloqueo antes de encolar lo demas.
+    for (int i = 0; i < 200 && jobs::stats().queued > 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::mutex mutex;
+    std::vector<char> order;
+    const auto record = [&](char c) {
+        std::lock_guard<std::mutex> lock(mutex);
+        order.push_back(c);
+    };
+    std::atomic<bool> background_ran{false};
+    const jobs::JobHandle b = jobs::schedule(
+        [&] {
+            background_ran = true;
+            record('B');
+        },
+        nullptr, jobs::Priority::Background);
+    const jobs::JobHandle h = jobs::schedule([&] { record('H'); }, nullptr, jobs::Priority::High);
+    // Esperar una tarea propia no ejecuta las de otros (la Background sigue en cola).
+    std::atomic<bool> own_ran{false};
+    const jobs::JobHandle own = jobs::schedule([&] { own_ran = true; });
+    jobs::wait(own);
+    check(own_ran.load() && !background_ran.load(), "quien espera solo ejecuta su grupo (no la tarea larga de otro)");
+    gate = true;
+    jobs::wait(blocker);
+    jobs::wait(h);
+    jobs::wait(b);
+    check(order.size() == 2 && order[0] == 'H' && order[1] == 'B', "High antes que Background");
+
+    const jobs::Cancel cancel = std::make_shared<jobs::CancelToken>();
+    cancel->cancelled = true;
+    std::atomic<bool> worked{false};
+    const jobs::JobHandle io = jobs::scheduleIo([cancel, &worked] {
+        if (!jobs::isCancelled(cancel)) worked = true;
+    });
+    jobs::wait(io);
+    check(io->done() && !worked.load(), "una tarea de IO cancelada no hace su trabajo");
+
+    jobs::FrameBudget none(0.0);
+    const bool first = none.spend();
+    const bool second = none.spend();
+    check(first && !second, "presupuesto 0: siempre deja pasar uno, y solo uno");
+    jobs::FrameBudget plenty(1000.0);
+    check(plenty.spend() && plenty.spend() && plenty.spend() && plenty.spent() == 3, "con tiempo, todos");
+    jobs::setWorkerCount(workers_before > 0 ? -1 : 0);
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // si algo falla, que se vea hasta donde llego
     if (const char* dump = std::getenv("CRAMION_DUMP_TEXTURES")) {
         dumpTextures(dump);
         return 0;
     }
+    testJobs();
+    testSnapshot();
     testGenerator();
     testFoliage();
     testTools();

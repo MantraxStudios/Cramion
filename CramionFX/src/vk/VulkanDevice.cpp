@@ -6,10 +6,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string_view>
 #include <map>
 #include <optional>
@@ -790,6 +792,206 @@ void VulkanDevice::waitIdle() const {
 }
 
 // -----------------------------------------------------------------------------
+// Envios sin espera (streaming de terrenos, texturas de capas, vegetacion)
+// -----------------------------------------------------------------------------
+
+bool GpuTicket::done() const {
+    if (signaled_.load(std::memory_order_acquire)) return true;
+    if (!*fence_) return true;
+    try {
+        if (fence_.getStatus() != vk::Result::eSuccess) return false;
+    } catch (const std::exception&) {
+        // Dispositivo perdido: no queda nada que esperar.
+    }
+    signaled_.store(true, std::memory_order_release);
+    return true;
+}
+
+void GpuTicket::wait() const {
+    if (done() || device_ == nullptr) return;
+    (void)device_->waitForFences(*fence_, VK_TRUE, UINT64_MAX);
+    signaled_.store(true, std::memory_order_release);
+}
+
+std::shared_ptr<GpuTicket> VulkanDevice::submitAsync(
+    const std::function<void(const vk::raii::CommandBuffer&)>& record,
+    std::vector<std::shared_ptr<const void>> keep_alive) const {
+    auto ticket = std::make_shared<GpuTicket>();
+    ticket->device_ = &device_;
+    ticket->fence_ = vk::raii::Fence(device_, vk::FenceCreateInfo{});
+
+    AsyncSubmit entry;
+    entry.ticket = ticket;
+    entry.keep_alive = std::move(keep_alive);
+
+    vk::CommandBufferAllocateInfo allocate_info{};
+    allocate_info.commandPool = *transient_pool_;
+    allocate_info.level = vk::CommandBufferLevel::ePrimary;
+    allocate_info.commandBufferCount = 1;
+    vk::CommandBuffer raw{};
+    {
+        // El pool se comparte entre hilos: grabar con el puesto (como submitOneTime).
+        const std::lock_guard pool_lock(transient_mutex_);
+        try {
+            entry.commands.emplace(device_, allocate_info);
+            const vk::raii::CommandBuffer& cmd = entry.commands->front();
+            vk::CommandBufferBeginInfo begin_info{};
+            begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+            cmd.begin(begin_info);
+            record(cmd);
+            cmd.end();
+            raw = *cmd;
+        } catch (...) {
+            entry.commands.reset();  // con el pool aun puesto
+            throw;
+        }
+    }
+
+    vk::SubmitInfo submit_info{};
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &raw;
+    try {
+        const std::lock_guard queue_lock(queue_mutex_);
+        graphics_queue_.submit(submit_info, *ticket->fence_);
+    } catch (...) {
+        const std::lock_guard pool_lock(transient_mutex_);
+        entry.commands.reset();
+        throw;
+    }
+
+    const std::lock_guard lock(async_mutex_);
+    async_.push_back(std::move(entry));
+    return ticket;
+}
+
+void VulkanDevice::releaseAsync(std::vector<AsyncSubmit>& finished) const {
+    if (finished.empty()) return;
+    {
+        const std::lock_guard pool_lock(transient_mutex_);
+        for (AsyncSubmit& f : finished) f.commands.reset();
+    }
+    // Lo mantenido vivo (staging, imagenes no adoptadas) se suelta fuera de
+    // los cerrojos.
+    finished.clear();
+}
+
+std::size_t VulkanDevice::collectAsync() const {
+    std::vector<AsyncSubmit> finished;
+    std::size_t remaining = 0;
+    {
+        const std::lock_guard lock(async_mutex_);
+        if (async_.empty()) return 0;
+        auto keep = std::stable_partition(async_.begin(), async_.end(),
+                                          [](const AsyncSubmit& a) { return !a.ticket->done(); });
+        finished.assign(std::make_move_iterator(keep), std::make_move_iterator(async_.end()));
+        async_.erase(keep, async_.end());
+        remaining = async_.size();
+    }
+    releaseAsync(finished);
+    return remaining;
+}
+
+std::size_t VulkanDevice::asyncInFlight() const {
+    const std::lock_guard lock(async_mutex_);
+    return async_.size();
+}
+
+// -----------------------------------------------------------------------------
+// Tareas en segundo plano
+// -----------------------------------------------------------------------------
+
+void VulkanDevice::setTaskScheduler(TaskScheduler scheduler) {
+    const std::lock_guard lock(task_mutex_);
+    scheduler_ = std::move(scheduler);
+}
+
+void VulkanDevice::runTask(std::function<void()> task) const {
+    if (!task) return;
+    tasks_in_flight_.fetch_add(1);
+    // La tarea (y lo que captura: imagenes, buffers...) se suelta ANTES de
+    // avisar a drainTasks: si no, sus recursos Vulkan se destruirian despues
+    // de que el dispositivo se apagara. Compartida por si el planificador
+    // copia el envoltorio: la ejecuta y suelta la copia que corra.
+    auto holder = std::make_shared<std::function<void()>>(std::move(task));
+    std::function<void()> wrapped = [this, holder]() {
+        try {
+            std::function<void()> run = std::move(*holder);
+            *holder = nullptr;
+            if (run) run();
+        } catch (const std::exception& e) {
+            std::cerr << "[Vulkan] Una tarea en segundo plano fallo: " << e.what() << "\n";
+        } catch (...) {
+            std::cerr << "[Vulkan] Una tarea en segundo plano fallo.\n";
+        }
+        // Con el cerrojo puesto: drainTasks no puede seguir (ni destruir el
+        // dispositivo) hasta que se suelte, y despues no se toca nada mas.
+        const std::lock_guard lock(task_mutex_);
+        tasks_in_flight_.fetch_sub(1);
+        task_done_cv_.notify_all();
+    };
+    TaskScheduler scheduler;
+    {
+        const std::lock_guard lock(task_mutex_);
+        scheduler = scheduler_;
+        if (!scheduler) {
+            if (!task_thread_.joinable()) {
+                task_stop_ = false;
+                task_thread_ = std::thread([this]() {
+                    for (;;) {
+                        std::function<void()> next;
+                        {
+                            std::unique_lock wait_lock(task_mutex_);
+                            task_cv_.wait(wait_lock, [this]() { return task_stop_ || !tasks_.empty(); });
+                            if (tasks_.empty()) return;  // task_stop_
+                            next = std::move(tasks_.front());
+                            tasks_.pop_front();
+                        }
+                        next();
+                    }
+                });
+            }
+            tasks_.push_back(std::move(wrapped));
+        }
+    }
+    if (scheduler) {
+        try {
+            scheduler(wrapped);
+        } catch (...) {
+            // El planificador no la acepto (apagandose): aqui mismo (si ya
+            // corrio en otro hilo, `holder` esta vacio y esa copia descuenta).
+            if (*holder) wrapped();
+        }
+        return;
+    }
+    task_cv_.notify_one();
+}
+
+void VulkanDevice::drainTasks() const {
+    std::unique_lock lock(task_mutex_);
+    const bool drained = task_done_cv_.wait_for(lock, std::chrono::seconds(10),
+                                                [this]() { return tasks_in_flight_.load() == 0; });
+    if (!drained) {
+        std::cerr << "[Vulkan] Quedan " << tasks_in_flight_.load()
+                  << " tareas en segundo plano sin terminar (¿se apago antes el sistema de jobs?)\n";
+    }
+}
+
+void VulkanDevice::stopTaskThread() {
+    {
+        const std::lock_guard lock(task_mutex_);
+        task_stop_ = true;
+    }
+    task_cv_.notify_all();
+    if (task_thread_.joinable()) task_thread_.join();
+    const std::lock_guard lock(task_mutex_);
+    task_stop_ = false;
+}
+
+VulkanDevice::~VulkanDevice() {
+    stopTaskThread();
+}
+
+// -----------------------------------------------------------------------------
 // Cache de pipelines
 // -----------------------------------------------------------------------------
 
@@ -861,7 +1063,19 @@ const vk::raii::PipelineCache& VulkanDevice::pipelineCache() const {
 }
 
 void VulkanDevice::shutdown() {
+    // Primero las tareas en segundo plano (pueden estar creando recursos o
+    // enviando copias), despues la GPU y lo que quedaba de los envios sin espera.
+    drainTasks();
+    stopTaskThread();
     waitIdle();
+    {
+        std::vector<AsyncSubmit> finished;
+        {
+            const std::lock_guard lock(async_mutex_);
+            finished.swap(async_);
+        }
+        releaseAsync(finished);
+    }
     savePipelineCache();
     pipeline_cache_ = nullptr;
     compat::shutdown();  // sus render passes y framebuffers, antes que el dispositivo

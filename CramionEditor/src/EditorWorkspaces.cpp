@@ -33,8 +33,14 @@ using core::Vec3;
 
 namespace {
 
+// Los dockspaces de las pestanas (el de la Escena es scene_dockspace_id_; el
+// del Blueprint lo crea EditorBlueprint.cpp con este mismo nombre).
+constexpr const char* kPrefabDockspace = "CramionPrefabDockspaceBlenderAreas";
+constexpr const char* kScriptDockspace = "CramionScriptDockspace";
+constexpr const char* kBlueprintDockspace = "CramionBlueprintDock";
+
 const char* workspaceSuffix(int kind) {
-    return kind == 1 ? "@prefab" : (kind == 3 ? "@fsm" : (kind == 4 ? "@graph" : "@script"));
+    return kind == 1 ? "@prefab" : (kind == 3 ? "@fsm" : (kind == 4 ? "@graph" : (kind == 5 ? "@blueprint" : "@script")));
 }
 
 std::string lowerText(std::string text) {
@@ -95,6 +101,7 @@ const EditorApp::Workspace* EditorApp::findWorkspace(int id) const {
 
 void EditorApp::resetWorkspaces() {
     workspaces_.clear();
+    blueprint_editors_.clear();
     Workspace scene;
     scene.id = 0;
     scene.kind = WorkspaceKind::Scene;
@@ -104,8 +111,11 @@ void EditorApp::resetWorkspaces() {
     world_workspace_ = 0;
     pending_workspace_ = -1;
     pending_play_ = false;
+    pending_pause_ = false;
     workspace_close_ask_ = -1;
     workspace_focus_frames_ = 0;
+    workspace_focus_.clear();
+    workspace_restore_focus_ = 0;
 }
 
 EditorApp::WorkspaceKind EditorApp::activeWorkspaceKind() const {
@@ -119,19 +129,20 @@ std::string EditorApp::panelTitle(const char* name) const {
     const int suffix = kind == WorkspaceKind::Prefab         ? 1
                        : kind == WorkspaceKind::StateMachine ? 3
                        : kind == WorkspaceKind::Graph        ? 4
+                       : kind == WorkspaceKind::Blueprint    ? 5
                                                              : 2;
     return std::string(name) + "###" + name + workspaceSuffix(suffix);
 }
 
 ecs::Entity EditorApp::prefabStageRoot() {
     const Workspace* ws = findWorkspace(world_workspace_);
-    if (ws == nullptr || ws->kind != WorkspaceKind::Prefab) return {};
+    if (ws == nullptr || !isPrefabLikeWorkspace(ws->kind)) return {};
     return world_.find(ws->root);
 }
 
 bool EditorApp::isStageHelper(const Uuid& uuid) const {
     const Workspace* ws = findWorkspace(world_workspace_);
-    if (ws == nullptr || ws->kind != WorkspaceKind::Prefab) return false;
+    if (ws == nullptr || !isPrefabLikeWorkspace(ws->kind)) return false;
     return std::any_of(ws->helpers.begin(), ws->helpers.end(), [&](const Uuid& h) { return h == uuid; });
 }
 
@@ -154,6 +165,11 @@ void EditorApp::openPrefabWorkspace(const Uuid& prefab) {
     }
     if (playing()) {
         std::cerr << "[Prefab] Sal del modo Play para editar el prefab\n";
+        return;
+    }
+    // Un Blueprint de actor se edita en su pestana (Componentes, Event Graph...).
+    if (ecs::isBlueprint(prefabText(prefab))) {
+        openBlueprintWorkspace(prefab);
         return;
     }
     for (const Workspace& ws : workspaces_) {
@@ -334,6 +350,31 @@ bool EditorApp::beginGraphWorkspace(GraphKind kind, const char* title) {
 
 void EditorApp::requestWorkspace(int id) { pending_workspace_ = id; }
 
+// Un dockspace que no se dibuja no esta "vivo": ImGui desacopla de el las
+// ventanas que si se dibujan (las de todas las pestanas: Git, MCP,
+// Terminal...), y si un area se queda vacia la borra. Con KeepAliveOnly
+// siguen acopladas (ocultas) y el diseno de cada pestana queda intacto.
+// Solo los que ya existen (KeepAliveOnly crearia uno vacio). Al principio
+// del frame, antes de cualquier ventana. Tambien el de la pestana activa:
+// las ventanas de todas las pestanas se dibujan antes que su dockspace (y
+// una pestana puede cerrarse o cambiar a mitad de frame, antes de dibujar el
+// suyo); sin esto se desacoplaban igual. Su DockSpace de verdad, despues,
+// pone sus flags y lo actualiza (KeepAliveOnly no lo marca activo).
+void EditorApp::keepInactiveDockspacesAlive() {
+    const auto keep = [](ImGuiID id) {
+        if (id != 0 && ImGui::DockBuilderGetNode(id) != nullptr) {
+            ImGui::DockSpace(id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_KeepAliveOnly);
+        }
+    };
+    // Al arrancar aun no se ha dibujado la Escena: el mismo id que en drawUi
+    // (se llama desde alli, con la misma pila de ids).
+    if (scene_dockspace_id_ == 0) scene_dockspace_id_ = ImGui::GetID("CramionDockspaceBlenderAreas");
+    keep(scene_dockspace_id_);
+    keep(ImHashStr(kPrefabDockspace));
+    keep(ImHashStr(kScriptDockspace));
+    keep(ImHashStr(kBlueprintDockspace));
+}
+
 void EditorApp::applyPendingWorkspace() {
     if (workspaces_.empty()) resetWorkspaces();
     if (pending_workspace_ >= 0) {
@@ -344,13 +385,14 @@ void EditorApp::applyPendingWorkspace() {
     if (pending_play_) {
         pending_play_ = false;
         if (active_workspace_ == 0 && world_workspace_ == 0) enterPlay();
+        pending_pause_ = false;  // si no se pudo entrar, la pausa no queda para el proximo Play
     }
 }
 
 void EditorApp::activateWorkspace(int id) {
     Workspace* ws = findWorkspace(id);
     if (ws == nullptr || id == active_workspace_) return;
-    if (ws->kind == WorkspaceKind::Prefab && playing()) {
+    if (isPrefabLikeWorkspace(ws->kind) && playing()) {
         std::cerr << "[Prefab] Sal del modo Play para editar el prefab\n";
         return;
     }
@@ -359,6 +401,12 @@ void EditorApp::activateWorkspace(int id) {
     if (kind != WorkspaceKind::Script && kind != WorkspaceKind::StateMachine && kind != WorkspaceKind::Graph) {
         loadWorkspaceWorld(id);
     }
+    // Cada pestana conserva su diseno y el editor de cada area: este frame
+    // las areas aparecen sin llevarse el foco (beginArea) y el foco vuelve a
+    // la ventana que lo tenia en esta pestana (promoteFocusedArea).
+    workspace_switch_frame_ = ImGui::GetFrameCount();
+    const auto focused = workspace_focus_.find(id);
+    workspace_restore_focus_ = focused != workspace_focus_.end() ? focused->second : 0;
     active_workspace_ = id;
     flying_ = false;
     if (kind == WorkspaceKind::Script) {
@@ -502,7 +550,7 @@ void EditorApp::loadWorkspaceWorld(int id) {
 
 bool EditorApp::savePrefabWorkspace() {
     Workspace* ws = findWorkspace(world_workspace_);
-    if (ws == nullptr || ws->kind != WorkspaceKind::Prefab) return false;
+    if (ws == nullptr || !isPrefabLikeWorkspace(ws->kind)) return false;
     if (playing()) {
         std::cerr << "[Prefab] Sal del modo Play para guardar el prefab\n";
         return false;
@@ -582,14 +630,17 @@ void EditorApp::closeWorkspace(int id, bool save) {
         syncScriptWorkspaces();
         return;
     }
+    const bool blueprint = ws->kind == WorkspaceKind::Blueprint;
     if (save) {
         if (playing()) {
             std::cerr << "[Prefab] Sal del modo Play para guardar el prefab\n";
             return;
         }
         loadWorkspaceWorld(id);
-        if (!savePrefabWorkspace()) return;  // no se cierra si no se pudo guardar
+        // Blueprint: tambien su grafo y los datos de la clase.
+        if (!(blueprint ? saveBlueprintWorkspace() : savePrefabWorkspace())) return;  // no se cierra si no se pudo guardar
     }
+    if (blueprint) blueprint_editors_.erase(id);  // su Event Graph (sin guardar si se descarto)
     const bool was_active = active_workspace_ == id;
     if (world_workspace_ == id) {
         world_workspace_ = -1;  // su mundo se tira
@@ -623,8 +674,11 @@ void EditorApp::drawWorkspaceBar() {
         if (ws == nullptr) {
             ImGui::CloseCurrentPopup();
         } else {
-            ImGui::Text("El prefab \"%s\" tiene cambios sin guardar.", ws->name.c_str());
-            ImGui::TextDisabled("Guardar actualiza todas sus instancias de la escena.");
+            const bool blueprint = ws->kind == WorkspaceKind::Blueprint;
+            ImGui::Text(blueprint ? "El Blueprint \"%s\" tiene cambios sin guardar." : "El prefab \"%s\" tiene cambios sin guardar.",
+                        ws->name.c_str());
+            ImGui::TextDisabled(blueprint ? "Guardar escribe su Event Graph y actualiza todas sus instancias de la escena."
+                                          : "Guardar actualiza todas sus instancias de la escena.");
             ImGui::Spacing();
             const int id = workspace_close_ask_;
             if (ImGui::Button("Guardar", ImVec2(110.0f, 0.0f))) {
@@ -675,7 +729,7 @@ void EditorApp::drawWorkspacePanels(float delta_seconds) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     game_view_visible_ = false;
     if (activeWorkspaceKind() == WorkspaceKind::Prefab) {
-        const ImGuiID dock = ImHashStr("CramionPrefabDockspaceBlenderAreas");
+        const ImGuiID dock = ImHashStr(kPrefabDockspace);
         if (ImGui::DockBuilderGetNode(dock) == nullptr) buildPrefabLayout(dock);
         ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kGap);
         ImGui::DockSpaceOverViewport(dock, viewport);
@@ -691,6 +745,10 @@ void EditorApp::drawWorkspacePanels(float delta_seconds) {
         if (show_inspector_) drawInspector();
         if (show_project_) drawProject();
         if (show_console_) drawConsole();
+    } else if (activeWorkspaceKind() == WorkspaceKind::Blueprint) {
+        // Su propio dock (EditorBlueprint.cpp): Componentes, Mi Blueprint,
+        // Ventana grafica / Event Graph, Detalles y Resultados de compilacion.
+        drawBlueprintWorkspace();
     } else if (activeWorkspaceKind() == WorkspaceKind::StateMachine) {
         scene_view_visible_ = false;
         flying_ = false;
@@ -702,7 +760,7 @@ void EditorApp::drawWorkspacePanels(float delta_seconds) {
         flying_ = false;
         if (show_animator_) drawAnimatorEditor();
     } else {
-        const ImGuiID dock = ImHashStr("CramionScriptDockspace");
+        const ImGuiID dock = ImHashStr(kScriptDockspace);
         const ImGuiDockNode* node = ImGui::DockBuilderGetNode(dock);
         if (node == nullptr || node->IsLeafNode()) buildScriptLayout(dock);
         ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kGap);

@@ -225,6 +225,8 @@ TITLES = {
     "Graphics": "Configuración gráfica y post-procesado.",
     "Http": "Peticiones HTTPS a servidores y webs.",
     "Json": "Texto JSON a valores y al revés.",
+    "WebSocket": "Conexiones WebSocket (ws/wss) con tu servidor; WsClient.",
+    "Base64": "Texto o bytes a base64 y al reves.",
     "Navigation": "NavMesh: caminos, puntos y rayos sobre la malla de navegación.",
     "Network": "Multijugador: crear y unirse, mensajes, objetos de red.",
     "Prefs": "Datos guardados entre partidas (como PlayerPrefs).",
@@ -243,6 +245,26 @@ TITLES = {
     "Assert": "Comprobaciones de las pruebas automáticas.",
 }
 
+# Secciones de mas en una pagina de TITLES (ambitos que no tienen pagina propia).
+EXTRA_SECTIONS = {
+    "WebSocket": [("WsClient", ["WsClient"]), ("Base64 en el script (sin llamar al motor)", ["WsClient::base64"])],
+}
+
+# HTML que se anade al final de una pagina generada.
+PAGE_NOTES = {
+    "cpp-cvars": (
+        "<h3 id=\"websocket\">CVars de WebSocket</h3>\n"
+        "<table>\n  <tbody>\n"
+        "    <tr><td><code>net.WsInsecure</code></td><td>ws:// sin cifrar: 0 solo este PC, 1 también la red local, 2 cualquiera (solo con trucos).</td></tr>\n"
+        "    <tr><td><code>net.WsMaxConnections</code></td><td>Conexiones WebSocket a la vez en todo el juego (16).</td></tr>\n"
+        "    <tr><td><code>net.WsMaxMessageKB</code></td><td>Tamaño máximo por defecto de un mensaje recibido, en KB (4096).</td></tr>\n"
+        "    <tr><td><code>net.WsMaxEventsPerFrame</code></td><td>Eventos WebSocket entregados a los scripts por frame (512).</td></tr>\n"
+        "    <tr><td><code>net.WsLog</code></td><td>Consola: 1 abrir, cerrar y errores; 2 también cada mensaje (200 bytes).</td></tr>\n"
+        "  </tbody>\n</table>\n"
+        "<p>Más en <a href=\"websocket.html#opciones\">WebSocket</a>.</p>\n"
+    ),
+}
+
 
 def main():
     api_text = read("Api.gen.h")
@@ -255,6 +277,11 @@ def main():
             scopes.setdefault(k, []).extend(v)
     # Assert lo da el SDK a mano, en Test.h (no esta en Api.gen.h)
     scopes.setdefault("Assert", []).extend(parse(read("Test.h"))[0].get("Assert", []))
+    # WsClient y base64Encode/Decode (WsClient.h, lo incluye Script.h): en la pagina de WebSocket
+    if os.path.exists(os.path.join(SDK, "WsClient.h")):
+        ws_scopes = parse(read("WsClient.h"))[0]
+        scopes.setdefault("WsClient", []).extend(ws_scopes.get("WsClient", []))
+        scopes.setdefault("WsClient::base64", []).extend(ws_scopes.get("cramion", []))
 
     def page(slug, title, desc, intro, sections):
         body = [f"<p>{intro}</p>\n"]
@@ -265,6 +292,8 @@ def main():
             t = table(entries)
             if t:
                 body.append(f'<h3 id="{re.sub(r"[^a-z0-9]+", "-", heading.lower()).strip("-")}">{html.escape(heading)}</h3>\n{t}')
+        if slug in PAGE_NOTES:
+            body.append(PAGE_NOTES[slug])
         open(os.path.join(PAGES, slug + ".html"), "w", encoding="utf-8").write("\n".join(body))
         return {"slug": slug, "title": title, "desc": desc}
 
@@ -300,7 +329,8 @@ def main():
     done = {"Scene", "Input", "Physics", "Time", "Debug", "Api", "CVars", "Mesh", "StateMachine", "Entity", "Mathf", "Vec2",
             "Vec3", "Quat", "Color", "Script", "Property"}
     for name in sorted(k for k in scopes if "::" not in k and k not in done and k != "cramion" and k in TITLES):
-        pages.append(page("cpp-" + name.lower(), name, TITLES[name], TITLES[name], [(name, [name])]))
+        pages.append(page("cpp-" + name.lower(), name, TITLES[name], TITLES[name],
+                          [(name, [name])] + EXTRA_SECTIONS.get(name, [])))
 
     data = json.load(open(os.path.join(HERE, "pages.json"), encoding="utf-8"))
     intro = [p for p in data["groups"] if p["group"] == GROUP]

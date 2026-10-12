@@ -249,10 +249,16 @@ vec3 applyFog(vec3 color, vec3 position, float sky_visibility) {
     float distance_to_point = length(to_point);
     vec3 ray_direction = to_point / max(distance_to_point, 1e-4);
     float falloff = lights.clouds.z > 0.0 ? lights.clouds.z : kFogHeightFalloff;
-    float density = lights.clouds.y * exp(-(camera.position.y - kFogBaseHeight) * falloff);
+    // Forma estable, como heightFog de lighting.frag (exponentes acotados y
+    // densidad 0 = sin niebla): antes exp() se desbordaba y salia NaN.
     float b = falloff * ray_direction.y;
-    float integral = abs(b) > 0.0001 ? (1.0 - exp(-distance_to_point * b)) / b : distance_to_point;
-    float fog = clamp(1.0 - exp(-density * integral), 0.0, 1.0);
+    float a0 = -(camera.position.y - kFogBaseHeight) * falloff;
+    float a1 = a0 - b * distance_to_point;
+    float a_max = max(a0, a1);
+    float optical = abs(b) > 0.0001
+        ? lights.clouds.y * exp(min(a_max, 80.0)) * (1.0 - exp(min(a0, a1) - a_max)) / abs(b)
+        : lights.clouds.y * exp(min(a0, 80.0)) * distance_to_point;
+    float fog = lights.clouds.y > 0.0 ? clamp(1.0 - exp(-max(optical, 0.0)), 0.0, 1.0) : 0.0;
 
     vec3 fog_color = max(irradiance_sh.coefficients[0].rgb * 0.282095, vec3(0.0)) * (1.0 / kPi);
     float sun_alignment = max(dot(ray_direction, lights.sky_sun.xyz), 0.0);

@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <iterator>
+#include <memory>
 #include <unordered_map>
 
 namespace cramion::gfx {
@@ -36,6 +38,9 @@ constexpr std::size_t kTreeCap = 40000;        // como mucho (los mas cercanos)
 constexpr float kTreeReselect = 25.0f;         // m que se mueve la camara antes de volver a elegir
 constexpr float kTreeCell = 64.0f;             // m: rejilla para elegirlos rapido
 constexpr auto kTerrainUpdateInterval = std::chrono::milliseconds(250);
+// Terrenos que aparecen o desaparecen: reconstruir la escena de rayos como
+// mucho una vez cada tanto (VulkanRenderer::prepareRayTracingScene).
+constexpr auto kTerrainRebuildCooldown = std::chrono::seconds(2);
 
 float sampleHeight(const TerrainPass::RayTracingSource& s, std::int64_t x, std::int64_t y) {
     const auto res = static_cast<std::int64_t>(s.resolution);
@@ -311,8 +316,6 @@ void VulkanRenderer::buildRayTracingScene(const scene::Scene& scene) {
 
     RayTracing::ExtraScene extra;
     rt_terrains_.clear();
-    std::vector<RtTerrainCache> cache;
-    cache.swap(rt_terrain_cache_);
     std::vector<TerrainPass::RayTracingSource> sources = terrain_pass_.rayTracingSources();
     std::sort(sources.begin(), sources.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
     for (const TerrainPass::RayTracingSource& source : sources) {
@@ -323,31 +326,39 @@ void VulkanRenderer::buildRayTracingScene(const scene::Scene& scene) {
         terrain.splat_resolution = source.splat_resolution;
         terrain.cells = std::min(kTerrainMaxCells, source.resolution - 1);
         terrain.texture_size = terrainAlbedoSize(source);
-        terrain.height_revision = source.height_revision;
-        terrain.look_revision = source.look_revision;
         terrain.extra = static_cast<std::uint32_t>(extra.meshes.size());
         terrain.texture = static_cast<std::uint32_t>(extra.textures.size());
 
-        // Lo calculado la vez anterior, si el terreno no cambio.
-        const auto cached = std::find_if(cache.begin(), cache.end(), [&](const RtTerrainCache& c) {
+        // Lo calculado antes (en segundo plano, updateRtTerrainCache), aunque
+        // sea de una revision anterior: lo nuevo llega despues en su sitio.
+        auto cached = std::find_if(rt_terrain_cache_.begin(), rt_terrain_cache_.end(), [&](const RtTerrainCache& c) {
             return c.id == source.id && c.cells == terrain.cells && c.texture_size == terrain.texture_size;
         });
-        RtTerrainCache entry;
-        entry.id = source.id;
-        entry.cells = terrain.cells;
-        entry.texture_size = terrain.texture_size;
-        entry.height_revision = source.height_revision;
-        entry.look_revision = source.look_revision;
-        if (cached != cache.end() && cached->height_revision == source.height_revision) {
-            entry.vertices = std::move(cached->vertices);
-        } else {
-            entry.vertices = terrainVertices(source, terrain.cells);
+        if (cached == rt_terrain_cache_.end()) {
+            std::erase_if(rt_terrain_cache_, [&](const RtTerrainCache& c) { return c.id == source.id; });
+            RtTerrainCache fresh;
+            fresh.id = source.id;
+            fresh.cells = terrain.cells;
+            fresh.texture_size = terrain.texture_size;
+            rt_terrain_cache_.push_back(std::move(fresh));
+            cached = std::prev(rt_terrain_cache_.end());
         }
-        if (cached != cache.end() && cached->look_revision == source.look_revision) {
-            entry.albedo = std::move(cached->albedo);
-        } else {
-            entry.albedo = terrainAlbedo(source, terrain.texture_size);
+        RtTerrainCache& entry = *cached;
+        if (!rt_async_terrain_) {
+            // Como antes: lo que falte, ahora mismo.
+            if (entry.vertices.empty() || entry.height_revision != source.height_revision) {
+                entry.vertices = terrainVertices(source, terrain.cells);
+                entry.height_revision = source.height_revision;
+            }
+            if (entry.albedo.empty() || entry.look_revision != source.look_revision) {
+                entry.albedo = terrainAlbedo(source, terrain.texture_size);
+                entry.look_revision = source.look_revision;
+            }
         }
+        // Aun calculandose: este terreno entra en la siguiente reconstruccion.
+        if (entry.vertices.empty() || entry.albedo.empty()) continue;
+        terrain.height_revision = entry.height_revision;
+        terrain.look_revision = entry.look_revision;
 
         RayTracing::ExtraMesh mesh;
         mesh.vertices = entry.vertices;
@@ -365,7 +376,6 @@ void VulkanRenderer::buildRayTracingScene(const scene::Scene& scene) {
         texture.mips = entry.albedo;
         extra.textures.push_back(std::move(texture));
         rt_terrains_.push_back(terrain);
-        rt_terrain_cache_.push_back(std::move(entry));
     }
 
     rt_species_extra_.fill(-1);
@@ -397,6 +407,7 @@ void VulkanRenderer::buildRayTracingScene(const scene::Scene& scene) {
     ray_pinned_models_.clear();
     rt_scene_dirty_ = false;
     rt_model_edit_pending_ = false;
+    rt_scene_build_time_ = std::chrono::steady_clock::now();
     rt_trees_valid_ = false;
     path_tracing_reset_ = true;
     std::cout << "[Vulkan] Escena de rayos: " << models.size() << " modelos, " << rt_terrains_.size() << " terreno(s), "
@@ -413,6 +424,9 @@ void VulkanRenderer::prepareRayTracingScene(const scene::Scene& scene, std::vect
     // Terrenos nuevos, quitados o con otra resolucion; arboles regenerados.
     std::vector<TerrainPass::RayTracingSource> sources = terrain_pass_.rayTracingSources();
     std::sort(sources.begin(), sources.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
+    // Malla y color de cada terreno: en segundo plano (lo terminado entra en
+    // la cache; lo que falte se lanza).
+    updateRtTerrainCache(sources);
     std::size_t usable = 0;
     for (const auto& source : sources) usable += source.resolution >= 3 && source.splat_resolution >= 2 && source.size > 0.0f;
     bool terrains_changed = usable != rt_terrains_.size();
@@ -422,6 +436,31 @@ void VulkanRenderer::prepareRayTracingScene(const scene::Scene& scene, std::vect
         const RtTerrain& known = rt_terrains_[k++];
         terrains_changed = known.id != source.id || known.resolution != source.resolution ||
                            known.splat_resolution != source.splat_resolution;
+    }
+    // Solo se reconstruye cuando todos los terrenos tienen ya su malla y su
+    // color (calculados en otro hilo): si no, la reconstruccion los dejaria
+    // fuera y habria que repetirla (cada una espera a la GPU).
+    if (terrains_changed && rt_async_terrain_) {
+        for (const auto& source : sources) {
+            if (source.resolution < 3 || source.splat_resolution < 2 || source.size <= 0.0f) continue;
+            const std::uint32_t cells = std::min(kTerrainMaxCells, source.resolution - 1);
+            const std::uint32_t texture_size = terrainAlbedoSize(source);
+            const bool ready = std::any_of(rt_terrain_cache_.begin(), rt_terrain_cache_.end(), [&](const RtTerrainCache& c) {
+                return c.id == source.id && c.cells == cells && c.texture_size == texture_size && !c.vertices.empty() &&
+                       !c.albedo.empty();
+            });
+            if (!ready) {
+                terrains_changed = false;
+                break;
+            }
+        }
+    }
+    // Con world partition entran y salen trozos de terreno a menudo: cada
+    // reconstruccion espera a la GPU (waitIdle), asi que como mucho una cada
+    // kTerrainRebuildCooldown. Mientras, los rayos siguen con los de antes (el
+    // cambio se vuelve a detectar cada frame hasta que toca).
+    if (terrains_changed && ray_tracing_.sceneBuilt() && now - rt_scene_build_time_ < kTerrainRebuildCooldown) {
+        terrains_changed = false;
     }
     if (terrains_changed || foliage_pass_.speciesRevision() != rt_species_revision_) rt_scene_dirty_ = true;
     if (rt_scene_dirty_) buildRayTracingScene(scene);
@@ -433,15 +472,45 @@ void VulkanRenderer::prepareRayTracingScene(const scene::Scene& scene, std::vect
         const auto it = std::find_if(sources.begin(), sources.end(), [&](const auto& s) { return s.id == terrain.id; });
         if (it == sources.end()) continue;
         const TerrainPass::RayTracingSource& source = *it;
-        if (source.height_revision != terrain.height_revision && now - terrain.last_update > kTerrainUpdateInterval) {
-            ray_tracing_.updateExtraVertices(terrain.extra, terrainVertices(source, terrain.cells));
-            terrain.height_revision = source.height_revision;
-            terrain.last_update = now;
+        // Cambio de resolucion aun sin reconstruir (espera): su malla y su
+        // textura son de otro tamano, no se actualizan en su sitio.
+        const bool same_shape = source.resolution == terrain.resolution &&
+                                source.splat_resolution == terrain.splat_resolution;
+        if (!same_shape) {
+            if (source.visible) {
+                instances.push_back(RayTracing::Instance{rt_extra_base_ + terrain.extra, core::translate(source.origin),
+                                                         RayTracing::kMaskTerrain});
+            }
+            continue;
         }
-        if (source.look_revision != terrain.look_revision && now - terrain.last_texture > kTerrainUpdateInterval) {
-            ray_tracing_.updateExtraTexture(terrain.texture, terrainAlbedo(source, terrain.texture_size));
-            terrain.look_revision = source.look_revision;
-            terrain.last_texture = now;
+        if (rt_async_terrain_) {
+            // Lo calculado en segundo plano, cuando llega (sin calcular aqui).
+            const auto cached = std::find_if(rt_terrain_cache_.begin(), rt_terrain_cache_.end(), [&](const RtTerrainCache& c) {
+                return c.id == terrain.id && c.cells == terrain.cells && c.texture_size == terrain.texture_size;
+            });
+            if (cached != rt_terrain_cache_.end()) {
+                if (!cached->vertices.empty() && cached->height_revision != terrain.height_revision) {
+                    ray_tracing_.updateExtraVertices(terrain.extra, cached->vertices);
+                    terrain.height_revision = cached->height_revision;
+                    terrain.last_update = now;
+                }
+                if (!cached->albedo.empty() && cached->look_revision != terrain.look_revision) {
+                    ray_tracing_.updateExtraTexture(terrain.texture, cached->albedo);
+                    terrain.look_revision = cached->look_revision;
+                    terrain.last_texture = now;
+                }
+            }
+        } else {
+            if (source.height_revision != terrain.height_revision && now - terrain.last_update > kTerrainUpdateInterval) {
+                ray_tracing_.updateExtraVertices(terrain.extra, terrainVertices(source, terrain.cells));
+                terrain.height_revision = source.height_revision;
+                terrain.last_update = now;
+            }
+            if (source.look_revision != terrain.look_revision && now - terrain.last_texture > kTerrainUpdateInterval) {
+                ray_tracing_.updateExtraTexture(terrain.texture, terrainAlbedo(source, terrain.texture_size));
+                terrain.look_revision = source.look_revision;
+                terrain.last_texture = now;
+            }
         }
         if (source.visible) {
             instances.push_back(RayTracing::Instance{rt_extra_base_ + terrain.extra, core::translate(source.origin),
@@ -518,6 +587,90 @@ void VulkanRenderer::prepareRayTracingScene(const scene::Scene& scene, std::vect
         }
     }
     instances.insert(instances.end(), rt_tree_instances_.begin(), rt_tree_instances_.end());
+}
+
+void VulkanRenderer::updateRtTerrainCache(const std::vector<TerrainPass::RayTracingSource>& sources) {
+    const auto now = std::chrono::steady_clock::now();
+    // Lo terminado: a la cache.
+    for (auto it = rt_terrain_jobs_.begin(); it != rt_terrain_jobs_.end();) {
+        RtTerrainJob& job = *it->second;
+        if (!job.ready.load(std::memory_order_acquire)) {
+            ++it;
+            continue;
+        }
+        auto cached = std::find_if(rt_terrain_cache_.begin(), rt_terrain_cache_.end(),
+                                   [&](const RtTerrainCache& c) { return c.id == job.id; });
+        if (cached == rt_terrain_cache_.end()) {
+            rt_terrain_cache_.push_back(RtTerrainCache{});
+            cached = std::prev(rt_terrain_cache_.end());
+            cached->id = job.id;
+        }
+        if (cached->cells != job.cells || cached->texture_size != job.texture_size) {
+            // Otra resolucion: lo de antes ya no sirve.
+            const auto job_time = cached->job_time;
+            *cached = RtTerrainCache{};
+            cached->id = job.id;
+            cached->cells = job.cells;
+            cached->texture_size = job.texture_size;
+            cached->job_time = job_time;
+        }
+        if (job.want_vertices && !job.vertices.empty()) {
+            cached->vertices = std::move(job.vertices);
+            cached->height_revision = job.height_revision;
+        }
+        if (job.want_albedo && !job.albedo.empty()) {
+            cached->albedo = std::move(job.albedo);
+            cached->look_revision = job.look_revision;
+        }
+        it = rt_terrain_jobs_.erase(it);
+    }
+    // Terrenos que ya no estan.
+    std::erase_if(rt_terrain_cache_, [&](const RtTerrainCache& c) {
+        return std::none_of(sources.begin(), sources.end(), [&](const auto& s) { return s.id == c.id; });
+    });
+    if (!rt_async_terrain_) return;
+
+    // Lo que falte o haya cambiado: una tarea por terreno (como mucho
+    // kTerrainUpdateInterval entre dos si ya tiene algo: esculpir). La tarea
+    // solo ve su copia de la fuente (los datos compartidos e inmutables).
+    for (const TerrainPass::RayTracingSource& source : sources) {
+        if (source.resolution < 3 || source.splat_resolution < 2 || source.size <= 0.0f) continue;
+        if (!source.heights_data || !source.splat0_data || !source.splat1_data) continue;
+        if (rt_terrain_jobs_.contains(source.id)) continue;
+        const std::uint32_t cells = std::min(kTerrainMaxCells, source.resolution - 1);
+        const std::uint32_t texture_size = terrainAlbedoSize(source);
+        const auto cached = std::find_if(rt_terrain_cache_.begin(), rt_terrain_cache_.end(), [&](const RtTerrainCache& c) {
+            return c.id == source.id && c.cells == cells && c.texture_size == texture_size;
+        });
+        const bool have = cached != rt_terrain_cache_.end();
+        const bool want_vertices = !have || cached->vertices.empty() || cached->height_revision != source.height_revision;
+        const bool want_albedo = !have || cached->albedo.empty() || cached->look_revision != source.look_revision;
+        if (!want_vertices && !want_albedo) continue;
+        if (have && !cached->vertices.empty() && !cached->albedo.empty() && now - cached->job_time < kTerrainUpdateInterval) {
+            continue;
+        }
+        if (have) cached->job_time = now;
+        auto job = std::make_shared<RtTerrainJob>();
+        job->id = source.id;
+        job->cells = cells;
+        job->texture_size = texture_size;
+        job->height_revision = source.height_revision;
+        job->look_revision = source.look_revision;
+        job->want_vertices = want_vertices;
+        job->want_albedo = want_albedo;
+        rt_terrain_jobs_.emplace(source.id, job);
+        device_.runTask([job, source]() {
+            try {
+                if (job->want_vertices) job->vertices = terrainVertices(source, job->cells);
+                if (job->want_albedo) job->albedo = terrainAlbedo(source, job->texture_size);
+            } catch (const std::exception& e) {
+                std::cerr << "[Vulkan] Malla del terreno para los rayos: " << e.what() << "\n";
+                job->vertices.clear();
+                job->albedo.clear();
+            }
+            job->ready.store(true, std::memory_order_release);
+        });
+    }
 }
 
 }  // namespace cramion::gfx

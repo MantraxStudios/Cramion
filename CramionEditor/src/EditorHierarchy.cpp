@@ -127,6 +127,14 @@ void EditorApp::drawHierarchy() {
     drawPrefabStageBanner();  // solo en la pestana de un prefab
 
     if (open_create) ImGui::OpenPopup("crear_menu");
+    drawHierarchyContents({});
+    endArea();
+}
+
+// El arbol sin su ventana (y sin la cabecera): `root_filter` valido = solo esa
+// rama. El menu "crear_menu" lo abre quien llama.
+void EditorApp::drawHierarchyContents(ecs::Entity root_filter) {
+    hierarchy_root_filter_ = root_filter.valid() ? root_filter.uuid() : Uuid{};
     if (ImGui::BeginPopup("crear_menu")) {
         const ecs::Entity parent = world_.find(active_);
         const auto item = [&](const char* label, int kind) {
@@ -347,7 +355,7 @@ void EditorApp::drawHierarchy() {
         }
         if (ImGui::IsKeyPressed(ImGuiKey_F, false)) focusSelection();
     }
-    endArea();
+    hierarchy_root_filter_ = {};
 }
 
 // Filas del arbol en orden (padre antes que hijos) bajando solo por los
@@ -367,7 +375,11 @@ void EditorApp::buildHierarchyRows() {
     const ecs::Entity reveal_target = reveal_.valid() ? world_.find(reveal_) : ecs::Entity{};
     ImGuiStorage* storage = ImGui::GetStateStorage();
     std::vector<HierarchyRow> stack;
-    const std::vector<entt::entity>& roots = world_.roots();
+    // drawHierarchyContents con una rama: solo esa raiz (y lo de debajo).
+    const ecs::Entity only = hierarchy_root_filter_.valid() ? world_.find(hierarchy_root_filter_) : ecs::Entity{};
+    std::vector<entt::entity> only_root;
+    if (only.valid()) only_root.push_back(only.handle());
+    const std::vector<entt::entity>& roots = only.valid() ? only_root : world_.roots();
     for (auto it = roots.rbegin(); it != roots.rend(); ++it) {
         const ecs::Entity root = world_.wrap(*it);
         // Las teselas de un Terreno grande las pone y quita el streaming: no
@@ -669,8 +681,10 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
             if (ImGui::MenuItem("Enfocar", "F")) focusSelection();
             drawExtractAnimationsMenu(entity);
             {
-                ecs::RenderSync::SkeletonPose pose;
-                if (rigPose(entity, pose, false)) {
+                // Sin RenderSync: el esqueleto sale del modelo en pose de reposo (Rigging.h).
+                ecs::Entity skinned;
+                std::shared_ptr<const assets::ModelAsset> keep;
+                if (skinnedModelData(entity, skinned, keep, false) != nullptr) {
                     if (ImGui::MenuItem("Huesos como objetos")) createBoneObjects(entity);
                     ImGui::SetItemTooltip("Un objeto por hueso en la Jerarquia: moverlo mueve esa parte del modelo\n"
                                           "(una mano, un dedo) sin mover el resto.");

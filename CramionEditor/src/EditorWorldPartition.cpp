@@ -49,8 +49,8 @@ void EditorApp::drawWorldPartitionInspector(ecs::Entity entity) {
     world_.forEachDepthFirst([&](ecs::Entity e) {
         if (e.parent().valid() || !worldpart::WorldPartitionSystem::streamable(e)) return;
         ++streamable;
-        const Vec3 p = e.worldPosition();
-        cells.insert({static_cast<int>(std::floor(p.x / size)), static_cast<int>(std::floor(p.z / size))});
+        const worldpart::CellCoord c = worldpart::WorldPartitionSystem::cellAt(world_.absolute(e.worldPosition()), size);
+        cells.insert({c.x, c.z});
     });
     ImGui::TextDisabled("En Play: %d objetos en %d celdas se cargan y descargan", streamable, static_cast<int>(cells.size()));
     ImGui::TextDisabled("Sin Fuente de carga, carga la camara. \"Siempre cargado\" lo excluye.");
@@ -86,11 +86,16 @@ int EditorApp::buildHlods(const worldpart::WorldPartition& wp) {
         if (!e.parent().valid() && worldpart::WorldPartitionSystem::streamable(e)) roots.push_back(e);
     });
     for (const ecs::Entity& root : roots) {
-        const Vec3 rp = root.worldPosition();
-        const std::pair<int, int> key{static_cast<int>(std::floor(rp.x / size)), static_cast<int>(std::floor(rp.z / size))};
-        const Vec3 origin{static_cast<float>(key.first) * size, 0.0f, static_cast<float>(key.second) * size};
+        // Celdas de la posicion absoluta (como WorldPartitionSystem); la esquina, en local.
+        const worldpart::CellCoord cc = worldpart::WorldPartitionSystem::cellAt(world_.absolute(root.worldPosition()), size);
+        const std::pair<int, int> key{cc.x, cc.z};
+        const Vec3 corner = world_.local(ecs::DVec3{static_cast<double>(cc.x) * size, 0.0, static_cast<double>(cc.z) * size});
+        // Altura absoluta: la esquina es la altura 0 del mundo (no la y = 0
+        // local, que se mueve con el origen flotante).
+        const Vec3 origin = corner;
         core::Mat4 to_cell = core::Mat4::identity();
         to_cell.m[3][0] = -origin.x;
+        to_cell.m[3][1] = -origin.y;
         to_cell.m[3][2] = -origin.z;
         std::vector<ecs::Entity> stack{root};
         while (!stack.empty()) {
@@ -134,7 +139,9 @@ int EditorApp::buildHlods(const worldpart::WorldPartition& wp) {
         }
         if (!uuid.valid()) continue;
         ecs::Entity e = world_.create("HLOD " + std::to_string(key.first) + "," + std::to_string(key.second));
-        e.setWorldPosition(Vec3{static_cast<float>(key.first) * size, 0.0f, static_cast<float>(key.second) * size});
+        const Vec3 corner =
+            world_.local(ecs::DVec3{static_cast<double>(key.first) * size, 0.0, static_cast<double>(key.second) * size});
+        e.setWorldPosition(corner);  // altura 0 absoluta (con el origen flotante, no la y local)
         ecs::MeshRenderer& mr = e.add<ecs::MeshRenderer>();
         mr.model = assets::AssetRef{uuid, assets::AssetType::Model};
         mr.visible = false;  // solo en Play, con la celda descargada
@@ -166,8 +173,11 @@ void EditorApp::drawWorldPartitionGrid() {
     const Vec3 cam = scene_.camera().position();
     float ground = 0.0f;
     const float y = groundHeightAt(cam.x, cam.z, ground) ? ground + 0.5f : 0.0f;
+    // Las celdas son de la posicion absoluta: la esquina, en local (origen flotante).
     const auto square = [&](int cx, int cz, ImU32 color) {
-        const float x0 = static_cast<float>(cx) * size, z0 = static_cast<float>(cz) * size;
+        const Vec3 corner =
+            world_.local(ecs::DVec3{static_cast<double>(cx) * size, 0.0, static_cast<double>(cz) * size});
+        const float x0 = corner.x, z0 = corner.z;
         const Vec3 a{x0, y, z0}, b{x0 + size, y, z0}, c{x0 + size, y, z0 + size}, d{x0, y, z0 + size};
         line(a, b, color);
         line(b, c, color);
@@ -180,8 +190,9 @@ void EditorApp::drawWorldPartitionGrid() {
         }
     } else {
         // La rejilla alrededor de la camara y el circulo de carga.
-        const int cx = static_cast<int>(std::floor(cam.x / size));
-        const int cz = static_cast<int>(std::floor(cam.z / size));
+        const worldpart::CellCoord cam_cell = worldpart::WorldPartitionSystem::cellAt(world_.absolute(cam), size);
+        const int cx = cam_cell.x;
+        const int cz = cam_cell.z;
         const int r = std::clamp(static_cast<int>(std::ceil(wp->load_range / size)) + 1, 1, 12);
         for (int z = cz - r; z <= cz + r; ++z)
             for (int x = cx - r; x <= cx + r; ++x) square(x, z, IM_COL32(120, 160, 255, 90));

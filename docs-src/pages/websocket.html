@@ -1,0 +1,329 @@
+<p>
+  <code>WebSocket</code> abre una <strong>conexión permanente con tu servidor</strong> (el backend de un MMO, un chat, un
+  lobby, notificaciones en directo): los dos lados se mandan mensajes cuando quieren, sin pedir y esperar como con
+  <a href="http.html">Http</a>. Conectar, enviar y cerrar <strong>nunca paran el juego</strong>: cada conexión trabaja en
+  segundo plano y los mensajes llegan en el hilo del juego, al principio del frame, como un <code>update</code> más. Si
+  se corta, <strong>se reconecta sola</strong>.
+</p>
+
+<pre><code class="language-cpp">WsClient ws_;   // miembro del script
+
+void start() override {
+    ws_.connect(Value{{"url", "wss://juego.miservidor.com/ws"}, {"name", "mmo"},
+                      {"headers", Value{{"Authorization", "Bearer " + token}}}});
+    ws_.onOpen([](const Value&amp;) { Debug::log("conectado"); });
+    ws_.onMessage([this](const Value&amp; ev) {
+        if (ev["data"]["tipo"].asString() == "chat") mostrarChat(ev["data"]["texto"].asString());
+    });
+    ws_.onClose([](const Value&amp; ev) { Debug::log("cerrada: " + ev["code"].asString()); });
+}
+
+void enviarChat(const std::string&amp; texto) {
+    ws_.sendJson(Value{{"tipo", "chat"}, {"texto", texto}});
+}</code></pre>
+
+<h3 id="cual">WebSocket, Http o Network</h3>
+<table>
+  <thead><tr><th></th><th>Para qué</th><th>Cómo</th></tr></thead>
+  <tbody>
+    <tr><td><a href="http.html"><code>Http</code></a></td><td>Pedir algo y esperar la respuesta: iniciar sesión, leer el marcador, guardar en la nube, noticias.</td><td>Una petición, una respuesta. HTTPS.</td></tr>
+    <tr><td><code>WebSocket</code></td><td>Estar conectado a <em>tu</em> servidor todo el rato: MMO, chat, lobby, emparejamiento, avisos en directo, juegos por turnos.</td><td>Una conexión TCP abierta (ws:// o wss://); mensajes en los dos sentidos, en orden, sin perderse.</td></tr>
+    <tr><td><a href="red.html"><code>Network</code></a></td><td>Partidas en tiempo real entre jugadores (uno hace de servidor, o <code>CramionServer</code>): objetos y variables sincronizados.</td><td>UDP (ENet), mensajes fiables o rápidos.</td></tr>
+  </tbody>
+</table>
+<p>
+  Un MMO típico usa los tres: <code>Http</code> para la cuenta, <code>WebSocket</code> para el chat, el lobby y el mundo
+  persistente, y <code>Network</code> para una partida concreta.
+</p>
+
+<h3 id="conectar">Conectar, enviar y recibir</h3>
+<p>
+  <code>WebSocket::connect(opciones)</code> devuelve el <strong>id</strong> de la conexión al momento (o vacío si la
+  dirección no vale; el motivo sale en la Consola) y conecta en segundo plano. Hasta que llega el evento
+  <code>open</code> no se puede enviar. Los mensajes se reciben de dos formas (en cada conexión, una u otra, nunca las dos):
+</p>
+<ul>
+  <li><strong>Escuchas</strong> (<code>on</code>): una función por tipo de evento; el motor la llama al principio del frame.</li>
+  <li><strong><code>poll</code></strong>: tú pides los eventos pendientes cuando quieras (por ejemplo cada frame en <code>update</code>). Si una conexión no tiene escuchas, sus eventos se guardan hasta que hagas <code>poll</code>.</li>
+</ul>
+<pre><code class="language-cpp">// Con escuchas (WebSocket::* directo, sin WsClient)
+const Value id = WebSocket::connect(Value{{"url", "ws://localhost:8080/juego"}});
+WebSocket::on(id, "message", [](const Values&amp; a) {
+    const Value&amp; ev = a[0];
+    Debug::log("llego: " + ev["text"].asString());
+});
+WebSocket::on(id, "open", [id](const Values&amp;) { WebSocket::send(id, "hola"); });
+
+// Con poll (mejor con mucho trafico: un solo viaje al motor por frame)
+void update(float) override {
+    for (const Value&amp; ev : ws_.poll()) {
+        const std::string tipo = ev["type"].asString();
+        if (tipo == "message") procesar(ev);
+        else if (tipo == "close") Debug::log("cerrada");
+    }
+}</code></pre>
+
+<h4>El evento</h4>
+<table>
+  <thead><tr><th><code>ev["type"]</code></th><th>Campos (además de <code>id</code> y <code>name</code>)</th></tr></thead>
+  <tbody>
+    <tr><td><code>open</code></td><td><code>protocol</code>: el subprotocolo que eligió el servidor (o vacío).</td></tr>
+    <tr><td><code>message</code> (texto)</td><td><code>binary = false</code>, <code>text</code> y, si el texto es JSON (empieza por <code>{</code> o <code>[</code>, hasta 1 MB), <code>data</code> ya decodificado.</td></tr>
+    <tr><td><code>message</code> (binario)</td><td><code>binary = true</code> y <code>base64</code> con los bytes.</td></tr>
+    <tr><td><code>close</code></td><td><code>code</code> (1000 normal, 1001 se va, 1006 cortada sin cierre, 4000-4999 los tuyos), <code>reason</code>, <code>clean</code> (hubo saludo de cierre), <code>reconnect</code> (detrás viene una reconexión) y <code>dropped</code> (mensajes tuyos que no se llegaron a enviar).</td></tr>
+    <tr><td><code>error</code></td><td><code>error</code> (texto en español, tabla de abajo), <code>status</code> (HTTP del saludo, 401, 404...; 0 si no hubo) y <code>reconnect</code>.</td></tr>
+    <tr><td><code>reconnecting</code></td><td><code>attempt</code> (1, 2...) y <code>delay</code> (segundos hasta el intento).</td></tr>
+  </tbody>
+</table>
+<p>
+  Con <code>on(id, "any", fn)</code> recibes todos. <code>on</code> devuelve un número para dejar de escuchar con
+  <code>WebSocket::off(numero)</code>. <code>on</code> acepta el id o el <strong>nombre</strong> de la conexión, incluso antes de
+  que exista.
+</p>
+
+<h4>Visual Scripting</h4>
+<p>
+  El nodo <strong>On WebSocket</strong> (grupo Eventos) escucha una conexión por su nombre (<em>Conexion</em>, <code>main</code>
+  por defecto) y un tipo (<em>Tipo</em>: <code>message</code>, <code>open</code>, <code>close</code>, <code>error</code>,
+  <code>reconnecting</code> o <code>any</code>). Sus salidas: <em>Evento</em> (el objeto entero), <em>Texto</em> (el mensaje, o
+  el error, o el motivo del cierre) y <em>Datos</em> (el JSON decodificado). Para conectar, en <em>Event Start</em> pon el nodo
+  <code>WebSocket.connect</code> con la tabla <code>{url = "wss://...", name = "main"}</code>; como conectar con nombre devuelve
+  la conexión que ya existe, es seguro hacerlo en cada carga de escena. Para enviar, el nodo <code>WebSocket.send</code> con
+  el nombre como id.
+</p>
+
+<h4>En el servidor dedicado</h4>
+<p>
+  Los scripts de <code>CramionServer</code> (Windows y Linux) usan la misma API: un servidor de partida puede avisar a tu
+  backend (resultado de la partida, jugadores que entran) por WebSocket mientras los jugadores juegan por
+  <code>Network</code>.
+</p>
+
+<h3 id="nombres">Conexiones con nombre y cambio de escena</h3>
+<p>
+  Con <code>name</code> la conexión es <strong>del juego, no de la escena</strong>:
+</p>
+<ul>
+  <li><strong>Sobrevive al cambio de escena</strong> (<code>Scene::load</code>). Las que no tienen nombre se cierran (1001).</li>
+  <li>Llamar a <code>connect</code> con un nombre que ya está vivo <strong>devuelve la misma conexión</strong> (no abre otra). Así cada escena puede conectar sin miedo.</li>
+  <li><code>WebSocket::find("mmo")</code> da su id, y <code>WsClient::attach("mmo")</code> la recupera.</li>
+  <li>Al cambiar de escena las escuchas (<code>on</code>) se quitan, porque eran de los scripts de la escena vieja; los mensajes que lleguen mientras tanto se guardan hasta que vuelvas a escuchar o hagas <code>poll</code>.</li>
+</ul>
+<pre><code class="language-cpp">void awake() override {
+    if (!ws_.attach("mmo"))   // primera escena: aun no existe
+        ws_.connect(Value{{"url", "wss://juego.miservidor.com/ws"}, {"name", "mmo"}});
+    ws_.onMessage([this](const Value&amp; ev) { procesar(ev); });
+}</code></pre>
+
+<h3 id="recarga">Recarga en caliente</h3>
+<p>
+  Al guardar el <code>.cpp</code> en Play (o si el proceso de los scripts se reinicia tras un fallo) la conexión
+  <strong>sigue abierta</strong>, pero las escuchas de C++ se olvidan: sus funciones eran del proceso anterior. Vuelve a
+  ponerlas en <code>onAfterReload</code>:
+</p>
+<pre><code class="language-cpp">void onAfterReload(const Value&amp;) override {
+    ws_.attach("mmo");
+    ws_.onMessage([this](const Value&amp; ev) { procesar(ev); });
+}</code></pre>
+<p>Las escuchas de los Visual Scripts no se pierden.</p>
+
+<h3 id="reconexion">Reconexión</h3>
+<p>
+  Si la conexión se corta (1006, el servidor se reinicia con 1001/1012, sin Internet un rato, el móvil cambia de red) el
+  motor <strong>vuelve a conectar solo</strong>, esperando cada vez más (0,5 s, 1 s, 2 s... hasta 30 s, con algo de azar
+  para que no vuelvan todos los jugadores a la vez). Recibes <code>close</code> (o <code>error</code>) con
+  <code>reconnect = true</code>, después <code>reconnecting</code> y, al volver, <code>open</code> otra vez: ahí vuelve a
+  identificarte o a pedir el estado.
+</p>
+<p>
+  <strong>No reconecta</strong> cuando cierras tú (<code>close</code>), cuando el servidor cierra normal (1000) o por un error
+  del protocolo (1002, 1003, 1007, 1008, 1009, 1010), ante un rechazo de la sesión (HTTP 401, 403, 404 y otros 4xx) ni con tus
+  códigos 4000-4999 (salvo <code>appCodes = true</code>): así un servidor que te echa (<code>4001 "baneado"</code>) o un token
+  caducado no se convierten en un bucle de intentos.
+</p>
+<pre><code class="language-cpp">ws_.connect(Value{{"url", url}, {"name", "mmo"},
+                  {"reconnect", Value{{"min", 1}, {"max", 60}, {"tries", 10}, {"appCodes", false}}}});
+
+// Renovar el token antes del proximo intento
+ws_.onReconnecting([this](const Value&amp;) {
+    WebSocket::setHeader(ws_.id(), "Authorization", "Bearer " + tokenNuevo());
+});</code></pre>
+<p>
+  <code>reconnect = false</code> la desactiva. Lo que quedó sin enviar al cortarse se tira (cuenta en <code>dropped</code>),
+  salvo con <code>resend = true</code>.
+</p>
+
+<h3 id="binario">Binario</h3>
+<p>
+  Los bytes cruzan entre el motor y los scripts <strong>en base64</strong> (nunca en bruto). <code>WsClient::sendBinary</code>
+  codifica por ti; lo que llega trae <code>ev["base64"]</code>:
+</p>
+<pre><code class="language-cpp">ws_.sendBinary(paquete);   // std::string con bytes
+ws_.onMessage([](const Value&amp; ev) {
+    if (!ev["binary"].asBool()) return;
+    std::string bytes;
+    if (base64Decode(ev["base64"].asString(), bytes)) leerPaquete(bytes);
+});</code></pre>
+<p>
+  <code>base64Encode</code> y <code>base64Decode</code> del SDK no llaman al motor. <code>Base64::encode</code> y
+  <code>Base64::decode</code> hacen lo mismo desde la API (Visual Scripting).
+</p>
+
+<h3 id="trafico">Mucho tráfico</h3>
+<ul>
+  <li>Usa <strong><code>poll</code></strong> en <code>update</code>: un viaje al motor por frame, con todos los eventos juntos. Las escuchas cuestan un viaje por evento.</li>
+  <li>Cada frame se entregan como mucho <code>net.WsMaxEventsPerFrame</code> eventos (512) a las escuchas; el resto espera al frame siguiente, sin perderse.</li>
+  <li>Si los scripts no recogen, la cola de entrada se llena (16 MB) y el motor <strong>deja de leer</strong> del servidor hasta que haya sitio: no se pierde nada y la memoria no crece (TCP frena al servidor).</li>
+  <li>Junta mensajes pequeños: es mejor un mensaje con 20 posiciones que 20 mensajes.</li>
+</ul>
+
+<h3 id="opciones">Opciones y límites</h3>
+<table>
+  <thead><tr><th>Opción de <code>connect</code></th><th>Qué es</th></tr></thead>
+  <tbody>
+    <tr><td><code>url</code></td><td><code>wss://host[:puerto]/ruta?consulta</code> (o <code>ws://</code>, ver Seguridad).</td></tr>
+    <tr><td><code>name</code></td><td>Nombre de la conexión (sobrevive al cambio de escena; ver arriba).</td></tr>
+    <tr><td><code>headers</code></td><td>Cabeceras del saludo: <code>Authorization</code>, <code>Cookie</code>... (hasta 32).</td></tr>
+    <tr><td><code>protocols</code></td><td>Subprotocolos que pides (<code>Sec-WebSocket-Protocol</code>); el elegido llega en <code>open</code>.</td></tr>
+    <tr><td><code>reconnect</code></td><td><code>true</code> (por defecto), <code>false</code> o <code>{min, max, tries, appCodes}</code> (segundos; <code>tries = -1</code> sin límite).</td></tr>
+    <tr><td><code>resend</code></td><td>Al reconectar, mandar lo que quedó sin enviar.</td></tr>
+    <tr><td><code>timeout</code></td><td>Segundos para conectar (DNS, TCP, TLS y saludo): 10.</td></tr>
+    <tr><td><code>maxSize</code></td><td>Bytes como máximo por mensaje recibido (4 MB, <code>net.WsMaxMessageKB</code>; tope 64 MB). Uno mayor cierra con 1009.</td></tr>
+    <tr><td><code>pingInterval</code></td><td>Segundos entre pings (20).</td></tr>
+    <tr><td><code>idleTimeout</code></td><td>Segundos sin recibir nada para dar la conexión por muerta (1006 y reconexión). Por defecto, en Linux y Android, 2,5 veces el ping (mínimo 45 s); en Windows no hay, salvo que lo pongas o uses <code>heartbeat</code>. <code>0</code> = nunca.</td></tr>
+    <tr><td><code>heartbeat</code></td><td>Texto que se manda cada <code>pingInterval</code> (para servidores que necesitan un latido propio).</td></tr>
+  </tbody>
+</table>
+<table>
+  <thead><tr><th>CVar</th><th>Qué es</th></tr></thead>
+  <tbody>
+    <tr><td><code>net.WsInsecure</code></td><td><code>ws://</code> sin cifrar: 0 solo este PC (por defecto), 1 también la red local, 2 cualquiera (solo con trucos).</td></tr>
+    <tr><td><code>net.WsMaxConnections</code></td><td>Conexiones a la vez en todo el juego (16).</td></tr>
+    <tr><td><code>net.WsMaxMessageKB</code></td><td><code>maxSize</code> por defecto, en KB (4096).</td></tr>
+    <tr><td><code>net.WsMaxEventsPerFrame</code></td><td>Eventos entregados a las escuchas por frame (512).</td></tr>
+    <tr><td><code>net.WsLog</code></td><td>Consola: 1 abrir, cerrar y errores; 2 también cada mensaje (200 bytes).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="funciones">Funciones</h3>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>WebSocket::connect(opciones)</code></td><td>Abre una conexión (no espera). Devuelve el id, o vacío si no vale. Con <code>name</code>, si ya hay una viva, devuelve esa.</td></tr>
+    <tr><td><code>WebSocket::send(id, texto)</code></td><td>Envía texto (UTF-8). <code>true</code> si se encoló; <code>false</code> (y un aviso) si no está abierta, el texto no es UTF-8 o la cola de envío está llena.</td></tr>
+    <tr><td><code>WebSocket::sendJson(id, tabla)</code></td><td>Envía un objeto o lista como texto JSON.</td></tr>
+    <tr><td><code>WebSocket::sendBinary(id, base64)</code></td><td>Envía bytes (en base64).</td></tr>
+    <tr><td><code>WebSocket::on(id, tipo, funcion)</code> / <code>off(n)</code></td><td>Escuchar (<code>open</code>, <code>message</code>, <code>close</code>, <code>error</code>, <code>reconnecting</code>, <code>any</code>) y dejar de escuchar.</td></tr>
+    <tr><td><code>WebSocket::poll(id, max)</code></td><td>Los eventos pendientes (hasta <code>max</code>, 1000 por defecto) si no usas <code>on</code>.</td></tr>
+    <tr><td><code>WebSocket::close(id, codigo, motivo)</code></td><td>Cierre limpio (1000, o tus códigos 3000-4999; motivo de hasta 123 bytes). No reconecta.</td></tr>
+    <tr><td><code>WebSocket::closeAll(codigo, motivo)</code></td><td>Cierra todas.</td></tr>
+    <tr><td><code>WebSocket::setHeader(id, nombre, valor)</code></td><td>Cabecera para la próxima reconexión (valor vacío la quita).</td></tr>
+    <tr><td><code>WebSocket::state(id)</code></td><td><code>connecting</code>, <code>open</code>, <code>closing</code>, <code>closed</code> o <code>reconnecting</code>.</td></tr>
+    <tr><td><code>WebSocket::info(id)</code></td><td><code>{id, name, url, state, protocol, sent, received, sentBytes, receivedBytes, buffered, rtt, reconnects}</code>.</td></tr>
+    <tr><td><code>WebSocket::find(nombre)</code>, <code>list()</code>, <code>count()</code></td><td>Buscar por nombre, la lista y cuántas hay vivas.</td></tr>
+  </tbody>
+</table>
+<p>
+  <code>WsClient</code> (en el SDK, sin incluir nada) envuelve todo esto: <code>connect</code>, <code>attach</code>,
+  <code>send</code>, <code>sendJson</code>, <code>sendBinary</code>, <code>close</code>, <code>state</code>, <code>poll</code> y
+  <code>onOpen</code>/<code>onMessage</code>/<code>onClose</code>/<code>onError</code>/<code>onReconnecting</code>. Al
+  destruirse quita sus escuchas pero <strong>no cierra</strong> la conexión. Referencia completa en
+  <a href="cpp-websocket.html">WebSocket (C++)</a>.
+</p>
+
+<h3 id="seguridad">Seguridad</h3>
+<ul>
+  <li><strong>Usa <code>wss://</code></strong> (TLS 1.2 o 1.3): se comprueban el certificado del servidor y su nombre. Si está caducado, es de otro dominio o no es de una autoridad de confianza, no se conecta (y no lo reintenta).</li>
+  <li><code>ws://</code> sin cifrar solo va a <code>localhost</code> / <code>127.0.0.1</code>, para probar en tu PC. Con <code>net.WsInsecure = 1</code> también a la red local (10.x, 172.16-31.x, 192.168.x), comprobado con las direcciones ya resueltas; 2 (cualquiera) solo con trucos activados.</li>
+  <li>Las cabeceras no pueden llevar saltos de línea ni ser las del protocolo (<code>Host</code>, <code>Upgrade</code>, <code>Connection</code>, <code>Sec-WebSocket-*</code>, <code>Content-Length</code>).</li>
+  <li>Cada mensaje tiene un <strong>tamaño máximo</strong> (se comprueba al llegar cada trozo, antes de reservar memoria) y las colas de entrada y salida tienen tope: un servidor que manda datos sin fin no llena la memoria.</li>
+  <li>Conectar, enviar y cerrar nunca bloquean el juego; un servidor que no responde se da por muerto con los tiempos máximos (conectar, enviar, cerrar, sin datos).</li>
+  <li>El texto que llega se comprueba como UTF-8; el binario nunca cruza al script en bruto.</li>
+</ul>
+<p>
+  <strong>No pongas claves secretas en los scripts</strong>: van dentro del juego exportado. Identifica al jugador con un
+  token que le dé tu servidor al iniciar sesión (por <a href="http.html">Http</a>) y mándalo en <code>Authorization</code>.
+  Tu servidor debe comprobar todo lo que llega: el cliente puede estar modificado.
+</p>
+
+<h3 id="servidor">Tu servidor</h3>
+<ul>
+  <li>Cualquier servidor WebSocket estándar (RFC 6455) vale: Node (<code>ws</code>), Go, Python (<code>websockets</code>), C#, Rust...</li>
+  <li>Manda un <strong>ping como mucho cada 20 s</strong> o algo de tráfico: muchos proxies y routers cortan una conexión callada.</li>
+  <li>Para echar o rechazar, cierra con tus códigos <strong>4000-4999</strong> y un motivo: el juego los recibe en <code>close</code> y no reconecta.</li>
+  <li>Sin compresión (<code>permessage-deflate</code>): desactívala en el servidor.</li>
+  <li>Para publicar, pon delante un HTTPS (Let's Encrypt, Nginx, Caddy, Cloudflare) y usa <code>wss://</code>.</li>
+</ul>
+<pre><code class="language-javascript">// Node: npm install ws
+const { WebSocketServer } = require("ws");
+const wss = new WebSocketServer({ port: 8080, perMessageDeflate: false });
+
+wss.on("connection", (ws, req) =&gt; {
+  const token = (req.headers.authorization || "").replace("Bearer ", "");
+  if (!tokenValido(token)) return ws.close(4001, "token no valido");
+  ws.isAlive = true;
+  ws.on("pong", () =&gt; (ws.isAlive = true));
+  ws.on("message", (data, isBinary) =&gt; {
+    if (isBinary) return;
+    const msg = JSON.parse(data);
+    if (msg.tipo === "chat")
+      for (const c of wss.clients) c.send(JSON.stringify({ tipo: "chat", texto: msg.texto }));
+  });
+});
+
+// Ping cada 20 s; la que no conteste, fuera
+setInterval(() =&gt; {
+  for (const ws of wss.clients) {
+    if (!ws.isAlive) { ws.terminate(); continue; }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 20000);</code></pre>
+<p>En el juego: <code>ws://localhost:8080</code> mientras pruebas y <code>wss://tu-dominio</code> al publicar.</p>
+
+<h3 id="plataformas">Plataformas</h3>
+<table>
+  <thead><tr><th>Plataforma</th><th>Notas</th></tr></thead>
+  <tbody>
+    <tr><td>Windows (editor, juego, servidor)</td><td>WinHTTP: usa el proxy del sistema y su almacén de certificados. Responde solo a los pings del servidor y manda <em>keepalive</em>, pero no mide el <code>rtt</code> (sale -1) ni da por muerta una conexión callada salvo con <code>idleTimeout</code> o <code>heartbeat</code>.</td></tr>
+    <tr><td>Android</td><td>Activa <strong>Internet</strong> al exportar (si no, el error lo dice). <code>wss://</code> con el TLS del sistema (comprueba el nombre del servidor). Sin proxy. Al pausar la app el sistema puede cortar la red: al volver se reconecta solo.</td></tr>
+    <tr><td>Linux (<code>CramionServer</code>)</td><td><code>ws://</code> siempre. <code>wss://</code> necesita OpenSSL al compilar (<code>sudo apt install libssl-dev</code>, opción <code>CRAMION_WITH_OPENSSL</code>, activada por defecto); sin él, <code>wss://</code> da un error claro.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="errores">Errores</h3>
+<p>El texto de <code>ev["error"]</code> (o el de la Consola, empezando por la función):</p>
+<table>
+  <thead><tr><th>Texto</th><th>Qué pasa</th></tr></thead>
+  <tbody>
+    <tr><td><code>direccion no valida (usa ws:// o wss://)</code></td><td>Esquema, puerto o formato de la dirección.</td></tr>
+    <tr><td><code>ws:// sin cifrar solo se permite a este PC (localhost); usa wss:// o cambia net.WsInsecure</code></td><td><code>ws://</code> a otra máquina.</td></tr>
+    <tr><td><code>ws:// sin cifrar solo a la red local (esta direccion es publica)</code></td><td>Con <code>net.WsInsecure = 1</code>, una dirección de Internet.</td></tr>
+    <tr><td><code>cabecera no valida: X</code> / <code>cabecera reservada del protocolo: X</code></td><td>Saltos de línea o nombres raros / una del protocolo.</td></tr>
+    <tr><td><code>subprotocolo no valido: X</code></td><td>Un subprotocolo con espacios o caracteres raros, o repetido.</td></tr>
+    <tr><td><code>demasiadas conexiones WebSocket (maximo N, net.WsMaxConnections)</code></td><td>Hay N abiertas.</td></tr>
+    <tr><td><code>la red del motor ya se cerro</code></td><td>El juego se está cerrando.</td></tr>
+    <tr><td><code>no se encuentra el servidor (sin Internet o nombre mal escrito)</code></td><td>DNS. Reintenta.</td></tr>
+    <tr><td><code>el servidor rechazo la conexion (no hay nada escuchando en ese puerto)</code></td><td>Servidor caído o puerto mal. Reintenta.</td></tr>
+    <tr><td><code>el servidor no responde (tiempo agotado)</code></td><td>Superó <code>timeout</code>. Reintenta.</td></tr>
+    <tr><td><code>conexion segura rechazada (el certificado del servidor no es valido)</code></td><td>Certificado caducado, de otro dominio o propio. No reintenta.</td></tr>
+    <tr><td><code>wss:// no disponible en esta compilacion: ...</code></td><td>Linux sin OpenSSL.</td></tr>
+    <tr><td><code>falta el permiso INTERNET (activa Internet al exportar para Android)</code></td><td>Android sin el permiso.</td></tr>
+    <tr><td><code>el servidor rechazo la conexion (HTTP N): revisa el token o la sesion</code></td><td>401 o 403. No reintenta.</td></tr>
+    <tr><td><code>el servidor no acepta WebSocket en esa ruta (respondio HTTP N)</code></td><td>Ruta mal (404...). Reintenta solo con 5xx, 408 y 429.</td></tr>
+    <tr><td><code>respuesta del servidor no valida (no es un saludo WebSocket correcto)</code></td><td>No es un servidor WebSocket (o un proxy en medio).</td></tr>
+    <tr><td><code>el servidor eligio un subprotocolo que no se pidio (X)</code> / <code>el servidor no acepto ningun subprotocolo</code></td><td>Subprotocolos que no encajan.</td></tr>
+    <tr><td><code>el servidor pidio extensiones no soportadas (compresion)</code></td><td>Desactiva <code>permessage-deflate</code> en el servidor.</td></tr>
+    <tr><td><code>mensaje demasiado grande (mas de N bytes, maxSize)</code></td><td>Cierre 1009. Sube <code>maxSize</code> o manda menos.</td></tr>
+    <tr><td><code>el servidor mando texto que no es UTF-8 valido</code></td><td>Cierre 1007. Manda binario.</td></tr>
+    <tr><td><code>error de protocolo WebSocket del servidor (detalle)</code></td><td>Cierre 1002: el servidor no cumple el estándar.</td></tr>
+    <tr><td><code>se corto la conexion</code></td><td>1006. Reintenta.</td></tr>
+    <tr><td><code>el servidor no responde (sin datos en N s)</code></td><td><code>idleTimeout</code>. Reintenta.</td></tr>
+    <tr><td><code>la conexion no esta abierta (estado: X)</code></td><td><code>send</code> antes de <code>open</code> o tras cerrar.</td></tr>
+    <tr><td><code>cola de envio llena (el servidor no lee o la red va lenta)</code></td><td>Más de 16 MB pendientes de enviar.</td></tr>
+    <tr><td><code>el texto no es UTF-8 valido; usa sendBinary</code></td><td><code>send</code> con bytes.</td></tr>
+    <tr><td><code>base64 no valido</code></td><td><code>sendBinary</code> o <code>Base64::decode</code> con texto que no es base64.</td></tr>
+    <tr><td><code>codigo de cierre no valido (1000 o 3000-4999)</code></td><td><code>close</code> con otro código.</td></tr>
+    <tr><td><code>no se pudo reconectar tras N intentos</code></td><td>Se acabaron los <code>tries</code>.</td></tr>
+  </tbody>
+</table>

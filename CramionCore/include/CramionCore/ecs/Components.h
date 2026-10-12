@@ -278,6 +278,7 @@ struct BoneSocket {
     core::Vec3 rotation{};  // grados
     bool drive_position = false;  // Mover el hueso: tambien su posicion (si no, solo el giro)
     float weight = 1.0f;
+    bool bone_object = false;          // "Hueso del esqueleto" (icono/filtro en Componentes)
 
     void reflect(PropertyVisitor& v);
 };

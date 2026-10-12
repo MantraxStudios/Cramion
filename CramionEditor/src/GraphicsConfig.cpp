@@ -49,6 +49,13 @@ constexpr std::array<SizeLevel, 5> kShadowLevels = {{{"auto", "auto", 0},
                                                      {"medium", "media", 2048},
                                                      {"high", "alta", 4096},
                                                      {"ultra", "ultra", 6144}}};
+// Filtrado anisotropico por nombre: muestras (0 = segun el PC, 1 = apagado).
+constexpr std::array<SizeLevel, 6> kFilteringLevels = {{{"auto", "auto", 0},
+                                                        {"off", "no", 1},
+                                                        {"2x", "2x", 2},
+                                                        {"4x", "4x", 4},
+                                                        {"8x", "8x", 8},
+                                                        {"16x", "16x", 16}}};
 
 template <std::size_t N>
 std::vector<std::string> names(const std::array<const char*, N>& list) {
@@ -150,6 +157,8 @@ void loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& ren
         if (key == "target_fps") g.target_fps = std::clamp(value, 15.0f, 360.0f);
         if (key == "shadow_resolution") g.shadow_resolution = std::clamp(static_cast<int>(value), 0, 8192);
         if (key == "texture_max_size") g.texture_max_size = std::clamp(static_cast<int>(value), 0, 16384);
+        if (key == "texture_filtering") g.texture_filtering = std::clamp(static_cast<int>(value), 0, 16);
+        if (key == "texture_lod_bias" && std::isfinite(value)) g.texture_lod_bias = std::clamp(value, -1.0f, 2.0f);
         if (key == "shadows") renderer.setShadowsEnabled(value != 0.0f);
         if (key == "ray_tracing" && renderer.rayTracingSupported()) renderer.setRayTracingEnabled(value != 0.0f);
         if (key == "reflection_probe") renderer.setReflectionProbeEnabled(value != 0.0f);
@@ -174,6 +183,8 @@ bool saveGraphicsIni(const std::filesystem::path& file, const gfx::VulkanRendere
     out << "target_fps=" << g.target_fps << "\n";
     out << "shadow_resolution=" << g.shadow_resolution << "\n";
     out << "texture_max_size=" << g.texture_max_size << "\n";
+    out << "texture_filtering=" << g.texture_filtering << "\n";
+    out << "texture_lod_bias=" << g.texture_lod_bias << "\n";
     out << "shadows=" << (renderer.shadowsEnabled() ? 1 : 0) << "\n";
     out << "ray_tracing=" << (renderer.rayTracingEnabled() ? 1 : 0) << "\n";
     out << "reflection_probe=" << (renderer.reflectionProbeEnabled() ? 1 : 0) << "\n";
@@ -327,6 +338,17 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
         "Calidad de las texturas: auto, low (1024), medium (2048), high (4096), ultra (8192) o max (16384). "
         "Se aplica a lo que se carga despues (Scene.load)",
         levelNames(kTextureLevels));
+    add("texture_filtering", levelOf(kFilteringLevels, g.texture_filtering),
+        "Filtrado anisotropico de las texturas (suelos y paredes en angulo nitidos): auto (segun el PC), off, "
+        "2x, 4x, 8x o 16x. Tambien vale un numero (1..16). Se aplica al momento",
+        levelNames(kFilteringLevels));
+    add("texture_filtering_active", number(renderer_.textureFiltering().anisotropy),
+        "Anisotropico en uso (1 = apagado; con auto, el del perfil del PC)", {}, false);
+    add("texture_filtering_max", number(renderer_.maxTextureAnisotropy()),
+        "Maximo anisotropico que admite la GPU (lectura)", {}, false);
+    add("texture_lod_bias", number(g.texture_lod_bias),
+        "Sesgo de los mipmaps (-1..2): negativo = texturas mas nitidas (y mas parpadeo de lejos), positivo = "
+        "mas suaves y menos ancho de banda. 0 = normal. Se aplica al momento");
     // Iluminacion y rendimiento del render
     add("ray_tracing", renderer_.rayTracingEnabled(), "Trazado de rayos por hardware (GI, reflejos y sombras de las luces locales)");
     add("reflection_probe", renderer_.reflectionProbeEnabled(), "Sonda de reflexion del entorno");
@@ -461,6 +483,28 @@ bool RendererGraphicsHost::set(const std::string& key, const GraphicsValue& valu
         int size = 0;
         if (!sizeOfLevel(kTextureLevels, text, size)) return bad_choice(levelNames(kTextureLevels));
         g.texture_max_size = size;
+        settings_changed = true;
+    } else if (key == "texture_filtering") {
+        // "16x", "off", "auto" o un numero (1 = apagado, 0 = auto).
+        int samples = 0;
+        if (std::holds_alternative<double>(value) && asNumber(value, n)) {
+            samples = static_cast<int>(std::clamp(n, 0.0, 16.0));
+        } else if (!need_choice(levelNames(kFilteringLevels))) {
+            return false;
+        } else if (!sizeOfLevel(kFilteringLevels, text, samples)) {
+            return bad_choice(levelNames(kFilteringLevels));
+        }
+        // Solo potencias de dos (lo que dan las GPU): 3 -> 2, 12 -> 8.
+        if (samples > 1) {
+            int p = 1;
+            while (p * 2 <= samples) p *= 2;
+            samples = p;
+        }
+        g.texture_filtering = samples;
+        settings_changed = true;
+    } else if (key == "texture_lod_bias") {
+        if (!need_number(-1.0, 2.0)) return false;
+        g.texture_lod_bias = static_cast<float>(n);
         settings_changed = true;
     } else if (key == "shadows") {
         if (!need_bool()) return false;

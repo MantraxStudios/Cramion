@@ -2,10 +2,13 @@
 
 #include "CramionCore/anim/Creature.h"
 #include "CramionCore/anim/Humanoid.h"
+#include "CramionCore/ecs/MathUtil.h"
 
 #include <algorithm>
 #include <cctype>
 #include <initializer_list>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace cramion::ecs {
 
@@ -145,6 +148,143 @@ std::vector<PhysBoneChain> suggestPhysBones(const asset::ModelData& data) {
         out.push_back(c);
     }
     return out;
+}
+
+// --- Huesos como objetos (sin RenderSync) ------------------------------------------------
+
+std::vector<BindBone> bindSkeleton(const asset::ModelData& data) {
+    std::vector<BindBone> out;
+    const std::size_t count = data.nodes.size();
+    // Los huesos y sus antepasados, sin el nodo 0 (la raiz de la escena del
+    // archivo), como RenderSync::skeletonPose.
+    std::vector<bool> keep(count, false);
+    for (const asset::Bone& b : data.bones) {
+        for (int n = b.node; n > 0 && static_cast<std::size_t>(n) < count && !keep[static_cast<std::size_t>(n)];
+             n = data.nodes[static_cast<std::size_t>(n)].parent) {
+            keep[static_cast<std::size_t>(n)] = true;
+        }
+    }
+    const std::vector<core::Mat4> rest = humanoid::restGlobals(data.nodes);
+    std::vector<int> index(count, -1);
+    // Los nodos vienen con los padres antes que los hijos.
+    for (std::size_t i = 0; i < count; ++i) {
+        if (!keep[i]) continue;
+        BindBone bone;
+        bone.name = data.nodes[i].name;
+        bone.node = static_cast<int>(i);
+        const int parent = data.nodes[i].parent;
+        bone.parent = parent >= 0 && static_cast<std::size_t>(parent) < i ? index[static_cast<std::size_t>(parent)] : -1;
+        bone.global = rest[i];
+        index[i] = static_cast<int>(out.size());
+        out.push_back(std::move(bone));
+    }
+    return out;
+}
+
+Entity findBoneObject(Entity skinned, const std::string& bone) {
+    if (!skinned.valid() || bone.empty() || skinned.world() == nullptr) return {};
+    World& world = *skinned.world();
+    std::vector<Entity> stack{skinned};
+    while (!stack.empty()) {
+        const Entity e = stack.back();
+        stack.pop_back();
+        // Los de antes ("Huesos como objetos" del editor) no tienen la marca
+        // pero se llaman como su hueso.
+        if (const BoneSocket* s = e.tryGet<BoneSocket>();
+            s != nullptr && s->bone == bone && (s->bone_object || s->bone == e.name())) {
+            return e;
+        }
+        const auto& children = e.children();
+        for (auto it = children.rbegin(); it != children.rend(); ++it) stack.push_back(world.wrap(*it));
+    }
+    return {};
+}
+
+std::vector<Entity> createBoneEntities(World& world, Entity skinned, const asset::ModelData& data,
+                                       const std::vector<std::string>& only, bool nested) {
+    std::vector<Entity> created;
+    if (!skinned.valid()) return created;
+    const std::vector<BindBone> skeleton = bindSkeleton(data);
+    if (skeleton.empty()) return created;
+    const std::unordered_set<std::string> wanted(only.begin(), only.end());
+    // Los que ya tienen objeto en este modelo (no se repiten).
+    std::unordered_map<std::string, Entity> existing;
+    {
+        std::vector<Entity> stack{skinned};
+        while (!stack.empty()) {
+            const Entity e = stack.back();
+            stack.pop_back();
+            if (const BoneSocket* s = e.tryGet<BoneSocket>();
+                s != nullptr && !s->bone.empty() && (s->bone_object || s->bone == e.name())) {
+                existing.emplace(s->bone, e);
+            }
+            for (const entt::entity child : e.children()) stack.push_back(world.wrap(child));
+        }
+    }
+    const core::Mat4 model_world = skinned.worldMatrix();
+    // En el orden del esqueleto (los padres antes): con `nested` cada hueso
+    // cuelga del objeto de su hueso padre mas cercano, asi mover la mano
+    // mueve tambien los dedos.
+    std::vector<Entity> objects(skeleton.size());
+    for (std::size_t i = 0; i < skeleton.size(); ++i) {
+        const BindBone& bone = skeleton[i];
+        if (const auto it = existing.find(bone.name); it != existing.end()) {
+            objects[i] = it->second;
+            continue;
+        }
+        if (!wanted.empty() && wanted.count(bone.name) == 0) continue;
+        Entity parent;
+        if (nested) {
+            for (int p = bone.parent; p >= 0 && !parent.valid(); p = skeleton[static_cast<std::size_t>(p)].parent) {
+                parent = objects[static_cast<std::size_t>(p)];
+            }
+        }
+        if (!parent.valid()) parent = skinned;
+        Entity e = world.create(bone.name.empty() ? std::string("Hueso") : bone.name, parent);
+        // En el hueso en reposo, sin su escala (el socket no la usa).
+        core::Vec3 position{};
+        core::Quat rotation{};
+        core::Vec3 scale{};
+        decomposeMatrix(model_world * bone.global, position, rotation, scale);
+        e.setWorldMatrix(core::composeTrs(position, rotation, core::Vec3{1.0f, 1.0f, 1.0f}));
+        // Siguen la animacion; el que se mueve con el gizmo pasa a mover su hueso.
+        BoneSocket& socket = e.add<BoneSocket>();
+        socket.bone = bone.name;
+        socket.mode = SocketMode::Follow;
+        socket.drive_position = true;
+        socket.bone_object = true;
+        objects[i] = e;
+        created.push_back(e);
+    }
+    return created;
+}
+
+Entity materializeBone(World& world, Entity skinned, const asset::ModelData& data, const std::string& bone,
+                       bool nested) {
+    if (!skinned.valid()) return {};
+    if (Entity found = findBoneObject(skinned, bone); found.valid()) return found;
+    // El nombre exacto del nodo ("Head" vale por "mixamorig:Head").
+    const int node = findBone(data, bone);
+    if (node < 0) return {};
+    const std::vector<BindBone> skeleton = bindSkeleton(data);
+    int at = -1;
+    for (std::size_t i = 0; i < skeleton.size(); ++i) {
+        if (skeleton[i].node == node) {
+            at = static_cast<int>(i);
+            break;
+        }
+    }
+    if (at < 0) return {};
+    const std::string& name = skeleton[static_cast<std::size_t>(at)].name;
+    if (Entity found = findBoneObject(skinned, name); found.valid()) return found;
+    std::vector<std::string> chain{name};
+    if (nested) {
+        for (int p = skeleton[static_cast<std::size_t>(at)].parent; p >= 0; p = skeleton[static_cast<std::size_t>(p)].parent) {
+            chain.push_back(skeleton[static_cast<std::size_t>(p)].name);
+        }
+    }
+    createBoneEntities(world, skinned, data, chain, nested);
+    return findBoneObject(skinned, name);
 }
 
 }  // namespace cramion::ecs

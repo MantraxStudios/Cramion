@@ -16,5 +16,13 @@
     <tr><td><code>Value set(texto, activar)</code></td><td>cambia una opcion; o Graphics.set{ clave = valor, ... } Devuelve: bool</td></tr>
     <tr><td><code>Value setPost(texto, activar)</code></td><td>cambia el post-procesado global Devuelve: bool</td></tr>
     <tr><td><code>Value setQuality(texto)</code></td><td>calidad rapida: Baja, Media, Alta, Ultra (o 0..3) Devuelve: bool</td></tr>
+    <tr><td><code>Value setTextureFiltering(valor)</code></td><td>filtrado anisotropico: 0 = auto, 1 = apagado, 2, 4, 8 o 16 (o &quot;auto&quot;, &quot;off&quot;, &quot;16x&quot;); al momento Devuelve: bool</td></tr>
+    <tr><td><code>Value setTextureLodBias(valor)</code></td><td>sesgo de los mipmaps (-1..2): negativo = mas nitidas, positivo = mas suaves; al momento Devuelve: bool</td></tr>
+    <tr><td><code>Value setTextureQuality(texto)</code></td><td>calidad de las texturas: auto, low, medium, high, ultra o max (para lo que se carga despues) Devuelve: bool</td></tr>
+    <tr><td><code>Value textureFiltering(...)</code></td><td>anisotropico en uso (1 = apagado; con auto, el del perfil del PC) Devuelve: numero</td></tr>
+    <tr><td><code>Value textureFilteringLevels(...)</code></td><td>filtrados posibles (auto, off, 2x, 4x, 8x, 16x) Devuelve: lista de texto</td></tr>
+    <tr><td><code>Value textureLodBias(...)</code></td><td>sesgo de los mipmaps Devuelve: numero</td></tr>
+    <tr><td><code>Value textureQuality(...)</code></td><td>calidad de las texturas elegida (auto, low... o custom) Devuelve: texto</td></tr>
+    <tr><td><code>Value textureQualityLevels(...)</code></td><td>calidades de textura posibles Devuelve: lista de texto</td></tr>
   </tbody>
 </table>

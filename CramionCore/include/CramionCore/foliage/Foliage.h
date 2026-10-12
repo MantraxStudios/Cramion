@@ -91,18 +91,20 @@ struct Foliage {
 // en la GPU alrededor de la camara donde el terreno tiene su capa de hierba.
 // Se mecen con el viento, brillan a contraluz y se apartan y aplastan con los
 // objetos fisicos y los personajes. Sin coste en la CPU ni en memoria por brizna.
+// Por defecto, muchas briznas muy finas: de cerca se lee como pelo, no como
+// tiras de papel.
 struct Grass {
     int layer = 0;               // capa del terreno donde crece
     float threshold = 0.25f;     // peso minimo de esa capa (0..1)
     int dry_layer = 1;           // capa que la seca (-1 = ninguna)
-    float density = 70.0f;       // briznas por m2
+    float density = 500.0f;      // briznas por m2
     float max_distance = 80.0f;  // m
-    float detail_distance = 22.0f;  // briznas con detalle hasta aqui (m)
-    float height = 0.45f;        // m
+    float detail_distance = 12.0f;  // briznas con detalle hasta aqui (m)
+    float height = 0.35f;        // m
     float height_variation = 0.4f;
-    float width = 0.028f;        // m
+    float width = 0.007f;        // m
     float bend = 0.35f;
-    core::Vec3 base_color{0.1f, 0.16f, 0.045f};
+    core::Vec3 base_color{0.13f, 0.20f, 0.06f};
     core::Vec3 tip_color{0.27f, 0.38f, 0.11f};
     core::Vec3 dry_color{0.5f, 0.45f, 0.25f};
     float color_variation = 0.25f;
@@ -120,6 +122,9 @@ struct FoliageGround {
     std::shared_ptr<const terrain::TerrainData> data;
     terrain::Terrain terrain;
     core::Vec3 origin{};  // esquina (x, z minimas) y altura 0
+    // Si esta, se lee esto (inmutable) en vez de `data`: lo que se siembra en
+    // otro hilo mientras el editor esculpe o el streamer cose bordes.
+    std::shared_ptr<const terrain::TerrainSnapshot> snapshot;
 };
 
 struct FoliageResult {

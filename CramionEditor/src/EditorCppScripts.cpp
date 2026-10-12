@@ -946,6 +946,7 @@ void EditorApp::drawCppConsole(ScriptTab& tab) {
             } else {
                 std::string result;
                 const bool ok = scripts_.run(cpp_console_input_, &result, &world_);
+                commit();  // fuera de Play, lo que cambio (destroy, parent...) se puede deshacer
                 (ok ? std::cout : std::cerr) << "[C++] API> " << cpp_console_input_ << (result.empty() ? "" : "  ->  ") << result << std::endl;
             }
         }

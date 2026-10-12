@@ -12,7 +12,9 @@
 
 #include "Dialogs.h"
 
+#include <CramionCore/ecs/Blueprint.h>
 #include <CramionCore/ecs/ModelInstantiation.h>
+#include <CramionCore/ecs/Prefab.h>
 
 #include <iostream>
 #include <map>
@@ -246,6 +248,15 @@ int EditorApp::rebuildModelInstances(const Uuid& model, const std::vector<std::v
     for (const entt::entity h : world_.registry().view<ecs::MeshRenderer>()) {
         ecs::Entity e = world_.wrap(h);
         if (e.get<ecs::MeshRenderer>().model.uuid != model || e.get<ecs::MeshRenderer>().mesh) continue;
+        // Dentro de una instancia de Blueprint, no: rehacerla borraria sus
+        // mallas enlazadas, objetos de hueso y sockets, y quedarian como
+        // cambios propios de la instancia. Se actualiza desde su Blueprint.
+        // Las instancias de prefabs normales se rehacen como antes.
+        if (const ecs::Entity prefab_root = ecs::prefabRoot(e);
+            prefab_root.valid() && prefab_root.has<ecs::PrefabInstance>() &&
+            ecs::isBlueprint(prefabText(prefab_root.get<ecs::PrefabInstance>().prefab.uuid))) {
+            continue;
+        }
         ecs::Entity root = e;
         for (ecs::Entity p = e.parent(); p.valid() && subtreeIsModel(world_, p, model) &&
                                          p.get<ecs::NameComponent>().name == asset->name;

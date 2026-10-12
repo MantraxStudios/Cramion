@@ -3,16 +3,46 @@
 
 #include "CramionFX/vk/VulkanCommon.h"
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace cramion::gfx {
 
 class VulkanInstance;
 class VulkanSurface;
+
+// Trabajo enviado a la GPU sin esperarlo (VulkanDevice::submitAsync). Se
+// consulta su fence sin bloquear: el hilo principal adopta el resultado
+// cuando done() da true. El command buffer y lo que haya que mantener vivo
+// (staging) los suelta VulkanDevice::collectAsync cuando la GPU termina.
+class GpuTicket {
+public:
+    // true cuando la GPU termino. No bloquea. Desde cualquier hilo.
+    bool done() const;
+    // Bloquea hasta que termine. Solo para los caminos sincronos de reserva
+    // (CVars de streaming apagadas), nunca en el camino normal del frame.
+    void wait() const;
+
+private:
+    friend class VulkanDevice;
+    const vk::raii::Device* device_ = nullptr;
+    vk::raii::Fence fence_{nullptr};
+    mutable std::atomic<bool> signaled_{false};
+};
+
+// Quien ejecuta las tareas en segundo plano de CramionFX (decodificar las
+// texturas de las capas, la malla del terreno para los rayos, la vegetacion).
+// CramionCore le pasa su sistema de jobs; sin el, un hilo propio.
+using TaskScheduler = std::function<void(std::function<void()>)>;
 
 // Paso 3 de la inicializacion: eleccion del dispositivo fisico y creacion del
 // dispositivo logico con sus colas.
@@ -28,7 +58,7 @@ class VulkanSurface;
 class VulkanDevice {
 public:
     VulkanDevice() = default;
-    ~VulkanDevice() = default;
+    ~VulkanDevice();
 
     VulkanDevice(const VulkanDevice&) = delete;
     VulkanDevice& operator=(const VulkanDevice&) = delete;
@@ -69,6 +99,26 @@ public:
     // termine. Para copias de staging y transiciones puntuales de layout.
     // Se puede llamar desde cualquier hilo.
     void submitOneTime(const std::function<void(const vk::raii::CommandBuffer&)>& record) const;
+
+    // Como submitOneTime pero SIN esperar: graba, envia (cola de graficos,
+    // con queueMutex) y devuelve un ticket con su fence. `keep_alive` (el
+    // staging, las imagenes de destino...) vive hasta que la GPU termina.
+    // Desde cualquier hilo. Nunca bloquea en la GPU.
+    std::shared_ptr<GpuTicket> submitAsync(const std::function<void(const vk::raii::CommandBuffer&)>& record,
+                                           std::vector<std::shared_ptr<const void>> keep_alive = {}) const;
+    // Hilo principal, una vez por frame: suelta los command buffers y lo
+    // mantenido vivo de los envios que ya terminaron. Devuelve los que siguen
+    // en vuelo.
+    std::size_t collectAsync() const;
+    std::size_t asyncInFlight() const;
+
+    // Tareas en segundo plano (ver TaskScheduler). setTaskScheduler al
+    // arrancar (nullptr = el hilo propio). runTask desde cualquier hilo;
+    // drainTasks espera a que terminen todas (al destruir pasadas).
+    void setTaskScheduler(TaskScheduler scheduler);
+    void runTask(std::function<void()> task) const;
+    void drainTasks() const;
+    std::uint32_t tasksInFlight() const { return static_cast<std::uint32_t>(tasks_in_flight_.load()); }
 
     // Formato de profundidad soportado por la GPU, elegido al inicializar.
     vk::Format depthFormat() const { return depth_format_; }
@@ -180,6 +230,28 @@ private:
     std::filesystem::path pipeline_cache_file_;
     mutable std::uint32_t pipelines_created_ = 0;
     std::function<void(std::uint32_t)> pipeline_callback_;
+
+    // --- Envios sin espera (submitAsync). Al final: se destruyen antes que
+    // el pool y el dispositivo. ---
+    struct AsyncSubmit {
+        std::shared_ptr<GpuTicket> ticket;
+        std::optional<vk::raii::CommandBuffers> commands;  // se libera con transient_mutex_
+        std::vector<std::shared_ptr<const void>> keep_alive;
+    };
+    void releaseAsync(std::vector<AsyncSubmit>& finished) const;
+    mutable std::mutex async_mutex_;
+    mutable std::vector<AsyncSubmit> async_;
+
+    // --- Tareas en segundo plano ---
+    void stopTaskThread();
+    mutable std::mutex task_mutex_;
+    mutable std::condition_variable task_cv_;
+    mutable std::condition_variable task_done_cv_;
+    mutable std::deque<std::function<void()>> tasks_;
+    mutable std::thread task_thread_;
+    mutable bool task_stop_ = false;
+    mutable std::atomic<int> tasks_in_flight_{0};
+    TaskScheduler scheduler_;  // con task_mutex_
 };
 
 }  // namespace cramion::gfx

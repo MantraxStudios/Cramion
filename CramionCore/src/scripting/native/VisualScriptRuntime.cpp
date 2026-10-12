@@ -27,6 +27,9 @@
 
 #include "Modules.h"
 
+#include "CramionCore/ecs/MathUtil.h"
+#include "CramionCore/ecs/Prefab.h"
+#include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/scripting/VisualScript.h"
 
 #include <algorithm>
@@ -71,9 +74,16 @@ bool numberFromText(const std::string& text, double& out) {
 // --- El grafo leido ------------------------------------------------------------------
 
 struct Loaded {
+    // Lo que el interprete pregunta en cada uso (calculado una vez al leer).
+    struct Meta {
+        bool pure = false;
+        std::vector<PinType> inputs;  // tipo real de cada entrada
+    };
+
     std::string file;
     Graph graph;
     std::unordered_map<int, const Node*> nodes;
+    std::unordered_map<int, Meta> meta;
     std::map<PinKey, PinKey> input_links;   // entrada -> (nodo, salida) de donde viene
     std::map<PinKey, PinKey> output_links;  // salida exec -> (nodo, entrada) a donde va
     std::map<PinKey, Literal> literals;     // valor escrito en cada entrada
@@ -106,11 +116,16 @@ std::shared_ptr<Loaded> prepare(const std::string& file, Graph graph) {
     const Graph& g = out->graph;
     for (const Node& n : g.nodes) {
         out->nodes[n.id] = &n;
+        Loaded::Meta& meta = out->meta[n.id];
+        meta.pure = vscript::isPureNode(n);
+        meta.inputs.resize(n.inputs.size(), PinType::Any);
         for (std::size_t i = 0; i < n.inputs.size(); ++i) {
             const PinType t = vscript::nodePinType(g, n, false, static_cast<int>(i));
+            meta.inputs[i] = t;
             if (t != PinType::Exec) out->literals[{n.id, static_cast<int>(i)}] = vscript::parseLiteral(n.inputs[i].value, t);
         }
         if (n.breakpoint) out->breakpoints.insert(n.id);
+        if (n.disabled) continue;  // un evento desactivado no se lanza
         const vscript::NodeInfo* info = vscript::findNodeInfo(n.kind);
         if (info != nullptr && info->event) out->events[n.kind].push_back(&n);
         if (n.kind == "event.custom" && !n.inputs.empty()) {
@@ -161,6 +176,7 @@ struct Instance {
     std::vector<Pending> pending;
     std::map<std::string, Timer> timers;
     std::vector<long long> bindings;      // Input.bindAction
+    std::vector<long long> ws_listeners;  // WebSocket.on (On WebSocket)
 };
 
 // Corta la cadena (Delay): no es un error.
@@ -234,10 +250,64 @@ struct Host final : VisualScriptDebugHost {
     // --- Valores ---
     api::Value self(const Instance& inst) const { return rt.entityValue(inst.entity); }
 
-    api::Value findObject(const std::string& name) {
+    // El objeto de la instancia (vacio si ya no existe).
+    ecs::Entity selfEntity(const Instance& inst) const {
+        if (rt.world == nullptr || !rt.world->registry().valid(inst.entity)) return {};
+        return rt.world->wrap(inst.entity);
+    }
+
+    // `e` o alguien de debajo con ese nombre (en profundidad).
+    static ecs::Entity findInTree(const ecs::Entity& e, const std::string& name) {
+        if (!e.valid() || e.world() == nullptr) return {};
+        if (e.name() == name) return e;
+        for (const entt::entity child : e.children()) {
+            const ecs::Entity found = findInTree(e.world()->wrap(child), name);
+            if (found.valid()) return found;
+        }
+        return {};
+    }
+
+    // Un objeto por su nombre: primero este objeto y lo de debajo, luego su
+    // prefab / Blueprint y por ultimo el mundo. Asi dos instancias del mismo
+    // Blueprint usan cada una su "Mano_R".
+    api::Value findObject(const Instance& inst, const std::string& name) {
         if (rt.world == nullptr || name.empty()) return {};
+        const ecs::Entity me = selfEntity(inst);
+        if (me.valid()) {
+            if (const ecs::Entity e = findInTree(me, name); e.valid()) return rt.entityValue(e);
+            const ecs::Entity root = ecs::prefabRoot(me);
+            if (root.valid() && root.handle() != me.handle()) {
+                if (const ecs::Entity e = findInTree(root, name); e.valid()) return rt.entityValue(e);
+            }
+        }
         const ecs::Entity e = rt.world->findByName(name);
         return e.valid() ? rt.entityValue(e) : api::Value{};
+    }
+
+    // Nodo "entity.child": la ruta desde la raiz de esta instancia (la de su
+    // prefab / Blueprint, o el propio objeto). Si la ruta ya no existe (se
+    // renombro o se movio un padre), el primero con ese nombre debajo de Self
+    // y luego debajo de la raiz. Nunca el resto del mundo: es de este actor.
+    api::Value childByPath(const Instance& inst, const std::string& path) {
+        const ecs::Entity me = selfEntity(inst);
+        if (!me.valid()) return {};
+        const ecs::Entity owner = ecs::prefabRoot(me);
+        const ecs::Entity root = owner.valid() ? owner : me;
+        if (const ecs::Entity e = vscript::resolveEntityChildPath(root, path); e.valid()) return rt.entityValue(e);
+        if (root.handle() != me.handle()) {
+            if (const ecs::Entity e = vscript::resolveEntityChildPath(me, path); e.valid()) return rt.entityValue(e);
+        }
+        std::string name = vscript::entityChildPathName(path);
+        if (const std::size_t mark = name.rfind(" ["); mark != std::string::npos && !name.empty() && name.back() == ']') {
+            name.erase(mark);
+        }
+        if (name.empty()) return {};
+        for (const ecs::Entity& from : {me, root}) {
+            for (const entt::entity child : from.children()) {
+                if (const ecs::Entity e = findInTree(from.world()->wrap(child), name); e.valid()) return rt.entityValue(e);
+            }
+        }
+        return {};
     }
 
     api::Value literal(const Instance& inst, const Literal& lit) {
@@ -248,7 +318,7 @@ struct Host final : VisualScriptDebugHost {
             case Literal::Kind::Text: return api::Value(lit.text);
             case Literal::Kind::Vector: return api::Value(lit.vector);
             case Literal::Kind::Self: return self(inst);
-            case Literal::Kind::Find: return findObject(lit.text);
+            case Literal::Kind::Find: return findObject(inst, lit.text);
         }
         return {};
     }
@@ -268,7 +338,7 @@ struct Host final : VisualScriptDebugHost {
                     it = inst.vars.emplace(v.name, literal(inst, vscript::parseLiteral(v.value, v.type))).first;
                 }
             }
-            if (v.type == PinType::Entity && it->second.isString()) it->second = findObject(it->second.asString());
+            if (v.type == PinType::Entity && it->second.isString()) it->second = findObject(inst, it->second.asString());
         }
         for (const Node& n : g.graph.nodes) {
             if (n.kind != "flow.do_once" && n.kind != "flow.gate") continue;
@@ -490,7 +560,10 @@ struct Host final : VisualScriptDebugHost {
     api::Value input(Exec& x, const Node& n, int index) {
         if (index < 0 || index >= static_cast<int>(n.inputs.size())) return {};
         const Loaded& g = *x.inst.graph;
-        const PinType want = vscript::nodePinType(g.graph, n, false, index);
+        const auto meta = g.meta.find(n.id);
+        const PinType want = meta != g.meta.end() && index < static_cast<int>(meta->second.inputs.size())
+                                 ? meta->second.inputs[static_cast<std::size_t>(index)]
+                                 : vscript::nodePinType(g.graph, n, false, index);
         const auto link = g.input_links.find({n.id, index});
         if (link == g.input_links.end()) {
             const auto lit = g.literals.find({n.id, index});
@@ -507,10 +580,13 @@ struct Host final : VisualScriptDebugHost {
     }
 
     api::Value output(Exec& x, const Node& n, int pin) {
-        if (!vscript::isPureNode(n)) {
+        const auto meta = x.inst.graph->meta.find(n.id);
+        const bool is_pure = meta != x.inst.graph->meta.end() ? meta->second.pure : vscript::isPureNode(n);
+        if (!is_pure) {
             const auto it = x.inst.slots.find({n.id, pin});
             return it == x.inst.slots.end() ? api::Value{} : it->second;
         }
+        if (n.disabled) return {};  // compileGraph no deja usar su valor
         if (++x.depth > 512) throw api::Error("demasiados nodos de datos encadenados");
         const int previous = x.node;
         x.node = n.id;
@@ -656,7 +732,8 @@ struct Host final : VisualScriptDebugHost {
         if (k == "str.length") return api::Value(static_cast<double>(text(a(0)).size()));
         if (k == "str.contains") return api::Value(text(a(0)).find(text(a(1))) != std::string::npos);
         if (k == "entity.self") return self(x.inst);
-        if (k == "entity.find") return rt.native.call("Scene.find", {a(0)});
+        if (k == "entity.child") return childByPath(x.inst, n.fn);
+        if (k == "entity.find")return rt.native.call("Scene.find", {a(0)});
         if (k == "entity.find_tag") return rt.native.call("Scene.findWithTag", {a(0)});
         if (k == "entity.get_position") return entityGet(x, n, "position");
         if (k == "entity.get_rotation") return entityGet(x, n, "rotation");
@@ -687,6 +764,255 @@ struct Host final : VisualScriptDebugHost {
         if (k == "time.time") return api::Value(rt.time);
         if (k == "time.frame") return api::Value(static_cast<double>(rt.frame));
         if (k == "util.reroute") return a(0);
+        return pureMore(x, n, pin);
+    }
+
+    // Delta de un nodo Interp To: el del frame si la entrada esta vacia y sin enlace.
+    double deltaInput(Exec& x, const Node& n, int index) {
+        const Loaded& g = *x.inst.graph;
+        if (!g.input_links.contains({n.id, index}) && index < static_cast<int>(n.inputs.size()) &&
+            trimText(n.inputs[static_cast<std::size_t>(index)].value).empty()) {
+            return rt.delta;
+        }
+        return number(input(x, n, index), "Delta");
+    }
+
+    static std::string upperText(std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        return s;
+    }
+
+    // Posicion de `v` en una lista (desde 1; 0 si no esta).
+    static long long findIn(const api::Value& list, const api::Value& v) {
+        if (!list.isArray()) return 0;
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            if (equal(list[i], v)) return static_cast<long long>(i) + 1;
+        }
+        return 0;
+    }
+
+    // Objeto de un Blueprint / prefab por el id de la entidad dentro del prefab
+    // (PrefabLink.source) o por su nombre, dentro de esta instancia.
+    api::Value componentRef(const Instance& inst, const std::string& key) {
+        if (key.empty()) return {};
+        const ecs::Entity me = selfEntity(inst);
+        if (!me.valid()) return {};
+        const ecs::Entity root = ecs::prefabRoot(me).valid() ? ecs::prefabRoot(me) : me;
+        ecs::Entity by_name;
+        std::vector<ecs::Entity> stack{root};
+        while (!stack.empty()) {
+            const ecs::Entity e = stack.back();
+            stack.pop_back();
+            if (const auto* link = e.tryGet<ecs::PrefabLink>(); link != nullptr && link->source == key) return rt.entityValue(e);
+            if (!by_name.valid() && e.name() == key) by_name = e;
+            const std::vector<entt::entity>& children = e.children();
+            for (auto it = children.rbegin(); it != children.rend(); ++it) stack.push_back(e.world()->wrap(*it));
+        }
+        return by_name.valid() ? rt.entityValue(by_name) : api::Value{};
+    }
+
+    // Get Component: `o` o el primero de debajo que tiene ese componente.
+    api::Value withComponent(const api::Value& o, const std::string& name) {
+        if (missing(o) || !o.isEntity() || rt.world == nullptr) return {};
+        const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find(name);
+        const ecs::Entity start = rt.entity(o.asEntity());
+        if (type == nullptr || !start.valid()) return {};
+        std::vector<ecs::Entity> queue{start};
+        for (std::size_t i = 0; i < queue.size(); ++i) {
+            const ecs::Entity e = queue[i];
+            if (type->has(*rt.world, e.handle())) return rt.entityValue(e);
+            for (const entt::entity child : e.children()) queue.push_back(rt.world->wrap(child));
+        }
+        return {};
+    }
+
+    // Los nodos de la biblioteca de la 2.5 (como Unreal): matematicas, conversiones,
+    // texto, listas, objeto y fisica.
+    api::Value pureMore(Exec& x, const Node& n, int pin) {
+        const std::string& k = n.kind;
+        const auto a = [&](int i) { return input(x, n, i); };
+        const auto num = [&](int i) { return number(a(i), vscript::nodeTitle(n).c_str()); };
+        const auto vec = [&](int i) { return vector(a(i), vscript::nodeTitle(n).c_str()); };
+        if (k == "flow.select_int") {
+            const double i = std::floor(lenient(a(0), -1.0));
+            if (i < 0.0 || i + 1.0 >= static_cast<double>(n.inputs.size())) return {};
+            return a(static_cast<int>(i) + 1);
+        }
+        // --- Matematicas ---
+        if (k == "math.finterp_to") {
+            const double current = num(0), target = num(1), dt = deltaInput(x, n, 2), speed = num(3);
+            if (speed <= 0.0) return api::Value(target);
+            const double dist = target - current;
+            if (dist * dist < 1e-8) return api::Value(target);
+            return api::Value(current + dist * std::clamp(dt * speed, 0.0, 1.0));
+        }
+        if (k == "math.vinterp_to") {
+            const core::Vec3 current = vec(0), target = vec(1);
+            const double dt = deltaInput(x, n, 2), speed = num(3);
+            if (speed <= 0.0) return api::Value(target);
+            const core::Vec3 dist = target - current;
+            if (core::dot(dist, dist) < 1e-8f) return api::Value(target);
+            return api::Value(current + dist * static_cast<float>(std::clamp(dt * speed, 0.0, 1.0)));
+        }
+        if (k == "math.nearly_equal") return api::Value(std::abs(num(0) - num(1)) <= std::abs(num(2)));
+        if (k == "math.in_range") {
+            const double v = num(0), lo = num(1), hi = num(2);
+            const bool low_ok = a(3).truthy() ? v >= lo : v > lo;
+            const bool high_ok = a(4).truthy() ? v <= hi : v < hi;
+            return api::Value(low_ok && high_ok);
+        }
+        if (k == "math.wrap") {
+            const double v = num(0), lo = num(1), hi = num(2);
+            const double range = hi - lo;
+            if (range == 0.0) return api::Value(lo);
+            double r = std::fmod(v - lo, range);
+            if (r < 0.0) r += range;
+            return api::Value(lo + r);
+        }
+        if (k == "math.sign") {
+            const double v = num(0);
+            return api::Value(v > 0.0 ? 1.0 : (v < 0.0 ? -1.0 : 0.0));
+        }
+        if (k == "math.frac") {
+            const double v = num(0);
+            return api::Value(v - std::floor(v));
+        }
+        if (k == "math.asin") return api::Value(std::asin(std::clamp(num(0), -1.0, 1.0)));
+        if (k == "math.acos") return api::Value(std::acos(std::clamp(num(0), -1.0, 1.0)));
+        if (k == "math.atan") return api::Value(std::atan(num(0)));
+        if (k == "math.exp") return api::Value(std::exp(num(0)));
+        if (k == "math.log") {
+            const double v = num(0);
+            if (v <= 0.0) throw api::Error("Log: el valor tiene que ser mayor que 0");
+            return api::Value(std::log(v));
+        }
+        if (k == "math.deg_to_rad") return api::Value(num(0) * 3.14159265358979323846 / 180.0);
+        if (k == "math.rad_to_deg") return api::Value(num(0) * 180.0 / 3.14159265358979323846);
+        if (k == "math.random_bool") return api::Value(std::uniform_int_distribution<int>(0, 1)(rng) == 1);
+        // --- Conversiones ---
+        if (k == "conv.int_to_float") return api::Value(num(0));
+        if (k == "conv.float_to_int") return api::Value(std::trunc(num(0)));
+        if (k == "conv.bool_to_int") return api::Value(a(0).truthy() ? 1.0 : 0.0);
+        // --- Texto ---
+        if (k == "str.format") {
+            const std::string format = text(a(0));
+            std::string out;
+            std::size_t at = 0;
+            while (at < format.size()) {
+                const std::size_t open = format.find('{', at);
+                const std::size_t close = open == std::string::npos ? std::string::npos : format.find('}', open + 1);
+                if (close == std::string::npos) {
+                    out += format.substr(at);
+                    break;
+                }
+                out += format.substr(at, open - at);
+                const std::string name = trimText(format.substr(open + 1, close - open - 1));
+                const int index = n.input(name);
+                if (index >= 1) out += text(a(index));
+                else out += format.substr(open, close - open + 1);  // sin entrada: se queda tal cual
+                at = close + 1;
+            }
+            return api::Value(out);
+        }
+        if (k == "str.substring") {
+            const std::string s = text(a(0));
+            const double start = std::max(0.0, std::floor(lenient(a(1))));
+            const double length = std::max(0.0, std::floor(lenient(a(2))));
+            if (start >= static_cast<double>(s.size())) return api::Value(std::string());
+            return api::Value(s.substr(static_cast<std::size_t>(start), static_cast<std::size_t>(std::min(length, 1e9))));
+        }
+        if (k == "str.replace") {
+            std::string s = text(a(0));
+            const std::string from = text(a(1));
+            const std::string to = text(a(2));
+            if (from.empty()) return api::Value(s);
+            for (std::size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size())) s.replace(at, from.size(), to);
+            return api::Value(s);
+        }
+        if (k == "str.split") {
+            const std::string s = text(a(0));
+            const std::string sep = text(a(1));
+            api::Value::Array parts;
+            if (sep.empty()) {
+                parts.emplace_back(s);
+            } else {
+                std::size_t at = 0;
+                for (std::size_t next = s.find(sep); next != std::string::npos; next = s.find(sep, at)) {
+                    parts.emplace_back(s.substr(at, next - at));
+                    at = next + sep.size();
+                }
+                parts.emplace_back(s.substr(at));
+            }
+            return api::Value(std::move(parts));
+        }
+        if (k == "str.upper") return api::Value(upperText(text(a(0))));
+        if (k == "str.lower") return api::Value(lowerText(text(a(0))));
+        if (k == "str.trim") return api::Value(trimText(text(a(0))));
+        if (k == "str.starts_with") {
+            const std::string s = text(a(0)), p = text(a(1));
+            return api::Value(s.size() >= p.size() && s.compare(0, p.size(), p) == 0);
+        }
+        if (k == "str.ends_with") {
+            const std::string s = text(a(0)), p = text(a(1));
+            return api::Value(s.size() >= p.size() && s.compare(s.size() - p.size(), p.size(), p) == 0);
+        }
+        if (k == "str.is_empty") return api::Value(text(a(0)).empty());
+        // --- Listas (desde 1) ---
+        if (k == "array.make") {
+            api::Value::Array items;
+            for (std::size_t i = 0; i < n.inputs.size(); ++i) items.push_back(a(static_cast<int>(i)));
+            return api::Value(std::move(items));
+        }
+        if (k == "array.get") {
+            const api::Value list = a(0);
+            const double i = std::floor(lenient(a(1)));
+            if (!list.isArray() || i < 1.0 || i > static_cast<double>(list.size())) return {};
+            return list[static_cast<std::size_t>(i) - 1];
+        }
+        if (k == "array.length") {
+            const api::Value list = a(0);
+            return api::Value(static_cast<double>(list.isArray() ? list.size() : 0));
+        }
+        if (k == "array.contains") return api::Value(findIn(a(0), a(1)) > 0);
+        if (k == "array.find") return api::Value(static_cast<double>(findIn(a(0), a(1))));
+        // --- Objeto ---
+        if (k == "entity.owner") {
+            const api::Value o = a(0);
+            if (missing(o) || !o.isEntity()) return {};
+            const ecs::Entity e = rt.entity(o.asEntity());
+            if (!e.valid()) return {};
+            const ecs::Entity root = ecs::prefabRoot(e);
+            return rt.entityValue(root.valid() ? root : e);
+        }
+        if (k == "component.get") {
+            const api::Value found = withComponent(a(0), text(a(1)));
+            return pin == 1 ? api::Value(!found.isNil()) : found;
+        }
+        if (k == "component.has") {
+            const api::Value o = a(0);
+            if (missing(o)) return api::Value(false);
+            return rt.native.call("Entity:hasComponent", {api::Value(text(a(1)))}, o);
+        }
+        if (k == "component.ref") return componentRef(x.inst, trimText(text(a(0))));
+        // --- Fisica ---
+        if (k == "physics.break_hit") {
+            const api::Value r = a(0);
+            if (!r.isObject()) return pin == 0 ? api::Value(false) : api::Value{};
+            switch (pin) {
+                case 0: return api::Value(true);
+                case 1: return r["entity"];
+                case 2: return r["point"];
+                case 3: return r["normal"];
+                default: return r["distance"];
+            }
+        }
+        // --- Vector ---
+        if (k == "vec.rotate") return api::Value(ecs::quatRotate(ecs::quatFromEulerDegrees(vec(1)), vec(0)));
+        if (k == "vec.unit_direction") return api::Value(core::normalize(vec(1) - vec(0)));
+        if (k == "vec.distance2d") {
+            const core::Vec3 p = vec(0), q = vec(1);
+            return api::Value(std::sqrt((p.x - q.x) * (p.x - q.x) + (p.z - q.z) * (p.z - q.z)));
+        }
         throw api::Error("el nodo " + vscript::nodeTitle(n) + " no da valores");
     }
 
@@ -728,6 +1054,16 @@ struct Host final : VisualScriptDebugHost {
         Instance& inst = x.inst;
         const std::string& k = n.kind;
         const auto a = [&](int i) { return input(x, n, i); };
+        if (n.disabled) {
+            // Desactivado: la ejecucion pasa por su primera salida exec.
+            for (std::size_t o = 0; o < n.outputs.size(); ++o) {
+                if (n.outputs[o].type == PinType::Exec) {
+                    follow(x, n, static_cast<int>(o));
+                    break;
+                }
+            }
+            return;
+        }
         if (k == "flow.branch") {
             follow(x, n, a(1).truthy() ? 0 : 1);
         } else if (k == "flow.sequence") {
@@ -842,9 +1178,189 @@ struct Host final : VisualScriptDebugHost {
             const api::Value value = data.empty() ? api::Value{} : input(x, n, data.back());
             rt.native.set(n.fn, value, propertyTarget(x, n));
             follow(x, n, 0);
-        } else {
+        } else if (!runMore(x, n, in)) {
             throw api::Error("el nodo " + vscript::nodeTitle(n) + " no se puede ejecutar");
         }
+    }
+
+    // Lista que cambia un nodo de Array: si llega de una variable (Get), la
+    // variable se queda con la copia nueva (las listas se comparten).
+    void writeBack(Exec& x, const Node& n, int input_index, const api::Value& list) {
+        const Loaded& g = *x.inst.graph;
+        const auto link = g.input_links.find({n.id, input_index});
+        if (link == g.input_links.end()) return;
+        const Node* src = g.node(link->second.first);
+        if (src != nullptr && src->kind == "var.get" && !src->fn.empty()) x.inst.vars[src->fn] = list;
+    }
+
+    static api::Value::Array copyOf(const api::Value& list) {
+        return list.isArray() ? list.items() : api::Value::Array{};
+    }
+
+    // Componentes que un grafo no puede anadir ni quitar.
+    static bool lockedComponent(const std::string& name) {
+        static const std::set<std::string> kLocked = {"Transform", "Name", "NameComponent", "EntityInfo", "PrefabInstance",
+                                                      "PrefabLink"};
+        return kLocked.contains(name);
+    }
+
+    // Salida exec de un Switch con ese nombre (o Default, la 0).
+    static int switchOutput(const Node& n, const std::string& name) {
+        for (std::size_t o = 1; o < n.outputs.size(); ++o) {
+            if (n.outputs[o].type == PinType::Exec && n.outputs[o].name == name) return static_cast<int>(o);
+        }
+        return 0;
+    }
+
+    bool broken(const Instance& inst, const Node& n) const {
+        const auto it = inst.state.find(n.id);
+        return it != inst.state.end() && it->second.truthy();
+    }
+
+    // Los nodos de ejecucion de la biblioteca de la 2.5 (false = no es de aqui).
+    bool runMore(Exec& x, const Node& n, int in) {
+        Instance& inst = x.inst;
+        const std::string& k = n.kind;
+        const auto a = [&](int i) { return input(x, n, i); };
+        if (k == "flow.switch_int") {
+            const double selector = std::floor(lenient(a(1)));
+            char name[32];
+            std::snprintf(name, sizeof(name), "%.0f", selector);
+            follow(x, n, switchOutput(n, name));
+        } else if (k == "flow.switch_string") {
+            follow(x, n, switchOutput(n, text(a(1))));
+        } else if (k == "flow.for_break") {
+            if (in == 3) {
+                inst.state[n.id] = api::Value(true);  // Break: el bucle lo mira en cada vuelta
+                return true;
+            }
+            inst.state.erase(n.id);
+            forLoop(x, n, static_cast<long long>(std::floor(lenient(a(1)))), static_cast<long long>(std::floor(lenient(a(2)))));
+        } else if (k == "flow.foreach_break") {
+            if (in == 2) {
+                inst.state[n.id] = api::Value(true);
+                return true;
+            }
+            inst.state.erase(n.id);
+            forEach(x, n, a(1), 0);
+        } else if (k == "flow.multigate") {
+            if (in == 1) {
+                inst.state.erase(n.id);  // Reset
+                return true;
+            }
+            const int outs = static_cast<int>(std::min<std::size_t>(n.outputs.size(), 52));
+            if (outs == 0) return true;
+            const api::Value previous = inst.state.contains(n.id) ? inst.state[n.id] : api::Value{};
+            std::uint64_t used = static_cast<std::uint64_t>(previous["used"].asNumber());
+            int next = 0;
+            if (previous.isNil()) {
+                const double start = std::floor(lenient(a(4), -1.0));
+                next = start >= 0.0 && start < outs ? static_cast<int>(start) : 0;
+            } else {
+                next = static_cast<int>(previous["next"].asNumber()) % outs;
+            }
+            const std::uint64_t all = outs >= 64 ? ~std::uint64_t(0) : (std::uint64_t(1) << outs) - 1;
+            if ((used & all) == all) {
+                if (!a(3).truthy()) return true;  // ya salio por todas (hasta Reset)
+                used = 0;
+            }
+            int chosen = -1;
+            if (a(2).truthy()) {
+                std::vector<int> unused;
+                for (int o = 0; o < outs; ++o) {
+                    if ((used & (std::uint64_t(1) << o)) == 0) unused.push_back(o);
+                }
+                chosen = unused[std::uniform_int_distribution<std::size_t>(0, unused.size() - 1)(rng)];
+            } else {
+                for (int step = 0; step < outs && chosen < 0; ++step) {
+                    const int o = (next + step) % outs;
+                    if ((used & (std::uint64_t(1) << o)) == 0) chosen = o;
+                }
+            }
+            used |= std::uint64_t(1) << chosen;
+            api::Value saved = api::Value::object();
+            saved.set("used", api::Value(static_cast<double>(used)));
+            saved.set("next", api::Value(static_cast<double>((chosen + 1) % outs)));
+            inst.state[n.id] = saved;
+            follow(x, n, chosen);
+        } else if (k == "flow.retrig_delay") {
+            // Cada entrada empieza la cuenta otra vez: las esperas de antes se descartan.
+            const double generation = (inst.state.contains(n.id) ? inst.state[n.id].asNumber() : 0.0) + 1.0;
+            inst.state[n.id] = api::Value(generation);
+            std::erase_if(inst.pending, [&](const Pending& p) { return !p.frames.empty() && p.frames.front().node == n.id; });
+            x.wait = lenient(a(1));
+            x.frames.push_back(Frame{n.id, static_cast<long long>(generation)});
+            throw Suspend{};
+        } else if (k == "flow.is_valid") {
+            const api::Value o = a(1);
+            const bool valid = !missing(o) && (!o.isEntity() || rt.native.call("Entity:valid", {}, o).truthy());
+            follow(x, n, valid ? 0 : 1);
+        } else if (k == "array.add") {
+            api::Value::Array items = copyOf(a(1));
+            items.push_back(a(2));
+            const double index = static_cast<double>(items.size());
+            const api::Value list(std::move(items));
+            writeBack(x, n, 1, list);
+            inst.slots[{n.id, 1}] = list;
+            inst.slots[{n.id, 2}] = api::Value(index);
+            follow(x, n, 0);
+        } else if (k == "array.remove_index") {
+            api::Value::Array items = copyOf(a(1));
+            const double i = std::floor(lenient(a(2)));
+            if (i >= 1.0 && i <= static_cast<double>(items.size())) items.erase(items.begin() + static_cast<std::ptrdiff_t>(i) - 1);
+            const api::Value list(std::move(items));
+            writeBack(x, n, 1, list);
+            inst.slots[{n.id, 1}] = list;
+            follow(x, n, 0);
+        } else if (k == "array.clear") {
+            const api::Value list(api::Value::Array{});
+            writeBack(x, n, 1, list);
+            inst.slots[{n.id, 1}] = list;
+            follow(x, n, 0);
+        } else if (k == "component.add" || k == "component.remove") {
+            const bool add = k == "component.add";
+            const api::Value o = a(1);
+            const std::string name = trimText(text(a(2)));
+            bool done = false;
+            if (!missing(o) && !name.empty()) {
+                const bool on_self = o.isEntity() && o.asEntity() == inst.entity;
+                if (lockedComponent(name) || (on_self && name == "VisualScript")) {
+                    rt.write(1, std::string(add ? "Add" : "Remove") + " Component: " + name + " no se puede cambiar desde un grafo");
+                } else {
+                    done = rt.native.call(add ? "Entity:addComponent" : "Entity:removeComponent", {api::Value(name)}, o).truthy();
+                }
+            }
+            inst.slots[{n.id, 1}] = api::Value(done);
+            follow(x, n, 0);
+        } else if (k == "physics.line_trace") {
+            const core::Vec3 from = vector(a(1), "Line Trace");
+            const core::Vec3 to = vector(a(2), "Line Trace");
+            const core::Vec3 direction = to - from;
+            const float distance = core::length(direction);
+            api::Value result;
+            if (rt.physics != nullptr && distance > 1e-6f) {
+                physics::QueryFilter filter;
+                if (a(3).truthy()) filter.ignore = selfEntity(inst);  // no tocarse a si mismo
+                physics::RaycastHit hit;
+                if (rt.physics->raycast(from, direction * (1.0f / distance), distance, hit, filter)) {
+                    result = api::Value::object();
+                    result.set("entity", rt.entityValue(hit.entity));
+                    result.set("point", hit.point);
+                    result.set("normal", hit.normal);
+                    result.set("distance", hit.distance);
+                }
+            }
+            inst.slots[{n.id, 1}] = api::Value(!result.isNil());
+            inst.slots[{n.id, 2}] = result["entity"];
+            inst.slots[{n.id, 3}] = result["point"];
+            inst.slots[{n.id, 4}] = result["normal"];
+            inst.slots[{n.id, 5}] = result["distance"];
+            inst.slots[{n.id, 6}] = result;
+            follow(x, n, 0);
+        } else {
+            return false;
+        }
+        return true;
     }
 
     void sequence(Exec& x, const Node& n, long long from) {
@@ -854,16 +1370,21 @@ struct Host final : VisualScriptDebugHost {
     }
 
     void forLoop(Exec& x, const Node& n, long long from, long long last) {
+        const bool breakable = n.kind == "flow.for_break";  // For Loop with Break
         for (long long i = from; i <= last; ++i) {
+            if (breakable && broken(x.inst, n)) break;
             x.inst.slots[{n.id, 1}] = api::Value(static_cast<double>(i));
             followOrSave(x, n, 0, Frame{n.id, i + 1, last});
         }
+        if (breakable) x.inst.state.erase(n.id);
         follow(x, n, 2);
     }
 
     void forEach(Exec& x, const Node& n, const api::Value& list, long long from) {
+        const bool breakable = n.kind == "flow.foreach_break";  // For Each with Break
         if (list.isArray()) {
             for (long long i = from; i < static_cast<long long>(list.size()); ++i) {
+                if (breakable && broken(x.inst, n)) break;
                 x.inst.slots[{n.id, 1}] = list[static_cast<std::size_t>(i)];
                 x.inst.slots[{n.id, 2}] = api::Value(static_cast<double>(i + 1));  // desde 1, como la API
                 Frame f{n.id, i + 1};
@@ -871,6 +1392,7 @@ struct Host final : VisualScriptDebugHost {
                 followOrSave(x, n, 0, f);
             }
         }
+        if (breakable) x.inst.state.erase(n.id);
         follow(x, n, 3);
     }
 
@@ -893,9 +1415,15 @@ struct Host final : VisualScriptDebugHost {
             try {
                 x.node = n->id;
                 if (n->kind == "flow.delay") follow(x, *n, 0);
+                else if (n->kind == "flow.retrig_delay") {
+                    // Una espera que se volvio a lanzar: esta cadena ya no sigue (la nueva si).
+                    const auto it = x.inst.state.find(n->id);
+                    if (it == x.inst.state.end() || static_cast<long long>(it->second.asNumber()) != f.next) return;
+                    follow(x, *n, 0);
+                }
                 else if (n->kind == "flow.sequence") sequence(x, *n, f.next);
-                else if (n->kind == "flow.for") forLoop(x, *n, f.next, f.last);
-                else if (n->kind == "flow.foreach") forEach(x, *n, f.list, f.next);
+                else if (n->kind == "flow.for" || n->kind == "flow.for_break") forLoop(x, *n, f.next, f.last);
+                else if (n->kind == "flow.foreach" || n->kind == "flow.foreach_break") forEach(x, *n, f.list, f.next);
                 else if (n->kind == "flow.while") whileLoop(x, *n, f.next, f.last);
             } catch (const Suspend&) {
                 // Se corta otra vez: lo de fuera sigue esperando detras.
@@ -917,6 +1445,19 @@ struct Host final : VisualScriptDebugHost {
                 inst.slots[{n.id, 2}] = contact["point"];
                 inst.slots[{n.id, 3}] = contact["normal"];
                 inst.slots[{n.id, 4}] = contact["relativeVelocity"];
+            } else if (n.kind == "event.websocket") {
+                // Evento, Texto (text, error o reason) y Datos (el JSON ya leido).
+                const api::Value& ev = args.empty() ? api::Value::nil() : args[0];
+                inst.slots[{n.id, 1}] = ev;
+                api::Value text;
+                for (const char* key : {"text", "error", "reason"}) {
+                    if (!ev[key].isNil()) {
+                        text = ev[key];
+                        break;
+                    }
+                }
+                inst.slots[{n.id, 2}] = text;
+                inst.slots[{n.id, 3}] = ev["data"];
             } else if (n.outputs.size() > 1) {
                 inst.slots[{n.id, 1}] = args.empty() ? api::Value{} : args[0];
             }
@@ -997,7 +1538,7 @@ struct Host final : VisualScriptDebugHost {
     void send(ecs::Entity target, const std::string& method, const api::Value& value) {
         if (!target.valid() || method.empty()) return;
         for (const auto& fn : rt.hooks.event) fn(target, method, value);
-        if (rt.message_listener) rt.message_listener(target, method, rt.native.toJson(value).dump());
+        if (rt.message_listener) rt.message_listener(target, method, rt.native.toJson(value).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
     }
 
     // --- Fases ---
@@ -1013,6 +1554,23 @@ struct Host final : VisualScriptDebugHost {
             try {
                 const api::Value r = rt.native.call("Input.bindAction", {api::Value(action), api::Value(when), api::Value::function(id)});
                 if (r.asNumber() > 0) inst.bindings.push_back(static_cast<long long>(r.asNumber()));
+            } catch (const api::Error& e) {
+                fault(inst, n->id, e.what());
+                return;
+            }
+        }
+        // On WebSocket: escucha la conexion por su nombre (aunque aun no exista).
+        for (const Node* n : g->eventsOf("event.websocket")) {
+            const std::string name =
+                !n->inputs.empty() && !trimText(n->inputs[0].value).empty() ? trimText(n->inputs[0].value) : std::string("main");
+            const std::string kind = n->inputs.size() > 1 && !trimText(n->inputs[1].value).empty()
+                                         ? lowerText(trimText(n->inputs[1].value))
+                                         : std::string("message");
+            const std::uint64_t id = next_callback++;
+            callbacks[id] = {inst.entity, n->id};
+            try {
+                const api::Value r = rt.native.call("WebSocket.on", {api::Value(name), api::Value(kind), api::Value::function(id)});
+                if (r.asNumber() > 0) inst.ws_listeners.push_back(static_cast<long long>(r.asNumber()));
             } catch (const api::Error& e) {
                 fault(inst, n->id, e.what());
                 return;
@@ -1051,6 +1609,13 @@ struct Host final : VisualScriptDebugHost {
             }
         }
         inst.bindings.clear();
+        for (const long long id : inst.ws_listeners) {
+            try {
+                rt.native.call("WebSocket.off", {api::Value(id)});
+            } catch (const api::Error&) {
+            }
+        }
+        inst.ws_listeners.clear();
         std::erase_if(callbacks, [&](const auto& item) { return item.second.first == inst.entity; });
     }
 
@@ -1110,6 +1675,31 @@ struct Host final : VisualScriptDebugHost {
         }
     }
 
+    // Lo que define un nodo para su estado guardado (tipo, funcion y pines).
+    static std::string signature(const Node& n) {
+        std::string s = n.kind + "|" + n.fn + "|" + (n.disabled ? "off" : "on");
+        for (const vscript::Pin& p : n.inputs) s += "|i" + std::to_string(static_cast<int>(p.type)) + p.name;
+        for (const vscript::Pin& p : n.outputs) s += "|o" + std::to_string(static_cast<int>(p.type)) + p.name;
+        return s;
+    }
+
+    // Al recargar: el estado, los valores y las esperas de los nodos que ya no
+    // estan o cambiaron (un Delay borrado, un Switch con otras salidas) se
+    // descartan; no se puede seguir en un nodo que no es el mismo.
+    static void forgetChanged(Instance& inst, const Loaded& before, const Loaded& after) {
+        std::set<int> changed;
+        for (const Node& old : before.graph.nodes) {
+            const Node* now = after.node(old.id);
+            if (now == nullptr || signature(*now) != signature(old)) changed.insert(old.id);
+        }
+        if (changed.empty()) return;
+        std::erase_if(inst.state, [&](const auto& item) { return changed.contains(item.first); });
+        std::erase_if(inst.slots, [&](const auto& item) { return changed.contains(item.first.first); });
+        std::erase_if(inst.pending, [&](const Pending& p) {
+            return std::any_of(p.frames.begin(), p.frames.end(), [&](const Frame& f) { return changed.contains(f.node); });
+        });
+    }
+
     // Guardar un .crgraph en Play: las instancias siguen con sus datos, con
     // los nodos nuevos y lo que les falte (variables nuevas...).
     bool reload(const std::string& file) {
@@ -1127,6 +1717,7 @@ struct Host final : VisualScriptDebugHost {
         graphs[file] = g;
         for (auto& [h, inst] : instances) {
             if (inst.graph->file != file) continue;
+            forgetChanged(inst, *inst.graph, *g);
             inst.graph = g;
             inst.failed = false;
             init(inst);

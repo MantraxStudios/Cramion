@@ -9,6 +9,7 @@
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace cramion::ecs {
 
@@ -58,14 +59,38 @@ void collectSubtree(World& world, Entity root, json& entities) {
     }
 }
 
-Entity buildEntities(World& world, const json& entities, bool remap, Entity root_parent, std::vector<Entity>* created) {
+namespace {
+
+// `skip_existing` (recrear con los mismos UUID: World Partition): un registro
+// cuyo UUID ya esta en el mundo no se recrea (ni sus hijos), con un aviso. Si
+// no, World::create le daria un UUID nuevo y quedarian dos copias del objeto.
+Entity buildEntitiesImpl(World& world, const json& entities, bool remap, Entity root_parent,
+                         std::vector<Entity>* created, bool skip_existing) {
     std::unordered_map<std::string, Entity> by_uuid;
+    std::unordered_set<std::string> skipped;
+    std::vector<Entity> built;
     Entity first;
     for (const json& record : entities) {
         if (!record.is_object()) {
             continue;
         }
         const std::string uuid_text = record.value("uuid", std::string{});
+        if (skip_existing && !remap) {
+            const auto p = record.find("parent");
+            if (p != record.end() && p->is_string() && skipped.count(p->get<std::string>()) != 0) {
+                skipped.insert(uuid_text);  // hijo de uno que no se recreo
+                continue;
+            }
+            const Uuid existing_id = Uuid::parse(uuid_text);
+            if (existing_id.valid()) {
+                if (const Entity existing = world.find(existing_id); existing.valid()) {
+                    std::cerr << "[Escena] UUID repetido " << uuid_text << " (\"" << record.value("name", std::string{})
+                              << "\"): ya esta en el mundo como \"" << existing.name() << "\", no se recrea\n";
+                    skipped.insert(uuid_text);
+                    continue;
+                }
+            }
+        }
         Entity parent = root_parent;
         if (const auto it = record.find("parent"); it != record.end() && it->is_string()) {
             const auto found = by_uuid.find(it->get<std::string>());
@@ -84,6 +109,7 @@ Entity buildEntities(World& world, const json& entities, bool remap, Entity root
         info.is_static = record.value("static", false);
         info.static_batched = record.value("static_batched", false);
         by_uuid[uuid_text] = e;
+        built.push_back(e);
         if (created != nullptr) created->push_back(e);
         if (!first.valid()) {
             first = e;
@@ -103,10 +129,32 @@ Entity buildEntities(World& world, const json& entities, bool remap, Entity root
             }
         }
     }
+    // Con UUIDs nuevos (pegar, instanciar un prefab), las referencias entre las
+    // entidades pegadas pasan a las copias; las de fuera se quedan como estan.
+    if (remap) {
+        std::unordered_map<Uuid, Uuid> refs;
+        for (const auto& [old_text, e] : by_uuid) {
+            const Uuid old_uuid = Uuid::parse(old_text);
+            if (old_uuid.valid() && e.valid()) refs[old_uuid] = e.uuid();
+        }
+        if (!refs.empty()) {
+            for (const Entity& e : built) world.remapEntityRefs(e, refs);
+        }
+    }
     return first;
 }
 
+}  // namespace
+
+Entity buildEntities(World& world, const json& entities, bool remap, Entity root_parent, std::vector<Entity>* created) {
+    return buildEntitiesImpl(world, entities, remap, root_parent, created, /*skip_existing=*/false);
+}
+
 }  // namespace detail
+
+struct ParsedEntities {
+    json root;
+};
 
 using detail::buildEntities;
 using detail::entityRecord;
@@ -289,7 +337,22 @@ Entity restoreEntities(World& world, const std::string& text, Entity parent) {
     if (it == root.end() || !it->is_array()) {
         return {};
     }
-    return buildEntities(world, *it, /*remap=*/false, parent);
+    return detail::buildEntitiesImpl(world, *it, /*remap=*/false, parent, nullptr, /*skip_existing=*/true);
+}
+
+std::shared_ptr<const ParsedEntities> parseEntities(const std::string& text) {
+    auto parsed = std::make_shared<ParsedEntities>();
+    parsed->root = json::parse(text, nullptr, false);
+    if (parsed->root.is_discarded() || !parsed->root.is_object()) return nullptr;
+    const auto it = parsed->root.find("entities");
+    if (it == parsed->root.end() || !it->is_array()) return nullptr;
+    return parsed;
+}
+
+Entity restoreParsedEntities(World& world, const ParsedEntities& parsed, Entity parent) {
+    const auto it = parsed.root.find("entities");
+    if (it == parsed.root.end() || !it->is_array()) return {};
+    return detail::buildEntitiesImpl(world, *it, /*remap=*/false, parent, nullptr, /*skip_existing=*/true);
 }
 
 Uuid readSceneUuid(const std::filesystem::path& path) {

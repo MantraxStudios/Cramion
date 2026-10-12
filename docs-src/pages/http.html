@@ -4,6 +4,10 @@
   plano</strong> (el juego no se para) y la respuesta llega a una función que se llama en el hilo del juego, como un
   <code>update</code> más. <code>Json</code> convierte entre un <code>Value</code> y texto JSON.
 </p>
+<div class="note">
+  ¿Necesitas una <strong>conexión abierta</strong> con tu servidor, que te mande cosas sin pedirlas (chat, lobby, MMO,
+  avisos en directo)? Usa <a href="websocket.html">WebSocket</a>. <code>Http</code> es para pedir y esperar la respuesta.
+</div>
 
 <pre><code class="language-cpp">// Leer
 Http::get("https://api.mijuego.com/noticias", [](const Values&amp; a) {

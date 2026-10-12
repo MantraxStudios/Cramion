@@ -1,14 +1,9 @@
 #include "CramionCore/net/Http.h"
 
+#include "NetCommon.h"
+
 #if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <winhttp.h>
+#include "WinHttpCommon.h"
 #elif defined(__ANDROID__)
 #include <jni.h>
 #endif
@@ -25,22 +20,11 @@ namespace cramion::net {
 namespace {
 
 #if defined(_WIN32)
-std::wstring widen(const std::string& s) {
-    if (s.empty()) return {};
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring out(static_cast<std::size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
-    return out;
-}
-
-std::string narrow(const std::wstring& s) {
-    if (s.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
-    std::string out(static_cast<std::size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n, nullptr, nullptr);
-    return out;
-}
-
+// widen, narrow, Handle y winError: WinHttpCommon.h (los usa tambien WebSocket).
+using detail::Handle;
+using detail::narrow;
+using detail::widen;
+using detail::winError;
 #endif
 
 std::string lower(std::string s) {
@@ -48,45 +32,8 @@ std::string lower(std::string s) {
     return s;
 }
 
-#if defined(_WIN32)
-struct Handle {
-    HINTERNET h = nullptr;
-    explicit Handle(HINTERNET handle = nullptr) : h(handle) {}
-    ~Handle() {
-        if (h != nullptr) WinHttpCloseHandle(h);
-    }
-    Handle(const Handle&) = delete;
-    Handle& operator=(const Handle&) = delete;
-    explicit operator bool() const { return h != nullptr; }
-};
-
-std::string winError(const char* what) {
-    const DWORD code = GetLastError();
-    std::string text = what;
-    switch (code) {
-        case ERROR_WINHTTP_NAME_NOT_RESOLVED: text += ": no se encuentra el servidor (sin Internet o nombre mal escrito)"; break;
-        case ERROR_WINHTTP_TIMEOUT: text += ": el servidor no responde (tiempo agotado)"; break;
-        case ERROR_WINHTTP_CANNOT_CONNECT: text += ": no se pudo conectar con el servidor"; break;
-        case ERROR_WINHTTP_CONNECTION_ERROR: text += ": se corto la conexion"; break;
-        case ERROR_WINHTTP_SECURE_FAILURE:
-        case ERROR_WINHTTP_SECURE_INVALID_CERT:
-        case ERROR_WINHTTP_SECURE_CERT_CN_INVALID:
-        case ERROR_WINHTTP_SECURE_CERT_DATE_INVALID:
-        case ERROR_WINHTTP_SECURE_INVALID_CA:
-            text += ": conexion segura rechazada (el certificado del servidor no es valido)";
-            break;
-        case ERROR_WINHTTP_REDIRECT_FAILED: text += ": redireccion no permitida (de https a http)"; break;
-        case ERROR_WINHTTP_OPERATION_CANCELLED: text += ": cancelada"; break;
-        default: text += " (error " + std::to_string(code) + ")"; break;
-    }
-    return text;
-}
-#endif
-
-bool isLocalHost(const std::string& host) {
-    const std::string h = lower(host);
-    return h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]";
-}
+// localhost, 127.0.0.0/8, ::1 (con o sin corchetes): NetCommon.
+bool isLocalHost(const std::string& host) { return detail::isLoopbackHost(host); }
 
 #if defined(_WIN32)
 struct UrlParts {
@@ -231,9 +178,9 @@ std::string urlEncode(const std::string& text) {
     return out;
 }
 
-#if defined(_WIN32)
-void setJavaVM(void*) {}
+// setJavaVM: NetCommon.cpp (una sola definicion para todas las plataformas).
 
+#if defined(_WIN32)
 HttpResponse httpRequest(const HttpRequest& request, const std::atomic<bool>* cancel) {
     HttpResponse response;
     const auto start = std::chrono::steady_clock::now();
@@ -388,8 +335,6 @@ HttpResponse httpRequest(const HttpRequest& request, const std::atomic<bool>* ca
 #elif !defined(__ANDROID__)
 // Escritorio sin WinHTTP (Linux, las pruebas): sin red. La peticion se valida
 // igual y vuelve con un error claro.
-void setJavaVM(void*) {}
-
 HttpResponse httpRequest(const HttpRequest& request, const std::atomic<bool>*) {
     HttpResponse response;
     UrlParts url;
@@ -404,13 +349,8 @@ HttpResponse httpRequest(const HttpRequest& request, const std::atomic<bool>*) {
     return response;
 }
 #else
-namespace {
-JavaVM* g_vm = nullptr;
-}  // namespace
-
-void setJavaVM(void* vm) { g_vm = static_cast<JavaVM*>(vm); }
-
 HttpResponse httpRequest(const HttpRequest& request, const std::atomic<bool>* cancel) {
+    JavaVM* const g_vm = static_cast<JavaVM*>(detail::javaVm());
     HttpResponse response;
     const auto start = std::chrono::steady_clock::now();
     const auto finish = [&](std::string error) {

@@ -4,6 +4,49 @@
   lightmap de superficie, accesibilidad, mods, informe de cierres, job system y Linux.
 </p>
 
+<h3 id="v248">2.4.8: Blueprints, WebSocket, hierba realista y streaming en otros hilos</h3>
+<div class="shots">
+  <figure><img src="../img/CramionEditor_ucGQ9NhRfo.jpg" alt="Césped denso con la nueva iluminación, a la sombra de los árboles" loading="lazy"><figcaption>Césped denso con luz y sombra entre los árboles</figcaption></figure>
+  <figure><img src="../img/CramionEditor_dxtp2ekjlG.jpg" alt="Hierba alta bajo los árboles con rayos de luz y niebla" loading="lazy"><figcaption>Hierba alta, sombras de los árboles y niebla</figcaption></figure>
+  <figure><img src="../img/CramionEditor_ejy9ipCqYc.jpg" alt="Bosque con niebla volumétrica y profundidad de campo" loading="lazy"><figcaption>Bosque con niebla volumétrica y profundidad de campo</figcaption></figure>
+  <figure><img src="../img/CramionEditor_SegU4MOPzp.jpg" alt="Copas de robles, pinos y sauces vistas desde arriba" loading="lazy"><figcaption>Copas de los árboles desde arriba</figcaption></figure>
+  <figure><img src="../img/CramionEditor_YWpw1JWIOd.jpg" alt="Camino entre árboles con la luz direccional seleccionada en el editor" loading="lazy"><figcaption>Luz del sol entre los árboles, en el editor</figcaption></figure>
+  <figure><img src="../img/CramionEditor_YQhQMgAYGg.png" alt="La interfaz del editor de Cramion con la Jerarquía, el Inspector, Proyecto y la Consola" loading="lazy"><figcaption>El editor: Jerarquía, Propiedades, Proyecto y Consola</figcaption></figure>
+</div>
+<ul>
+  <li><strong>Blueprints de actor</strong>: un <code>.crprefab</code> con su <code>.crgraph</code>, creado desde un modelo (doble clic),
+    desde un prefab o vacío, con su pestaña (Componentes, Mi Blueprint, Detalles, Ventana gráfica, Event Graph y Resultados de
+    compilación). Ver <a href="blueprints.html">Blueprints</a>.</li>
+  <li><strong>Editor de nodos estilo Unreal</strong>: reroutes, minimapa (M), comentarios (C), alinear (Mayús+WASD), búsqueda
+    sensible al contexto, conversión automática de tipos, deshacer y <em>Compilar</em> (F7). <strong>56 nodos nuevos</strong>:
+    Switch, For Loop with Break, MultiGate, texto, listas, Line Trace, componentes y más. El editor ya no guarda solo.</li>
+  <li><strong>Cliente WebSocket</strong>: <code>WebSocket.connect</code>, <code>send</code>, <code>sendJson</code>,
+    <code>on</code>... en scripts, <code>WsClient</code> en C++ y el nodo <em>On WebSocket</em>. <code>wss://</code> con TLS en
+    Windows, Linux (OpenSSL) y Android. Ver <a href="websocket.html">WebSocket</a>.</li>
+  <li><strong>Hierba realista</strong>: hojas con volumen y un modelo de sombreado propio (translucidez y brillo), auto-sombra
+    dentro del césped, el suelo con el color de la hierba y cantidad según el nivel del hardware. Nuevos valores por defecto:
+    densidad 500 y anchura 0,007.</li>
+  <li><strong>Árboles con volumen</strong>: hojas mate e inclinadas, auto-sombra de la copa, variación de color y sombras
+    cercanas con la malla de detalle en Alto y Ultra.</li>
+  <li><strong>Streaming en otros hilos</strong>: teselas, colliders, navegación, subidas a la GPU y celdas del World Partition se
+    preparan fuera del hilo principal con un presupuesto por frame. El servidor dedicado carga alrededor de cada jugador y del
+    punto de aparición.</li>
+  <li><strong>Texturas</strong>: filtrado anisotrópico (automático, apagado o 2x a 16x) y sesgo de mips en <em>Gráficos</em>, y
+    <code>Graphics.setTextureFiltering</code> desde un script.</li>
+  <li><strong>Fallos corregidos</strong>: pruebas con <code>co_await</code> que no se ejecutaban, coordenadas del MCP con origen
+    flotante, editor a 10 FPS en Play sin foco, coste de la sonda de reflexión, consola en modo edición, NaN de la niebla, nubes
+    desde dentro de la capa, escalón entre teselas al esculpir, pausa que destruía personajes, referencias al duplicar y pegar,
+    IDs repetidos de la interfaz y más.</li>
+</ul>
+<pre><code class="language-cpp">WsClient ws_;   // miembro del script
+
+void start() override {
+    ws_.connect(Value{{"url", "wss://juego.miservidor.com/ws"}, {"name", "mmo"}});
+    ws_.onMessage([](const Value&amp; ev) { Debug::log(ev["text"].asString()); });
+    ws_.send("hola");
+}</code></pre>
+<p>Ver el <a href="https://github.com/MantraxStudios/Cramion/blob/main/CHANGELOG.md">registro de cambios</a> completo.</p>
+
 <h3 id="v246">2.4.6: mundos de 12 a 16 km</h3>
 <ul>
   <li><strong>Terreno grande por teselas</strong> (<code>TerrainGrid</code>): un mundo de 12 × 12 km con 1,5 m por vértice,

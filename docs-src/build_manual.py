@@ -3,7 +3,7 @@
 #   docs-src/pages/*.html   el contenido de cada pagina (HTML con h3, p, table, pre...)
 # Uso: python docs-src/build_manual.py
 # Cada pagina sale con el menu lateral, el buscador (docs/manual/search.js),
-# el estilo de docs-src/manual.css (shadcn/ui, sin compilar), modo claro/oscuro,
+# el estilo de docs-src/manual.css (colores del editor, sin compilar), modo claro/oscuro,
 # "En esta pagina", anterior/siguiente, donaciones y el boton de copiar en el codigo.
 import html
 import json
@@ -111,7 +111,8 @@ with open(os.path.join(OUT, "search.js"), "w", encoding="utf-8", newline="\n") a
     f.write("window.CRAMION_SEARCH = " + json.dumps(search, ensure_ascii=False) + ";\n")
 
 # --- Plantilla ---------------------------------------------------------------------
-# Estilo shadcn/ui en CSS propio (docs-src/manual.css, se copia a docs/manual/):
+# Colores del editor en CSS propio (docs-src/manual.css, se copia a docs/manual/;
+# el resaltado del codigo tambien va ahi, sin tema externo de highlight.js):
 # cabecera con buscador tipo Command (Ctrl+K o /), menu lateral que en el movil es
 # un panel deslizante, "En esta pagina", tarjeta de donacion y modo claro/oscuro.
 import shutil
@@ -146,7 +147,7 @@ HEAD = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title}</title>
   <meta name="description" content="{desc}">
-  <meta name="theme-color" content="#09090b">
+  <meta name="theme-color" content="#232323">
   <link rel="icon" href="../img/icon.png">
   <script>
     // Tema antes de pintar (sin parpadeo). Oscuro por defecto.
@@ -154,8 +155,7 @@ HEAD = """<!doctype html>
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="manual.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
@@ -165,12 +165,17 @@ HEAD = """<!doctype html>
 </head>
 <body>
 """
+# La hoja con su huella: un navegador con la manual.css vieja en cache no la
+# mezcla con las paginas nuevas (el logo salia gigante sin sus estilos).
+import hashlib  # noqa: E402
+with open(os.path.join(HERE, "manual.css"), "rb") as _css:
+    HEAD = HEAD.replace('href="manual.css"', 'href="manual.css?v=' + hashlib.md5(_css.read()).hexdigest()[:10] + '"')
 
 HEADER = f"""
   <header class="site-header">
     <div class="header-inner">
       <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú">{icon("menu")}</button>
-      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span><span class="tag">Docs</span></a>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">{{version}}</span></a>
       <nav class="main-nav" aria-label="Secciones">
         <a href="index.html" data-nav="index">Documentación</a>
         <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
@@ -190,6 +195,7 @@ HEADER = f"""
         <a href="{DONATE}" target="_blank" rel="noopener" class="icon-btn only-mobile" aria-label="Donar con PayPal" title="Donar">{icon("heart")}</a>
       </div>
     </div>
+    <div class="read-progress" id="read-progress" aria-hidden="true"></div>
   </header>
   <div class="overlay" id="overlay"></div>
 """
@@ -208,7 +214,7 @@ SEARCH_DIALOG = f"""
 FOOTER = f"""
   <footer class="site-footer">
     <div class="footer-inner">
-      <span>Cramion Engine · manual de la {{version}}. Gratis para hacer y vender tus juegos.</span>
+      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la {{version}}. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="licencia.html">Licencia</a>
@@ -243,7 +249,7 @@ VERSION = read_version()
 
 
 def sidebar(current):
-    out = [f'<div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span></a>'
+    out = [f'<div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span></a>'
            f'<button id="menu-close" class="icon-btn" aria-label="Cerrar el menú">{icon("x")}</button></div>']
     out.append('<div class="group"><p class="group-title">' + icon("home") + 'Inicio</p>'
                + '<a href="index.html"{}>Introducción</a>'.format(' class="active" aria-current="page"' if current == "index" else "")
@@ -342,6 +348,15 @@ SCRIPT = """
       document.querySelectorAll(".toc-inline a").forEach(a => a.addEventListener("click", () => a.closest("details").open = false));
     }
 
+    // Barra de lectura bajo la cabecera.
+    const bar = document.getElementById("read-progress");
+    const onScroll = () => {
+      const h = document.documentElement.scrollHeight - innerHeight;
+      bar.style.width = (h > 0 ? Math.min(100, scrollY / h * 100) : 0) + "%";
+    };
+    addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+
     // Buscador (Command): titulos, secciones y nombres de la API.
     const cmd = document.getElementById("cmd");
     const input = document.getElementById("search");
@@ -424,7 +439,8 @@ def layout(current, main_html, with_onpage=True):
 
 def write(name, title, desc, body, group="index"):
     text = (HEAD.format(title=html.escape(title), desc=html.escape(desc))
-            + HEADER + SEARCH_DIALOG + body + FOOTER.replace("{version}", VERSION or "última versión") + SCRIPT)
+            + HEADER.replace("{version}", ("v" + VERSION) if VERSION else "") + SEARCH_DIALOG + body
+            + FOOTER.replace("{version}", VERSION or "última versión") + SCRIPT)
     text = text.replace("<body>", f'<body data-group="{html.escape(group)}">', 1)
     with open(os.path.join(OUT, name), "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
@@ -495,7 +511,7 @@ hub_main = f"""
     <main class="doc">
       <div class="doc-inner" style="max-width: 1040px">
         <section class="hero">
-          <a class="badge" href="editor-interfaz.html"><b>Nuevo en la {VERSION}</b> Interfaz como Blender, texturas comprimidas y scripts en C++ {icon("arrow")}</a>
+          <a class="badge" href="novedades-24.html#v248"><b>Nuevo en la {VERSION}</b> Blueprints de actor, cliente WebSocket, hierba realista y streaming en otros hilos {icon("arrow")}</a>
           <h1>Documentación de Cramion</h1>
           <div class="intro">{intro_html}</div>
           <div class="actions">

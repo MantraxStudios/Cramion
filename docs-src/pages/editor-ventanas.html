@@ -70,7 +70,10 @@
   Todo lo que escriben el motor y los scripts: <code>Debug::log</code>, <code>Debug::warning</code>,
   <code>Debug::error</code> y los fallos de los scripts (con el archivo y la línea). Filtro de texto, <em>Limpiar</em> y
   <em>Auto-desplazar</em>. En la pestaña de un script hay además la <strong>Consola C++</strong>: los errores de compilación (doble
-  clic va a la línea) y una línea de comandos para CVars o llamadas a la API (en Play, dentro del juego).
+  clic va a la línea) y una línea de comandos para CVars o llamadas a la API (en Play, dentro del juego). Fuera de Play
+  trabaja sobre la escena del editor: <code>Scene.destroy(e)</code> borra al terminar el comando,
+  <code>e.parent = grupo</code> emparenta conservando la posición en el mundo (<code>nil</code> = a la raíz) y el cambio se
+  puede deshacer.
 </p>
 
 <h3 id="estadisticas">Estadísticas</h3>

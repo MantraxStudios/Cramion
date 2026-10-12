@@ -3,6 +3,7 @@
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/environment/Environment.h"
+#include "SerializerInternal.h"
 
 #include <array>
 
@@ -456,6 +457,11 @@ void BoneSocket::reflect(PropertyVisitor& v) {
     if (v.wantsAllFields() || mode == SocketMode::Drive) {
         v.field({"drive_position", "Mover tambien la posicion"}, drive_position);
         v.field({"weight", "Peso"}, weight, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+    }
+    // Solo se escribe si esta puesto: los sockets de antes se guardan igual y
+    // sus instancias no ganan un cambio propio por una clave nueva.
+    if (bone_object || dynamic_cast<detail::JsonWriter*>(&v) == nullptr) {
+        v.field({"bone_object", "Hueso del esqueleto", "Objeto de un hueso del modelo (Huesos como objetos)"}, bone_object);
     }
 }
 

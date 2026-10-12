@@ -194,6 +194,8 @@ public:
         auto r = detail::rpc(cppproto::Rpc::Parent, w);
         return Entity(r.u64());
     }
+    /// Lo pone como hijo de p conservando su posicion en el mundo (Entity{} = a la raiz).
+    void setParent(const Entity& p) const { set("parent", p.id() != 0 ? Value(p) : Value()); }
     /// Lo borra de la escena (al final del frame).
     void destroy() const {
         cppproto::Writer w;
@@ -949,9 +951,14 @@ public:
     virtual void onNetVar(const std::string& /*key*/, const Value& /*value*/) {}
     /// Recarga en caliente (guardaste el .cpp en Play): lo que devuelvas aqui llega a onAfterReload
     /// de la instancia nueva. Las Property<T> se conservan solas; guarda aqui el resto (variables privadas).
+    /// Las corrutinas vivas (co_await) NO se conservan: su trama y su codigo son de la DLL anterior.
+    /// Guarda aqui su progreso (paso del recorrido, tiempo que falta...) para retomarlo despues.
     virtual Value onBeforeReload() { return {}; }
     /// Recarga en caliente: la instancia nueva ya tiene sus Property<T>; no se llama awake() ni start().
-    /// Vuelve a registrar aqui los callbacks (Input.bindAction, Network.on...) del proceso anterior.
+    /// Vuelve a registrar aqui los callbacks (Input.bindAction, Network.on...) del proceso anterior
+    /// y vuelve a lanzar las corrutinas que tenias (empiezan de cero: usa el progreso de onBeforeReload).
+    /// Conexiones WebSocket: siguen abiertas, pero sus escuchas se pierden; guarda el nombre y usa
+    /// WsClient::attach(nombre) aqui (y vuelve a poner onMessage...).
     virtual void onAfterReload(const Value& /*state*/) {}
     /// Que hacer con un mensaje (en el constructor o en awake):
     /// on("OnJugar", [this](const Value&) { Scene::load("Nivel1"); });
@@ -1006,3 +1013,4 @@ struct Registrar {
 
 // Toda la API del motor (Audio, UI, Navigation, Network...) en C++.
 #include "Api.gen.h"
+#include "WsClient.h"

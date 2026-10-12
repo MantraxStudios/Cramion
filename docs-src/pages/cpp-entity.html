@@ -30,6 +30,7 @@
     <tr><td><code>bool active() const</code></td><td>Esta activo en la escena.</td></tr>
     <tr><td><code>void setActive(bool on) const</code></td><td>Activa o desactiva el objeto (y sus hijos).</td></tr>
     <tr><td><code>Entity parent() const</code></td><td>Su padre en la Jerarquia (no valida si no tiene).</td></tr>
+    <tr><td><code>void setParent(const Entity&amp; p) const</code></td><td>Lo pone como hijo de p conservando su posicion en el mundo (Entity{} = a la raiz).</td></tr>
     <tr><td><code>void destroy() const</code></td><td>Lo borra de la escena (al final del frame).</td></tr>
     <tr><td><code>bool has(std::string_view component) const</code></td><td>Tiene ese componente (&quot;Light&quot;, &quot;Rigidbody&quot;, &quot;AudioSource&quot;...).</td></tr>
     <tr><td><code>bool add(std::string_view component) const</code></td><td>Le pone un componente por su nombre.</td></tr>

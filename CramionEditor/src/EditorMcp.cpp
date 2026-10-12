@@ -100,6 +100,27 @@ Vec3 readVec(const json& j, const char* key, const Vec3& fallback) {
     return Vec3{(*it)[0].get<float>(), (*it)[1].get<float>(), (*it)[2].get<float>()};
 }
 
+// Origen flotante: las posiciones del mundo que usan las herramientas son
+// LOCALES (relativas a world.origin(); absoluta = origen + local). Con
+// "absolute": true en los argumentos, la posicion se lee como absoluta (en
+// doble precision) y se pasa a local con world.local().
+bool wantsAbsolute(const json& args) {
+    const auto it = args.find("absolute");
+    return it != args.end() && it->is_boolean() && it->get<bool>();
+}
+
+Vec3 readPosition(const json& args, const char* key, const Vec3& fallback, const ecs::World& world) {
+    if (!wantsAbsolute(args)) return readVec(args, key, fallback);
+    const auto it = args.find(key);
+    if (it == args.end() || !it->is_array() || it->size() < 3) return fallback;
+    return world.local(ecs::DVec3{(*it)[0].get<double>(), (*it)[1].get<double>(), (*it)[2].get<double>()});
+}
+
+json originJson(const ecs::World& world) {
+    const ecs::DVec3& o = world.origin();
+    return json::array({o.x, o.y, o.z});
+}
+
 std::string readText(const std::filesystem::path& file) {
     std::ifstream in(file, std::ios::binary);
     std::stringstream s;
@@ -125,6 +146,11 @@ json prop(const char* type, const char* description) { return json{{"type", type
 json vec3Prop(const char* description) {
     return json{{"type", "array"}, {"items", {{"type", "number"}}}, {"minItems", 3}, {"maxItems", 3}, {"description", description}};
 }
+// Parametro "absolute" de las herramientas que reciben posiciones del mundo.
+json absoluteProp() {
+    return prop("boolean", "true: las posiciones/coordenadas dadas son ABSOLUTAS y se pasan a locales con el origen "
+                           "flotante (como Scene.toLocal). Por defecto false: son LOCALES (relativas al origen actual).");
+}
 
 struct ToolDef {
     const char* name;
@@ -144,14 +170,16 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"create_project", "Crea un proyecto nuevo desde una plantilla y lo abre.", {{"name", prop("string", "Nombre del proyecto")}, {"folder", prop("string", "Carpeta donde crearlo (por defecto Documentos/Cramion Projects)")}, {"template", prop("string", "Id de la plantilla (ver list_projects); por defecto 'blank'")}}, {"name"}});
         d.push_back({"list_entities", "Arbol de la escena: cada entidad con su UUID, nombre, componentes e hijos.", {{"root", entity}, {"depth", prop("integer", "Profundidad maxima (por defecto 12)")}}, {}});
         d.push_back({"get_entity", "Todo de una entidad: transformacion y cada componente con sus campos (JSON).", {{"entity", entity}}, {"entity"}});
-        d.push_back({"create_entity", "Crea una entidad. type: empty, cube, sphere, plane, cylinder, capsule, directional_light, point_light, spot_light, camera, decal, vehicle, character (Character Controller), terrain, voxel_world, ocean, lake, river. Opcional: posicion, giro (grados), escala, padre y componentes {\"Tipo\": {campos}}.",
+        d.push_back({"create_entity", "Crea una entidad. type: empty, cube, sphere, plane, cylinder, capsule, directional_light, point_light, spot_light, camera, decal, vehicle, character (Character Controller), terrain, voxel_world, ocean, lake, river. Opcional: posicion, giro (grados), escala, padre y componentes {\"Tipo\": {campos}}. La posicion es LOCAL al origen flotante (absoluta = origen + local; el origen va en la respuesta y en editor_state); con absolute=true se da en coordenadas absolutas.",
                      {{"type", prop("string", "Que crear (por defecto empty)")}, {"name", prop("string", "Nombre")}, {"parent", entity},
-                      {"position", vec3Prop("Posicion en el mundo")}, {"rotation", vec3Prop("Giro local en grados (X, Y, Z)")}, {"scale", vec3Prop("Escala local")},
+                      {"position", vec3Prop("Posicion en el mundo (local al origen flotante salvo absolute=true)")}, {"absolute", absoluteProp()},
+                      {"rotation", vec3Prop("Giro local en grados (X, Y, Z)")}, {"scale", vec3Prop("Escala local")},
                       {"components", prop("object", "Componentes a anadir/ajustar: {\"Light\": {\"intensity\": 5}, \"Rigidbody\": {}}")}}, {}});
-        d.push_back({"modify_entity", "Cambia nombre, activo, tag, padre, posicion (mundo), posicion local, giro (grados) o escala de una entidad.",
+        d.push_back({"modify_entity", "Cambia nombre, activo, tag, padre, posicion (mundo), posicion local, giro (grados) o escala de una entidad. 'position' es del mundo pero LOCAL al origen flotante (con absolute=true, absoluta); 'local_position' es relativa al padre y no le afecta absolute.",
                      {{"entity", entity}, {"name", prop("string", "Nombre nuevo")}, {"active", prop("boolean", "Activa")}, {"tag", prop("string", "Tag")},
-                      {"parent", prop("string", "Nuevo padre (UUID/nombre; vacio = raiz)")}, {"position", vec3Prop("Posicion en el mundo")},
-                      {"local_position", vec3Prop("Posicion local")}, {"rotation", vec3Prop("Giro local en grados")}, {"scale", vec3Prop("Escala local")}}, {"entity"}});
+                      {"parent", prop("string", "Nuevo padre (UUID/nombre; vacio = raiz)")}, {"position", vec3Prop("Posicion en el mundo (local al origen flotante salvo absolute=true)")},
+                      {"absolute", absoluteProp()},
+                      {"local_position", vec3Prop("Posicion relativa al padre")}, {"rotation", vec3Prop("Giro local en grados")}, {"scale", vec3Prop("Escala local")}}, {"entity"}});
         d.push_back({"delete_entity", "Borra una entidad y sus hijos.", {{"entity", entity}}, {"entity"}});
         d.push_back({"cvar_list", "Variables de configuracion (CVars) del motor y del juego: nombre, valor, por defecto, tipo, limites y descripcion.",
                      {{"filter", prop("string", "Solo las que contengan este texto")}}, {}});
@@ -215,7 +243,7 @@ const std::vector<ToolDef>& toolDefs() {
                       {"prefabs", prop("array", "Nombres, rutas o UUID de prefabs (si no hay grupo)")}, {"align", prop("number", "0 vertical .. 1 sigue el suelo")},
                       {"scale_min", prop("number", "Escala minima (0.9)")}, {"scale_max", prop("number", "Escala maxima (1.1)")},
                       {"erase", prop("boolean", "Borrar en vez de pintar")}}, {"center"}});
-        d.push_back({"set_camera", "Coloca la camara del editor.", {{"position", vec3Prop("Posicion")}, {"target", vec3Prop("Punto al que mira")}}, {"position", "target"}});
+        d.push_back({"set_camera", "Coloca la camara del editor. position y target son LOCALES al origen flotante (ver origin en editor_state).", {{"position", vec3Prop("Posicion")}, {"target", vec3Prop("Punto al que mira")}}, {"position", "target"}});
         d.push_back({"set_weather", "Ambiente (como Enviro): cambia el clima con una transicion suave. Crea el componente Environment (con cielo fisico) si la escena no tiene. Climas: Clear, Cloudy, Overcast, Foggy, LightRain, Rain, Storm, LightSnow, Snow, Blizzard, Sandstorm (tambien en espanol).",
                      {{"weather", prop("string", "Clima (p. ej. Storm, Nieve)")}, {"seconds", prop("number", "Segundos de la transicion (0 = al instante, tambien la humedad y la nieve acumulada)")},
                       {"random", prop("boolean", "Clima al azar segun la estacion")}, {"snow_cover", prop("number", "Nieve acumulada 0..1 al instante")},
@@ -284,6 +312,8 @@ const std::vector<ToolDef>& toolDefs() {
                       {"sharpness", prop("number", "Nitidez RCAS tras el escalado (0..1)")},
                       {"shadow_resolution", prop("number", "Resolucion por cascada (0 = auto)")},
                       {"texture_max_size", prop("number", "Lado maximo de las texturas (0 = auto)")},
+                      {"texture_filtering", prop("number", "Filtrado anisotropico de las texturas: 0 = auto (segun el PC), 1 = apagado, 2, 4, 8 o 16")},
+                      {"texture_lod_bias", prop("number", "Sesgo de los mipmaps (-1..2): negativo = mas nitidas, positivo = mas suaves")},
                       {"path_tracing", prop("boolean", "Path tracing en la vista Escena (necesita trazado de rayos)")},
                       {"path_tracing_bounces", prop("number", "Rebotes del path tracing (1-16)")},
                       {"path_tracing_samples", prop("number", "Muestras maximas por pixel del path tracing")}}, {}});
@@ -295,8 +325,9 @@ const std::vector<ToolDef>& toolDefs() {
                       {"top", prop("integer", "Cuantas zonas devolver (20)")}}, {}});
         d.push_back({"import_file", "Importa un archivo del disco al proyecto (modelo .fbx/.obj/.gltf/.glb, cielo .hdr).",
                      {{"path", prop("string", "Ruta absoluta del archivo")}, {"folder", prop("string", "Subcarpeta de Assets (por defecto Models)")}}, {"path"}});
-        d.push_back({"ground_height", "Altura del suelo (terreno o lo que haya) en un punto x, z del mundo: para colocar camaras u objetos encima.",
-                     {{"x", prop("number", "X del mundo")}, {"z", prop("number", "Z del mundo")}}, {"x", "z"}});
+        d.push_back({"ground_height", "Altura del suelo (terreno o lo que haya) en un punto x, z del mundo: para colocar camaras u objetos encima. x, z e y son LOCALES al origen flotante (absoluta = origen + local); con absolute=true x, z se dan absolutas y la respuesta trae tambien y_absolute. La respuesta incluye el origen.",
+                     {{"x", prop("number", "X del mundo (local salvo absolute=true)")}, {"z", prop("number", "Z del mundo (local salvo absolute=true)")},
+                      {"absolute", absoluteProp()}}, {"x", "z"}});
         d.push_back({"fluid_create", "Crea liquidos de particulas (GameObject > Efectos > Liquidos): faucet (grifo de agua), block (bloque de agua que cae), honey (chorro de miel), lava (chorro de lava), world (Mundo de liquidos: dominio y ajustes), drain (desague) o tank (tanque de demostracion con un cubo que flota). Crea un FluidWorld si no hay (con 'Simular en el editor').",
                      {{"kind", prop("string", "faucet, block, honey, lava, world, drain o tank")}, {"position", vec3Prop("Donde (sin: delante de la camara)")},
                       {"fluid", prop("string", "Tipo del emisor: water, oil, honey, lava, mud, blood, acid, custom")},
@@ -361,7 +392,7 @@ const std::vector<ToolDef>& toolDefs() {
                       {"beach_width", prop("number", "Metros de playa")}, {"snow_line", prop("number", "0..1 altura de la nieve")},
                       {"textures", prop("boolean", "Texturas procedurales de las capas (true)")},
                       {"trees", prop("boolean", "Arboles (true)")}, {"tree_density", prop("number", "Arboles por hectarea (120)")},
-                      {"grass", prop("boolean", "Hierba en la GPU (true)")}, {"grass_density", prop("number", "Briznas por m2 (40)")}}, {}});
+                      {"grass", prop("boolean", "Hierba en la GPU (true)")}, {"grass_density", prop("number", "Briznas por m2 (500)")}}, {}});
         d.push_back({"create_model", "Crea un modelo 3D a partir de texto OBJ (y opcionalmente MTL) y lo importa como asset.",
                      {{"name", prop("string", "Nombre del modelo")}, {"obj", prop("string", "Contenido del .obj (v, vt, vn, f...)")}, {"mtl", prop("string", "Contenido del .mtl (opcional)")}}, {"name", "obj"}});
         d.push_back({"instantiate", "Pone en la escena un modelo, prefab o cielo del proyecto.",
@@ -601,6 +632,12 @@ private:
         json j = summary(e);
         j["parent"] = e.parent().valid() ? json(e.parent().uuid().toString()) : json(nullptr);
         j["local_position"] = vec(e.localPosition());
+        // "position" es local al origen flotante; si el origen se ha movido, tambien la absoluta.
+        if (a.world_.origin() != ecs::DVec3{}) {
+            const ecs::DVec3 absolute_pos = a.world_.absolute(e.worldPosition());
+            j["absolute_position"] = json::array({absolute_pos.x, absolute_pos.y, absolute_pos.z});
+            j["origin"] = originJson(a.world_);
+        }
         json components = json::object();
         for (const ecs::ComponentType& type : ecs::ComponentRegistry::instance().types()) {
             if (type.name == "EntityInfo" || !type.has(a.world_, e.handle())) continue;
@@ -707,6 +744,8 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
             json selection = json::array();
             for (const ecs::Entity e : a.selectedEntities()) selection.push_back(json{{"uuid", e.uuid().toString()}, {"name", e.name()}});
             j["selection"] = selection;
+            // Las posiciones del mundo son locales a este origen (absoluta = origin + local).
+            j["origin"] = originJson(a.world_);
             j["camera_position"] = vec(a.scene_.camera().position());
             j["camera_forward"] = vec(a.scene_.camera().forward());
         }
@@ -802,12 +841,14 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (!e.valid()) throw ToolError("no se pudo crear");
         if (args.contains("name")) e.setName(arg(args, "name"));
         if (parent.valid() && e.parent() != parent) e.setParent(parent, false);
-        if (args.contains("position")) e.setWorldPosition(readVec(args, "position", e.worldPosition()));
+        if (args.contains("position")) e.setWorldPosition(readPosition(args, "position", e.worldPosition(), a.world_));
         if (args.contains("rotation")) e.setLocalEulerDegrees(readVec(args, "rotation", {}));
         if (args.contains("scale")) e.setLocalScale(readVec(args, "scale", Vec3{1, 1, 1}));
         if (args.contains("components")) applyComponents(e, args["components"]);
         a.commit();
-        return summary(e);
+        json j = summary(e);
+        j["origin"] = originJson(a.world_);
+        return j;
     }
     if (name == "modify_entity") {
         ecs::Entity e = entity(arg(args, "entity"));
@@ -818,12 +859,14 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
             const std::string p = arg(args, "parent");
             if (!e.setParent(p.empty() ? ecs::Entity{} : entity(p), true)) throw ToolError("no se puede emparentar (crearia un ciclo)");
         }
-        if (args.contains("position")) e.setWorldPosition(readVec(args, "position", e.worldPosition()));
+        if (args.contains("position")) e.setWorldPosition(readPosition(args, "position", e.worldPosition(), a.world_));
         if (args.contains("local_position")) e.setLocalPosition(readVec(args, "local_position", e.localPosition()));
         if (args.contains("rotation")) e.setLocalEulerDegrees(readVec(args, "rotation", e.localEulerDegrees()));
         if (args.contains("scale")) e.setLocalScale(readVec(args, "scale", e.localScale()));
         a.commit();
-        return summary(e);
+        json j = summary(e);
+        j["origin"] = originJson(a.world_);
+        return j;
     }
     if (name == "delete_entity") {
         const ecs::Entity e = entity(arg(args, "entity"));
@@ -1728,6 +1771,20 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (args.contains("sharpness")) { g.sharpness = std::clamp(args["sharpness"].get<float>(), 0.0f, 1.0f); changed = true; }
         if (args.contains("shadow_resolution")) { g.shadow_resolution = args["shadow_resolution"].get<int>(); changed = true; }
         if (args.contains("texture_max_size")) { g.texture_max_size = args["texture_max_size"].get<int>(); changed = true; }
+        if (args.contains("texture_filtering")) {
+            int samples = std::clamp(args["texture_filtering"].get<int>(), 0, 16);
+            if (samples > 1) {
+                int p = 1;
+                while (p * 2 <= samples) p *= 2;  // potencias de dos (lo que dan las GPU)
+                samples = p;
+            }
+            g.texture_filtering = samples;
+            changed = true;
+        }
+        if (args.contains("texture_lod_bias")) {
+            g.texture_lod_bias = std::clamp(args["texture_lod_bias"].get<float>(), -1.0f, 2.0f);
+            changed = true;
+        }
         if (changed) {
             a.renderer_.setGraphicsSettings(g);
             a.saveGraphicsSettings();
@@ -1748,6 +1805,10 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
                                  {"bounces", a.renderer_.pathTracingBounces()}};
         j["shadow_resolution"] = a.renderer_.shadowResolution();
         j["shadow_resolution_setting"] = g.shadow_resolution;
+        j["texture_filtering_setting"] = g.texture_filtering;
+        j["texture_filtering"] = a.renderer_.textureFiltering().anisotropy;
+        j["texture_filtering_max"] = a.renderer_.maxTextureAnisotropy();
+        j["texture_lod_bias"] = g.texture_lod_bias;
         {
             static constexpr const char* kNames[] = {"off", "taa", "fsr1", "fsr3", "dlss"};
             const vk::Extent2D render = a.renderer_.renderExtent();
@@ -1833,11 +1894,22 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
                     {"path", a.assetRelative(result.info.path)}};
     }
     if (name == "ground_height") {
+        // x, z locales al origen flotante; con absolute=true, absolutas.
         float y = 0.0f;
-        const float x = args.value("x", 0.0f);
-        const float z = args.value("z", 0.0f);
-        if (!a.groundHeightAt(x, z, y)) return json{{"found", false}};
-        return json{{"found", true}, {"y", y}};
+        const bool absolute = wantsAbsolute(args);
+        float x = args.value("x", 0.0f);
+        float z = args.value("z", 0.0f);
+        if (absolute) {
+            const Vec3 local = a.world_.local(ecs::DVec3{args.value("x", 0.0), 0.0, args.value("z", 0.0)});
+            x = local.x;
+            z = local.z;
+        }
+        json j{{"found", false}, {"x", x}, {"z", z}, {"origin", originJson(a.world_)}};
+        if (!a.groundHeightAt(x, z, y)) return j;
+        j["found"] = true;
+        j["y"] = y;
+        if (absolute) j["y_absolute"] = a.world_.origin().y + static_cast<double>(y);
+        return j;
     }
     if (name == "fluid_create") {
         static const std::map<std::string, int> kinds = {{"faucet", 0}, {"block", 1}, {"honey", 2}, {"lava", 3},
@@ -2065,7 +2137,7 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         a.terrain_gen_trees_ = args.value("trees", a.terrain_gen_trees_);
         number("tree_density", a.terrain_gen_tree_density_, 1.0f, 2000.0f);
         a.terrain_gen_grass_ = args.value("grass", a.terrain_gen_grass_);
-        number("grass_density", a.terrain_gen_grass_density_, 1.0f, 400.0f);
+        number("grass_density", a.terrain_gen_grass_density_, 1.0f, 2000.0f);
         if (args.contains("houses") && args["houses"].is_number_integer()) {
             a.terrain_gen_houses_ = std::clamp(args["houses"].get<int>(), 0, 60);
         }
@@ -2487,6 +2559,7 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
     if (name == "run_console") {
         std::string out;
         const bool ok = a.scripts_.run(arg(args, "code"), &out, &a.world_);
+        a.commit();  // fuera de Play, lo que cambio (destroy, parent...) se puede deshacer
         if (!ok) throw ToolError("error: " + out);
         return json{{"result", out}};
     }
@@ -2554,7 +2627,10 @@ std::string EditorApp::handleMcp(const std::string& body) {
                                     {"capabilities", {{"tools", {{"listChanged", false}}}}},
                                     {"serverInfo", {{"name", "cramion-editor"}, {"version", "0.6.0"}}},
                                     {"instructions", "Editor del motor Cramion. Llama a la herramienta 'help' para la guia y a "
-                                                     "'editor_state' para ver que hay abierto."}}}};
+                                                     "'editor_state' para ver que hay abierto. Las posiciones del mundo que "
+                                                     "reciben y devuelven las herramientas son LOCALES al origen flotante "
+                                                     "(absoluta = origin + local; origin en editor_state). create_entity, "
+                                                     "modify_entity y ground_height aceptan absolute=true."}}}};
         }
         if (method == "ping") return json{{"jsonrpc", "2.0"}, {"id", id}, {"result", json::object()}};
         if (method == "tools/list") {

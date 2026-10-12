@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Cramion
-    VERSION 2.4.6
+    VERSION 2.4.8
     DESCRIPTION "Motor con capa de plataforma DirectX 12 (CramionDM) y renderizador Vulkan (CramionFX)"
     LANGUAGES CXX
 )
@@ -21,10 +21,23 @@ endif()
 # C: miniaudio (el audio de CramionCore) y zstd.
 enable_language(C)
 set(CRAMION_ICON_RC "${CMAKE_CURRENT_SOURCE_DIR}/assets/cramion.rc")
+# assets/ no esta en el repositorio (.gitignore): sin cramion.rc o sin icon.ico
+# se usa un .rc vacio y los .exe salen sin icono en vez de fallar al configurar.
+if(NOT EXISTS "${CRAMION_ICON_RC}" OR NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.ico")
+    message(WARNING "Cramion: falta assets/cramion.rc o assets/icon.ico; los ejecutables "
+                    "se compilan sin icono (ver README.md, seccion Requisitos).")
+    set(CRAMION_ICON_RC "${CMAKE_CURRENT_BINARY_DIR}/cramion_sin_icono.rc")
+    if(NOT EXISTS "${CRAMION_ICON_RC}")
+        file(WRITE "${CRAMION_ICON_RC}" "// Sin assets/icon.ico: ejecutables sin icono.\n")
+    endif()
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# El motor no usa modulos de C++20: sin esto CMake >= 3.28 busca clang-scan-deps,
+# que el Clang de Visual Studio no siempre trae. Se fija antes de crear los targets.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

@@ -12,9 +12,40 @@
 // oclusion de la copa, calculada en TreeGenerator, va en el alfa del color).
 // La corteza lleva su normal map (base tangente de las derivadas), su
 // rugosidad, musgo arriba y en el pie, o el pie oscuro y agrietado del abedul.
+//
+// Para que la copa se lea como un volumen y no como tarjetas de papel:
+//   - La normal de la hoja es la de la copa mezclada con la de la tarjeta
+//     (TreeGenerator); la cara que se ve sale del sentido del triangulo
+//     (gl_FrontFacing), no de esa normal doblada, y en el enves solo se da la
+//     vuelta la parte de la tarjeta (la de la copa se conserva).
+//   - Cada hoja de la textura lleva su propia inclinacion en el normal map.
+//   - Auto-sombra del sol dentro de la copa (surface_sun_shadow), mas fuerte
+//     lejos, donde ya no llega el mapa de sombras.
+//   - Variacion de color por zonas de la copa y borde de la hoja con un alfa
+//     con ruido (el TAA lo funde: sin escalones en el recorte).
+
+layout(set = 0, binding = 0) uniform CameraBuffer {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    vec4 position;
+    mat4 unjittered_view_projection;
+    mat4 previous_view_projection;
+    vec4 jitter;
+    uvec4 motion;
+} camera;
 
 layout(set = 1, binding = 2) uniform sampler2DArray tree_albedo;
 layout(set = 1, binding = 3) uniform sampler2DArray tree_normal;
+
+// Igual que en foliage.vert (DrawPush de FoliagePass, 112 bytes).
+layout(push_constant) uniform FoliagePush {
+    mat4 light_view_projection;
+    vec4 params;  // x segundos, y sombra (0/1), z viento, w segundos del frame anterior
+    vec4 offset;  // xyz origen flotante, w alfa con ruido en las hojas (0/1)
+    vec4 sun;     // xyz hacia el sol (mundo), w distancia de las sombras (0 = sin sombras)
+} push;
 
 layout(location = 0) in vec3 v_world_position;
 layout(location = 1) in vec3 v_normal;
@@ -26,6 +57,7 @@ layout(location = 6) in float v_leaf;
 layout(location = 7) in float v_extra;  // corteza: musgo / pie oscuro del abedul; hoja: translucidez
 layout(location = 8) in vec3 v_to_camera;
 layout(location = 9) in float v_young;  // corteza joven (TreeGenerator): lisa; en el pino, anaranjada
+layout(location = 10) in float v_crown_sun;  // hoja: luz del sol que entra en la copa (1 = toda)
 
 #include "gbuffer_surface.glsl"
 
@@ -41,13 +73,50 @@ const int kLayerWillowLeaves = 7;
 const int kLayerFirNeedles = 8;
 const int kLayerPineShoot = 10;
 
+// Que cara de la hoja es la "frontal" de Vulkan (gl_FrontFacing). Las
+// tarjetas (TreeGenerator: emitCard y las frondas de la palmera) van en el
+// orden {p0, p0 + 1, p1} = (+lado, +direccion): la normal geometrica del
+// triangulo es -face (el enves). La proyeccion lleva la Y invertida
+// (core::perspective, m[1][1] = -f) y el viewport es positivo, asi que la
+// imagen no sale espejada: con frontFace CCW (el de por defecto) es frontal
+// la cara hacia la que apunta la normal geometrica, el enves. Por eso la haz
+// (face) NO es la frontal. Si alguna vez la copa se ve con el enves por
+// fuera, se cambia esta constante.
+const bool kLeafFrontIsFace = false;
+
+// Mate: una hoja de verdad tiene poco brillo (cuticula fina) salvo con el
+// sol rasante; con 0.4 la copa entera brillaba como plastico.
 float leafRoughness(int layer) {
-    if (layer == kLayerLeaves) return 0.42;        // roble: haz cerosa
-    if (layer == kLayerFrond) return 0.38;         // palmera: muy brillante
-    if (layer == kLayerBirchLeaves) return 0.48;
-    if (layer == kLayerWillowLeaves) return 0.5;
-    if (layer == kLayerNeedles || layer == kLayerFirNeedles || layer == kLayerPineShoot) return 0.46;
-    return 0.5;
+    if (layer == kLayerLeaves) return 0.55;        // roble
+    if (layer == kLayerFrond) return 0.5;          // palmera: la mas brillante
+    if (layer == kLayerBirchLeaves) return 0.58;
+    if (layer == kLayerWillowLeaves) return 0.6;
+    if (layer == kLayerNeedles || layer == kLayerFirNeedles || layer == kLayerPineShoot) return 0.6;
+    return 0.6;
+}
+
+// Ruido de valor 2D (manchas de color de la copa).
+float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+float valueNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Ruido de gradiente entrelazado (Jimenez 2014): uniforme en pantalla y el
+// TAA lo funde (con el jitter cambia cada frame).
+float interleavedNoise(vec2 pixel) {
+    return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
 }
 
 void main() {
@@ -55,33 +124,51 @@ void main() {
     vec4 maps = texture(tree_normal, v_uv_layer);
     bool leaf = v_leaf > 0.5;
     int layer = int(v_uv_layer.z + 0.5);
-    bool cut_out = leaf && texel.a < 0.5;
+    // Recorte con un umbral con ruido (alfa "hashed"): el borde de la hoja
+    // sale suave tras el TAA. En el nivel Bajo (offset.w = 0), 0.5 fijo. Las
+    // sombras (foliage_shadow.frag) recortan siempre en 0.5.
+    vec2 noise_pixel = gl_FragCoord.xy + camera.jitter.xy * 4096.0;
+    float alpha_noise = interleavedNoise(noise_pixel);
+    float alpha_cut = push.offset.w > 0.5 ? mix(0.35, 0.65, alpha_noise) : 0.5;
+    bool cut_out = leaf && texel.a < alpha_cut;
 
-    // La corteza es un tubo cerrado: su normal de vertice ya mira hacia fuera
-    // (no se usa gl_FrontFacing: el orden de los triangulos del tubo no es el
-    // "frontal" de Vulkan y la normal quedaba hacia dentro = tronco negro).
-    // Las hojas son de dos caras: si se ve la de atras (la normal no mira a
-    // la camara), se da la vuelta. Asi no depende del orden de los vertices.
-    vec3 n = normalize(v_normal);
-    vec3 view = normalize(v_to_camera);
-    bool back_side = leaf && dot(n, view) < 0.0;
-    if (back_side) n = -n;
-
-    // Normal map con una base tangente de las derivadas (Schuler 2006): sin
-    // tangentes en los vertices. Las derivadas fuera de los if (flujo uniforme).
+    // Derivadas fuera de los if (flujo uniforme): la base tangente del normal
+    // map (Schuler 2006, sin tangentes en los vertices) y la cara real.
     vec3 dp1 = dFdx(v_world_position);
     vec3 dp2 = dFdy(v_world_position);
     vec2 duv1 = dFdx(v_uv_layer.xy);
     vec2 duv2 = dFdy(v_uv_layer.xy);
-    vec3 dp2perp = cross(dp2, n);
-    vec3 dp1perp = cross(n, dp1);
+
+    // La corteza es un tubo cerrado: su normal de vertice ya mira hacia fuera
+    // (no se usa gl_FrontFacing: el orden de los triangulos del tubo no es el
+    // "frontal" de Vulkan y la normal quedaba hacia dentro = tronco negro).
+    // Las hojas son de dos caras. Su normal de vertice es 0.4 tarjeta + 0.6
+    // copa: mirar si apunta a la camara decia "enves" en media copa aunque se
+    // viera la haz (y al reves). La cara vista sale del orden de los
+    // triangulos (kLeafFrontIsFace); en el enves solo se refleja la parte de
+    // la tarjeta (2 x 0.4 de la cara, que alli es -g) y la de la copa sigue.
+    vec3 n = normalize(v_normal);
+    vec3 view = normalize(v_to_camera);
+    vec3 g = cross(dp1, dp2);
+    g = dot(g, g) > 1e-20 ? normalize(g) : n;
+    if (dot(g, view) < 0.0) g = -g;  // la cara que se ve
+    bool back_side = leaf && (gl_FrontFacing != kLeafFrontIsFace);
+    if (back_side) n = normalize(n + 0.8 * g);
+    // En la hoja la base tangente se hace sobre la cara vista (g): la normal
+    // doblada hacia la copa puede quedar casi en el plano de la tarjeta y la
+    // base salia degenerada. El relieve (lo que el mapa aparta de la cara) se
+    // suma despues a la normal de la copa.
+    vec3 frame_n = leaf ? g : n;
+    vec3 dp2perp = cross(dp2, frame_n);
+    vec3 dp1perp = cross(frame_n, dp1);
     vec3 t = dp2perp * duv1.x + dp1perp * duv2.x;
     vec3 b = dp2perp * duv1.y + dp1perp * duv2.y;
     float invmax = inversesqrt(max(max(dot(t, t), dot(b, b)), 1e-20));
+    // Hoja: nervios e inclinacion propia de cada hoja (TreeGenerator), enteros.
     vec2 txy = maps.rg * 2.0 - 1.0;
-    if (leaf) txy *= 0.75;  // hoja: el relieve de los nervios, suave
     vec3 tn = vec3(txy, sqrt(max(1.0 - dot(txy, txy), 0.0)));
-    vec3 normal = normalize(mat3(t * invmax, b * invmax, n) * tn);
+    vec3 mapped = normalize(mat3(t * invmax, b * invmax, frame_n) * tn);
+    vec3 normal = leaf ? normalize(n + (mapped - frame_n)) : mapped;
     vec3 tangent_normal = normalize(tn);
 
     // Color: textura (sRGB, ya lineal al leerla; writeSurface la quiere en
@@ -92,12 +179,27 @@ void main() {
 
     if (leaf) {
         roughness = leafRoughness(layer);
+        // Variacion por zonas de la copa (mas amarilla o mas azulada) y el
+        // interior (oclusion de la copa) mas apagado y frio que el borde al sol.
+        float patch_noise = valueNoise(v_world_position.xz * 0.6 + v_world_position.y * 0.4);
+        albedo *= mix(vec3(0.9, 0.95, 1.02), vec3(1.1, 1.06, 0.9), patch_noise);
+        albedo *= mix(vec3(0.85, 0.92, 0.88), vec3(1.06, 1.06, 0.92), smoothstep(0.3, 0.9, v_color.a));
         if (back_side) {
             // Enves: mas palido, algo mas amarillo y mate.
             float luma = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
             albedo = mix(albedo, vec3(luma) * vec3(1.08, 1.1, 0.78), 0.3) * 1.12;
-            roughness = min(roughness + 0.18, 1.0);
+            roughness = min(roughness + 0.12, 1.0);
         }
+        // Auto-sombra del sol en la copa: las hojas del lado de la sombra y
+        // las de dentro. Cerca la da sobre todo el mapa de sombras (los
+        // arboles lo proyectan); lejos, o sin sombras, esto es lo unico.
+        // Con ruido antes de los 8 niveles del G-buffer (el TAA lo funde).
+        float sun_fade = push.sun.w > 0.0
+                             ? 0.3 + 0.7 * smoothstep(0.5 * push.sun.w, push.sun.w, length(v_to_camera))
+                             : 1.0;
+        float crown_shadow = mix(1.0, clamp(v_crown_sun, 0.0, 1.0), 0.85 * sun_fade);
+        float shadow_noise = interleavedNoise(noise_pixel + vec2(17.0, 59.0));
+        surface_sun_shadow = clamp(crown_shadow + (shadow_noise - 0.5) / 7.0, 0.0, 1.0);
         // Translucidez: la del mapa (los nervios y lo seco, menos) por la de la
         // tarjeta, y menos dentro de la copa (alli llega menos luz; la sombra de
         // la cara de atras ya oscurece lo tapado). Con 0.6 y 0.25 dentro, las
@@ -141,8 +243,11 @@ void main() {
         }
     }
 
+    // Reflectancia de la hoja: menos en los nervios y huecos (oclusion del
+    // mapa) y dentro de la copa (alli no llega el cielo que se reflejaria).
+    float reflectance = leaf ? 0.035 * mix(0.4, 1.0, maps.b) * mix(0.3, 1.0, v_color.a) : 0.03;
     writeSurface(vec4(clamp(albedo, 0.0, 1.0), 1.0), n, normal, tangent_normal, n, 0.0, roughness, occlusion, vec3(0.0),
-                 leaf ? 0.035 : 0.03, v_world_position);
+                 reflectance, v_world_position);
     writeVelocity(v_current_clip, v_previous_clip);
     if (cut_out) discard;
 }

@@ -1,8 +1,9 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-// Una brizna de hierba sin malla: los vertices salen de gl_VertexIndex. De
-// cerca, 7 tramos y la punta (45 vertices); de lejos, 3 tramos y la punta (21).
+// Una brizna de hierba sin malla: los vertices salen de gl_VertexIndex. Los
+// tramos de cada lista (cerca, media, lejos) los pone TerrainPass segun el
+// nivel del hardware (p. ej. 7, 3 y 1 tramos mas la punta).
 // Se curva hacia delante, se mece con el viento (rachas que recorren el campo)
 // y se aparta y se aplasta con lo que la pisa (grass_cull.comp).
 
@@ -48,6 +49,11 @@ layout(location = 2) out float v_height;   // 0 en la base, 1 en la punta
 layout(location = 3) out vec3 v_color;     // sRGB
 layout(location = 4) out vec4 v_current_clip;
 layout(location = 5) out vec4 v_previous_clip;
+layout(location = 6) out vec3 v_across;   // eje de lado a lado de la hoja (con el giro)
+layout(location = 7) out float v_side;    // -1..1 de borde a borde (el nervio en 0)
+layout(location = 8) out vec3 v_strand;   // hacia donde sube la hoja (la "hebra" del pelo)
+layout(location = 9) out float v_above;   // metros por encima de la base
+layout(location = 10) out float v_dist;   // distancia a la camara (m)
 
 // Viento: una ola que recorre el campo mas un temblor rapido por brizna.
 vec2 windOffset(vec2 xz, float phase, float seconds) {
@@ -64,7 +70,17 @@ vec3 bladePoint(GrassBlade blade, vec4 info, float t, float side, float seconds,
                 out vec3 across) {
     float yaw = info.x * 6.2831853;
     float height = info.y * grass.shape.x * 2.5 * burn_height;
-    float width = grass.shape.z * (1.0 + info.w * 2.0);
+    // Ensanche de lejos (grass_cull.comp: 1/sqrt de lo que queda, hasta 5x).
+    float width = grass.shape.z * (1.0 + info.w * 4.0);
+    // Nunca mas fina que ~3/4 de pixel: si no, de lejos parpadea y desaparece
+    // (sub-pixel). Con la posicion de la base: igual en este frame y en el
+    // anterior (los vectores de movimiento no cambian).
+    float view_distance = distance(camera.position.xyz, blade.position.xyz);
+    float pixels_high = max(camera.jitter.w, 1.0);
+    float meters_per_pixel = camera.projection[3][3] < 0.5
+                                 ? 2.0 * view_distance / (abs(camera.projection[1][1]) * pixels_high)  // perspectiva
+                                 : 2.0 / (abs(camera.projection[1][1]) * pixels_high);                // ortografica
+    width = max(width, meters_per_pixel * 0.75);
     vec3 facing = vec3(cos(yaw), 0.0, sin(yaw));
     across = vec3(-facing.z, 0.0, facing.x);
 
@@ -81,6 +97,12 @@ vec3 bladePoint(GrassBlade blade, vec4 info, float t, float side, float seconds,
     // Perfil de una hoja de verdad: estrecha en la base, lo mas ancho hacia
     // el primer cuarto y afilandose en punta.
     float w = width * (0.55 + 0.45 * smoothstep(0.0, 0.18, t)) * pow(1.0 - t, 0.9);
+    // Giro de la hoja a lo largo (cada una el suyo, y algo con el viento): de
+    // perfil y de cara en la misma brizna, como las de verdad. La inclinacion
+    // y la subida van con el `facing` sin girar.
+    float twist_seed = fract(info.x * 7.13 + info.y * 3.71);
+    float twist = ((twist_seed - 0.5) * 1.2 + sin(seconds * 3.1 + phase) * 0.35 * grass.tip_color.a) * t;
+    across = normalize(across * cos(twist) + cross(vec3(0.0, 1.0, 0.0), across) * sin(twist));
     point += across * side * w * 0.5;
     tangent_up = normalize(vec3(lean.x * 2.0 * t, up, lean.y * 2.0 * t));
     return point;
@@ -124,12 +146,12 @@ void main() {
     vec3 unused_across;
     vec3 previous = bladePoint(blade, info, t, side, grass.wind.w, unused_up, unused_across);
 
-    // Normal: la de la hoja, algo redondeada hacia los lados y hacia arriba
-    // (la hierba de verdad no es un plano: asi no se ve "de carton").
+    // Normal: solo la de la cara de la hoja. El redondeo (nervio, hacia
+    // arriba) va por pixel en grass.frag DESPUES de orientarla a la camara: si
+    // se redondeaba aqui, el gl_FrontFacing de grass.frag le daba la vuelta
+    // entera (tambien al "hacia arriba") y las caras salian una clara y otra
+    // oscura: el aspecto "de carton".
     vec3 n = normalize(cross(across, tangent_up));
-    // Hoja con el nervio central: la normal gira hacia los bordes (se ve
-    // redondeada, no un plano) y algo hacia arriba.
-    n = normalize(n + across * side * 0.65 + vec3(0.0, 0.3, 0.0));
 
     // Color. La brizna es casi toda de su color (el de la punta); el de la
     // base solo abajo: lo oscuro del pie ya lo pone la oclusion (antes el
@@ -142,7 +164,7 @@ void main() {
     vec4 look = unpackBlade(blade.look);  // x fase, y tono de la mata, z frondosa, w muerta
     float amount = clamp(grass.base_color.a * 4.0, 0.0, 2.0);  // 1 con la variacion por defecto (0.25)
     float variation = (fract(info.x * 91.7 + info.y * 13.1) - 0.5) * grass.base_color.a;
-    vec3 green = mix(grass.base_color.rgb, grass.tip_color.rgb, smoothstep(0.0, 0.45, t));
+    vec3 green = mix(grass.base_color.rgb, grass.tip_color.rgb, smoothstep(0.0, 0.8, t));
     float hue = (look.y - 0.5) * 2.0 * amount;
     green *= hue > 0.0 ? mix(vec3(1.0), vec3(1.12, 1.04, 0.7), min(hue, 1.0) * 0.7)
                        : mix(vec3(1.0), vec3(0.86, 0.98, 1.12), min(-hue, 1.0) * 0.7);
@@ -158,6 +180,11 @@ void main() {
     v_world_position = world;
     v_normal = n;
     v_height = t;
+    v_across = across;
+    v_side = side;
+    v_strand = tangent_up;
+    v_above = world.y - blade.position.y;
+    v_dist = distance(camera.position.xyz, world);
     gl_Position = camera.view_projection * vec4(world, 1.0);
     v_current_clip = camera.unjittered_view_projection * vec4(world, 1.0);
     v_previous_clip = camera.previous_view_projection * vec4(previous, 1.0);

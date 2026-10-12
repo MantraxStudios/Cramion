@@ -38,6 +38,7 @@ void registerRigApi(Runtime& rt);            // huesos, IK, ragdoll, sockets, na
 void registerInputApi(Runtime& rt);          // Input (teclas, acciones), Screen, XR
 void registerNetworkApi(Runtime& rt);        // Network y lo de red de las entidades
 void registerHttpApi(Runtime& rt);           // Http, Json
+void registerWebSocketApi(Runtime& rt);      // WebSocket, Base64
 void registerWorldApi(Runtime& rt);          // Fire, Weather / Environment, Voxel, Fluid
 void registerGraphicsApi(Runtime& rt);       // Graphics, Graphics.post
 void registerMeshApi(Runtime& rt);           // Mesh
@@ -60,6 +61,7 @@ inline void registerAll(Runtime& rt) {
     registerInputApi(rt);
     registerNetworkApi(rt);
     registerHttpApi(rt);
+    registerWebSocketApi(rt);
     registerWorldApi(rt);
     registerGraphicsApi(rt);
     registerMeshApi(rt);

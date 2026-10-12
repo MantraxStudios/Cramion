@@ -4,10 +4,21 @@
 // Hierba: cada hilo es una celda de una rejilla alrededor de la camara (fija
 // al mundo: las briznas no "nadan" al moverse). Decide si hay brizna (la capa
 // de hierba del terreno, el recorte por el frustum, menos densidad lejos) y la
-// escribe en la lista cercana (con detalle) o en la lejana (simple). Tambien
-// calcula aqui, una vez por brizna, lo que la empujan los objetos fisicos.
+// escribe en una de las tres listas: cerca (con todo el detalle), media y
+// lejos. Tambien calcula aqui, una vez por brizna, lo que la empujan los
+// objetos fisicos.
+//
+// Dos rejillas (dos despachos, `pc.ring`): la del anillo 0 es fina (la
+// densidad de cerca, briznas finas y muchas) y solo cubre hasta rings.x; la
+// del anillo 1 es gruesa (ya con la proporcion de lejos) y cubre la corona
+// hasta la distancia maxima. Con una sola rejilla fina casi todos los hilos
+// lejanos se descartaban: con la hierba densa (pelo) no salia.
 
 layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform CullPush {
+    uint ring;  // 0 = rejilla fina (cerca y media), 1 = rejilla gruesa (lejos)
+} pc;
 
 #define GRASS_SET 1
 #include "grass_common.glsl"
@@ -35,7 +46,7 @@ struct DrawArgs {
     uint first_instance;
 };
 layout(std430, set = 1, binding = 2) buffer Args {
-    DrawArgs args[2];  // 0 = cerca (con detalle), 1 = lejos
+    DrawArgs args[3];  // 0 = cerca (con detalle), 1 = media, 2 = lejos
 };
 
 float heightAt(vec2 uv) {
@@ -51,19 +62,27 @@ float layerWeight(vec2 uv, int layer) {
 }
 
 void main() {
-    uint cells = uint(grass.grid.y);
+    bool far_ring = pc.ring != 0u;
+    uint cells = uint(far_ring ? grass.rings.z : grass.grid.y);
     if (gl_GlobalInvocationID.x >= cells || gl_GlobalInvocationID.y >= cells) return;
-    float spacing = grass.grid.x;
+    float spacing = far_ring ? grass.rings.y : grass.grid.x;
+    vec2 corner = far_ring ? grass.ring_origin.xy : grass.origin.xy;
 
-    // Celda del mundo y un punto al azar dentro de ella.
-    vec2 cell = floor(grass.origin.xy / spacing) + vec2(gl_GlobalInvocationID.xy);
+    // Celda del mundo y un punto al azar dentro de ella (las del anillo 1,
+    // con otra semilla: no repiten el patron del anillo 0).
+    vec2 cell = floor(corner / spacing) + vec2(gl_GlobalInvocationID.xy);
+    if (far_ring) cell += vec2(97.0, 211.0);
     vec2 random = grassHash2(cell + grass.camera_pos.w);
     vec2 xz = (cell + random) * spacing;
+    if (far_ring) xz -= vec2(97.0, 211.0) * spacing;
 
     vec2 to_camera = xz - grass.camera_pos.xz;
     float distance_xz = length(to_camera);
     float max_distance = grass.grid.z;
+    float mid_distance = grass.rings.x;
     if (distance_xz > max_distance) return;
+    // Cada anillo, lo suyo: el 0 hasta mid_distance, el 1 la corona de fuera.
+    if (far_ring ? distance_xz < mid_distance : distance_xz > mid_distance) return;
 
     // Dentro del terreno y donde crece la hierba (su capa).
     vec2 uv = (xz - terrain.origin_size.xz) / terrain.origin_size.w;
@@ -74,9 +93,12 @@ void main() {
     float chance = grassHash(cell * 1.37 + 7.1);
     if (chance >= density) return;
 
-    // Menos briznas lejos (mas anchas, para cubrir lo mismo).
+    // Menos briznas lejos (mas anchas, para cubrir lo mismo). En el anillo 0
+    // se aclara de la densidad de cerca a la de lejos entre near y mid; el
+    // anillo 1 ya nace con la densidad de lejos (su rejilla es mas gruesa).
     float near_distance = grass.grid.w;
-    float keep = mix(1.0, 0.12, smoothstep(near_distance, max_distance, distance_xz));
+    float far_ratio = grass.ring_origin.z;
+    float keep = far_ring ? 1.0 : mix(1.0, far_ratio, smoothstep(near_distance, mid_distance, distance_xz));
     if (grassHash(cell * 2.91 + 3.3) >= keep) return;
 
     vec3 base = vec3(xz.x, terrain.origin_size.y + heightAt(uv), xz.y);
@@ -116,6 +138,9 @@ void main() {
     // Mas bajas en los bordes de la capa (transicion natural).
     height_scale *= mix(0.45, 1.0, smoothstep(0.0, 0.5, density));
     float height = grass.shape.x * max(height_scale, 0.15);
+    // Al final se desvanece bajando (en vez de un corte seco a la distancia maxima).
+    height *= 1.0 - smoothstep(grass.rings.w, max_distance, distance_xz);
+    if (height < 0.01) return;
 
     // Frustum (con margen por la altura y el viento).
     vec4 clip = grass.view_projection * vec4(base + vec3(0.0, height * 0.5, 0.0), 1.0);
@@ -147,7 +172,11 @@ void main() {
 
     float dry = grass.layers.y >= 0 ? layerWeight(uv, grass.layers.y) : 0.0;
     dry = clamp(dry + (grassHash(cell * 9.7) - 0.5) * 0.3, 0.0, 1.0);
-    float width_scale = clamp(inversesqrt(max(keep, 0.12)) / 3.0, 0.0, 1.0);  // 1/sqrt(keep), hasta 3x
+    // Ensanche que conserva la cobertura: 1/sqrt(lo que queda). Cerca es
+    // exactamente 1 (briznas finas, como pelo); en grass.vert, 1 + 4 x esto.
+    float keep_eff = far_ring ? far_ratio : keep;
+    float widen = inversesqrt(max(keep_eff, 0.04));
+    float width_scale = clamp((widen - 1.0) / 4.0, 0.0, 1.0);
     // Giro: hacia fuera de la mata (la brizna se curva hacia donde mira), con
     // algo de azar; en el centro, cualquiera.
     float away = dot(from_center, from_center) > 1e-10 ? atan(from_center.y, from_center.x) / 6.2831853 : 0.0;
@@ -159,7 +188,7 @@ void main() {
     float phase = fract(grassHash(clump_cell * 3.91 + 5.3) + grassHash(cell * 0.73) * 0.12);
     uint look = packBlade(phase, grassHash(clump_cell * 2.17 + 9.1), lush, dead);
 
-    uint list = distance_xz < near_distance ? 0u : 1u;
+    uint list = far_ring ? 2u : (distance_xz < near_distance ? 0u : 1u);
     uint index = atomicAdd(args[list].instance_count, 1u);
     uint cap = uint(grass.origin.w);
     if (index >= cap) {

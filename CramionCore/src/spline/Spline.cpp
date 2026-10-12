@@ -6,6 +6,7 @@
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/terrain/Terrain.h"
+#include "CramionCore/terrain/TerrainGrid.h"
 #include "CramionCore/terrain/TerrainTools.h"
 #include "CramionCore/water/Water.h"
 
@@ -14,6 +15,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <unordered_map>
 
 namespace cramion::spline {
@@ -568,9 +570,11 @@ std::shared_ptr<ecs::Mesh> buildExtrudeMesh(const Spline& spline, const SplineEx
 
 namespace {
 
+// El componente se apunta (no se copia: sus capas son strings). Vale mientras
+// no se anadan ni quiten componentes Terrain (se usa en el mismo frame).
 struct Ground {
     std::shared_ptr<terrain::TerrainData> data;
-    terrain::Terrain terrain;
+    const terrain::Terrain* terrain = nullptr;
     Vec3 origin;
 };
 
@@ -581,17 +585,19 @@ std::vector<Ground> grounds(ecs::World& world, terrain::TerrainStore* store) {
         const ecs::Entity e = world.wrap(handle);
         if (!e.activeInHierarchy()) continue;
         const terrain::Terrain& t = e.get<terrain::Terrain>();
-        std::shared_ptr<terrain::TerrainData> data = store->get(t);
+        // Las teselas las carga el streamer en otro hilo: solo si ya estan.
+        std::shared_ptr<terrain::TerrainData> data =
+            e.has<terrain::TerrainTile>() ? store->find(t) : store->get(t);
         if (!data) continue;
-        out.push_back({std::move(data), t, e.worldPosition()});
+        out.push_back({std::move(data), &t, e.worldPosition()});
     }
     return out;
 }
 
 bool groundHeight(const std::vector<Ground>& gs, float x, float z, float& height) {
     for (const Ground& g : gs) {
-        if (x < g.origin.x || z < g.origin.z || x > g.origin.x + g.terrain.size || z > g.origin.z + g.terrain.size) continue;
-        height = terrain::heightAt(*g.data, g.terrain, g.origin, x, z);
+        if (x < g.origin.x || z < g.origin.z || x > g.origin.x + g.terrain->size || z > g.origin.z + g.terrain->size) continue;
+        height = terrain::heightAt(*g.data, *g.terrain, g.origin, x, z);
         return true;
     }
     return false;
@@ -736,10 +742,10 @@ int applyToTerrain(ecs::World& world, const ecs::Entity& entity, terrain::Terrai
     if (ex->shape == ExtrudeShape::Rails) width += 1.6f;
     int changed = 0;
     for (const Ground& g : gs) {
-        bool any = terrain::flattenPath(*g.data, g.terrain, g.origin, pts, width, ex->terrain_blend);
-        const int layer = ex->paint_layer == -2 ? autoLayer(g.terrain, ex->shape) : ex->paint_layer;
-        if (layer >= 0 && layer < static_cast<int>(g.terrain.layers.size())) {
-            any |= terrain::paintPath(*g.data, g.terrain, g.origin, pts, width + (river ? 2.0f : 0.0f), layer,
+        bool any = terrain::flattenPath(*g.data, *g.terrain, g.origin, pts, width, ex->terrain_blend);
+        const int layer = ex->paint_layer == -2 ? autoLayer(*g.terrain, ex->shape) : ex->paint_layer;
+        if (layer >= 0 && layer < static_cast<int>(g.terrain->layers.size())) {
+            any |= terrain::paintPath(*g.data, *g.terrain, g.origin, pts, width + (river ? 2.0f : 0.0f), layer,
                                       std::max(ex->terrain_blend * 0.5f, 0.5f));
         }
         if (any) {
@@ -771,12 +777,45 @@ std::uint64_t buildKey(const Spline& s, const SplineExtrude& ex, const ecs::Enti
         const Mat4& m = e.worldMatrix();
         for (int c = 0; c < 4; ++c)
             for (int r = 0; r < 4; ++r) h = hashFloat(h, m.m[c][r]);
-        for (const Ground& g : gs) {
-            h = (h ^ g.data->version()) * 1099511628211ull;
-            h = hashFloat(h, g.origin.x);
-            h = hashFloat(h, g.origin.y);
-            h = hashFloat(h, g.origin.z);
+        // Solo los terrenos bajo la spline (su caja con margen) y su version de
+        // colision (al terminar cada trazo, no en cada toque del pincel): cargar
+        // una tesela lejana o esculpir en otro sitio no rehace la malla.
+        float min_x = std::numeric_limits<float>::max(), min_z = min_x;
+        float max_x = -min_x, max_z = -min_x;
+        float margin = 2.0f;
+        Vec3 previous{};
+        for (std::size_t i = 0; i < s.points.size(); ++i) {
+            const Vec3 w = ecs::transformPoint(m, s.points[i].position);
+            min_x = std::min(min_x, w.x);
+            max_x = std::max(max_x, w.x);
+            min_z = std::min(min_z, w.z);
+            max_z = std::max(max_z, w.z);
+            margin = std::max(margin, ex.width * std::abs(s.points[i].width) + 2.0f);
+            // La curva puede salirse un poco de los puntos entre uno y otro.
+            if (i > 0) margin = std::max(margin, 0.5f * core::length(w - previous));
+            previous = w;
         }
+        min_x -= margin;
+        min_z -= margin;
+        max_x += margin;
+        max_z += margin;
+        std::uint64_t sum = 0;  // conmutativa: el orden de los terrenos no cuenta
+        for (const Ground& g : gs) {
+            const float size = g.terrain->size;
+            if (g.origin.x > max_x || g.origin.x + size < min_x || g.origin.z > max_z || g.origin.z + size < min_z) {
+                continue;
+            }
+            std::uint64_t t = 1469598103934665603ull;
+            t = (t ^ g.data->collisionVersion()) * 1099511628211ull;
+            t = (t ^ static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(g.data.get()))) * 1099511628211ull;
+            t = hashFloat(t, g.origin.x);
+            t = hashFloat(t, g.origin.y);
+            t = hashFloat(t, g.origin.z);
+            t = hashFloat(t, size);
+            t = hashFloat(t, g.terrain->height);
+            sum += t;
+        }
+        h = (h ^ sum) * 1099511628211ull;
     }
     return h;
 }
@@ -802,7 +841,8 @@ void updateSplineMeshes(ecs::World& world, terrain::TerrainStore* terrains) {
             gs = grounds(world, terrains);
             gs_ready = true;
         }
-        const std::uint64_t key = buildKey(s, ex, e, ex.conform_to_terrain ? gs : std::vector<Ground>{});
+        static const std::vector<Ground> kNoGround;
+        const std::uint64_t key = buildKey(s, ex, e, ex.conform_to_terrain ? gs : kNoGround);
         Built& b = cache[h];
         if (ex.shape == ExtrudeShape::River) {
             if (b.key == key) continue;

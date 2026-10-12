@@ -4,14 +4,14 @@
 const int kMaxGrassInteractors = 32;
 
 struct GrassBlade {
-    vec4 position;  // xyz = base (mundo), w = uintBits: giro, altura, sequedad, anchura (8 bits cada uno)
+    vec4 position;  // xyz = base (mundo), w = uintBits: giro, altura, sequedad, ensanche (8 bits cada uno)
     vec3 push;      // xz = empuje de lo que la pisa (m), y = aplastado (0..1)
     uint look;      // 8 bits cada uno: fase del viento, tono de la mata, mancha (0 pobre, 1 frondosa), muerta
 };
 
 layout(std140, set = GRASS_SET, binding = 0) uniform GrassParams {
-    vec4 grid;         // x = separacion (m), y = celdas por lado, z = distancia maxima, w = distancia del detalle
-    vec4 origin;       // xy = esquina de la rejilla (x, z del mundo), z = umbral de la capa, w = tope por lista
+    vec4 grid;         // anillo 0: x = separacion (m), y = celdas por lado; z = distancia maxima, w = distancia del detalle
+    vec4 origin;       // xy = esquina de la rejilla del anillo 0 (x, z del mundo), z = umbral de la capa, w = tope por lista
     vec4 shape;        // x = altura (m), y = variacion, z = anchura (m), w = curvatura
     vec4 base_color;   // rgb (sRGB), a = variacion de color
     vec4 tip_color;    // rgb, a = viento
@@ -21,6 +21,9 @@ layout(std140, set = GRASS_SET, binding = 0) uniform GrassParams {
     ivec4 layers;      // x = capa donde crece, y = capa seca (-1 = ninguna), z = interactores, w = 0
     mat4 view_projection;
     vec4 interactors[kMaxGrassInteractors];  // xyz = centro, w = radio
+    vec4 sun;          // xyz = hacia el sol, w = extincion del cesped (1/m): auto-sombra y oclusion
+    vec4 rings;        // x = fin del anillo 0 (m), y = separacion del anillo 1, z = celdas del anillo 1, w = empieza a desvanecerse
+    vec4 ring_origin;  // xy = esquina de la rejilla del anillo 1, z = proporcion que queda lejos, w = 0
 } grass;
 
 float grassHash(vec2 p) {

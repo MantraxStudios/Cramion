@@ -29,6 +29,17 @@ namespace cramion::editor {
 
 namespace {
 
+// ecs::isBlueprint con cache por texto (la insignia "BP" se pinta cada frame y
+// un Blueprint con muchos objetos es un JSON grande de leer).
+bool cachedIsBlueprint(const std::string& prefab_text) {
+    if (prefab_text.find("\"blueprint\"") == std::string::npos) return false;
+    static std::unordered_map<std::size_t, bool> cache;
+    const std::size_t key = std::hash<std::string>{}(prefab_text);
+    if (const auto it = cache.find(key); it != cache.end()) return it->second;
+    if (cache.size() > 512) cache.clear();
+    return cache.emplace(key, ecs::isBlueprint(prefab_text)).first->second;
+}
+
 std::string lower(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -161,7 +172,7 @@ void EditorApp::rebuildBrowserCache() {
         for (const auto& entry : std::filesystem::directory_iterator(current_folder_, error)) {
             if (!entry.is_regular_file(error)) continue;
             if (isDecalImage(entry.path())) current_images_.push_back(entry.path());
-            std::string ext = entry.path().extension().string();
+            std::string ext = dialogs::utf8(entry.path().extension());
             std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp") {
                 current_scripts_.push_back(entry.path());
@@ -306,9 +317,12 @@ void EditorApp::drawFolderNode(std::size_t index) {
     if (index == 0) flags |= ImGuiTreeNodeFlags_DefaultOpen;
     // La carpeta actual deja sus padres abiertos.
     if (!current_folder_.empty() && node.path != current_folder_) {
-        const std::string mine = node.path.string();
-        const std::string current = current_folder_.string();
-        if (current.size() > mine.size() && current.compare(0, mine.size(), mine) == 0) {
+        // UTF-8 (path::string() lanza con nombres fuera de la pagina ANSI) y
+        // con separador detras: "Assets/Arbol" no es padre de "Assets/Arboles".
+        const std::string mine = dialogs::utf8(node.path);
+        const std::string current = dialogs::utf8(current_folder_);
+        if (current.size() > mine.size() && current.compare(0, mine.size(), mine) == 0 &&
+            (current[mine.size()] == '\\' || current[mine.size()] == '/')) {
             ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         }
     }
@@ -416,7 +430,7 @@ void EditorApp::buildBrowserItems() {
                  !error && it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
                 if (!it->is_regular_file(error)) continue;
                 const std::filesystem::path& p = it->path();
-                std::string ext = lower(p.extension().string());
+                std::string ext = lower(dialogs::utf8(p.extension()));
                 if (isDecalImage(p)) browser_all_loose_.push_back(file_item(p, Kind::Image, "Textura"));
                 else if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp") {
                     browser_all_loose_.push_back(file_item(p, Kind::Script, "Script C++"));
@@ -465,7 +479,7 @@ void EditorApp::buildBrowserItems() {
             browser_items_.push_back(file_item(p, Kind::Script, "Script C++"));
         }
         for (const std::filesystem::path& p : current_shaders_) {
-            browser_items_.push_back(file_item(p, Kind::Shader, graphFileLabel(lower(p.extension().string()))));
+            browser_items_.push_back(file_item(p, Kind::Shader, graphFileLabel(lower(dialogs::utf8(p.extension())))));
         }
         for (const std::filesystem::path& p : current_audio_) browser_items_.push_back(file_item(p, Kind::Audio, "Audio"));
     }
@@ -535,8 +549,11 @@ void EditorApp::openBrowserItem(const BrowserItem& item) {
     const assets::AssetInfo& info = item.info;
     switch (info.type) {
         case assets::AssetType::Scene: runOrAskToSave(PendingAction::OpenScene, info.path); break;
-        case assets::AssetType::Model: instantiateAsset(info.uuid, {}, std::nullopt); break;
-        case assets::AssetType::Prefab: openPrefabWorkspace(info.uuid); break;  // como Unity: modo prefab
+        // Como Unreal: doble clic en un modelo pregunta por un Blueprint de actor
+        // (el modal tambien tiene "Solo ponerlo en la escena"; arrastrarlo sigue igual).
+        case assets::AssetType::Model: requestNewBlueprint(info.uuid, info.type, info.name); break;
+        // Como Unity: modo prefab (un Blueprint abre su pestana Blueprint).
+        case assets::AssetType::Prefab: openPrefabWorkspace(info.uuid); break;
         case assets::AssetType::Environment: assignEnvironment(info.uuid); break;
         case assets::AssetType::AnimatorController: openAnimatorEditor(info.uuid); break;
         case assets::AssetType::StateMachine: openStateMachineEditor(info.uuid); break;
@@ -619,7 +636,7 @@ bool EditorApp::acceptBrowserMove(const std::filesystem::path& folder) {
     }
     for (const char* type : {kImagePayload, kScriptPayload, kAudioPayload, kFolderPayload}) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(type)) {
-            moveBrowserItems(folder, dialogs::fromUtf8(static_cast<const char*>(payload->Data)).string());
+            moveBrowserItems(folder, dialogs::utf8(dialogs::fromUtf8(static_cast<const char*>(payload->Data))));
             return true;
         }
     }
@@ -633,7 +650,7 @@ void EditorApp::moveBrowserItems(const std::filesystem::path& folder, const std:
     for (const Item& item : browser_items_) {
         if (whole_selection ? browserSelected(item) : item.key() == dragged_key) items.push_back(item);
     }
-    const std::string target = folder.lexically_normal().string();
+    const std::string target = dialogs::utf8(folder.lexically_normal());
     int moved = 0;
     int skipped = 0;
     for (const Item& item : items) {
@@ -648,7 +665,7 @@ void EditorApp::moveBrowserItems(const std::filesystem::path& folder, const std:
         }
         if (item.kind == Kind::Folder) {
             // Una carpeta no puede ir dentro de si misma.
-            const std::string self = from.lexically_normal().string();
+            const std::string self = dialogs::utf8(from.lexically_normal());
             if (target == self || (target.size() > self.size() && target.compare(0, self.size(), self) == 0 &&
                                    (target[self.size()] == '\\' || target[self.size()] == '/'))) {
                 ++skipped;
@@ -786,6 +803,11 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
                     break;
                 case assets::AssetType::Model:
                     if (ImGui::MenuItem("Poner en la escena")) instantiateAsset(info.uuid, {}, std::nullopt);
+                    if (ImGui::MenuItem("Crear Blueprint de actor...", nullptr, false, !playing())) {
+                        requestNewBlueprint(info.uuid, info.type, info.name);
+                    }
+                    ImGui::SetItemTooltip("Como Unreal: un actor con este modelo, sus componentes y su Event Graph\n"
+                                          "(Assets/Blueprints). Sus copias de la escena se actualizan al guardarlo.");
                     {
                         // Todos los modelos seleccionados (si este es uno de ellos).
                         std::vector<Uuid> models;
@@ -822,8 +844,22 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
                     }
                     break;
                 case assets::AssetType::Prefab: {
-                    if (ImGui::MenuItem("Abrir (editar)", nullptr, false, !playing())) openPrefabWorkspace(info.uuid);
+                    const bool is_blueprint = ecs::isBlueprint(prefabText(info.uuid));
+                    if (ImGui::MenuItem(is_blueprint ? "Abrir Blueprint" : "Abrir (editar)", nullptr, false, !playing())) {
+                        openPrefabWorkspace(info.uuid);  // un Blueprint va a su pestana
+                    }
                     if (ImGui::MenuItem("Poner en la escena")) instantiatePrefabAsset(info.uuid, {}, std::nullopt);
+                    if (!is_blueprint) {
+                        if (ImGui::MenuItem("Convertir en Blueprint", nullptr, false, !playing())) {
+                            convertPrefabToBlueprintAsset(info.uuid);
+                        }
+                        ImGui::SetItemTooltip("El mismo prefab pasa a ser un Blueprint de actor: se le anade un Event Graph\n"
+                                              "(.crgraph al lado) y sus instancias lo reciben.");
+                    }
+                    if (ImGui::MenuItem("Crear Blueprint de actor...", nullptr, false, !playing())) {
+                        requestNewBlueprint(info.uuid, info.type, info.name);
+                    }
+                    ImGui::SetItemTooltip("Un Blueprint nuevo (en Assets/Blueprints) con una copia de este prefab.");
                     const std::size_t count = ecs::prefabInstances(world_, info.uuid).size();
                     if (ImGui::MenuItem(("Seleccionar instancias (" + std::to_string(count) + ")").c_str(), nullptr, false, count > 0)) {
                         selectPrefabInstances(info.uuid);
@@ -835,6 +871,10 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
                     break;
                 case assets::AssetType::Material:
                     if (ImGui::MenuItem("Editar")) inspected_material_ = info.uuid;
+                    if (ImGui::MenuItem("Crear Blueprint de actor...", nullptr, false, !playing())) {
+                        requestNewBlueprint(info.uuid, info.type, info.name);
+                    }
+                    ImGui::SetItemTooltip("Un Blueprint de actor con un cubo con este material.");
                     if (ImGui::MenuItem("Asignar a la selección", nullptr, false, !selection_.empty())) {
                         bool any = false;
                         for (ecs::Entity e : selectedEntities()) any = applyMaterial(e, info.uuid, -1) || any;
@@ -1203,6 +1243,16 @@ void EditorApp::drawProject() {
                 draw->AddText(ImVec2(pos.x + (size - t.x) * 0.5f, pos.y + size * 0.78f), color, tag);
             }
         }
+        // Blueprint de actor: insignia "BP" arriba a la izquierda (como Unreal).
+        if (item.kind == Kind::Asset && item.info.type == assets::AssetType::Prefab &&
+            cachedIsBlueprint(prefabText(item.info.uuid))) {
+            const char* tag = "BP";
+            const ImVec2 t = ImGui::CalcTextSize(tag);
+            const ImVec2 tmin(pos.x + 3.0f, pos.y + 3.0f);
+            const ImVec2 tmax(tmin.x + t.x + 8.0f, tmin.y + t.y + 2.0f);
+            draw->AddRectFilled(tmin, tmax, IM_COL32(40, 100, 210, 235), 3.0f);
+            draw->AddText(ImVec2(tmin.x + 4.0f, tmin.y + 1.0f), IM_COL32(240, 245, 255, 255), tag);
+        }
         // Shader con error: marca roja.
         if (item.kind == Kind::Shader && sync_ && !sync_->surfaceShaderError(assetRelative(item.path)).empty()) {
             draw->AddCircleFilled(ImVec2(pos.x + size - 8.0f, pos.y + 8.0f), 5.0f, IM_COL32(255, 80, 80, 255));
@@ -1394,6 +1444,9 @@ void EditorApp::drawProject() {
             if (ImGui::MenuItem("Script C++")) createCppScriptAsset(target_folder, {});
             if (ImGui::MenuItem("Shader (GLSL)")) openScript(createShaderAsset(target_folder));
             if (ImGui::MenuItem("Animator")) createAnimatorAsset(target_folder);
+            if (ImGui::MenuItem("Blueprint de actor vacío", nullptr, false, !playing())) {
+                requestNewBlueprint({}, assets::AssetType::Unknown, {}, dialogs::fromUtf8(assetRelative(target_folder)));
+            }
             if (ImGui::BeginMenu("Máquina de estados (IA)")) {
                 if (ImGui::MenuItem("Vacía")) createStateMachineAsset(target_folder, false);
                 if (ImGui::MenuItem("Enemigo de ejemplo")) createStateMachineAsset(target_folder, true);
@@ -1495,7 +1548,7 @@ void EditorApp::revealInProject(const std::filesystem::path& path) {
         browser_selection_.clear();
     } else {
         navigateTo(path.parent_path());
-        std::string key = path.string();
+        std::string key = dialogs::utf8(path);
         if (database_) {
             for (const assets::AssetInfo& info : database_->all()) {
                 if (info.path == path && info.uuid.valid()) key = info.uuid.toString();

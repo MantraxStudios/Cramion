@@ -31,6 +31,7 @@
 #include "UiRenderer.h"
 
 #include <CramionCore/cvar/CVar.h>
+#include <CramionCore/jobs/JobSystem.h>
 #include <CramionCore/scripting/CppScripts.h>
 #include <CramionCore/scripting/ModEntry.h>
 #include <CramionCore/CramionCore.h>
@@ -48,6 +49,7 @@
 #include <CramionCore/lighting/ProbeBaker.h>
 #include <CramionCore/twod/System2D.h>
 #include <CramionCore/vfx/VisualEffect.h>
+#include <CramionCore/net/WebSocket.h>
 #include <CramionDM/CramionDM.h>
 #include <CramionFX/CramionFX.h>
 
@@ -177,6 +179,12 @@ bool installFromApk(const std::filesystem::path& root, std::string* error) {
     return true;
 }
 #endif
+
+// Con CRAMION_PERF_LOG=1, los frames mas lentos que esto se explican en el
+// log (como el editor), como mucho uno por segundo.
+cvar::CVar<float> g_slow_frame_ms("perf.SlowFrameMs", 150.0f,
+                                  "Frames mas lentos que esto (ms) se explican en el log (con CRAMION_PERF_LOG=1)",
+                                  cvar::Saved, 5.0f, 10000.0f);
 
 }  // namespace
 
@@ -1094,6 +1102,9 @@ int runPlayer() {
                         }
                     }
                     physics.start(world);
+                    // La colision de las teselas se prepara en otro hilo: lista
+                    // antes del primer paso (si no, el jugador cae al vacio).
+                    physics.flushPendingTerrain();
                     twod_system.start(world);  // fisica 2D del nivel
                     // La malla lista antes de que empiecen los scripts.
                     nav.waitForBuild(world, 20.0f);
@@ -1257,7 +1268,29 @@ int runPlayer() {
         float perf_seconds = 0.0f;
         int perf_frames = 0;
         prof::setLog([](const std::string& line) { std::cout << line << std::endl; });
+        // CRAMION_PERF_LOG=1: una linea por frame lento (en que se fue el tiempo).
+        const bool perf_log = [] {
+            const char* v = std::getenv("CRAMION_PERF_LOG");
+            return v != nullptr && v[0] != '\0' && v[0] != '0';
+        }();
+        double last_slow_log = -10.0;
+        double run_seconds = 0.0;
+        cvar::CVarBase* upload_mb_cvar = nullptr;
+        std::uint64_t upload_mb_version = ~0ull;
         while (!quit) {
+            const auto frame_start = std::chrono::steady_clock::now();
+            float physics_ms = 0.0f, streaming_ms = 0.0f, sync_ms = 0.0f, render_ms = 0.0f;
+            const auto ms_since = [](std::chrono::steady_clock::time_point t) {
+                return std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t).count();
+            };
+            // Bytes por frame para subir terrenos a la GPU (stream.UploadMBPerFrame).
+            if (upload_mb_cvar == nullptr) upload_mb_cvar = cvar::Registry::instance().find("stream.UploadMBPerFrame");
+            if (upload_mb_cvar != nullptr && upload_mb_cvar->version() != upload_mb_version) {
+                upload_mb_version = upload_mb_cvar->version();
+                double mb = 16.0;
+                if (!cvar::detail::parseNumber(upload_mb_cvar->toString(), mb)) mb = 16.0;
+                renderer.setTerrainUploadBudget(static_cast<std::size_t>(std::max(mb, 0.25) * 1024.0 * 1024.0));
+            }
             prof::beginFrame();
             const float clock_dt = clock.tick();  // sin recortar (el Profiler mide los frames reales)
             const float dt = std::min(clock_dt, 0.1f);
@@ -1316,8 +1349,10 @@ int runPlayer() {
                 int steps = 0;
                 {
                     CR_PROFILE_SCOPE("Fisica");
+                    const auto t = std::chrono::steady_clock::now();
                     xr_rig.updateCollisions(world);  // el Jugador VR no choca con lo que se coge
                     steps = physics.update(world, dt, true);
+                    physics_ms = ms_since(t);
                 }
                 particles.setViewer(scene.camera().position(), scene.camera().forward());
                 particles.update(world, dt, &physics);
@@ -1325,8 +1360,12 @@ int runPlayer() {
                 twod_system.update(world, dt, twod::System2D::Mode::Play);
                 fire::updateFires(world, dt, fire::FireMode::Play, &terrains);
                 spline::updateSplineFollowers(world, dt);
-                partition.update(world, scene.camera().position());
-                terrain_streamer.update(world, terrains, scene.camera().position(), true, false);
+                {
+                    const auto t = std::chrono::steady_clock::now();
+                    partition.update(world, scene.camera().position());
+                    terrain_streamer.update(world, terrains, scene.camera().position(), true, false);
+                    streaming_ms = ms_since(t);
+                }
                 crowds.update(world, dt, scene.camera().position());
                 {
                     const gameplay::AccessibilitySettings& a = gameplay::accessibility();
@@ -1380,6 +1419,7 @@ int runPlayer() {
                         voxels.shiftOrigin(*offset);
                         cinematics.shiftOrigin(*offset);
                         audio.shiftOrigin(*offset);
+                        partition.shiftOrigin(*offset);
                         scripts.shiftOrigin(*offset);
                         cpp_scripts.shiftOrigin(*offset);
                         renderer.shiftOrigin(*offset);
@@ -1440,7 +1480,9 @@ int runPlayer() {
             // Mientras carga no se sincroniza (el hilo usa el AssetManager):
             // se sigue viendo lo anterior, tapado por la pantalla de carga.
             if (loaded && !scene_loading()) {
+                const auto t = std::chrono::steady_clock::now();
                 sync.sync(world, scene, renderer, running ? dt : 0.0f, sync_options);
+                sync_ms = ms_since(t);
                 renderer.setParticles(particles.drawList(scene.camera().position()));
                 vfx_system.update(world, running ? dt : 0.0f, true, {}, renderer);
                 renderer.setSprites(twod_system.drawList(world, scene.camera().position(), scene.camera().forward()));
@@ -1450,9 +1492,31 @@ int runPlayer() {
             if (xr_rig.active()) xr_rig.renderEyes(renderer, scene);
             {
                 CR_PROFILE_SCOPE("Render (CPU)");
+                const auto t = std::chrono::steady_clock::now();
                 renderer.drawFrame(scene);
+                render_ms = ms_since(t);
             }
             if (vr) renderer.xr().endFrame();
+            run_seconds += clock_dt;
+            if (perf_log && running) {
+                const float total_ms = ms_since(frame_start);
+                if (total_ms > g_slow_frame_ms.get() && run_seconds - last_slow_log > 1.0) {
+                    last_slow_log = run_seconds;
+                    const terrain::TerrainStreamStats& ts = terrain_streamer.stats();
+                    const ecs::RenderSync::TerrainGpuStats& gs = sync.terrainGpuStats();
+                    const jobs::JobStats js = jobs::stats();
+                    char line[512];
+                    std::snprintf(line, sizeof(line),
+                                  "[Rendimiento] Frame lento de %.0f ms: fisica %.1f, streaming %.1f ms (World "
+                                  "Partition + teselas; %d leyendo, %d preparando GPU, %d adoptadas %.1f ms, %.1f MB "
+                                  "subidos; jobs en cola %d), sync %.1f, render %.1f",
+                                  static_cast<double>(total_ms), static_cast<double>(physics_ms),
+                                  static_cast<double>(streaming_ms) + gs.main_ms, ts.tiles_loading, gs.preparing,
+                                  gs.adopted, gs.main_ms, static_cast<double>(gs.bytes) / (1024.0 * 1024.0), js.queued,
+                                  static_cast<double>(sync_ms), static_cast<double>(render_ms));
+                    std::cout << line << std::endl;
+                }
+            }
             input.newFrame();
 
             // Cada 5 s una linea de rendimiento en el log (se vuelca ya: si el
@@ -1528,6 +1592,7 @@ int runPlayer() {
             project::setActiveMods(nullptr);
         });
         paso("red", [&] { scripts.shutdownNetwork(); });  // avisa a los demas jugadores
+        paso("websocket", [&] { cramion::net::shutdownWebSockets(500); });  // cierre limpio (1001) sin colgarse
         paso("audio", [&] { audio.stop(); });
         paso("fisica", [&] { physics.stop(); });
         paso("voxeles", [&] { voxels.stop(); });  // guarda el mundo con nombre

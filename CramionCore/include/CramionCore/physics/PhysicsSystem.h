@@ -215,10 +215,20 @@ public:
     void clearStaticMeshes();
     std::size_t staticMeshCount() const;
 
-    // Crea el mundo fisico y los cuerpos. stop() lo destruye todo.
+    // Crea el mundo fisico y los cuerpos. stop() lo destruye todo. La primera
+    // sincronizacion tras start() crea todo al momento (terrenos incluidos).
     void start(ecs::World& world);
     void stop();
     bool running() const;
+    // Los colliders de terreno se rehacen en un hilo de fondo (CVar
+    // physics.AsyncTerrain): el cuerpo viejo se queda hasta que llega el nuevo.
+    // flushPendingTerrain() BLOQUEA hasta terminar los que estan en marcha y
+    // hace que la siguiente sincronizacion (update) cree al momento todos los
+    // terrenos (y modelos de MeshCollider) que falten. Para cargas que no
+    // pueden esperar (loadNow del Player, empezar Play); no en cada frame.
+    void flushPendingTerrain();
+    // Colliders de terreno haciendose ahora mismo (estadisticas).
+    std::size_t pendingTerrainCount() const;
     // Origen flotante (ecs/FloatingOrigin.h): el mundo se desplazo -offset;
     // todos los cuerpos de Jolt (con su velocidad) y lo que guarda en coordenadas del mundo se mueve igual.
     void shiftOrigin(const core::Vec3& offset);
@@ -230,6 +240,12 @@ public:
     int update(ecs::World& world, float delta_seconds, bool simulate = true);
     // Un unico paso fijo (el boton "Paso" del modo Play en pausa).
     void singleStep(ecs::World& world);
+    // Segundos de fisica simulados desde start() (pasos fijos dados por su
+    // duracion). No depende de los FPS: sirve para medir velocidades reales.
+    double simulatedTime() const;
+    // Segundos de tiempo real que la fisica tiro desde la ultima llamada
+    // (max_substeps o frames de mas de 0,25 s) y la vuelve a poner a 0.
+    float takeDroppedTime();
 
     // --- Consultas (filtradas por capas; ver QueryFilter) ---
     bool raycast(const core::Vec3& origin, const core::Vec3& direction, float max_distance,

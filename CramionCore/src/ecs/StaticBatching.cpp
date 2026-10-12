@@ -4,6 +4,7 @@
 #include "CramionCore/asset/Importer.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/physics/PhysicsComponents.h"
+#include "CramionCore/world/WorldPartition.h"
 
 #include <CramionFX/asset/Model.h>
 
@@ -296,6 +297,27 @@ bool buildStaticBatch(World& world, const assets::AssetDatabase& database, const
                       const StaticBatchOptions& options, StaticBatchReport& report) {
     report = StaticBatchReport{};
 
+    // Con World Partition activo, lo que se descarga por celdas no entra en el
+    // lote: un solo modelo residente con todo el mundo estatico (GB en mundos
+    // grandes) nunca se descargaria. Solo lo no descargable o AlwaysLoaded.
+    bool partitioned = false;
+    for (const entt::entity handle : world.registry().view<worldpart::WorldPartition>()) {
+        const Entity e = world.wrap(handle);
+        if (e.activeInHierarchy() && e.get<worldpart::WorldPartition>().enabled) {
+            partitioned = true;
+            break;
+        }
+    }
+    std::size_t kept_streamed = 0;
+    std::unordered_map<entt::entity, bool> streamed_roots;  // raiz -> se descarga
+    const auto in_streamed_cell = [&](Entity e) {
+        Entity root = e;
+        while (root.parent().valid()) root = root.parent();
+        const auto [it, inserted] = streamed_roots.emplace(root.handle(), false);
+        if (inserted) it->second = worldpart::WorldPartitionSystem::streamable(root);
+        return it->second;
+    };
+
     // --- Candidatos: Static, visibles, activos y con malla de un asset ---
     std::unordered_map<Uuid, std::shared_ptr<const assets::ModelAsset>> models;
     std::vector<Candidate> candidates;
@@ -314,6 +336,10 @@ bool buildStaticBatch(World& world, const assets::AssetDatabase& database, const
         if (!renderer->visible || renderer->mesh || !renderer->model.valid() || !e.activeInHierarchy()) return;
         if (movable(world, e)) {
             ++report.kept_movable;
+            return;
+        }
+        if (partitioned && in_streamed_cell(e)) {
+            ++kept_streamed;
             return;
         }
         const Uuid uuid = renderer->model.uuid;
@@ -368,6 +394,9 @@ bool buildStaticBatch(World& world, const assets::AssetDatabase& database, const
     }
     if (combined.empty()) {
         report.message = "sin mallas estaticas que combinar";
+        if (kept_streamed > 0) {
+            report.message += " (" + std::to_string(kept_streamed) + " en celdas del World Partition)";
+        }
         if (report.kept_instanced + report.kept_movable > 0) {
             report.message += " (" + std::to_string(report.kept_instanced) + " repetidas y grandes, instanciadas; " +
                               std::to_string(report.kept_movable) + " que se pueden mover)";
@@ -399,6 +428,9 @@ bool buildStaticBatch(World& world, const assets::AssetDatabase& database, const
     report.combined = combined.size();
     // Sin la marca Static: el lote no se vuelve a combinar.
     Entity root = world.create("Static Batch");
+    // Con World Partition: el lote solo tiene lo que no se descarga, y su
+    // pivote (0,0,0) no es de ninguna celda en concreto: siempre cargado.
+    if (partitioned) root.add<worldpart::AlwaysLoaded>();
     for (std::size_t i = 0; i < batches.size(); ++i) {
         Entity child = batches.size() == 1 ? root : world.create(batches[i].data.name, root);
         MeshRenderer& renderer = child.add<MeshRenderer>();
@@ -424,6 +456,9 @@ bool buildStaticBatch(World& world, const assets::AssetDatabase& database, const
     }
     if (report.kept_movable > 0) {
         report.message += "; " + std::to_string(report.kept_movable) + " con Animator/Script/Rigidbody no se combinan";
+    }
+    if (kept_streamed > 0) {
+        report.message += "; " + std::to_string(kept_streamed) + " en celdas del World Partition se cargan por celda";
     }
     return true;
 }

@@ -122,12 +122,22 @@ vec3 depthOfField() {
 
 // --- Motion blur ---
 
+// Saneado: un vector inf o NaN (punto detras de la camara el frame anterior,
+// o un G-buffer viejo) llenaba de NaN el rastro y el pixel salia negro. La
+// comparacion con NaN es falsa, asi que tambien lo descarta.
+vec2 saneVelocity(vec2 velocity) {
+    return all(lessThan(abs(velocity), vec2(16.0))) ? velocity : vec2(0.0);
+}
+
 vec2 pixelVelocity(vec2 uv, float depth) {
     if (depth >= 1.0) {
         vec4 previous = push.reproject * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
-        return uv - (previous.xy / max(previous.w, 1e-6) * 0.5 + 0.5);
+        if (previous.w <= 1e-6) {
+            return vec2(0.0);
+        }
+        return saneVelocity(uv - (previous.xy / previous.w * 0.5 + 0.5));
     }
-    return textureLod(velocity_map, uv, 0.0).xy;
+    return saneVelocity(textureLod(velocity_map, uv, 0.0).xy);
 }
 
 vec3 motionBlur() {

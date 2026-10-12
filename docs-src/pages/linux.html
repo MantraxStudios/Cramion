@@ -15,6 +15,12 @@ cmake --build --preset linux-release
   sin ventana ni GPU que simula la escena (física, navegación, multitudes, scripts) y abre la partida en red. Sirve tanto para
   una carpeta de proyecto como para el <code>Game/</code> de un juego exportado (descomprime su <code>.crpack</code>).
 </p>
+<p>
+  <a href="websocket.html">WebSocket</a>: <code>ws://</code> funciona siempre; <code>wss://</code> usa el <strong>OpenSSL</strong>
+  del sistema (<code>sudo apt install libssl-dev</code> antes de <code>cmake --preset</code>). La opción de CMake
+  <code>CRAMION_WITH_OPENSSL</code> está activada por defecto; si no encuentra OpenSSL (o la desactivas) compila igual y
+  <code>wss://</code> da el error «wss:// no disponible en esta compilacion».
+</p>
 
 <h3 id="estado">Estado</h3>
 <ul>

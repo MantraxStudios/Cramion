@@ -1226,12 +1226,24 @@ vec4 upsampledVolume(float center_depth) {
 // Niebla exponencial por altura integrada a lo largo del rayo camara -> punto.
 float heightFog(float distance_to_point, vec3 ray_direction) {
     // Densidad y caida del post-procesado (0.0018 y 0.08 por defecto).
+    // Forma estable: c * (e^a0 - e^a1) / b, con a0 y a1 los exponentes de la
+    // densidad en la camara y en el punto, escrita como
+    // c * e^amax * (1 - e^(amin - amax)) / |b| (solo e^amax acotado: acotar
+    // los dos dejaba la diferencia en 0 y sin niebla con la camara muy por
+    // debajo de la base mirando abajo).
+    // Antes exp(-d * b) se desbordaba (camara alta mirando abajo, o muy
+    // lejos) y con la densidad 0 (niebla apagada) o desbordada salia
+    // 0 * inf = NaN: pixeles negros o niebla total.
+    if (lights.clouds.y <= 0.0) return 0.0;
     float falloff = lights.clouds.z > 0.0 ? lights.clouds.z : kFogHeightFalloff;
-    float density = lights.clouds.y * exp(-(camera.position.y - kFogBaseHeight) * falloff);
     float b = falloff * ray_direction.y;
-    float integral = abs(b) > 0.0001 ? (1.0 - exp(-distance_to_point * b)) / b
-                                     : distance_to_point;
-    return clamp(1.0 - exp(-density * integral), 0.0, 1.0);
+    float a0 = -(camera.position.y - kFogBaseHeight) * falloff;
+    float a1 = a0 - b * distance_to_point;
+    float a_max = max(a0, a1);
+    float optical = abs(b) > 0.0001
+        ? lights.clouds.y * exp(min(a_max, 80.0)) * (1.0 - exp(min(a0, a1) - a_max)) / abs(b)
+        : lights.clouds.y * exp(min(a0, 80.0)) * distance_to_point;
+    return clamp(1.0 - exp(-max(optical, 0.0)), 0.0, 1.0);
 }
 
 // Compensacion de energia por dispersion multiple (Kulla-Conty; forma de
@@ -1438,9 +1450,11 @@ void main() {
         surface_model = decodeShading(texelFetch(g_shading, frag_pixel, 0), normal);
 #endif
         vec3 f0 = disneyF0(surface_model, albedo, reflectance, metallic);
-        // Subsurface: lo que atraviesa se mira en la cara de atras, a este grosor.
-        bool translucent = surface_model.model == kShadingSubsurface && surface_model.params.y > 0.0;
-        float translucent_thickness = mix(0.01, 0.3, surface_model.params.z);
+        // Subsurface y hierba: lo que atraviesa se mira en la cara de atras, a
+        // este grosor (la brizna siempre es fina).
+        bool translucent = shadingTranslucency(surface_model) > 0.0;
+        float translucent_thickness = surface_model.model == kShadingGrass ? 0.01
+                                                                           : mix(0.01, 0.3, surface_model.params.z);
         // Fresnel con rugosidad (Lagarde): en superficies rugosas el borde
         // brilla menos.
         vec3 env_fresnel = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - n_dot_v, 5.0);
@@ -1484,7 +1498,7 @@ void main() {
         // tambien las atraviesa (contra el cielo, una copa no se ve negra).
         if (translucent) {
             diffuse_ibl += irradianceSh(-normal) * sky_visibility * translucencyColor(surface_model, albedo) *
-                           surface_model.params.y * 0.5 * (1.0 - metallic);
+                           shadingTranslucency(surface_model) * 0.5 * (1.0 - metallic);
         }
 
         // Especular: entorno prefiltrado en la direccion del reflejo, al mip
@@ -1492,11 +1506,15 @@ void main() {
         // Anisotropo: el reflejo del entorno se estira como el brillo
         // (normal doblada, Filament / McAuley).
         vec3 reflection_normal = normal;
-        if (surface_model.model == kShadingAnisotropic || surface_model.model == kShadingHair) {
+        if (surface_model.model == kShadingAnisotropic || surface_model.model == kShadingHair ||
+            surface_model.model == kShadingGrass) {
             vec3 aniso_direction = surface_model.bitangent;
             vec3 aniso_tangent = cross(aniso_direction, view_direction);
             vec3 aniso_normal = cross(aniso_tangent, aniso_direction);
-            float bend = (surface_model.model == kShadingHair ? 0.8 : surface_model.params.x) * clamp(5.0 * roughness, 0.0, 1.0);
+            float bend_amount = surface_model.model == kShadingHair    ? 0.8
+                                : surface_model.model == kShadingGrass ? 0.6
+                                                                       : surface_model.params.x;
+            float bend = bend_amount * clamp(5.0 * roughness, 0.0, 1.0);
             reflection_normal = normalize(mix(normal, aniso_normal, bend));
         }
         vec3 reflected = reflect(-view_direction, reflection_normal);
@@ -1575,16 +1593,19 @@ void main() {
         float shadow = 1.0;
         // El pelo recibe luz envolvente (hairBrdf) hasta N.L = -1/3: ahi
         // tambien hace falta la sombra, o el pelo de espaldas al sol brilla
-        // aunque el personaje este a la sombra de un edificio.
+        // aunque el personaje este a la sombra de un edificio. La hierba
+        // (grassBrdf) envuelve hasta N.L = -0.35.
         bool sun_lit = sun_n_dot_l > 0.0 ||
-                       (surface_model.model == kShadingHair && dot(normal, sun_direction) > -0.34);
+                       (surface_model.model == kShadingHair && dot(normal, sun_direction) > -0.34) ||
+                       (surface_model.model == kShadingGrass && dot(normal, sun_direction) > -0.35);
         if (sun_lit) {
             float geometric_n_dot_l = max(dot(geometric_normal, sun_direction), 0.0);
             // Con rayos: la mas oscura de las dos. Los rayos ven el escenario y
             // el terreno con su forma exacta (sin acne ni sombras despegadas) y
             // mas alla de las cascadas (montanas que tapan el sol a kilometros);
-            // el mapa, ademas, los personajes, la hierba y los arboles que se
-            // mecen. Casi de canto al sol (el borde entre luz y sombra de un
+            // el mapa, ademas, los personajes y los arboles que se mecen (la
+            // hierba no proyecta en el mapa: su auto-sombra llega analitica en
+            // relief_shadow). Casi de canto al sol (el borde entre luz y sombra de un
             // objeto) la malla de los rayos es de caras planas y se tapa a si
             // misma a trozos: ahi manda el mapa (y el propio N.L, que ya
             // oscurece).
@@ -1616,7 +1637,8 @@ void main() {
         }
         // Las nubes que pasan por delante del sol.
         shadow *= cloudShadow(world_position, sun_direction);
-        // Y las piedras del propio material (auto-sombra del parallax).
+        // Y las piedras del propio material (auto-sombra del parallax), o la
+        // transmitancia dentro de la masa de hierba u hojas.
         shadow *= relief_shadow;
 
         // El sol mide 0.53 grados: tangente de su radio angular.
@@ -1629,7 +1651,9 @@ void main() {
         // Subsurface: el sol que atraviesa la hoja, la oreja o la cera. La
         // sombra es la de la cara de atras (un poco hacia dentro): una hoja fina
         // la tiene iluminada; un muro, no, y no deja pasar nada.
-        if (translucent && dot(normal, sun_direction) < 0.2) {
+        // La hierba envuelve mas (grassBrdf): su translucidez entra antes.
+        float translucent_gate = surface_model.model == kShadingGrass ? 0.35 : 0.2;
+        if (translucent && dot(normal, sun_direction) < translucent_gate) {
             int back_cascade = 0;
             vec3 back_position = world_position - geometric_normal * translucent_thickness;
             float back_shadow = shadowFactor(back_position, -geometric_normal,

@@ -97,7 +97,7 @@ void registerScene(Runtime& rt) {
         const ecs::Entity e = rt.entity(c.entity(0));
         if (e.valid()) rt.destroyLater(e.handle());
         return api::Value{};
-    }, {"entity", "Lo destruye al final del frame"});
+    }, {"entity", "Lo destruye al final del frame (en la consola fuera de Play, al terminar el comando)"});
     // Cambiar de escena al terminar el frame (como SceneManager.LoadScene).
     rt.native.function("Scene.load", [&rt](api::Call& c) {
         const std::string name = c.string(0);
@@ -328,6 +328,11 @@ void registerPhysicsAndAudio(Runtime& rt) {
         if (rt.physics != nullptr) rt.physics->ignoreCollision(a, b, c.boolean(2, true));
         return api::Value{};
     }, {"a, b, true", "a y b no chocan entre si (false lo deshace)"});
+    // Tiempo de fisica simulado (pasos fijos dados): no depende de los FPS ni
+    // de max_substeps, para medir velocidades reales.
+    rt.native.function("Physics.simulatedTime", [&rt](api::Call&) {
+        return api::Value(rt.physics != nullptr ? rt.physics->simulatedTime() : 0.0);
+    }, {"", "Segundos de fisica simulados desde el Play (pasos fijos dados)", "numero"});
 
     rt.native.function("Audio.playOneShot", [&rt](api::Call& c) {
         const std::string clip = c.string(0);

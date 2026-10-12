@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Graphics (opciones gráficas) · Documentación de Cramion</title>
   <meta name="description" content="Configuración gráfica y post-procesado desde C++: calidad, resolución, sombras, texturas, ventana.">
-  <meta name="theme-color" content="#09090b">
+  <meta name="theme-color" content="#232323">
   <link rel="icon" href="../img/icon.png">
   <script>
     // Tema antes de pintar (sin parpadeo). Oscuro por defecto.
@@ -13,9 +13,8 @@
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
-  <link rel="stylesheet" href="manual.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="manual.css?v=ab13539204">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
@@ -27,7 +26,7 @@
   <header class="site-header">
     <div class="header-inner">
       <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span><span class="tag">Docs</span></a>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.4.8</span></a>
       <nav class="main-nav" aria-label="Secciones">
         <a href="index.html" data-nav="index">Documentación</a>
         <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
@@ -47,6 +46,7 @@
         <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="icon-btn only-mobile" aria-label="Donar con PayPal" title="Donar"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg></a>
       </div>
     </div>
+    <div class="read-progress" id="read-progress" aria-hidden="true"></div>
   </header>
   <div class="overlay" id="overlay"></div>
 
@@ -62,13 +62,13 @@
   <div class="layout">
     <aside id="side" class="sidebar" aria-label="Menú del manual">
       <nav>
-        <div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span></a><button id="menu-close" class="icon-btn" aria-label="Cerrar el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+        <div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span></a><button id="menu-close" class="icon-btn" aria-label="Cerrar el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Inicio</p><a href="index.html">Introducción</a><a href="../index.html">Web de Cramion</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="novedades-24.html">Novedades</a><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-api.html">Api (por nombre)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-xr.html">XR</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p><a href="editor-interfaz.html">Interfaz y pestañas</a><a href="editor-tema.html">Tema e Inspector</a><a href="editor-escena.html">Vista Escena y gizmos</a><a href="editor-jerarquia.html">Jerarquía e Inspector</a><a href="editor-proyecto.html">Proyecto e importación</a><a href="editor-play.html">Play, deshacer y escenas</a><a href="insights.html">Insights y rendimiento</a><a href="editor-herramientas.html">Herramientas de mundo</a><a href="modelado.html">Modelado poligonal</a><a href="2d.html">2D</a><a href="mundo-procedural.html">Mundo procedural</a><a href="mundos-grandes.html">Mundos grandes (MMO)</a><a href="ambiente.html">Ambiente y clima</a><a href="agua.html">Agua</a><a href="fuego.html">Fuego</a><a href="vfx-graph.html">VFX Graph</a><a href="liquidos.html">Líquidos</a><a href="destruccion.html">Destrucción</a><a href="vehiculos.html">Vehículos</a><a href="motion-matching.html">Motion Matching</a><a href="replays.html">Repeticiones</a><a href="editor-ventanas.html">Ventanas de herramientas</a><a href="maquinas-de-estados.html">Máquinas de estados</a><a href="visual-scripting.html">Visual Scripting</a><a href="behavior-trees.html">Behavior Trees</a><a href="dialogos.html">Diálogos</a><a href="localizacion.html">Localización</a><a href="guardado.html">Partidas guardadas</a><a href="materiales.html">Materiales</a><a href="shader-graph.html">Shader Graph</a><a href="render-textures.html">Render Textures</a><a href="render.html">Render y rendimiento</a><a href="iluminacion-horneada.html">Iluminación horneada</a><a href="exportar.html">Exportar y compilación</a><a href="steam.html">Steam</a><a href="linux.html">Linux</a><a href="git.html">Control de versiones (Git)</a><a href="pruebas.html">Pruebas automáticas</a><a href="datapacks.html">DataPacks (bundles)</a><a href="plantillas.html">Plantillas</a><a href="atajos.html">Atajos de teclado</a><a href="actualizaciones.html">Actualizaciones</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-api.html">Api (por nombre)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-base64.html">Base64</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-websocket.html">WebSocket</a><a href="cpp-xr.html">XR</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p><a href="editor-interfaz.html">Interfaz y pestañas</a><a href="editor-tema.html">Tema e Inspector</a><a href="editor-escena.html">Vista Escena y gizmos</a><a href="editor-jerarquia.html">Jerarquía e Inspector</a><a href="editor-proyecto.html">Proyecto e importación</a><a href="editor-play.html">Play, deshacer y escenas</a><a href="insights.html">Insights y rendimiento</a><a href="editor-herramientas.html">Herramientas de mundo</a><a href="modelado.html">Modelado poligonal</a><a href="2d.html">2D</a><a href="mundo-procedural.html">Mundo procedural</a><a href="mundos-grandes.html">Mundos grandes (MMO)</a><a href="ambiente.html">Ambiente y clima</a><a href="agua.html">Agua</a><a href="fuego.html">Fuego</a><a href="vfx-graph.html">VFX Graph</a><a href="liquidos.html">Líquidos</a><a href="destruccion.html">Destrucción</a><a href="vehiculos.html">Vehículos</a><a href="motion-matching.html">Motion Matching</a><a href="replays.html">Repeticiones</a><a href="editor-ventanas.html">Ventanas de herramientas</a><a href="maquinas-de-estados.html">Máquinas de estados</a><a href="visual-scripting.html">Visual Scripting</a><a href="blueprints.html">Blueprints de actor</a><a href="behavior-trees.html">Behavior Trees</a><a href="dialogos.html">Diálogos</a><a href="localizacion.html">Localización</a><a href="guardado.html">Partidas guardadas</a><a href="materiales.html">Materiales</a><a href="shader-graph.html">Shader Graph</a><a href="render-textures.html">Render Textures</a><a href="render.html">Render y rendimiento</a><a href="iluminacion-horneada.html">Iluminación horneada</a><a href="exportar.html">Exportar y compilación</a><a href="steam.html">Steam</a><a href="linux.html">Linux</a><a href="git.html">Control de versiones (Git)</a><a href="pruebas.html">Pruebas automáticas</a><a href="datapacks.html">DataPacks (bundles)</a><a href="plantillas.html">Plantillas</a><a href="atajos.html">Atajos de teclado</a><a href="actualizaciones.html">Actualizaciones</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-2d.html">2D</a><a href="componentes-iluminacion.html">Iluminación horneada</a><a href="componentes-vr.html">Realidad virtual</a><a href="componentes-mundo.html">Splines y mundos grandes</a><a href="componentes-ia.html">Multitudes</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Guías de scripting</p><a href="input-actions.html">Input Actions</a><a href="red.html">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="mallas.html">Mallas por código</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Guías de scripting</p><a href="input-actions.html">Input Actions</a><a href="red.html">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="websocket.html">WebSocket (servidor propio)</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="mallas.html">Mallas por código</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a><a href="graphics.html" class="active" aria-current="page">Graphics (opciones gráficas)</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p><a href="ejemplo-girar.html">Girar un objeto</a><a href="ejemplo-camara.html">Cámara que sigue al jugador</a><a href="ejemplo-jugador.html">Jugador con física</a><a href="ejemplo-disparo.html">Disparo con raycast</a><a href="ejemplo-monedas.html">Monedas y puntuación</a><a href="ejemplo-spawner.html">Generador de enemigos</a><a href="ejemplo-vehiculo.html">Conducir un vehículo</a><a href="ejemplo-menu.html">Menú, opciones y récord</a><a href="ejemplo-animacion.html">Animación de un personaje</a><a href="ejemplo-comunicacion.html">Scripts que se hablan</a><a href="ejemplo-ia.html">IA: patrullar y perseguir</a><a href="ejemplo-terreno.html">Terreno procedural con colisión</a><a href="ejemplo-efectos.html">Varios materiales y efectos</a><a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a></div>
         
@@ -97,7 +97,8 @@
 
 <pre><code class="language-cpp">Graphics::setQuality("Alta");           // Baja, Media, Alta, Ultra (o 0..3)
 Graphics::set("vsync", true);           // cualquier opción por su nombre
-Graphics::set("texture_quality", "high");
+Graphics::setTextureQuality("high");   // texturas: auto, low, medium, high, ultra, max
+Graphics::setTextureFiltering(16);      // anisotrópico: 0 = auto, 1 = apagado, 2, 4, 8, 16
 Graphics::set(Value{{"shadow_quality", "ultra"}, {"target_fps", 144}});   // varias a la vez
 Graphics::setPost("bloom", false);      // post-procesado de la escena
 Graphics::save();                       // el juego lo recuerda la próxima vez</code></pre>
@@ -114,6 +115,9 @@ Graphics::save();                       // el juego lo recuerda la próxima vez<
     <tr><td><code>Api::get("Graphics.clave")</code> / <code>Api::set("Graphics.clave", valor)</code></td><td>Lo mismo por su ruta: <code>Api::get("Graphics.vsync")</code>, <code>Api::set("Graphics.upscaler", "fsr1")</code>.</td></tr>
     <tr><td><code>Graphics::getAll()</code></td><td>Objeto <code>clave → valor</code> con todo.</td></tr>
     <tr><td><code>Graphics::options()</code></td><td>Lista para construir un menú: cada elemento tiene <code>key</code>, <code>value</code>, <code>writable</code>, <code>description</code> y, si es de una lista, <code>choices</code>.</td></tr>
+    <tr><td><code>Graphics::setTextureQuality(nivel)</code><br><code>Graphics::textureQuality()</code><br><code>Graphics::textureQualityLevels()</code></td><td>Calidad de las texturas (<code>texture_quality</code>): <code>"auto"</code>, <code>"low"</code>, <code>"medium"</code>, <code>"high"</code>, <code>"ultra"</code> o <code>"max"</code>. Se aplica a lo que se carga después (ver la nota). <code>textureQuality()</code> devuelve la elegida (<code>"custom"</code> si se dio un tamaño suelto) y <code>textureQualityLevels()</code> la lista para un desplegable.</td></tr>
+    <tr><td><code>Graphics::setTextureFiltering(n)</code><br><code>Graphics::textureFiltering()</code><br><code>Graphics::textureFilteringLevels()</code></td><td>Filtrado anisotrópico (<code>texture_filtering</code>): <code>0</code> = según el PC, <code>1</code> = apagado, <code>2</code>, <code>4</code>, <code>8</code> o <code>16</code>; también por nombre (<code>"auto"</code>, <code>"off"</code>, <code>"16x"</code>). Se aplica al momento a modelos, terreno, vegetación, agua y vóxeles. <code>textureFiltering()</code> devuelve el que está en uso (un número; con <code>auto</code>, el del perfil del PC).</td></tr>
+    <tr><td><code>Graphics::setTextureLodBias(sesgo)</code><br><code>Graphics::textureLodBias()</code></td><td>Sesgo de los mipmaps (<code>texture_lod_bias</code>, -1 .. 2): negativo = texturas más nítidas de lejos (y más parpadeo), positivo = más suaves y menos ancho de banda. 0 = normal. Al momento.</td></tr>
     <tr><td><code>Graphics::resolutions()</code></td><td>Resoluciones del monitor, de mayor a menor: una lista de objetos con <code>width</code> y <code>height</code> (<code>r["width"].asInt()</code>).</td></tr>
     <tr><td><code>Graphics::save()</code></td><td>En el juego exportado guarda la configuración del jugador (incluida la ventana) en <code>%LOCALAPPDATA%/Cramion/Saves/&lt;juego&gt;.graphics.ini</code>. Al volver a abrir el juego se aplica encima de la de <em>ProjectSettings/Graphics.ini</em>. En el editor no guarda nada.</td></tr>
   </tbody>
@@ -135,6 +139,8 @@ Graphics::save();                       // el juego lo recuerda la próxima vez<
     <tr><td><code>shadow_resolution</code></td><td>0, 512 .. 8192</td><td>Lo mismo en píxeles (0 = según el PC).</td></tr>
     <tr><td><code>texture_quality</code></td><td><code>"auto"</code>, <code>"low"</code>, <code>"medium"</code>, <code>"high"</code>, <code>"ultra"</code>, <code>"max"</code></td><td>Lado máximo de las texturas: según el PC, 1024, 2048, 4096, 8192 o 16384.</td></tr>
     <tr><td><code>texture_max_size</code></td><td>0, 64 .. 16384</td><td>Lo mismo en píxeles (0 = según el PC).</td></tr>
+    <tr><td><code>texture_filtering</code></td><td><code>"auto"</code>, <code>"off"</code>, <code>"2x"</code>, <code>"4x"</code>, <code>"8x"</code>, <code>"16x"</code> (o 0, 1 .. 16)</td><td>Filtrado anisotrópico de las texturas: suelos, carreteras y paredes vistos en ángulo nítidos en vez de borrosos. <code>auto</code> = según el PC (4x en Bajo, 8x en Medio, 16x en Alto y Ultra); se limita al máximo de la GPU (<code>texture_filtering_max</code>). Se aplica al momento.</td></tr>
+    <tr><td><code>texture_lod_bias</code></td><td>-1 .. 2</td><td>Sesgo de los mipmaps: negativo = más nítidas (y más parpadeo de lejos), positivo = más suaves. 0 = normal. Se aplica al momento.</td></tr>
     <tr><td><code>ray_tracing</code></td><td>true / false</td><td>GI, reflejos y sombras del sol y de las luces con trazado de rayos (si la GPU lo admite: <code>ray_tracing_supported</code>). Apagado no ocupa memoria.</td></tr>
     <tr><td><code>reflection_probe</code></td><td>true / false</td><td>Sonda de reflexión del entorno.</td></tr>
     <tr><td><code>sky_occlusion</code></td><td>true / false</td><td>Oclusión del cielo vista desde arriba (sin trazado de rayos): bajo los árboles y los tejados llega menos cielo.</td></tr>
@@ -146,17 +152,46 @@ Graphics::save();                       // el juego lo recuerda la próxima vez<
 </table>
 <p>De solo lectura: <code>gpu</code>, <code>hardware_tier</code>, <code>vram_mb</code>, <code>vram_used_mb</code>, <code>ray_tracing_supported</code>,
   <code>render_width</code>/<code>render_height</code> (resolución interna), <code>screen_width</code>/<code>screen_height</code> (salida) y
-  <code>gpu_ms</code> (milisegundos de GPU por frame). De la <a href="editor-herramientas.html#vegetacion">vegetación</a>:
+  <code>gpu_ms</code> (milisegundos de GPU por frame), <code>texture_filtering_active</code> (anisotrópico en uso) y
+  <code>texture_filtering_max</code> (el máximo de la GPU). De la <a href="editor-herramientas.html#vegetacion">vegetación</a>:
   <code>foliage_trees</code> (árboles en la GPU), <code>foliage_visible</code> (dibujados el último frame),
   <code>foliage_near</code> (con todo el detalle) y <code>foliage_triangles</code>.</p>
 
 <div class="note">
   <strong>Texturas:</strong> <code>texture_quality</code> se aplica a los modelos que se cargan después. En un menú de
-  opciones, vuelve a cargar la escena para verlo: <code>Scene::load(Scene::name())</code>.<br>
+  opciones, vuelve a cargar la escena para verlo: <code>Scene::load(Scene::name())</code>.
+  <code>texture_filtering</code> y <code>texture_lod_bias</code> se ven al momento (el motor rehace los samplers al empezar el
+  frame siguiente, con un parón de unos milisegundos: cámbialos desde un menú, no cada frame).<br>
   <strong>Presupuesto adaptativo:</strong> con <code>adaptive</code> activado el motor puede bajar sombras, efectos o resolución
   por su cuenta si no llega a los FPS; para que se quede exactamente lo que elige el jugador, desactívalo.<br>
   <strong>En el editor:</strong> lo que cambien los scripts en Play se deshace al parar; la ventana no se toca.
 </div>
+
+<h3 id="texturas">Texturas: calidad, filtrado anisotrópico y mipmaps</h3>
+<p>
+  Tres opciones controlan cómo se ven las texturas. La <strong>calidad</strong> (<code>texture_quality</code>) es el lado máximo
+  con el que se suben (memoria de vídeo) y vale para lo que se carga después. El <strong>filtrado anisotrópico</strong>
+  (<code>texture_filtering</code>) quita el borroso de los suelos y las paredes vistos en ángulo, y el <strong>sesgo de los
+  mipmaps</strong> (<code>texture_lod_bias</code>) elige entre nitidez y estabilidad de lejos; estas dos se aplican al momento.
+  En el editor están en <a href="render.html">Ajustes de render</a> &gt; Gráficos &gt; <em>Texturas</em>.
+</p>
+<pre><code class="language-cpp">// Un desplegable por opción, con los valores que da el motor.
+for (const Value&amp; nivel : Graphics::textureQualityLevels().items()) Debug::log(nivel.asString());     // auto, low ... max
+for (const Value&amp; filtro : Graphics::textureFilteringLevels().items()) Debug::log(filtro.asString()); // auto, off, 2x ... 16x
+
+Graphics::setTextureQuality("ultra");     // 8192 como mucho (al recargar la escena)
+Graphics::setTextureFiltering("8x");      // o 8; 0 = según el PC, 1 = apagado
+Graphics::setTextureLodBias(-0.25);       // un poco más nítidas de lejos
+
+Debug::log("Calidad " + Graphics::textureQuality().asString() + ", anisotrópico " +
+           std::to_string(Graphics::textureFiltering().asInt()) + "x de " +
+           std::to_string(Graphics::get("texture_filtering_max").asInt()) + "x posibles");
+Graphics::save();                         // el jugador lo recupera al abrir el juego</code></pre>
+<p>
+  Todas pasan por <code>Graphics::set</code>: <code>Graphics::set("texture_filtering", 16)</code> es lo mismo que
+  <code>Graphics::setTextureFiltering(16)</code>, y valen en <code>Graphics::set(Value{...})</code> con otras opciones.
+  Un valor que no está en la lista no cambia nada y avisa en la Consola.
+</p>
 
 <h3 id="post">Post-procesado: Graphics::setPost</h3>
 <p>
@@ -192,8 +227,11 @@ public:
         });
         on("OnVSync", [](const Value&amp; activo) { Graphics::set("vsync", activo.asBool()); });
         on("OnTexturas", [](const Value&amp; nivel) {   // "low", "medium", "high"...
-            Graphics::set("texture_quality", nivel);
+            Graphics::setTextureQuality(nivel);
             Scene::load(Scene::name());                // recargar para ver las texturas nuevas
+        });
+        on("OnFiltrado", [](const Value&amp; muestras) {  // 1 (apagado), 2, 4, 8, 16 o 0 (auto)
+            Graphics::setTextureFiltering(muestras);   // se ve al momento
         });
         on("OnGuardar", [](const Value&amp;) { Graphics::save(); });
     }
@@ -236,7 +274,7 @@ CRAMION_SCRIPT(Opciones)</code></pre>
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span>Cramion Engine · manual de la 2.4.6. Gratis para hacer y vender tus juegos.</span>
+      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.4.8. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="licencia.html">Licencia</a>
@@ -327,6 +365,15 @@ CRAMION_SCRIPT(Opciones)</code></pre>
       heads.forEach(h => obs.observe(h));
       document.querySelectorAll(".toc-inline a").forEach(a => a.addEventListener("click", () => a.closest("details").open = false));
     }
+
+    // Barra de lectura bajo la cabecera.
+    const bar = document.getElementById("read-progress");
+    const onScroll = () => {
+      const h = document.documentElement.scrollHeight - innerHeight;
+      bar.style.width = (h > 0 ? Math.min(100, scrollY / h * 100) : 0) + "%";
+    };
+    addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
 
     // Buscador (Command): titulos, secciones y nombres de la API.
     const cmd = document.getElementById("cmd");

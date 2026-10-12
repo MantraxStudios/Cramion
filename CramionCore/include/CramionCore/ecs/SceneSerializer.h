@@ -20,6 +20,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 
 namespace cramion::ecs {
@@ -54,7 +55,17 @@ bool componentFromJson(World& world, Entity entity, const std::string& component
 Entity pasteEntities(World& world, const std::string& json, Entity parent = {});
 // Como pasteEntities pero con los mismos UUID (recrear lo que se guardo con
 // serializeEntity y se borro: World Partition, deshacer).
+// Un registro cuyo UUID ya esta en el mundo no se recrea (ni sus hijos): se
+// avisa y se deja el que ya estaba (nunca dos copias del mismo objeto).
 Entity restoreEntities(World& world, const std::string& json, Entity parent = {});
+
+// Lo mismo en dos pasos: parseEntities lee el JSON en cualquier hilo (sin
+// tocar el mundo) y restoreParsedEntities crea las entidades en el hilo
+// principal (World Partition: leer y parsear las celdas fuera del frame).
+// nullptr si el texto no es valido.
+struct ParsedEntities;
+std::shared_ptr<const ParsedEntities> parseEntities(const std::string& json);
+Entity restoreParsedEntities(World& world, const ParsedEntities& parsed, Entity parent = {});
 
 // Lee solo el UUID de un .crscene (para la base de datos de assets).
 Uuid readSceneUuid(const std::filesystem::path& path);

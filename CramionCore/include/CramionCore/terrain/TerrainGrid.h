@@ -15,6 +15,13 @@
 //                    Terrain normal (render, fisica, hierba, navegacion...)
 //                    marcada como transitoria: no se guarda en la escena.
 //
+// Hilos (CVar stream.AsyncTerrain, encendida): la lectura va al grupo de IO,
+// el cosido de bordes (con fotos de las vecinas) a un hilo trabajador, y el
+// hilo principal solo mete las teselas listas en el mundo con un presupuesto
+// de tiempo (stream.MainBudgetMs). Una tesela que sale de la distancia antes
+// de terminar se cancela. Al soltar una tesela con cambios se guarda en el
+// hilo de IO (TerrainStore::saveAsync).
+//
 // Importar un mapa de alturas (RAW 16 bits, PNG 16 bits...) a una rejilla:
 // HeightmapImport.h.
 
@@ -29,6 +36,7 @@
 #include <future>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -97,6 +105,10 @@ struct TerrainStreamStats {
     std::size_t bytes = 0;  // memoria de las alturas y la pintura cargadas
     int loads = 0;          // desde el principio
     int unloads = 0;
+    int integrated = 0;     // teselas que entraron al mundo este frame
+    int cancelled = 0;      // cargas canceladas (salieron de la distancia), desde el principio
+    int saving = 0;         // guardandose en otro hilo ahora
+    double main_ms = 0.0;   // tiempo del hilo principal en update() este frame
 };
 
 class TerrainStreamer {
@@ -119,13 +131,20 @@ public:
     const TerrainStreamStats& stats() const { return stats_; }
     // Teselas de una rejilla y si estan cargadas (para dibujar el mapa).
     std::vector<std::pair<std::pair<int, int>, bool>> tiles(const Uuid& grid) const;
+    // Sin streaming para las rejillas de esta carpeta (mientras otro hilo
+    // reescribe sus teselas: en Windows leerlas a la vez rompe el rename).
+    void pauseFolder(const std::string& folder, bool paused);
 
 private:
+    // Una carga en otros hilos (lectura + cosido). Los hilos solo tocan esto
+    // (por shared_ptr), nunca el streamer ni el almacen.
+    struct LoadJob;
     struct Tile {
         entt::entity entity = entt::null;
-        std::future<std::shared_ptr<TerrainData>> job;
+        std::shared_ptr<LoadJob> job;
         bool loading = false;
         std::uint64_t seen_version = 0;  // para coser los bordes tras esculpir
+        std::string path;                // tilePath (sin rehacer la cadena cada frame)
     };
     struct GridState {
         TerrainGrid settings;
@@ -134,13 +153,23 @@ private:
     };
 
     void syncGrid(ecs::World& world, TerrainStore& store, ecs::Entity grid_entity, GridState& state,
-                  const std::vector<std::pair<core::Vec3, float>>& sources, bool save_on_unload, int& budget);
+                  const std::vector<std::pair<core::Vec3, float>>& sources, bool save_on_unload, int& budget,
+                  jobs::FrameBudget& frame_budget, int max_in_flight, bool async);
     void spawn(ecs::World& world, ecs::Entity grid_entity, GridState& state, int x, int z, Tile& tile);
-    void unload(ecs::World& world, TerrainStore& store, GridState& state, int x, int z, Tile& tile, bool save);
-    void startLoad(TerrainStore& store, const GridState& state, int x, int z, Tile& tile);
+    void unload(ecs::World& world, TerrainStore& store, GridState& state, int x, int z, Tile& tile, bool save,
+                bool async = false);
+    void startLoad(TerrainStore& store, const GridState& state, int x, int z, Tile& tile, bool async);
+    // Una tesela leida (y cosida) entra al almacen; false si no habia nada.
+    bool collect(TerrainStore& store, const GridState& state, int x, int z, Tile& tile);
+    void cancel(Tile& tile);
+    const std::string& pathOf(const GridState& state, int x, int z, Tile& tile) const;
     bool tileAlive(ecs::World& world, const Tile& tile) const;
+    int inFlight() const;
 
     std::map<Uuid, GridState> grids_;
+    std::set<std::string> paused_folders_;
+    // Cargas canceladas que aun corren en otro hilo (cuentan como en marcha).
+    std::vector<std::shared_ptr<LoadJob>> draining_;
     TerrainStreamStats stats_{};
 };
 

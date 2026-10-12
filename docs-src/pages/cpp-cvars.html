@@ -7,3 +7,15 @@
     <tr><td><code>bool set(std::string_view name, std::string_view value, std::string* error = nullptr)</code></td><td>Cambia una CVar (&quot;r.Shadows 0&quot;).</td></tr>
   </tbody>
 </table>
+
+<h3 id="websocket">CVars de WebSocket</h3>
+<table>
+  <tbody>
+    <tr><td><code>net.WsInsecure</code></td><td>ws:// sin cifrar: 0 solo este PC, 1 también la red local, 2 cualquiera (solo con trucos).</td></tr>
+    <tr><td><code>net.WsMaxConnections</code></td><td>Conexiones WebSocket a la vez en todo el juego (16).</td></tr>
+    <tr><td><code>net.WsMaxMessageKB</code></td><td>Tamaño máximo por defecto de un mensaje recibido, en KB (4096).</td></tr>
+    <tr><td><code>net.WsMaxEventsPerFrame</code></td><td>Eventos WebSocket entregados a los scripts por frame (512).</td></tr>
+    <tr><td><code>net.WsLog</code></td><td>Consola: 1 abrir, cerrar y errores; 2 también cada mensaje (200 bytes).</td></tr>
+  </tbody>
+</table>
+<p>Más en <a href="websocket.html#opciones">WebSocket</a>.</p>

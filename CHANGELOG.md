@@ -1,5 +1,106 @@
 # Cambios
 
+## 2.4.8
+
+**Blueprints de actor, cliente WebSocket, hierba realista y un mundo que se carga en otros hilos.** Los prefabs pasan a ser Blueprints con su propio editor de nodos al estilo de Unreal y 56 nodos nuevos; los scripts hablan con servidores por WebSocket (`ws://` y `wss://`) en Windows, Linux y Android; la hierba y los árboles se ven con volumen; y el terreno, la física, la navegación y el World Partition leen, preparan y suben lo que entra en otros hilos con un presupuesto de milisegundos por frame. Además, se corrigen los siete fallos del informe de fallos y una larga lista de fallos de render, de escenas y del editor. (La 2.4.7 no se publicó.)
+
+### Blueprints de actor
+- **Un Blueprint es un `.crprefab` con un bloque `"blueprint"`** (padre, grafo, descripción, categoría, tick) y un `.crgraph` al lado. Se crea desde un modelo, desde un prefab o vacío, y un prefab existente se puede convertir.
+- **Pestaña Blueprint** con los paneles Componentes (con glifos de hueso, Blueprint y malla), Mi Blueprint, Detalles, Ventana gráfica, Event Graph y Resultados de compilación. Insignia «BP» en el navegador del proyecto.
+- **Doble clic en un modelo** abre el modal *Nuevo Blueprint de actor*, con la opción *Solo ponerlo en la escena*.
+- Ctrl+S guarda el Blueprint y Ctrl+Z/Y van al grafo cuando está enfocado. Antes de Play se compilan y guardan los Blueprints con cambios. Las variables expuestas salen en el Inspector.
+- **Huesos sin RenderSync**: el esqueleto se enlaza y sus huesos se crean como objetos desde el núcleo (`bindSkeleton`, `createBoneEntities`); `BoneSocket` puede apuntar a un objeto hueso.
+- `Prefab.cpp` conserva las claves que no conoce, así que un prefab normal se escribe igual que antes.
+
+### Editor de nodos estilo Unreal
+- **Lienzo nuevo**: nodos compactos, de variable y reroute, pin de ejecución en pentágono, cables seleccionables (doble clic crea un reroute, Alt+clic corta, Ctrl+arrastrar mueve los enlaces), minimapa (M), comentario de la selección (C), enderezar (Q), alinear (Mayús+WASD), teclas de nodo (B/S/D/N/O/G/1-4) con clic, y **snap a la rejilla mientras se arrastra** (de 16 en 16, como Unreal; con Alt se mueve libre).
+- **Arrastrar desde Componentes al Event Graph**: la raíz crea **Self** y cualquier otro objeto crea un nodo con su nombre que guarda la **ruta desde la raíz** (`Cuerpo/Mano/Arma`, `Hueso[2]` si hay hermanos con el mismo nombre), así cada instancia encuentra su propio objeto. Con **Ctrl**, un menú con sus componentes crea **Get Component** ya conectado. También desde la Jerarquía.
+- **Búsqueda sensible al contexto** según el tipo del pin arrastrado; conversión automática al conectar tipos distintos; nodos desactivados, avisos y burbujas.
+- **Estado por documento, deshacer y Compilar (F7)**. El editor ya no guarda solo. El editor de `.crgraph` suelto usa el mismo componente.
+- Nodos de la API tipados según lo que devuelve cada función. Al recargar se descarta el estado de los nodos que cambiaron.
+- **56 nodos nuevos**: Switch on Int/String, For Loop/For Each with Break, MultiGate, Retriggerable Delay, Is Valid, Select; FInterp/VInterp To, Nearly Equal, In Range, Wrap, Sign, Frac, Asin, Acos, Atan, Exp, Log, grados↔radianes, Random Bool; conversiones entero↔decimal y booleano a entero; Format Text, Substring, Replace, Split, To Upper/Lower, Trim, Starts/Ends With, Is Empty; Make Array, Add, Get, Length, Contains, Find, Remove Index, Clear; Get Owner, Get/Has/Add/Remove Component; Line Trace, Break Hit Result; Rotate Vector, Get Unit Direction, Distance 2D; On WebSocket.
+
+### Cliente WebSocket
+- **`WebSocket.connect`, `send`, `sendBinary`, `sendJson`, `close`, `on`, `off`, `state`, `info`, `list`...** y `Base64.encode`/`decode` desde los scripts. En C++, `WsClient` (`sdk/cramion/WsClient.h`) con `attach(nombre)`. En Visual Scripting, el nodo *On WebSocket*.
+- Windows usa WinHTTP; Linux y Android, un motor RFC 6455 propio sobre TCP, con OpenSSL en Linux (`CRAMION_WITH_OPENSSL`) y `SSLSocket` por JNI en Android.
+- **Seguro por defecto**: `wss://` exige TLS y certificado válido; `ws://` sin cifrar solo a este PC salvo con `net.WsInsecure`.
+- Reconexión con espera creciente, heartbeat opcional, límites de tamaño de mensaje y de cola, y cierre limpio al salir del editor, del juego y del servidor.
+- Las conexiones con nombre sobreviven a `Scene.load`; las que no tienen nombre se cierran.
+
+### Hierba y árboles realistas
+- **Hierba con volumen**: normal redondeada por píxel y orientada a la cámara (adiós al aspecto de cartón), dos rejillas y tres distancias, ancho mínimo de unos 3/4 de píxel y desvanecido al final en vez de corte seco.
+- **Nuevo modelo de sombreado de hierba**: difuso envolvente, brillo de un lóbulo y translucidez fina; auto-sombra y oclusión dentro del césped; nervio central, bordes más oscuros, vetas y giro de la hoja con el viento.
+- **El suelo bajo la hierba** toma el color del césped y se apaga con las briznas (antes se veía un cuadrado con más hierba lejos y un círculo oscuro cerca).
+- **Cantidad según el hardware**: densidad ×0,35 en Bajo, ×0,6 en Medio, ×1 en Alto y ×1,6 en Ultra, con distancias y tramos propios.
+- **Nuevos valores por defecto**: densidad 500 (antes 70), anchura 0,007 (antes 0,028), altura 0,35 (antes 0,45), detalle 12 m (antes 22). Máximo del editor: densidad 2000.
+- **Árboles**: la cara de cada hoja se decide en la GPU, hojas mate con inclinación propia en el normal map, normal que sigue al temblor, auto-sombra de la copa, variación de color por zonas, borde con ruido y sombras cercanas con la malla de detalle en Alto y Ultra.
+
+### Streaming en otros hilos
+- **Jobs con prioridades** (alta, normal y de fondo), un grupo aparte para el disco, cancelación y presupuesto por frame.
+- **Teselas del terreno** leídas en el hilo de disco y cosidas en un hilo trabajador; el hilo principal solo las integra con un presupuesto de ms. Al soltar una tesela se guarda en segundo plano.
+- **Física**: el collider del terreno se hace en segundo plano (el viejo se queda hasta que llega el nuevo) y `MeshCollider` carga el modelo en diferido.
+- **Navegación**: los triángulos del terreno se sacan de una foto inmutable en los hilos de navegación.
+- **GPU**: los terrenos se preparan en otro hilo, las subidas tienen un tope por frame, la hierba usa un pool de bloques compartidos, las capas se leen en segundo plano y la vegetación se sube sin parar la GPU.
+- **World Partition**: las celdas se leen y se parsean en otros hilos, se recrean con un presupuesto por frame y se escriben en el hilo de disco.
+- **Servidor dedicado**: carga alrededor de cada jugador y del punto de aparición (el del `CharacterController` o la etiqueta «Player»), no alrededor de (0,0,0).
+- **Informe de frames lentos** con una sección de streaming (teselas leyendo, preparando GPU, adoptadas, MB subidos, jobs en cola), en el editor y en el Player con `CRAMION_PERF_LOG=1`.
+
+### Texturas
+- **Filtrado anisotrópico y sesgo de mips** en *Gráficos > Texturas*: Automático (4x/8x/16x/16x según el nivel), apagado, 2x, 4x, 8x o 16x, y un sesgo de −1 a 2. Las opciones que la GPU no admite salen desactivadas. Se aplica al momento.
+- Desde un script: `Graphics.setTextureQuality`, `setTextureFiltering`, `setTextureLodBias` y sus lecturas. También en el MCP.
+
+### Fallos del informe corregidos
+- **Pruebas con `co_await`** que pasaban sin ejecutarse: ahora se ejecutan, y una corrutina que no llega a empezar cuenta como fallida.
+- **MCP con origen flotante**: las posiciones son locales y lo dicen; `absolute: true` en `create_entity`, `modify_entity` y `ground_height`, y el origen sale en las respuestas.
+- **Editor sin foco**: ya no baja a 10 FPS durante Play. Aviso en la consola si la física pierde tiempo, y `Physics.simulatedTime` para los scripts.
+- **Recarga en caliente con corrutinas vivas**: aviso una vez por Play y las pruebas a medias se cierran como fallidas.
+- **Sonda de reflexión** más barata: intervalo entre caras, tiempo mínimo y distancia de dibujo según el nivel de la GPU; sin hierba en la captura.
+- **Consola en modo edición**: `Scene.destroy` y `Entity:destroy` borran, `e.parent` se puede escribir, `Entity::setParent` en el SDK y lo hecho desde la consola se puede deshacer.
+- **Compilar desde GitHub**: sin `assets/` se compila sin icono (con un aviso) y el README explica el compilador, los módulos y los iconos.
+
+### Render
+- La niebla con densidad 0 ya no da NaN; las nubes se ven bien desde dentro y por encima de la capa.
+- Normales correctas con escala negativa; vectores de velocidad sin inf/NaN (también para FSR y DLSS).
+- Sin costura de luz entre trozos del terreno ni escalón entre teselas al esculpir (el pincel cruza teselas y deja un solo deshacer).
+- Ya no se cierra el editor cuando se acaban los descriptores del terreno: los pools crecen bajo demanda.
+- Al mover el origen flotante se mueven también las matrices del frame anterior, las sondas y la oclusión del cielo.
+- Sincronización de la swapchain y de la historia SSR corregida; cascadas de sombra correctas con cámara ortográfica.
+- Con más de 16 masas de agua se usan las más cercanas.
+
+### Escenas, prefabs y editor
+- **Pausa** que destruía personajes y ragdolls; *Pausa* sin Play entra en Play ya pausado.
+- **`Scene.load` en Play** cierra el World Partition, las multitudes y la iluminación del nivel anterior y abre las del nuevo.
+- **Iluminación horneada**: una escena nueva descarta sondas y lightmap, y el horneado solo se aplica a su escena.
+- **Duplicar, pegar e instanciar** reasignan las referencias entre entidades a las copias, sin UUID repetidos.
+- **World Partition** con origen flotante: las celdas se calculan con la posición absoluta y las celdas guardan el origen (cabecera v2; la v1 se sigue leyendo). El Static Batching solo agrupa lo que no se descarga.
+- Rutas con caracteres fuera de ANSI; *Combinar mallas* sin punteros colgando; reimportar no rehace las instancias de Blueprint.
+- **Interfaz**: el cambio de tipo de área funciona a la primera e intercambia las áreas si hace falta, y se corrigen los IDs de ImGui repetidos (pestañas, Inspector, rigging, scripts, Blueprint, cinemáticas, rejilla de terreno, animador).
+- **Espacios de trabajo**: al volver a la escena desde un Visual Script, un prefab o un Blueprint, cada área conserva el editor que tenías delante (por ejemplo Proyecto); antes lo cambiaba el foco de las ventanas que reaparecían. Las ventanas compartidas ya no se desacoplan de los otros espacios y la elección de cada área se recupera al reiniciar el editor.
+- Física: un cuerpo dinámico rehecho en Play conserva su velocidad, *Paso* avanza los ragdolls y el personaje ya no se mueve dos veces al desplazar el origen.
+- Scripts de C++: ids de callback que ya no chocan a partir del proceso 512, `onDestroy` con el objeto aún válido, y JSON con UTF-8 inválido que ya no lanza.
+
+### Cambios a tener en cuenta
+- Las pruebas con `co_await` que pasaban en falso pueden fallar ahora.
+- La recarga en caliente no conserva las corrutinas: relánzalas en `onAfterReload`. Las escuchas WebSocket de C++ se pierden: usa `WsClient::attach(nombre)`.
+- El SDK de C++ cambia: los scripts se recompilan solos.
+- Las escenas con la hierba de fábrica sin tocar (0,028 / 70) se dibujan con los valores nuevos (0,007 / 500).
+- El editor de Visual Script ya no guarda solo y el doble clic en un modelo abre el modal de Blueprint.
+- En Linux, `wss://` necesita `libssl-dev`.
+- Compilación: `CMAKE_CXX_SCAN_FOR_MODULES OFF`.
+
+### CVars nuevas
+- Streaming: `stream.AsyncTerrain`, `stream.MainBudgetMs`, `stream.MaxInFlight`, `stream.IoThreads`, `stream.UploadMBPerFrame`.
+- Render: `render.terrain.AsyncUpload`, `AsyncPrepares`, `GrassPool`, `AsyncLayers`; `render.foliage.AsyncUpload`; `render.rt.AsyncTerrain`; `render.probe.FaceInterval`, `MinSeconds`, `DrawDistance`, `Terrain`.
+- Física y navegación: `physics.AsyncTerrain`, `AsyncTerrainBudgetMs`, `AsyncTerrainMaxWaitFrames`, `DeferMeshLoad`, `DeferMeshMaxFrames`; `nav.AsyncTerrainGather`.
+- World Partition: `wp.AsyncCells`, `wp.RestoreBudgetMs`, `wp.MaxIoInFlight`.
+- Rendimiento: `perf.SlowFrameMs`.
+- WebSocket: `net.WsInsecure`, `net.WsMaxConnections`, `net.WsMaxMessageKB`, `net.WsMaxEventsPerFrame`, `net.WsLog`.
+
+### Pruebas
+- WebSocket: protocolo RFC 6455 (`WsProtocolTests`), cliente contra un servidor de prueba local (`WebSocketTests`, `WsTestServer`) y la API de scripts (`WebSocketApiTests`).
+- Blueprints: nuevas pruebas en `BlueprintTests`, y más pruebas del intérprete de Visual Script en `VisualScriptRuntimeTests`.
+- Editor: autotest de la pestaña Blueprint (pasos 630 a 634).
+
 ## 2.4.6
 
 **Mundos de 12 a 16 km que nunca están enteros en memoria.** El terreno se reparte en teselas que se leen de disco solo alrededor de cada jugador, los mapas de alturas de World Machine, Gaea, Unity o Unreal se importan directamente, y el World Partition guarda en disco lo que descarga. El juego y el servidor dedicado cargan solo la zona de cada jugador: lo que pedía un MMO.

@@ -464,12 +464,16 @@ void EditorApp::drawAnimatorSidePanel(ecs::Entity preview) {
             drawBlendTreeEditor(st, data, live);
         } else if (data != nullptr && !data->animations.empty()) {
             if (ImGui::BeginCombo("Clip", st.clip_name.empty() ? "(ninguno)" : st.clip_name.c_str())) {
-                for (const asset::AnimationClip& clip : data->animations) {
+                // Id por indice: los modelos importados repiten o dejan vacios los nombres de clip.
+                for (std::size_t i = 0; i < data->animations.size(); ++i) {
+                    const asset::AnimationClip& clip = data->animations[i];
+                    ImGui::PushID(static_cast<int>(i));
                     if (ImGui::Selectable(clip.name.c_str(), clip.name == st.clip_name)) {
                         st.clip_name = clip.name;
                         if (st.name == "Estado" || st.name.empty()) st.name = clip.name;
                         animator_dirty_ = true;
                     }
+                    ImGui::PopID();
                 }
                 ImGui::EndCombo();
             }
@@ -833,8 +837,12 @@ void EditorApp::drawAnimatorGraph(ecs::Entity preview) {
             c.states.back().motion = ecs::AnimatorMotion::BlendTree2D;
         }
         if (live_data != nullptr && !live_data->animations.empty() && ImGui::BeginMenu("Crear estado con clip")) {
-            for (const asset::AnimationClip& clip : live_data->animations) {
+            // Id por indice: puede haber clips con el mismo nombre (o sin nombre).
+            for (std::size_t i = 0; i < live_data->animations.size(); ++i) {
+                const asset::AnimationClip& clip = live_data->animations[i];
+                ImGui::PushID(static_cast<int>(i));
                 if (ImGui::MenuItem(clip.name.c_str())) addState(clip.name, clip.name);
+                ImGui::PopID();
             }
             ImGui::EndMenu();
         }
@@ -986,11 +994,15 @@ void EditorApp::drawBlendTreeEditor(ecs::AnimatorState& st, const asset::ModelDa
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 60.0f);
         if (data != nullptr && !data->animations.empty() && !ch.clip.valid()) {
             if (ImGui::BeginCombo("##clip", ch.clip_name.empty() ? "(clip)" : ch.clip_name.c_str())) {
-                for (const asset::AnimationClip& clip : data->animations) {
+                // Id por indice dentro del popup del combo: nombres de clip repetidos o vacios.
+                for (std::size_t i = 0; i < data->animations.size(); ++i) {
+                    const asset::AnimationClip& clip = data->animations[i];
+                    ImGui::PushID(static_cast<int>(i));
                     if (ImGui::Selectable(clip.name.c_str(), clip.name == ch.clip_name)) {
                         ch.clip_name = clip.name;
                         animator_dirty_ = true;
                     }
+                    ImGui::PopID();
                 }
                 ImGui::EndCombo();
             }

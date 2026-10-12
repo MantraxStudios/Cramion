@@ -12,6 +12,8 @@
 
 #include "CramionCore/project/DataPack.h"
 #include "CramionCore/cvar/CVar.h"
+#include "CramionCore/jobs/JobSystem.h"
+#include "CramionCore/net/WebSocket.h"
 #include <CramionFX/asset/TextureCompression.h>
 
 #include <shellapi.h>
@@ -50,6 +52,12 @@ float millisecondsSince(CpuClock::time_point start) {
 std::wstring widen(const std::string& text) {
     return dialogs::fromUtf8(text).wstring();
 }
+
+// Informe de frames lentos en la consola: desde cuantos ms (25 para medir
+// tirones del streaming; 150 = solo los parones de verdad).
+cvar::CVar<float> g_slow_frame_ms("perf.SlowFrameMs", 150.0f,
+                                  "Frames mas lentos que esto (ms) se explican en la consola, parte por parte",
+                                  cvar::Saved, 5.0f, 10000.0f);
 
 }  // namespace
 
@@ -96,6 +104,8 @@ EditorApp::~EditorApp() {
     // Cerrar en Play: los scripts terminan (OnDestroy) mientras todo lo que usan
     // sigue vivo (el mundo de bloques se destruye antes que ellos).
     scripts_.stop();
+    // WebSocket: cierre limpio (1001) de lo que quede, como mucho 500 ms.
+    net::shutdownWebSockets(500);
     // Los scripts de C++ se desenganchan de la fisica mientras sigue viva (se
     // declaran antes que physics_ y se destruirian despues: crash al cerrar).
     cpp_scripts_.stop();
@@ -342,6 +352,7 @@ void EditorApp::newScene() {
     world_.setSceneName("Nueva escena");
     ecs::populateDefaultScene(world_);
     scene_path_.clear();
+    loadSceneLighting();  // sin escena: fuera las sondas y el lightmap de la anterior
     clearSelection();
     resetUndo();
     dirty_ = false;
@@ -385,6 +396,10 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
 }
 
 bool EditorApp::saveScene() {
+    // En un Blueprint, Guardar guarda el Blueprint (grafo + .crprefab).
+    if (findWorkspace(world_workspace_) != nullptr && findWorkspace(world_workspace_)->kind == WorkspaceKind::Blueprint) {
+        return saveBlueprintWorkspace();
+    }
     if (prefabStageRoot().valid() || (findWorkspace(world_workspace_) != nullptr &&
                                       findWorkspace(world_workspace_)->kind == WorkspaceKind::Prefab)) {
         return savePrefabWorkspace();  // en un prefab, Guardar guarda el prefab
@@ -460,12 +475,20 @@ void EditorApp::runOrAskToSave(PendingAction action, const std::filesystem::path
         if (action == PendingAction::Quit || action == PendingAction::BackToHub) {
             std::vector<int> dirty;
             for (const Workspace& ws : workspaces_) {
-                if (ws.kind == WorkspaceKind::Prefab && (ws.id == world_workspace_ ? dirty_ : ws.dirty)) dirty.push_back(ws.id);
+                if (prefabLikeDirty(ws.id)) dirty.push_back(ws.id);
             }
             for (const int id : dirty) {
+                const Workspace* ws = findWorkspace(id);
+                const bool blueprint = ws != nullptr && ws->kind == WorkspaceKind::Blueprint;
                 loadWorkspaceWorld(id);
-                savePrefabWorkspace();
+                if (blueprint) {
+                    saveBlueprintWorkspace();
+                } else {
+                    savePrefabWorkspace();
+                }
             }
+            // El editor .crgraph suelto ya no se guarda solo (vsedit): tampoco se pierde.
+            if (graphDoc(GraphKind::VisualScript).dirty) saveGraphDoc(GraphKind::VisualScript);
         }
         // Las escenas se abren, crean y guardan en la pestana Escena.
         returnToSceneWorkspace();
@@ -587,7 +610,7 @@ void EditorApp::undo() {
         TerrainUndo step = std::move(terrain_undo_.back());
         terrain_undo_.pop_back();
         undo_kinds_.pop_back();
-        applyTerrainSnapshot(step.path, *step.before);
+        applyTerrainUndo(step, false);
         terrain_redo_.push_back(std::move(step));
         redo_kinds_.push_back('T');
         dirty_ = true;
@@ -618,7 +641,7 @@ void EditorApp::redo() {
         TerrainUndo step = std::move(terrain_redo_.back());
         terrain_redo_.pop_back();
         redo_kinds_.pop_back();
-        applyTerrainSnapshot(step.path, *step.after);
+        applyTerrainUndo(step, true);
         terrain_undo_.push_back(std::move(step));
         undo_kinds_.push_back('T');
         dirty_ = true;
@@ -1061,6 +1084,10 @@ void EditorApp::drawUi(float delta_seconds) {
         if (projectLoading() || project_load_.stage == ProjectLoad::Stage::Done) {
             drawProjectLoading(delta_seconds);
             if (project_load_.stage == ProjectLoad::Stage::Done) project_load_.stage = ProjectLoad::Stage::Idle;
+            // El frame que viene aparecen todas las areas a la vez: como un
+            // cambio de pestana (sin llevarse el foco; si no, la ultima que se
+            // dibuja se pondria delante de la elegida en el .ini).
+            workspace_switch_frame_ = ImGui::GetFrameCount();
             return;
         }
         // Fallo al abrir: vuelve el Hub con el error.
@@ -1088,11 +1115,17 @@ void EditorApp::drawUi(float delta_seconds) {
         flying_ = false;
         drawHub();
         drawModals();
+        workspace_switch_frame_ = ImGui::GetFrameCount();  // igual al salir del Hub
         return;
     }
 
     // Pestana pedida el frame anterior (cambia el mundo: antes de todo).
     applyPendingWorkspace();
+    // Cambio de tipo de editor de un area pedido el frame anterior: antes del
+    // dockspace y de las areas (EditorAreas.cpp).
+    applyPendingAreaSwitch();
+    // Los dockspaces de las otras pestanas, vivos antes de cualquier ventana.
+    keepInactiveDockspacesAlive();
 
     // La fisica va ANTES que la interfaz: los gizmos, el Inspector y el
     // render ven los objetos donde estan en este frame (si fuera despues, los
@@ -1127,6 +1160,18 @@ void EditorApp::drawUi(float delta_seconds) {
         return;
     }
 
+    // Los paneles vuelven a dibujarse tras el Hub (abrir proyecto, arrancar)
+    // o el modo cine: todas las areas aparecen a la vez, como al cambiar de
+    // pestana. Sin esto la ultima en dibujarse se llevaba el foco y
+    // promoteFocusedArea la ponia delante (perdiendo el editor elegido en
+    // cada area, tambien el que vuelve del .ini).
+    if (const int ui_frame = ImGui::GetFrameCount(); ui_frame - areas_drawn_frame_ > 1) {
+        workspace_switch_frame_ = ui_frame;
+        const auto focused = workspace_focus_.find(active_workspace_);
+        workspace_restore_focus_ = focused != workspace_focus_.end() ? focused->second : 0;
+    }
+    areas_drawn_frame_ = ImGui::GetFrameCount();
+
     drawMenuBar();
     drawWorkspaceBar();
     drawStatusBar();
@@ -1152,6 +1197,7 @@ void EditorApp::drawUi(float delta_seconds) {
         // Id nuevo con las areas de Blender (un editor por area): los disenos
         // de antes se rehacen una vez.
         const ImGuiID dockspace_id = ImGui::GetID("CramionDockspaceBlenderAreas");
+        scene_dockspace_id_ = dockspace_id;  // para mantenerlo vivo desde otras pestanas
         if (reset_layout_ || ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
             buildDefaultLayout(dockspace_id);
             reset_layout_ = false;
@@ -1210,17 +1256,25 @@ void EditorApp::drawUi(float delta_seconds) {
     if (workspace == WorkspaceKind::Graph && !io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         if (const Workspace* ws = findWorkspace(active_workspace_)) saveGraphDoc(ws->graph);  // el grafo, no la escena
     }
+    // Pestana Blueprint: con el Event Graph enfocado, Ctrl+Z/Y son del grafo
+    // (los atiende su lienzo) y no del mundo; Ctrl+S guarda el Blueprint
+    // entero en los dos casos (una vez, al principio del frame que viene).
+    BlueprintEditorState* blueprint = workspace == WorkspaceKind::Blueprint ? activeBlueprint() : nullptr;
+    const bool blueprint_graph_keys = blueprint != nullptr && (blueprint->graph_focused || blueprint->graph.focused);
+    if (blueprint != nullptr && !io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+        blueprint->save_requested = true;
+    }
     if (!io.WantTextInput && !flying_ && workspace != WorkspaceKind::Script && workspace != WorkspaceKind::StateMachine &&
         workspace != WorkspaceKind::Graph) {
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+        if (blueprint == nullptr && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
             if (io.KeyShift) {
                 saveSceneAs();
             } else {
                 saveScene();
             }
         }
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) undo();
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y)) redo();
+        if (!blueprint_graph_keys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) undo();
+        if (!blueprint_graph_keys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y)) redo();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N, false)) runOrAskToSave(PendingAction::NewScene);
         // Play (Ctrl+P) y pausa (Ctrl+Mayus+P), como Unity.
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_P, false)) {
@@ -1245,7 +1299,7 @@ void EditorApp::reportFrame(float total_ms, float window_ms, float imgui_ms, flo
     const double now = ImGui::GetTime();
     // Frame lento (menos de ~7 FPS): se explica en la consola, como mucho una
     // vez por segundo, con lo que costo cada parte en ESE frame.
-    if (total_ms > 150.0f && has_project_ && now - last_slow_report_ > 1.0) {
+    if (total_ms > g_slow_frame_ms.get() && has_project_ && now - last_slow_report_ > 1.0) {
         last_slow_report_ = now;
         const auto ms = [](float v) { return std::to_string(static_cast<int>(v + 0.5f)); };
         const auto s = [&](int section) { return ms(frame_ms_[static_cast<std::size_t>(section)]); };
@@ -1265,6 +1319,21 @@ void EditorApp::reportFrame(float total_ms, float window_ms, float imgui_ms, flo
             if (passes[i].second >= 1.0f) line += std::string(i == 0 ? "; pases: " : ", ") + passes[i].first + " " + ms(passes[i].second);
         }
         line += "), ventana " + ms(window_ms) + ", imgui " + ms(imgui_ms) + ", camara " + ms(scene_update_ms);
+        {
+            // Streaming: el streamer de teselas mas adoptarlas en la GPU (dentro
+            // de sync), lo que hay en vuelo y lo subido en este frame.
+            const terrain::TerrainStreamStats& ts = terrain_streamer_.stats();
+            const ecs::RenderSync::TerrainGpuStats gs =
+                sync_ ? sync_->terrainGpuStats() : ecs::RenderSync::TerrainGpuStats{};
+            const jobs::JobStats js = jobs::stats();
+            char buffer[256];
+            std::snprintf(buffer, sizeof(buffer),
+                          "; streaming %.1f ms (teselas: %d leyendo, %d preparando GPU, %d adoptadas %.1f ms, %.1f MB "
+                          "subidos; jobs en cola %d)",
+                          static_cast<double>(frame_streaming_ms_) + gs.main_ms, ts.tiles_loading, gs.preparing,
+                          gs.adopted, gs.main_ms, static_cast<double>(gs.bytes) / (1024.0 * 1024.0), js.queued);
+            line += buffer;
+        }
         line += " | GPU " + ms(renderer_.gpuProfiler().totalMilliseconds()) + " ms, " +
                 std::to_string(scene_.actors().size()) + " actores, " + std::to_string(renderer_.triangleCount()) +
                 " triangulos";
@@ -1274,6 +1343,7 @@ void EditorApp::reportFrame(float total_ms, float window_ms, float imgui_ms, flo
     frame_tasks_ms_ = 0.0f;
     frame_refresh_ms_ = 0.0f;
     frame_refreshes_ = 0;
+    frame_streaming_ms_ = 0.0f;
 }
 
 void EditorApp::syncWorld(float delta_seconds, bool secondary) {
@@ -1847,6 +1917,7 @@ void EditorApp::drawHubTitleBar() {
 // -----------------------------------------------------------------------------
 
 void EditorApp::drawModals() {
+    drawNewBlueprintModal();  // "Nuevo Blueprint de actor" (EditorBlueprint.cpp)
     drawSaveTemplateDialog();
     drawUpdateDialog();
     drawUpdateToast();
@@ -2324,31 +2395,6 @@ void EditorApp::drawGraphicsSettings() {
         }
         ImGui::SetItemTooltip("Resolución por cascada del mapa de sombras del sol (4 cascadas).");
 
-        static constexpr int kTextureSizes[] = {0, 1024, 2048, 4096, 8192, 16384};
-        const std::uint32_t auto_textures = gfx::textureSizeFor(hw.tier);
-        char texture_preview[48];
-        if (g.texture_max_size <= 0) {
-            if (auto_textures == 0) std::snprintf(texture_preview, sizeof(texture_preview), "Auto (sin límite)");
-            else std::snprintf(texture_preview, sizeof(texture_preview), "Auto (%u)", auto_textures);
-        } else {
-            std::snprintf(texture_preview, sizeof(texture_preview), "%d", g.texture_max_size);
-        }
-        ImGui::SetNextItemWidth(-90.0f);
-        if (ImGui::BeginCombo("Texturas", texture_preview)) {
-            for (const int size : kTextureSizes) {
-                char label[64];
-                if (size == 0) std::snprintf(label, sizeof(label), "Auto (según el perfil)");
-                else std::snprintf(label, sizeof(label), "Máximo %d  (%.0f MB por textura)", size,
-                                   size * static_cast<double>(size) * 4.0 * 1.33 / (1024.0 * 1024.0));
-                if (ImGui::Selectable(label, g.texture_max_size == size)) {
-                    g.texture_max_size = size;
-                    changed = true;
-                }
-            }
-            ImGui::EndCombo();
-        }
-        ImGui::SetItemTooltip("Lado máximo de las texturas de los modelos. Una de 16K sin comprimir ocupa 1,3 GB de VRAM.\n"
-                              "Se aplica a los modelos que se cargan después (reabre la escena).");
         std::uint64_t vram_used = 0;
         std::uint64_t vram_budget = 0;
         if (r.device().videoMemory(vram_used, vram_budget)) {
@@ -2395,6 +2441,109 @@ void EditorApp::drawGraphicsSettings() {
             if (!budget.lastAction().empty()) ImGui::TextDisabled("Último cambio: %s", budget.lastAction().c_str());
         }
         ImGui::TextDisabled("Mapa de sombras en uso: %u x %u x 4 cascadas", r.shadowResolution(), r.shadowResolution());
+    }
+
+    // Texturas: calidad (lado maximo, al cargar), filtrado anisotropico y
+    // sesgo de los mips (al momento). Lo mismo que Graphics::set("texture_*").
+    ImGui::SeparatorText("Texturas");
+    {
+        const gfx::HardwareProfile& hw = r.hardwareProfile();
+        struct TextureLevel {
+            const char* name;
+            int size;
+        };
+        static constexpr TextureLevel kTextureLevels[] = {{"Auto", 0},      {"Baja", 1024},  {"Media", 2048},
+                                                          {"Alta", 4096},   {"Ultra", 8192}, {"Máxima", 16384}};
+        const std::uint32_t auto_textures = gfx::textureSizeFor(hw.tier);
+        char texture_preview[64];
+        std::snprintf(texture_preview, sizeof(texture_preview), "Personalizada (%d)", g.texture_max_size);
+        for (const TextureLevel& level : kTextureLevels) {
+            if (level.size != g.texture_max_size) continue;
+            if (level.size == 0 && auto_textures == 0) {
+                std::snprintf(texture_preview, sizeof(texture_preview), "Auto (sin límite)");
+            } else if (level.size == 0) {
+                std::snprintf(texture_preview, sizeof(texture_preview), "Auto (%u)", auto_textures);
+            } else {
+                std::snprintf(texture_preview, sizeof(texture_preview), "%s (%d)", level.name, level.size);
+            }
+        }
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::BeginCombo("Calidad##texturas", texture_preview)) {
+            for (const TextureLevel& level : kTextureLevels) {
+                char label[80];
+                if (level.size == 0) {
+                    std::snprintf(label, sizeof(label), "Auto (según el perfil)");
+                } else {
+                    std::snprintf(label, sizeof(label), "%s: máximo %d  (%.0f MB por textura)", level.name, level.size,
+                                  level.size * static_cast<double>(level.size) * 4.0 * 1.33 / (1024.0 * 1024.0));
+                }
+                if (ImGui::Selectable(label, g.texture_max_size == level.size)) {
+                    g.texture_max_size = level.size;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Lado máximo de las texturas de los modelos. Una de 16K sin comprimir ocupa 1,3 GB de VRAM.\n"
+                              "Se aplica a los modelos que se cargan después (reabre la escena).");
+
+        // Filtrado anisotropico: suelos, carreteras y paredes vistos en angulo.
+        const std::uint32_t max_aniso = r.maxTextureAnisotropy();
+        const std::uint32_t auto_aniso = std::min(r.autoTextureAnisotropy(), std::max(max_aniso, 1u));
+        static constexpr int kFiltering[] = {0, 1, 2, 4, 8, 16};
+        const auto filtering_label = [&](int samples, char* out, std::size_t size) {
+            if (samples == 0) std::snprintf(out, size, "Auto (%ux según el perfil)", auto_aniso);
+            else if (samples == 1) std::snprintf(out, size, "Desactivado (trilineal)");
+            else std::snprintf(out, size, "Anisotrópico %dx", samples);
+        };
+        char filtering_preview[64];
+        filtering_label(g.texture_filtering, filtering_preview, sizeof(filtering_preview));
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::BeginCombo("Filtrado##texturas", filtering_preview)) {
+            for (const int samples : kFiltering) {
+                char label[64];
+                filtering_label(samples, label, sizeof(label));
+                const bool available = samples <= 1 || static_cast<std::uint32_t>(samples) <= max_aniso;
+                if (ImGui::Selectable(label, g.texture_filtering == samples,
+                                      available ? 0 : ImGuiSelectableFlags_Disabled)) {
+                    g.texture_filtering = samples;
+                    changed = true;
+                }
+                if (!available && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    ImGui::SetTooltip("Esta GPU llega hasta %ux.", max_aniso);
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Filtrado anisotrópico: los suelos y las paredes vistos en ángulo se ven nítidos en vez de\n"
+                              "borrosos. En una GPU dedicada 16x apenas cuesta FPS. Se aplica al momento.");
+
+        // Sesgo de los mips: se aplica al soltar (cada cambio rehace los samplers).
+        static float lod_bias_edit = 0.0f;
+        static bool lod_bias_active = false;
+        if (!lod_bias_active) lod_bias_edit = g.texture_lod_bias;
+        ImGui::SetNextItemWidth(-90.0f);
+        ImGui::SliderFloat("Sesgo de mips", &lod_bias_edit, -1.0f, 2.0f, "%+.2f");
+        lod_bias_active = ImGui::IsItemActive();
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            g.texture_lod_bias = std::clamp(lod_bias_edit, -1.0f, 2.0f);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("Negativo: texturas más nítidas (y más parpadeo de lejos). Positivo: más suaves y\n"
+                              "menos ancho de banda. 0 = normal. Ctrl+clic para escribir el valor.");
+        if (g.texture_lod_bias != 0.0f) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("0##sesgo_mips")) {
+                g.texture_lod_bias = 0.0f;
+                changed = true;
+            }
+            ImGui::SetItemTooltip("Volver a 0 (normal).");
+        }
+        const gfx::TextureFiltering active = r.textureFiltering();
+        ImGui::TextDisabled("En uso: %s, sesgo %+.2f  |  máximo de la GPU %ux",
+                            active.anisotropy > 1.0f ? (std::to_string(static_cast<int>(active.anisotropy)) + "x").c_str()
+                                                     : "sin anisotrópico",
+                            active.lod_bias, max_aniso);
     }
 
     ImGui::SeparatorText("Presentación");

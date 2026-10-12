@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebSocket (servidor propio) · Documentación de Cramion</title>
+  <meta name="description" content="Conexion permanente con tu servidor (MMO, chat, lobby): mensajes en los dos sentidos, reconexion y seguridad.">
+  <meta name="theme-color" content="#232323">
+  <link rel="icon" href="../img/icon.png">
+  <script>
+    // Tema antes de pintar (sin parpadeo). Oscuro por defecto.
+    try { const t = localStorage.getItem("cramion-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="manual.css?v=ab13539204">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="search.js"></script>
+</head>
+<body data-group="Guías de scripting">
+
+  <header class="site-header">
+    <div class="header-inner">
+      <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.4.8</span></a>
+      <nav class="main-nav" aria-label="Secciones">
+        <a href="index.html" data-nav="index">Documentación</a>
+        <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
+        <a href="componentes.html" data-nav="Componentes">Componentes</a>
+        <a href="cpp-script.html" data-nav="API de C++">API de C++</a>
+        <a href="ejemplo-girar.html" data-nav="Ejemplos">Ejemplos</a>
+      </nav>
+      <div class="header-right">
+        <button id="search-open" class="search-trigger" aria-label="Buscar en la documentación">
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>Buscar en la documentación...</span><kbd>Ctrl K</kbd>
+        </button>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="icon-btn hide-mobile" aria-label="Discord" title="Discord"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 16.5c-2 .6-3.6 0-3.6 0C3.7 13 4 9 5.4 6.6 6.8 5.6 8.5 5.3 8.5 5.3l.6 1.2c1.9-.4 3.9-.4 5.8 0l.6-1.2s1.7.3 3.1 1.3C20 9 20.3 13 19.1 16.5c0 0-1.6.6-3.6 0l-.8-1.3"/><circle cx="9.5" cy="12" r="1"/><circle cx="14.5" cy="12" r="1"/></svg></a>
+        <button id="theme" class="icon-btn" aria-label="Cambiar entre tema claro y oscuro" title="Tema">
+          <span class="i-sun"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span><span class="i-moon"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg></span>
+        </button>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm hide-mobile"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Donar</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="icon-btn only-mobile" aria-label="Donar con PayPal" title="Donar"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg></a>
+      </div>
+    </div>
+    <div class="read-progress" id="read-progress" aria-hidden="true"></div>
+  </header>
+  <div class="overlay" id="overlay"></div>
+
+  <div id="cmd" class="cmd-backdrop" hidden>
+    <div class="cmd" role="dialog" aria-modal="true" aria-label="Buscar">
+      <div class="cmd-input"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="search" type="search" autocomplete="off" spellcheck="false"
+        placeholder="Buscar funciones, componentes, páginas..."><kbd>Esc</kbd></div>
+      <div id="results" class="cmd-list"></div>
+      <div class="cmd-foot"><span><kbd>↑</kbd><kbd>↓</kbd> moverse</span><span><kbd>Enter</kbd> abrir</span><span><kbd>Esc</kbd> cerrar</span></div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <aside id="side" class="sidebar" aria-label="Menú del manual">
+      <nav>
+        <div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span></a><button id="menu-close" class="icon-btn" aria-label="Cerrar el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Inicio</p><a href="index.html">Introducción</a><a href="../index.html">Web de Cramion</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="novedades-24.html">Novedades</a><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-api.html">Api (por nombre)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-base64.html">Base64</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-websocket.html">WebSocket</a><a href="cpp-xr.html">XR</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p><a href="editor-interfaz.html">Interfaz y pestañas</a><a href="editor-tema.html">Tema e Inspector</a><a href="editor-escena.html">Vista Escena y gizmos</a><a href="editor-jerarquia.html">Jerarquía e Inspector</a><a href="editor-proyecto.html">Proyecto e importación</a><a href="editor-play.html">Play, deshacer y escenas</a><a href="insights.html">Insights y rendimiento</a><a href="editor-herramientas.html">Herramientas de mundo</a><a href="modelado.html">Modelado poligonal</a><a href="2d.html">2D</a><a href="mundo-procedural.html">Mundo procedural</a><a href="mundos-grandes.html">Mundos grandes (MMO)</a><a href="ambiente.html">Ambiente y clima</a><a href="agua.html">Agua</a><a href="fuego.html">Fuego</a><a href="vfx-graph.html">VFX Graph</a><a href="liquidos.html">Líquidos</a><a href="destruccion.html">Destrucción</a><a href="vehiculos.html">Vehículos</a><a href="motion-matching.html">Motion Matching</a><a href="replays.html">Repeticiones</a><a href="editor-ventanas.html">Ventanas de herramientas</a><a href="maquinas-de-estados.html">Máquinas de estados</a><a href="visual-scripting.html">Visual Scripting</a><a href="blueprints.html">Blueprints de actor</a><a href="behavior-trees.html">Behavior Trees</a><a href="dialogos.html">Diálogos</a><a href="localizacion.html">Localización</a><a href="guardado.html">Partidas guardadas</a><a href="materiales.html">Materiales</a><a href="shader-graph.html">Shader Graph</a><a href="render-textures.html">Render Textures</a><a href="render.html">Render y rendimiento</a><a href="iluminacion-horneada.html">Iluminación horneada</a><a href="exportar.html">Exportar y compilación</a><a href="steam.html">Steam</a><a href="linux.html">Linux</a><a href="git.html">Control de versiones (Git)</a><a href="pruebas.html">Pruebas automáticas</a><a href="datapacks.html">DataPacks (bundles)</a><a href="plantillas.html">Plantillas</a><a href="atajos.html">Atajos de teclado</a><a href="actualizaciones.html">Actualizaciones</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-2d.html">2D</a><a href="componentes-iluminacion.html">Iluminación horneada</a><a href="componentes-vr.html">Realidad virtual</a><a href="componentes-mundo.html">Splines y mundos grandes</a><a href="componentes-ia.html">Multitudes</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Guías de scripting</p><a href="input-actions.html">Input Actions</a><a href="red.html">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="websocket.html" class="active" aria-current="page">WebSocket (servidor propio)</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="mallas.html">Mallas por código</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a><a href="graphics.html">Graphics (opciones gráficas)</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p><a href="ejemplo-girar.html">Girar un objeto</a><a href="ejemplo-camara.html">Cámara que sigue al jugador</a><a href="ejemplo-jugador.html">Jugador con física</a><a href="ejemplo-disparo.html">Disparo con raycast</a><a href="ejemplo-monedas.html">Monedas y puntuación</a><a href="ejemplo-spawner.html">Generador de enemigos</a><a href="ejemplo-vehiculo.html">Conducir un vehículo</a><a href="ejemplo-menu.html">Menú, opciones y récord</a><a href="ejemplo-animacion.html">Animación de un personaje</a><a href="ejemplo-comunicacion.html">Scripts que se hablan</a><a href="ejemplo-ia.html">IA: patrullar y perseguir</a><a href="ejemplo-terreno.html">Terreno procedural con colisión</a><a href="ejemplo-efectos.html">Varios materiales y efectos</a><a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a></div>
+        
+      <div class="donate-card side-donate">
+        <div class="t"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion</div>
+        <p>El motor es gratis y lo seguirá siendo. Una donación ayuda a seguir añadiendo cosas.</p>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm btn-block">Donar con PayPal</a>
+      </div>
+      </nav>
+    </aside>
+
+    <main class="doc">
+      <div class="doc-inner">
+        <nav class="crumbs" aria-label="Ruta"><a href="index.html">Documentación</a><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span>Guías de scripting</span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span class="here">WebSocket (servidor propio)</span></nav>
+        <h1>WebSocket (servidor propio)</h1>
+        <p class="lede">Conexion permanente con tu servidor (MMO, chat, lobby): mensajes en los dos sentidos, reconexion y seguridad.</p>
+        <details class="toc-inline"><summary>En esta página <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></summary><nav class="onpage"></nav></details>
+        <div class="body">
+<p>
+  <code>WebSocket</code> abre una <strong>conexión permanente con tu servidor</strong> (el backend de un MMO, un chat, un
+  lobby, notificaciones en directo): los dos lados se mandan mensajes cuando quieren, sin pedir y esperar como con
+  <a href="http.html">Http</a>. Conectar, enviar y cerrar <strong>nunca paran el juego</strong>: cada conexión trabaja en
+  segundo plano y los mensajes llegan en el hilo del juego, al principio del frame, como un <code>update</code> más. Si
+  se corta, <strong>se reconecta sola</strong>.
+</p>
+
+<pre><code class="language-cpp">WsClient ws_;   // miembro del script
+
+void start() override {
+    ws_.connect(Value{{"url", "wss://juego.miservidor.com/ws"}, {"name", "mmo"},
+                      {"headers", Value{{"Authorization", "Bearer " + token}}}});
+    ws_.onOpen([](const Value&amp;) { Debug::log("conectado"); });
+    ws_.onMessage([this](const Value&amp; ev) {
+        if (ev["data"]["tipo"].asString() == "chat") mostrarChat(ev["data"]["texto"].asString());
+    });
+    ws_.onClose([](const Value&amp; ev) { Debug::log("cerrada: " + ev["code"].asString()); });
+}
+
+void enviarChat(const std::string&amp; texto) {
+    ws_.sendJson(Value{{"tipo", "chat"}, {"texto", texto}});
+}</code></pre>
+
+<h3 id="cual">WebSocket, Http o Network</h3>
+<table>
+  <thead><tr><th></th><th>Para qué</th><th>Cómo</th></tr></thead>
+  <tbody>
+    <tr><td><a href="http.html"><code>Http</code></a></td><td>Pedir algo y esperar la respuesta: iniciar sesión, leer el marcador, guardar en la nube, noticias.</td><td>Una petición, una respuesta. HTTPS.</td></tr>
+    <tr><td><code>WebSocket</code></td><td>Estar conectado a <em>tu</em> servidor todo el rato: MMO, chat, lobby, emparejamiento, avisos en directo, juegos por turnos.</td><td>Una conexión TCP abierta (ws:// o wss://); mensajes en los dos sentidos, en orden, sin perderse.</td></tr>
+    <tr><td><a href="red.html"><code>Network</code></a></td><td>Partidas en tiempo real entre jugadores (uno hace de servidor, o <code>CramionServer</code>): objetos y variables sincronizados.</td><td>UDP (ENet), mensajes fiables o rápidos.</td></tr>
+  </tbody>
+</table>
+<p>
+  Un MMO típico usa los tres: <code>Http</code> para la cuenta, <code>WebSocket</code> para el chat, el lobby y el mundo
+  persistente, y <code>Network</code> para una partida concreta.
+</p>
+
+<h3 id="conectar">Conectar, enviar y recibir</h3>
+<p>
+  <code>WebSocket::connect(opciones)</code> devuelve el <strong>id</strong> de la conexión al momento (o vacío si la
+  dirección no vale; el motivo sale en la Consola) y conecta en segundo plano. Hasta que llega el evento
+  <code>open</code> no se puede enviar. Los mensajes se reciben de dos formas (en cada conexión, una u otra, nunca las dos):
+</p>
+<ul>
+  <li><strong>Escuchas</strong> (<code>on</code>): una función por tipo de evento; el motor la llama al principio del frame.</li>
+  <li><strong><code>poll</code></strong>: tú pides los eventos pendientes cuando quieras (por ejemplo cada frame en <code>update</code>). Si una conexión no tiene escuchas, sus eventos se guardan hasta que hagas <code>poll</code>.</li>
+</ul>
+<pre><code class="language-cpp">// Con escuchas (WebSocket::* directo, sin WsClient)
+const Value id = WebSocket::connect(Value{{"url", "ws://localhost:8080/juego"}});
+WebSocket::on(id, "message", [](const Values&amp; a) {
+    const Value&amp; ev = a[0];
+    Debug::log("llego: " + ev["text"].asString());
+});
+WebSocket::on(id, "open", [id](const Values&amp;) { WebSocket::send(id, "hola"); });
+
+// Con poll (mejor con mucho trafico: un solo viaje al motor por frame)
+void update(float) override {
+    for (const Value&amp; ev : ws_.poll()) {
+        const std::string tipo = ev["type"].asString();
+        if (tipo == "message") procesar(ev);
+        else if (tipo == "close") Debug::log("cerrada");
+    }
+}</code></pre>
+
+<h4>El evento</h4>
+<table>
+  <thead><tr><th><code>ev["type"]</code></th><th>Campos (además de <code>id</code> y <code>name</code>)</th></tr></thead>
+  <tbody>
+    <tr><td><code>open</code></td><td><code>protocol</code>: el subprotocolo que eligió el servidor (o vacío).</td></tr>
+    <tr><td><code>message</code> (texto)</td><td><code>binary = false</code>, <code>text</code> y, si el texto es JSON (empieza por <code>{</code> o <code>[</code>, hasta 1 MB), <code>data</code> ya decodificado.</td></tr>
+    <tr><td><code>message</code> (binario)</td><td><code>binary = true</code> y <code>base64</code> con los bytes.</td></tr>
+    <tr><td><code>close</code></td><td><code>code</code> (1000 normal, 1001 se va, 1006 cortada sin cierre, 4000-4999 los tuyos), <code>reason</code>, <code>clean</code> (hubo saludo de cierre), <code>reconnect</code> (detrás viene una reconexión) y <code>dropped</code> (mensajes tuyos que no se llegaron a enviar).</td></tr>
+    <tr><td><code>error</code></td><td><code>error</code> (texto en español, tabla de abajo), <code>status</code> (HTTP del saludo, 401, 404...; 0 si no hubo) y <code>reconnect</code>.</td></tr>
+    <tr><td><code>reconnecting</code></td><td><code>attempt</code> (1, 2...) y <code>delay</code> (segundos hasta el intento).</td></tr>
+  </tbody>
+</table>
+<p>
+  Con <code>on(id, "any", fn)</code> recibes todos. <code>on</code> devuelve un número para dejar de escuchar con
+  <code>WebSocket::off(numero)</code>. <code>on</code> acepta el id o el <strong>nombre</strong> de la conexión, incluso antes de
+  que exista.
+</p>
+
+<h4>Visual Scripting</h4>
+<p>
+  El nodo <strong>On WebSocket</strong> (grupo Eventos) escucha una conexión por su nombre (<em>Conexion</em>, <code>main</code>
+  por defecto) y un tipo (<em>Tipo</em>: <code>message</code>, <code>open</code>, <code>close</code>, <code>error</code>,
+  <code>reconnecting</code> o <code>any</code>). Sus salidas: <em>Evento</em> (el objeto entero), <em>Texto</em> (el mensaje, o
+  el error, o el motivo del cierre) y <em>Datos</em> (el JSON decodificado). Para conectar, en <em>Event Start</em> pon el nodo
+  <code>WebSocket.connect</code> con la tabla <code>{url = "wss://...", name = "main"}</code>; como conectar con nombre devuelve
+  la conexión que ya existe, es seguro hacerlo en cada carga de escena. Para enviar, el nodo <code>WebSocket.send</code> con
+  el nombre como id.
+</p>
+
+<h4>En el servidor dedicado</h4>
+<p>
+  Los scripts de <code>CramionServer</code> (Windows y Linux) usan la misma API: un servidor de partida puede avisar a tu
+  backend (resultado de la partida, jugadores que entran) por WebSocket mientras los jugadores juegan por
+  <code>Network</code>.
+</p>
+
+<h3 id="nombres">Conexiones con nombre y cambio de escena</h3>
+<p>
+  Con <code>name</code> la conexión es <strong>del juego, no de la escena</strong>:
+</p>
+<ul>
+  <li><strong>Sobrevive al cambio de escena</strong> (<code>Scene::load</code>). Las que no tienen nombre se cierran (1001).</li>
+  <li>Llamar a <code>connect</code> con un nombre que ya está vivo <strong>devuelve la misma conexión</strong> (no abre otra). Así cada escena puede conectar sin miedo.</li>
+  <li><code>WebSocket::find("mmo")</code> da su id, y <code>WsClient::attach("mmo")</code> la recupera.</li>
+  <li>Al cambiar de escena las escuchas (<code>on</code>) se quitan, porque eran de los scripts de la escena vieja; los mensajes que lleguen mientras tanto se guardan hasta que vuelvas a escuchar o hagas <code>poll</code>.</li>
+</ul>
+<pre><code class="language-cpp">void awake() override {
+    if (!ws_.attach("mmo"))   // primera escena: aun no existe
+        ws_.connect(Value{{"url", "wss://juego.miservidor.com/ws"}, {"name", "mmo"}});
+    ws_.onMessage([this](const Value&amp; ev) { procesar(ev); });
+}</code></pre>
+
+<h3 id="recarga">Recarga en caliente</h3>
+<p>
+  Al guardar el <code>.cpp</code> en Play (o si el proceso de los scripts se reinicia tras un fallo) la conexión
+  <strong>sigue abierta</strong>, pero las escuchas de C++ se olvidan: sus funciones eran del proceso anterior. Vuelve a
+  ponerlas en <code>onAfterReload</code>:
+</p>
+<pre><code class="language-cpp">void onAfterReload(const Value&amp;) override {
+    ws_.attach("mmo");
+    ws_.onMessage([this](const Value&amp; ev) { procesar(ev); });
+}</code></pre>
+<p>Las escuchas de los Visual Scripts no se pierden.</p>
+
+<h3 id="reconexion">Reconexión</h3>
+<p>
+  Si la conexión se corta (1006, el servidor se reinicia con 1001/1012, sin Internet un rato, el móvil cambia de red) el
+  motor <strong>vuelve a conectar solo</strong>, esperando cada vez más (0,5 s, 1 s, 2 s... hasta 30 s, con algo de azar
+  para que no vuelvan todos los jugadores a la vez). Recibes <code>close</code> (o <code>error</code>) con
+  <code>reconnect = true</code>, después <code>reconnecting</code> y, al volver, <code>open</code> otra vez: ahí vuelve a
+  identificarte o a pedir el estado.
+</p>
+<p>
+  <strong>No reconecta</strong> cuando cierras tú (<code>close</code>), cuando el servidor cierra normal (1000) o por un error
+  del protocolo (1002, 1003, 1007, 1008, 1009, 1010), ante un rechazo de la sesión (HTTP 401, 403, 404 y otros 4xx) ni con tus
+  códigos 4000-4999 (salvo <code>appCodes = true</code>): así un servidor que te echa (<code>4001 "baneado"</code>) o un token
+  caducado no se convierten en un bucle de intentos.
+</p>
+<pre><code class="language-cpp">ws_.connect(Value{{"url", url}, {"name", "mmo"},
+                  {"reconnect", Value{{"min", 1}, {"max", 60}, {"tries", 10}, {"appCodes", false}}}});
+
+// Renovar el token antes del proximo intento
+ws_.onReconnecting([this](const Value&amp;) {
+    WebSocket::setHeader(ws_.id(), "Authorization", "Bearer " + tokenNuevo());
+});</code></pre>
+<p>
+  <code>reconnect = false</code> la desactiva. Lo que quedó sin enviar al cortarse se tira (cuenta en <code>dropped</code>),
+  salvo con <code>resend = true</code>.
+</p>
+
+<h3 id="binario">Binario</h3>
+<p>
+  Los bytes cruzan entre el motor y los scripts <strong>en base64</strong> (nunca en bruto). <code>WsClient::sendBinary</code>
+  codifica por ti; lo que llega trae <code>ev["base64"]</code>:
+</p>
+<pre><code class="language-cpp">ws_.sendBinary(paquete);   // std::string con bytes
+ws_.onMessage([](const Value&amp; ev) {
+    if (!ev["binary"].asBool()) return;
+    std::string bytes;
+    if (base64Decode(ev["base64"].asString(), bytes)) leerPaquete(bytes);
+});</code></pre>
+<p>
+  <code>base64Encode</code> y <code>base64Decode</code> del SDK no llaman al motor. <code>Base64::encode</code> y
+  <code>Base64::decode</code> hacen lo mismo desde la API (Visual Scripting).
+</p>
+
+<h3 id="trafico">Mucho tráfico</h3>
+<ul>
+  <li>Usa <strong><code>poll</code></strong> en <code>update</code>: un viaje al motor por frame, con todos los eventos juntos. Las escuchas cuestan un viaje por evento.</li>
+  <li>Cada frame se entregan como mucho <code>net.WsMaxEventsPerFrame</code> eventos (512) a las escuchas; el resto espera al frame siguiente, sin perderse.</li>
+  <li>Si los scripts no recogen, la cola de entrada se llena (16 MB) y el motor <strong>deja de leer</strong> del servidor hasta que haya sitio: no se pierde nada y la memoria no crece (TCP frena al servidor).</li>
+  <li>Junta mensajes pequeños: es mejor un mensaje con 20 posiciones que 20 mensajes.</li>
+</ul>
+
+<h3 id="opciones">Opciones y límites</h3>
+<table>
+  <thead><tr><th>Opción de <code>connect</code></th><th>Qué es</th></tr></thead>
+  <tbody>
+    <tr><td><code>url</code></td><td><code>wss://host[:puerto]/ruta?consulta</code> (o <code>ws://</code>, ver Seguridad).</td></tr>
+    <tr><td><code>name</code></td><td>Nombre de la conexión (sobrevive al cambio de escena; ver arriba).</td></tr>
+    <tr><td><code>headers</code></td><td>Cabeceras del saludo: <code>Authorization</code>, <code>Cookie</code>... (hasta 32).</td></tr>
+    <tr><td><code>protocols</code></td><td>Subprotocolos que pides (<code>Sec-WebSocket-Protocol</code>); el elegido llega en <code>open</code>.</td></tr>
+    <tr><td><code>reconnect</code></td><td><code>true</code> (por defecto), <code>false</code> o <code>{min, max, tries, appCodes}</code> (segundos; <code>tries = -1</code> sin límite).</td></tr>
+    <tr><td><code>resend</code></td><td>Al reconectar, mandar lo que quedó sin enviar.</td></tr>
+    <tr><td><code>timeout</code></td><td>Segundos para conectar (DNS, TCP, TLS y saludo): 10.</td></tr>
+    <tr><td><code>maxSize</code></td><td>Bytes como máximo por mensaje recibido (4 MB, <code>net.WsMaxMessageKB</code>; tope 64 MB). Uno mayor cierra con 1009.</td></tr>
+    <tr><td><code>pingInterval</code></td><td>Segundos entre pings (20).</td></tr>
+    <tr><td><code>idleTimeout</code></td><td>Segundos sin recibir nada para dar la conexión por muerta (1006 y reconexión). Por defecto, en Linux y Android, 2,5 veces el ping (mínimo 45 s); en Windows no hay, salvo que lo pongas o uses <code>heartbeat</code>. <code>0</code> = nunca.</td></tr>
+    <tr><td><code>heartbeat</code></td><td>Texto que se manda cada <code>pingInterval</code> (para servidores que necesitan un latido propio).</td></tr>
+  </tbody>
+</table>
+<table>
+  <thead><tr><th>CVar</th><th>Qué es</th></tr></thead>
+  <tbody>
+    <tr><td><code>net.WsInsecure</code></td><td><code>ws://</code> sin cifrar: 0 solo este PC (por defecto), 1 también la red local, 2 cualquiera (solo con trucos).</td></tr>
+    <tr><td><code>net.WsMaxConnections</code></td><td>Conexiones a la vez en todo el juego (16).</td></tr>
+    <tr><td><code>net.WsMaxMessageKB</code></td><td><code>maxSize</code> por defecto, en KB (4096).</td></tr>
+    <tr><td><code>net.WsMaxEventsPerFrame</code></td><td>Eventos entregados a las escuchas por frame (512).</td></tr>
+    <tr><td><code>net.WsLog</code></td><td>Consola: 1 abrir, cerrar y errores; 2 también cada mensaje (200 bytes).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="funciones">Funciones</h3>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>WebSocket::connect(opciones)</code></td><td>Abre una conexión (no espera). Devuelve el id, o vacío si no vale. Con <code>name</code>, si ya hay una viva, devuelve esa.</td></tr>
+    <tr><td><code>WebSocket::send(id, texto)</code></td><td>Envía texto (UTF-8). <code>true</code> si se encoló; <code>false</code> (y un aviso) si no está abierta, el texto no es UTF-8 o la cola de envío está llena.</td></tr>
+    <tr><td><code>WebSocket::sendJson(id, tabla)</code></td><td>Envía un objeto o lista como texto JSON.</td></tr>
+    <tr><td><code>WebSocket::sendBinary(id, base64)</code></td><td>Envía bytes (en base64).</td></tr>
+    <tr><td><code>WebSocket::on(id, tipo, funcion)</code> / <code>off(n)</code></td><td>Escuchar (<code>open</code>, <code>message</code>, <code>close</code>, <code>error</code>, <code>reconnecting</code>, <code>any</code>) y dejar de escuchar.</td></tr>
+    <tr><td><code>WebSocket::poll(id, max)</code></td><td>Los eventos pendientes (hasta <code>max</code>, 1000 por defecto) si no usas <code>on</code>.</td></tr>
+    <tr><td><code>WebSocket::close(id, codigo, motivo)</code></td><td>Cierre limpio (1000, o tus códigos 3000-4999; motivo de hasta 123 bytes). No reconecta.</td></tr>
+    <tr><td><code>WebSocket::closeAll(codigo, motivo)</code></td><td>Cierra todas.</td></tr>
+    <tr><td><code>WebSocket::setHeader(id, nombre, valor)</code></td><td>Cabecera para la próxima reconexión (valor vacío la quita).</td></tr>
+    <tr><td><code>WebSocket::state(id)</code></td><td><code>connecting</code>, <code>open</code>, <code>closing</code>, <code>closed</code> o <code>reconnecting</code>.</td></tr>
+    <tr><td><code>WebSocket::info(id)</code></td><td><code>{id, name, url, state, protocol, sent, received, sentBytes, receivedBytes, buffered, rtt, reconnects}</code>.</td></tr>
+    <tr><td><code>WebSocket::find(nombre)</code>, <code>list()</code>, <code>count()</code></td><td>Buscar por nombre, la lista y cuántas hay vivas.</td></tr>
+  </tbody>
+</table>
+<p>
+  <code>WsClient</code> (en el SDK, sin incluir nada) envuelve todo esto: <code>connect</code>, <code>attach</code>,
+  <code>send</code>, <code>sendJson</code>, <code>sendBinary</code>, <code>close</code>, <code>state</code>, <code>poll</code> y
+  <code>onOpen</code>/<code>onMessage</code>/<code>onClose</code>/<code>onError</code>/<code>onReconnecting</code>. Al
+  destruirse quita sus escuchas pero <strong>no cierra</strong> la conexión. Referencia completa en
+  <a href="cpp-websocket.html">WebSocket (C++)</a>.
+</p>
+
+<h3 id="seguridad">Seguridad</h3>
+<ul>
+  <li><strong>Usa <code>wss://</code></strong> (TLS 1.2 o 1.3): se comprueban el certificado del servidor y su nombre. Si está caducado, es de otro dominio o no es de una autoridad de confianza, no se conecta (y no lo reintenta).</li>
+  <li><code>ws://</code> sin cifrar solo va a <code>localhost</code> / <code>127.0.0.1</code>, para probar en tu PC. Con <code>net.WsInsecure = 1</code> también a la red local (10.x, 172.16-31.x, 192.168.x), comprobado con las direcciones ya resueltas; 2 (cualquiera) solo con trucos activados.</li>
+  <li>Las cabeceras no pueden llevar saltos de línea ni ser las del protocolo (<code>Host</code>, <code>Upgrade</code>, <code>Connection</code>, <code>Sec-WebSocket-*</code>, <code>Content-Length</code>).</li>
+  <li>Cada mensaje tiene un <strong>tamaño máximo</strong> (se comprueba al llegar cada trozo, antes de reservar memoria) y las colas de entrada y salida tienen tope: un servidor que manda datos sin fin no llena la memoria.</li>
+  <li>Conectar, enviar y cerrar nunca bloquean el juego; un servidor que no responde se da por muerto con los tiempos máximos (conectar, enviar, cerrar, sin datos).</li>
+  <li>El texto que llega se comprueba como UTF-8; el binario nunca cruza al script en bruto.</li>
+</ul>
+<p>
+  <strong>No pongas claves secretas en los scripts</strong>: van dentro del juego exportado. Identifica al jugador con un
+  token que le dé tu servidor al iniciar sesión (por <a href="http.html">Http</a>) y mándalo en <code>Authorization</code>.
+  Tu servidor debe comprobar todo lo que llega: el cliente puede estar modificado.
+</p>
+
+<h3 id="servidor">Tu servidor</h3>
+<ul>
+  <li>Cualquier servidor WebSocket estándar (RFC 6455) vale: Node (<code>ws</code>), Go, Python (<code>websockets</code>), C#, Rust...</li>
+  <li>Manda un <strong>ping como mucho cada 20 s</strong> o algo de tráfico: muchos proxies y routers cortan una conexión callada.</li>
+  <li>Para echar o rechazar, cierra con tus códigos <strong>4000-4999</strong> y un motivo: el juego los recibe en <code>close</code> y no reconecta.</li>
+  <li>Sin compresión (<code>permessage-deflate</code>): desactívala en el servidor.</li>
+  <li>Para publicar, pon delante un HTTPS (Let's Encrypt, Nginx, Caddy, Cloudflare) y usa <code>wss://</code>.</li>
+</ul>
+<pre><code class="language-javascript">// Node: npm install ws
+const { WebSocketServer } = require("ws");
+const wss = new WebSocketServer({ port: 8080, perMessageDeflate: false });
+
+wss.on("connection", (ws, req) =&gt; {
+  const token = (req.headers.authorization || "").replace("Bearer ", "");
+  if (!tokenValido(token)) return ws.close(4001, "token no valido");
+  ws.isAlive = true;
+  ws.on("pong", () =&gt; (ws.isAlive = true));
+  ws.on("message", (data, isBinary) =&gt; {
+    if (isBinary) return;
+    const msg = JSON.parse(data);
+    if (msg.tipo === "chat")
+      for (const c of wss.clients) c.send(JSON.stringify({ tipo: "chat", texto: msg.texto }));
+  });
+});
+
+// Ping cada 20 s; la que no conteste, fuera
+setInterval(() =&gt; {
+  for (const ws of wss.clients) {
+    if (!ws.isAlive) { ws.terminate(); continue; }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 20000);</code></pre>
+<p>En el juego: <code>ws://localhost:8080</code> mientras pruebas y <code>wss://tu-dominio</code> al publicar.</p>
+
+<h3 id="plataformas">Plataformas</h3>
+<table>
+  <thead><tr><th>Plataforma</th><th>Notas</th></tr></thead>
+  <tbody>
+    <tr><td>Windows (editor, juego, servidor)</td><td>WinHTTP: usa el proxy del sistema y su almacén de certificados. Responde solo a los pings del servidor y manda <em>keepalive</em>, pero no mide el <code>rtt</code> (sale -1) ni da por muerta una conexión callada salvo con <code>idleTimeout</code> o <code>heartbeat</code>.</td></tr>
+    <tr><td>Android</td><td>Activa <strong>Internet</strong> al exportar (si no, el error lo dice). <code>wss://</code> con el TLS del sistema (comprueba el nombre del servidor). Sin proxy. Al pausar la app el sistema puede cortar la red: al volver se reconecta solo.</td></tr>
+    <tr><td>Linux (<code>CramionServer</code>)</td><td><code>ws://</code> siempre. <code>wss://</code> necesita OpenSSL al compilar (<code>sudo apt install libssl-dev</code>, opción <code>CRAMION_WITH_OPENSSL</code>, activada por defecto); sin él, <code>wss://</code> da un error claro.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="errores">Errores</h3>
+<p>El texto de <code>ev["error"]</code> (o el de la Consola, empezando por la función):</p>
+<table>
+  <thead><tr><th>Texto</th><th>Qué pasa</th></tr></thead>
+  <tbody>
+    <tr><td><code>direccion no valida (usa ws:// o wss://)</code></td><td>Esquema, puerto o formato de la dirección.</td></tr>
+    <tr><td><code>ws:// sin cifrar solo se permite a este PC (localhost); usa wss:// o cambia net.WsInsecure</code></td><td><code>ws://</code> a otra máquina.</td></tr>
+    <tr><td><code>ws:// sin cifrar solo a la red local (esta direccion es publica)</code></td><td>Con <code>net.WsInsecure = 1</code>, una dirección de Internet.</td></tr>
+    <tr><td><code>cabecera no valida: X</code> / <code>cabecera reservada del protocolo: X</code></td><td>Saltos de línea o nombres raros / una del protocolo.</td></tr>
+    <tr><td><code>subprotocolo no valido: X</code></td><td>Un subprotocolo con espacios o caracteres raros, o repetido.</td></tr>
+    <tr><td><code>demasiadas conexiones WebSocket (maximo N, net.WsMaxConnections)</code></td><td>Hay N abiertas.</td></tr>
+    <tr><td><code>la red del motor ya se cerro</code></td><td>El juego se está cerrando.</td></tr>
+    <tr><td><code>no se encuentra el servidor (sin Internet o nombre mal escrito)</code></td><td>DNS. Reintenta.</td></tr>
+    <tr><td><code>el servidor rechazo la conexion (no hay nada escuchando en ese puerto)</code></td><td>Servidor caído o puerto mal. Reintenta.</td></tr>
+    <tr><td><code>el servidor no responde (tiempo agotado)</code></td><td>Superó <code>timeout</code>. Reintenta.</td></tr>
+    <tr><td><code>conexion segura rechazada (el certificado del servidor no es valido)</code></td><td>Certificado caducado, de otro dominio o propio. No reintenta.</td></tr>
+    <tr><td><code>wss:// no disponible en esta compilacion: ...</code></td><td>Linux sin OpenSSL.</td></tr>
+    <tr><td><code>falta el permiso INTERNET (activa Internet al exportar para Android)</code></td><td>Android sin el permiso.</td></tr>
+    <tr><td><code>el servidor rechazo la conexion (HTTP N): revisa el token o la sesion</code></td><td>401 o 403. No reintenta.</td></tr>
+    <tr><td><code>el servidor no acepta WebSocket en esa ruta (respondio HTTP N)</code></td><td>Ruta mal (404...). Reintenta solo con 5xx, 408 y 429.</td></tr>
+    <tr><td><code>respuesta del servidor no valida (no es un saludo WebSocket correcto)</code></td><td>No es un servidor WebSocket (o un proxy en medio).</td></tr>
+    <tr><td><code>el servidor eligio un subprotocolo que no se pidio (X)</code> / <code>el servidor no acepto ningun subprotocolo</code></td><td>Subprotocolos que no encajan.</td></tr>
+    <tr><td><code>el servidor pidio extensiones no soportadas (compresion)</code></td><td>Desactiva <code>permessage-deflate</code> en el servidor.</td></tr>
+    <tr><td><code>mensaje demasiado grande (mas de N bytes, maxSize)</code></td><td>Cierre 1009. Sube <code>maxSize</code> o manda menos.</td></tr>
+    <tr><td><code>el servidor mando texto que no es UTF-8 valido</code></td><td>Cierre 1007. Manda binario.</td></tr>
+    <tr><td><code>error de protocolo WebSocket del servidor (detalle)</code></td><td>Cierre 1002: el servidor no cumple el estándar.</td></tr>
+    <tr><td><code>se corto la conexion</code></td><td>1006. Reintenta.</td></tr>
+    <tr><td><code>el servidor no responde (sin datos en N s)</code></td><td><code>idleTimeout</code>. Reintenta.</td></tr>
+    <tr><td><code>la conexion no esta abierta (estado: X)</code></td><td><code>send</code> antes de <code>open</code> o tras cerrar.</td></tr>
+    <tr><td><code>cola de envio llena (el servidor no lee o la red va lenta)</code></td><td>Más de 16 MB pendientes de enviar.</td></tr>
+    <tr><td><code>el texto no es UTF-8 valido; usa sendBinary</code></td><td><code>send</code> con bytes.</td></tr>
+    <tr><td><code>base64 no valido</code></td><td><code>sendBinary</code> o <code>Base64::decode</code> con texto que no es base64.</td></tr>
+    <tr><td><code>codigo de cierre no valido (1000 o 3000-4999)</code></td><td><code>close</code> con otro código.</td></tr>
+    <tr><td><code>no se pudo reconectar tras N intentos</code></td><td>Se acabaron los <code>tries</code>.</td></tr>
+  </tbody>
+</table>
+        </div>
+        <nav class="pager" aria-label="Paginación"><a href="http.html"><span>← Anterior</span><b>Http y Json</b></a><a class="next" href="realidad-virtual.html"><span>Siguiente →</span><b>Realidad virtual (XR)</b></a></nav>
+        <div class="help"><span>¿Algo no queda claro o falta algo? Pregunta en el
+          <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</span>
+          <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-outline btn-sm"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoyar el proyecto</a></div>
+      </div>
+    </main>
+    <aside class="toc-col" aria-label="En esta página">
+      <div>
+        <p class="toc-title">En esta página</p>
+        <nav class="onpage"></nav>
+      </div>
+      
+      <div class="donate-card">
+        <div class="t"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion</div>
+        <p>El motor es gratis y lo seguirá siendo. Una donación ayuda a seguir añadiendo cosas.</p>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm btn-block">Donar con PayPal</a>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.4.8. Gratis para hacer y vender tus juegos.</span>
+      <nav>
+        <a href="../index.html">Web</a>
+        <a href="licencia.html">Licencia</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener">Donar con PayPal</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script>
+    // Solo el codigo con lenguaje (los arboles de carpetas y la salida quedan tal cual).
+    hljs.configure({ cssSelector: 'pre code[class*="language-"]' });
+    hljs.highlightAll();
+    const ICON_COPY = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>', ICON_CHECK = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+
+    // Tema claro / oscuro.
+    const root = document.documentElement;
+    const syncTheme = () => {
+      const dark = root.dataset.theme === "dark";
+      document.querySelector("#theme .i-sun").style.display = dark ? "inline-flex" : "none";
+      document.querySelector("#theme .i-moon").style.display = dark ? "none" : "inline-flex";
+    };
+    syncTheme();
+    document.getElementById("theme").addEventListener("click", () => {
+      root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      try { localStorage.setItem("cramion-theme", root.dataset.theme); } catch (e) {}
+      syncTheme();
+    });
+
+    // Seccion de la cabecera marcada.
+    const group = document.body.dataset.group;
+    document.querySelectorAll(".main-nav a").forEach(a => a.classList.toggle("on", a.dataset.nav === group));
+
+    // Menu lateral (panel deslizante en el movil).
+    const side = document.getElementById("side");
+    const setMenu = open => document.body.classList.toggle("menu-open", open);
+    document.getElementById("menu-btn").addEventListener("click", () => setMenu(true));
+    document.getElementById("menu-close").addEventListener("click", () => setMenu(false));
+    document.getElementById("overlay").addEventListener("click", () => setMenu(false));
+    const current = side.querySelector("a.active");
+    if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
+
+    // Ancla de cada seccion y boton de copiar en el codigo.
+    document.querySelectorAll(".doc h3[id]").forEach(h => {
+      const a = document.createElement("a");
+      a.className = "anchor";
+      a.href = "#" + h.id;
+      a.setAttribute("aria-label", "Enlace a esta sección");
+      a.textContent = "#";
+      h.appendChild(a);
+    });
+    document.querySelectorAll(".doc pre").forEach(pre => {
+      const b = document.createElement("button");
+      b.className = "copy";
+      b.setAttribute("aria-label", "Copiar el código");
+      b.innerHTML = ICON_COPY;
+      b.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
+          b.innerHTML = ICON_CHECK;
+        } catch (e) { b.textContent = "!"; }
+        setTimeout(() => (b.innerHTML = ICON_COPY), 1400);
+      });
+      pre.appendChild(b);
+    });
+
+    // Tablas anchas: se desplazan dentro de su marco.
+    document.querySelectorAll(".doc table").forEach(t => {
+      const w = document.createElement("div");
+      w.className = "table-wrap";
+      t.replaceWith(w);
+      w.appendChild(t);
+    });
+
+    // "En esta pagina": los h3, con la seccion visible marcada (columna y desplegable).
+    const heads = [...document.querySelectorAll(".doc h3[id]")];
+    const lists = [...document.querySelectorAll(".onpage")];
+    if (heads.length < 2) {
+      document.querySelectorAll(".toc-col > div, .toc-inline").forEach(el => el.remove());
+    } else {
+      lists.forEach(list => list.innerHTML = heads.map(h => `<a href="#${h.id}">${h.firstChild.textContent}</a>`).join(""));
+      const links = [...document.querySelectorAll(".onpage a")];
+      const obs = new IntersectionObserver(entries => {
+        for (const e of entries) {
+          if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+        }
+      }, { rootMargin: "-80px 0px -70% 0px" });
+      heads.forEach(h => obs.observe(h));
+      document.querySelectorAll(".toc-inline a").forEach(a => a.addEventListener("click", () => a.closest("details").open = false));
+    }
+
+    // Barra de lectura bajo la cabecera.
+    const bar = document.getElementById("read-progress");
+    const onScroll = () => {
+      const h = document.documentElement.scrollHeight - innerHeight;
+      bar.style.width = (h > 0 ? Math.min(100, scrollY / h * 100) : 0) + "%";
+    };
+    addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+
+    // Buscador (Command): titulos, secciones y nombres de la API.
+    const cmd = document.getElementById("cmd");
+    const input = document.getElementById("search");
+    const box = document.getElementById("results");
+    const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const ICON_PAGE = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>', ICON_HASH = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></svg>', ICON_CODE = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>';
+    let hits = [], sel = 0;
+    const suggested = window.CRAMION_SEARCH.filter(e => e.d).slice(0, 8);
+    const render = () => {
+      const q = input.value.trim();
+      const list = q ? hits : suggested;
+      if (!list.length) { box.innerHTML = '<p class="none">Sin resultados para "' + esc(q) + '".</p>'; return; }
+      box.innerHTML = (q ? "" : '<p class="heading">Páginas</p>') + list.map((h, i) => `
+        <a href="${h.u}" class="${i === sel ? "sel" : ""}">
+          ${h.c ? ICON_CODE : h.d ? ICON_PAGE : ICON_HASH}
+          <span><span class="t${h.c ? " code" : ""}">${esc(h.t)}</span>
+          <span class="g">${esc(h.g)}</span></span>
+        </a>`).join("");
+      box.querySelector("a.sel")?.scrollIntoView({ block: "nearest" });
+    };
+    const openSearch = () => { cmd.hidden = false; document.body.style.overflow = "hidden"; sel = 0; render(); setTimeout(() => input.focus(), 0); };
+    const closeSearch = () => { cmd.hidden = true; document.body.style.overflow = ""; input.value = ""; hits = []; };
+    document.getElementById("search-open").addEventListener("click", openSearch);
+    cmd.addEventListener("click", ev => { if (ev.target === cmd) closeSearch(); });
+    input.addEventListener("input", () => {
+      const q = norm(input.value.trim());
+      sel = 0;
+      if (!q) { hits = []; render(); return; }
+      const words = q.split(/\s+/);
+      hits = window.CRAMION_SEARCH
+        .map(e => {
+          const t = norm(e.t), all = t + " " + norm(e.g) + " " + norm(e.d || "");
+          if (!words.every(w => all.includes(w))) return null;
+          const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
+          return { e, score };
+        })
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 20).map(x => x.e);
+      render();
+    });
+    input.addEventListener("keydown", ev => {
+      const list = input.value.trim() ? hits : suggested;
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, list.length - 1); render(); ev.preventDefault(); }
+      if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
+      if (ev.key === "Enter" && list[sel]) { location.href = list[sel].u; closeSearch(); }
+    });
+    document.addEventListener("keydown", ev => {
+      const typing = /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+      if ((ev.key === "k" && (ev.ctrlKey || ev.metaKey)) || (ev.key === "/" && !typing)) { ev.preventDefault(); cmd.hidden ? openSearch() : closeSearch(); }
+      if (ev.key === "Escape") { if (!cmd.hidden) closeSearch(); setMenu(false); }
+    });
+  </script>
+</body>
+</html>

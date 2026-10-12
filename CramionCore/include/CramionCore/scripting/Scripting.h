@@ -209,6 +209,9 @@ public:
     // Vuelve a leer un archivo (ruta en Assets: .crgraph, .crfsm, .crbt): en
     // Play, las instancias siguen con sus datos.
     void reloadFile(const std::string& file);
+    // Lo llama CppScriptSystem al recargar en caliente o reiniciar el proceso
+    // de scripts: olvida los callbacks de C++ (las conexiones siguen).
+    void resetBridgeCallbacks();
 
     // Ultimos errores (archivo, linea, mensaje).
     const std::vector<ScriptError>& errors() const;
@@ -225,7 +228,8 @@ public:
     // Consola: llamadas a la API ("Audio.playOneShot('clic.wav')",
     // "Time.timeScale = 0.5", "Scene.find('Jugador'):translate(Vec3(0,1,0))").
     // Devuelve false si hay error. Fuera de Play trabaja sobre `world` (la
-    // escena del editor).
+    // escena del editor) y lo que se destruya (Scene.destroy, Entity:destroy)
+    // se borra al terminar el comando; en Play, al final del frame.
     bool run(const std::string& code, std::string* output = nullptr, ecs::World* world = nullptr);
 
     // Scene.load("Nivel2"): la escena pedida (ruta del .crscene) o vacio. El
@@ -273,6 +277,12 @@ public:
     // Mensajes para los scripts de C++ del objeto (Send Message y Run Script de
     // los Behavior Trees): Script::onMessage(method, value).
     void setMessageListener(std::function<void(ecs::Entity e, const std::string& method, const std::string& value_json)> listener);
+    // Un objeto (o un hijo) que se va a destruir al final del frame: se avisa
+    // mientras aun es valido, despues de los modulos (onDestroy de los scripts de C++).
+    void setDestroyListener(std::function<void(ecs::Entity e)> listener);
+    // Entity::destroy de los scripts de C++: el mismo camino que Entity:destroy
+    // (al final del frame, con sus hijos y los avisos de arriba).
+    void destroyLater(ecs::Entity e);
 
     // --- Visual Scripting: depuracion del editor (VisualScriptRuntime.cpp) ---
     struct VisualScriptDebug {

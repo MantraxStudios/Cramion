@@ -124,6 +124,11 @@ public:
     // Copia profunda (componentes e hijos) con UUIDs nuevos, justo despues
     // del original entre sus hermanos.
     Entity duplicate(Entity entity);
+    // Cambia las referencias a entidades (PropertyVisitor::entity) de los
+    // componentes de `entity` segun `remap` (UUID viejo -> nuevo); las que no
+    // esten en el mapa no se tocan. Duplicar, pegar e instanciar prefabs lo
+    // usan para que las copias apunten a las copias y no a los originales.
+    void remapEntityRefs(Entity entity, const std::unordered_map<Uuid, Uuid>& remap);
     void clear();
     // Como clear() pero las raices transitorias (EntityInfo::transient: las
     // teselas de un TerrainGrid) se quedan: deshacer o parar Play no las
@@ -193,7 +198,9 @@ private:
     void detach(entt::entity entity);
     void attach(entt::entity entity, entt::entity parent, int index);
     void destroyRecursive(entt::entity entity);
-    entt::entity duplicateRecursive(entt::entity source, entt::entity parent, int index);
+    entt::entity duplicateRecursive(entt::entity source, entt::entity parent, int index,
+                                    std::unordered_map<Uuid, Uuid>& remap,
+                                    std::vector<entt::entity>& copies);
     const core::Mat4& computeWorld(entt::entity entity) const;
     std::vector<entt::entity>& siblingsOf(entt::entity entity);
 

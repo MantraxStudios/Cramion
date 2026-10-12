@@ -202,5 +202,27 @@ int main() {
     check(t.scripts.run("return Scene.find('Editor')", &out, &editor) && out == Value::entity(in_editor.handle()).asString(),
           "sobre la escena que se pase (la del editor)");
     check(t.call("Scene.find", {Value("Editor")}).isNil(), "y despues vuelve la de antes");
+    // Fuera de Play no hay final de frame del juego: destroy al terminar el comando.
+    const ecs::Entity borrar = editor.create("Borrar");
+    const ecs::Entity hijo = editor.create("HijoBorrar", borrar);
+    const ecs::Entity quedar = editor.create("Quedar");
+    check(t.scripts.run("local b = Scene.find('Borrar'); Scene.destroy(b); return b.name", &out, &editor) && out == "Borrar",
+          "Scene.destroy en el editor: sigue vivo hasta terminar el comando");
+    check(!borrar.valid() && !hijo.valid() && quedar.valid(), "y al terminarlo se borra (con sus hijos)");
+    check(t.scripts.run("Scene.find('Quedar'):destroy()", &out, &editor) && !quedar.valid(), "Entity:destroy en el editor");
+    check(t.scripts.run("Scene.destroy(nil)", &out, &editor), "Scene.destroy(nil) en el editor no falla");
+    // e.parent = otro (conserva la posicion en el mundo) y nil = a la raiz.
+    ecs::Entity grupo = editor.create("Grupo");
+    ecs::Entity suelto = editor.create("Suelto");
+    grupo.setWorldPosition(Vec3{10.0f, 0.0f, 0.0f});
+    suelto.setWorldPosition(Vec3{1.0f, 2.0f, 3.0f});
+    check(t.scripts.run("Scene.find('Suelto').parent = Scene.find('Grupo')", &out, &editor) && suelto.parent() == grupo &&
+              std::abs(suelto.worldPosition().x - 1.0f) < 1e-4f && std::abs(suelto.localPosition().x + 9.0f) < 1e-4f,
+          "e.parent = otro en el editor (conserva la posicion en el mundo)");
+    check(!t.scripts.run("Scene.find('Grupo').parent = Scene.find('Suelto')", &out, &editor) && grupo.parent() != suelto,
+          "un ciclo es un error");
+    check(t.scripts.run("Scene.find('Suelto').parent = nil", &out, &editor) && !suelto.parent().valid() &&
+              std::abs(suelto.worldPosition().x - 1.0f) < 1e-4f,
+          "e.parent = nil lo deja en la raiz");
     return finish();
 }

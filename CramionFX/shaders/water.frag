@@ -738,10 +738,16 @@ void main() {
     // --- Niebla por altura (la misma formula que lighting.frag) ---
     vec3 ray_direction = -view_direction;
     float fog_falloff = lights.clouds.z > 0.0 ? lights.clouds.z : kFogHeightFalloff;
-    float fog_density = lights.clouds.y * exp(-(camera.position.y - kFogBaseHeight) * fog_falloff);
+    // Forma estable (exponentes acotados y densidad 0 = sin niebla): antes
+    // exp() se desbordaba y salia 0 * inf = NaN.
     float fog_b = fog_falloff * ray_direction.y;
-    float fog_integral = abs(fog_b) > 0.0001 ? (1.0 - exp(-surface_distance * fog_b)) / fog_b : surface_distance;
-    float fog = clamp(1.0 - exp(-fog_density * fog_integral), 0.0, 1.0);
+    float fog_a0 = -(camera.position.y - kFogBaseHeight) * fog_falloff;
+    float fog_a1 = fog_a0 - fog_b * surface_distance;
+    float fog_a_max = max(fog_a0, fog_a1);
+    float fog_optical = abs(fog_b) > 0.0001
+        ? lights.clouds.y * exp(min(fog_a_max, 80.0)) * (1.0 - exp(min(fog_a0, fog_a1) - fog_a_max)) / abs(fog_b)
+        : lights.clouds.y * exp(min(fog_a0, 80.0)) * surface_distance;
+    float fog = lights.clouds.y > 0.0 ? clamp(1.0 - exp(-max(fog_optical, 0.0)), 0.0, 1.0) : 0.0;
     vec3 fog_color = textureLod(environment_map, normalize(vec3(ray_direction.x, max(ray_direction.y, 0.02), ray_direction.z)), 3.0).rgb;
     float sun_alignment = max(dot(ray_direction, sun_direction), 0.0);
     fog_color += sun_radiance * pow(sun_alignment, 10.0) * 0.35 * smoothstep(-0.05, 0.1, sun_direction.y);

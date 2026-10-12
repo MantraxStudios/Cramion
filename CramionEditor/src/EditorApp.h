@@ -44,6 +44,7 @@
 #include "McpServer.h"
 #include "ModelPreviews.h"
 #include "ProfilerOverlay.h"
+#include "BlueprintEditor.h"
 
 #include <CramionCore/ecs/FloatingOrigin.h>
 #include <CramionCore/xr/XrRig.h>
@@ -80,6 +81,7 @@
 #include <deque>
 #include <filesystem>
 #include <future>
+#include <map>
 #include <memory>
 #include <optional>
 #include <random>
@@ -245,6 +247,7 @@ private:
     float frame_tasks_ms_ = 0.0f;    // importaciones, vigilar Assets, miniaturas, MCP
     float frame_refresh_ms_ = 0.0f;  // refrescos de la base de datos de assets
     int frame_refreshes_ = 0;
+    float frame_streaming_ms_ = 0.0f;  // streamer de teselas (el adoptar en la GPU va en sync)
     double last_slow_report_ = -10.0;
 public:
     // Al final de cada frame (main.cpp): si fue lento, escribe en la consola
@@ -353,7 +356,9 @@ private:
     // se actualizan todas sus instancias de la escena. Solo hay un ecs::World:
     // al cambiar de pestana el mundo que no se ve se guarda en JSON (con su
     // deshacer, seleccion y camara) y se carga el otro.
-    enum class WorkspaceKind { Scene, Prefab, Script, StateMachine, Graph };
+    enum class WorkspaceKind { Scene, Prefab, Script, StateMachine, Graph, Blueprint };  // Blueprint al final
+    // Prefab y Blueprint editan un escenario de prefab (Jerarquia, Inspector, vista).
+    bool isPrefabLikeWorkspace(WorkspaceKind k) const { return k == WorkspaceKind::Prefab || k == WorkspaceKind::Blueprint; }
     // Editores de nodos que se abren en su pestana (una por tipo, a toda la
     // ventana, como los scripts): abrir otro archivo del mismo tipo la reusa.
     enum class GraphKind { Vfx, ShaderGraph, VisualScript, BehaviorTree, Dialogue, Animator, Count };
@@ -381,6 +386,42 @@ private:
     std::string panelTitle(const char* name) const;
     void openPrefabWorkspace(const Uuid& prefab);
     void openScriptWorkspace(const std::filesystem::path& file);
+    // Blueprints de actor (EditorBlueprint.cpp): pestana con Componentes, Mi
+    // Blueprint, Detalles, Ventana grafica, Event Graph y Resultados de compilacion.
+    void openBlueprintWorkspace(const Uuid& prefab);
+    bool saveBlueprintWorkspace();
+    void drawBlueprintWorkspace();
+    void drawBlueprintToolbar(BlueprintEditorState& bp);
+    void drawBlueprintComponents(BlueprintEditorState& bp);
+    void drawBlueprintDetails(BlueprintEditorState& bp);
+    void drawNewBlueprintModal();
+    bool createActorBlueprint(const Uuid& source, assets::AssetType type, const std::string& name, int bones, bool collider);
+    void drawInspectorContents();      // sin beginArea
+    void drawHierarchyContents(ecs::Entity root_filter);
+    vsedit::Host blueprintHost();
+    void buildBlueprintLayout(unsigned int dockspace_id);
+    // Abre el modal "Nuevo Blueprint de actor" (fuente invalida = vacio; `folder`
+    // relativo a Assets, vacio = Blueprints).
+    void requestNewBlueprint(const Uuid& source, assets::AssetType type, const std::string& source_name,
+                             const std::filesystem::path& folder = {});
+    // createActorBlueprint en otra carpeta (relativa a Assets).
+    bool createActorBlueprintIn(const Uuid& source, assets::AssetType type, const std::string& name, int bones,
+                                bool collider, const std::filesystem::path& folder);
+    BlueprintEditorState* activeBlueprint();  // la pestana Blueprint delante (o nullptr)
+    // Cambios sin guardar de una pestana Blueprint: su mundo, su grafo o los datos de la clase.
+    bool blueprintDirty(int workspace_id) const;
+    // Prefab o Blueprint con cambios sin guardar (para avisar y guardar al salir).
+    bool prefabLikeDirty(int workspace_id) const;
+    // Antes de Play (como el PIE de Unreal): compila y guarda los Blueprints con cambios.
+    void saveBlueprintsBeforePlay();
+    void convertPrefabToBlueprintAsset(const Uuid& prefab);
+    // Inspector: las variables expuestas del grafo con el control de su tipo.
+    void drawVisualScriptVariables(ecs::Entity entity);
+    // El modelo con esqueleto del subarbol de `e` sin RenderSync (`skinned`
+    // recibe su entidad). `wait` = cargarlo si aun no esta (si no, nullptr
+    // hasta que llegue).
+    const asset::ModelData* skinnedModelData(ecs::Entity e, ecs::Entity& skinned,
+                                             std::shared_ptr<const assets::ModelAsset>& keep, bool wait);
     // Pestana de la maquina de estados abierta (a toda la ventana, como un script).
     void openStateMachineWorkspace();
     bool savePrefabWorkspace();
@@ -450,8 +491,22 @@ private:
     bool beginArea(AreaEditor editor, bool* p_open, ImGuiWindowFlags flags = 0,
                    const std::function<void()>& header = {});
     void endArea();
-    // Pone `to` en el area de `from` (desde el boton del tipo de editor).
+    // Pone `to` en el area de `from` (desde el boton del tipo de editor). No
+    // cambia nada en el acto: lo deja pedido y lo aplica
+    // applyPendingAreaSwitch al principio del frame siguiente, antes de que
+    // se dibujen el dockspace y las areas.
     void switchArea(AreaEditor from, AreaEditor to);
+    void applyPendingAreaSwitch();
+    // Si la pestana activa dibuja ese editor (solo esos salen en el menu del
+    // tipo de editor: elegir uno que no se dibuja no haria nada).
+    bool workspaceDrawsArea(AreaEditor editor) const;
+    struct PendingAreaSwitch {
+        AreaEditor from = AreaEditor::Scene;
+        AreaEditor to = AreaEditor::Scene;
+        int workspace = -1;  // si cambia la pestana antes de aplicarlo, se descarta
+        bool valid = false;
+    };
+    PendingAreaSwitch pending_area_switch_;
     // Trae un editor al frente de su area el proximo frame.
     void showAreaEditor(AreaEditor editor);
     struct AreaFrame {
@@ -459,12 +514,31 @@ private:
         bool child = false;  // contenido en un hijo (pestanas de Propiedades)
     };
     std::vector<AreaFrame> area_stack_;
-    std::unordered_map<ImGuiID, ImGuiID> area_front_;  // ventana -> area donde ponerla delante (0: la suya)
+    struct AreaFrontRequest {
+        ImGuiID node = 0;  // area donde ponerla delante (0: la suya)
+        int frame = 0;     // frame de ImGui en que se pidio (las viejas se borran)
+    };
+    std::unordered_map<ImGuiID, AreaFrontRequest> area_front_;  // ventana -> peticion
     void drawAreaTypeButton(AreaEditor editor);
     // Una ventana que recibe el foco (Ventana > ..., Play, soltada en un
     // area) pasa a ser la que se ve en su area.
     void promoteFocusedArea();
     ImGuiID last_focused_window_ = 0;
+    bool last_focused_was_popup_ = false;  // el foco anterior era un menu o popup
+    ImGuiID focus_before_popup_ = 0;       // la ventana con el foco antes de abrirse ese popup
+    // Cambio de pestana (espacio de trabajo): cada una conserva su diseno y
+    // el editor elegido en cada area. Ese frame (y el siguiente) las areas
+    // aparecen sin llevarse el foco y el foco vuelve a la ventana que lo
+    // tenia en esa pestana (promoteFocusedArea).
+    int workspace_switch_frame_ = -100;              // frame de ImGui del ultimo cambio
+    std::unordered_map<int, ImGuiID> workspace_focus_;  // pestana -> ventana acoplada con el foco
+    ImGuiID workspace_restore_focus_ = 0;            // la que recupera el foco tras el cambio
+    int areas_drawn_frame_ = -100;  // ultimo frame con paneles (al volver del Hub o del modo cine, como un cambio)
+    // Mantiene vivos los dockspaces de las pestanas que no se ven
+    // (KeepAliveOnly): sin esto ImGui desacopla de ellos las ventanas que se
+    // dibujan en todas las pestanas (Git, MCP, Terminal...) y el diseno cambia.
+    void keepInactiveDockspacesAlive();
+    unsigned int scene_dockspace_id_ = 0;  // el de la Escena (ImGui::GetID en drawUi)
     void drawPropertiesTabs(AreaEditor editor);
     // Barra superior: las pestanas de los espacios de trabajo (Escena,
     // prefabs, scripts, grafos) junto a los menus, como en Blender.
@@ -514,6 +588,7 @@ private:
         int depth = 0;
     };
     void buildHierarchyRows();
+    Uuid hierarchy_root_filter_{};  // drawHierarchyContents: solo esta rama (invalido = todo)
     void drawHierarchyRow(const HierarchyRow& row, bool scroll_to);
     static const void* hierarchyRowId(entt::entity entity);
     void drawInspector();
@@ -1012,7 +1087,8 @@ private:
     std::filesystem::path material_edit_path_;
     bool material_unsaved_ = false;
     std::uint64_t material_pushed_structure_ = 0;
-    void pushTerrainUndo(const std::string& path, std::shared_ptr<terrain::TerrainData> before);
+    void pushTerrainUndo(const std::string& path, std::shared_ptr<terrain::TerrainData> before,
+                         std::vector<std::pair<std::string, std::shared_ptr<terrain::TerrainData>>> others = {});
     void applyTerrainSnapshot(const std::string& path, const terrain::TerrainData& snapshot);
 
     // --- Vista Juego y cinematicas (EditorCinematics.cpp) ---
@@ -1506,7 +1582,7 @@ private:
     bool terrain_gen_textures_ = true;
     bool terrain_gen_trees_ = true;
     bool terrain_gen_grass_ = true;
-    float terrain_gen_grass_density_ = 70.0f;
+    float terrain_gen_grass_density_ = 500.0f;  // briznas finas y muchas (pelo)
     float terrain_gen_tree_density_ = 120.0f;
     std::unique_ptr<TerrainGenJob> terrain_gen_job_;
     void drawTerrainGeneratorWindow();
@@ -1522,10 +1598,12 @@ private:
 public:
     float cinemaDelta(float real_seconds);
     bool cinemaActive() const { return cinema_; }
-    // main.cpp: si puede bajar a 10 fps en segundo plano (no con el casco en
-    // Play o conectandose, en modo cine ni en pruebas automaticas).
+    // main.cpp: si puede bajar a 10 fps en segundo plano. Solo en edicion pura:
+    // nunca en Play (la fisica perderia tiempo por max_substeps y el juego iria
+    // mas lento que el reloj), ni conectando el casco, en modo cine o en
+    // pruebas automaticas (run_tests de MCP incluido).
     bool backgroundThrottleAllowed() const {
-        return !(playing() && play_vr_) && !xrConnecting() && !cinema_ && self_test_step_ <= 0 && !testRunActive();
+        return !playing() && !xrConnecting() && !cinema_ && self_test_step_ <= 0 && !testRunActive();
     }
 private:
     bool cinema_ = false;
@@ -1720,7 +1798,7 @@ public:
         std::string type;
         assets::AssetInfo info;  // Kind::Asset
         std::uint64_t size = 0;
-        std::string key() const { return kind == Kind::Asset && info.uuid.valid() ? info.uuid.toString() : path.string(); }
+        std::string key() const { return kind == Kind::Asset && info.uuid.valid() ? info.uuid.toString() : dialogs::utf8(path); }
     };
 private:
     std::vector<BrowserItem> browser_items_;      // lo que se ve (carpeta o busqueda)
@@ -1841,7 +1919,12 @@ private:
         std::string path;
         std::shared_ptr<terrain::TerrainData> before;
         std::shared_ptr<terrain::TerrainData> after;
+        std::vector<TerrainUndo> linked;  // otras teselas del mismo trazo (un solo paso)
     };
+    // Aplica el antes (o el despues) del paso y de sus teselas enlazadas.
+    void applyTerrainUndo(const TerrainUndo& step, bool after);
+    // Teselas vecinas tocadas por el trazo en curso (ruta, antes del trazo).
+    std::vector<std::pair<std::string, std::shared_ptr<terrain::TerrainData>>> terrain_stroke_others_;
     std::deque<TerrainUndo> terrain_undo_;
     std::deque<TerrainUndo> terrain_redo_;
     std::deque<char> undo_kinds_;
@@ -1879,12 +1962,15 @@ private:
     int world_workspace_ = 0;   // id del espacio cuyo mundo esta en world_
     int pending_workspace_ = -1;
     bool pending_play_ = false;
+    bool pending_pause_ = false;  // Pausa sin Play con otra pestana: entra en Play ya en pausa
     int workspace_close_ask_ = -1;       // prefab con cambios: preguntar al cerrar
     bool workspace_close_popup_ = false;  // abrir esa pregunta (desde la barra superior)
     int workspace_focus_frames_ = 0;     // enfocar el prefab cuando ya tiene actores
     unsigned int script_workspace_dock_ = 0;  // dockspace de las pestanas de script
     Workspace* findWorkspace(int id);
     const Workspace* findWorkspace(int id) const;
+    std::map<int, BlueprintEditorState> blueprint_editors_;   // clave = Workspace::id
+    NewBlueprintRequest new_blueprint_;
     float frame_delta_ = 0.0f;
 
     // Vistas y cinematicas.
@@ -2007,6 +2093,9 @@ private:
     std::shared_ptr<LightingEditorState> lighting_editor_;
     LightingEditorState& lightingEditor();
     void loadSceneLighting();  // <escena>.crbake al abrir la escena
+    // La de otra escena (Scene.load en Play); ruta vacia = sin horneado.
+    void loadSceneLighting(const std::filesystem::path& scene);
+    bool play_lighting_changed_ = false;  // Scene.load en Play cargo otra: exitPlay vuelve a la de la escena
     void startLightingBake();
     void drawLightingWindow();
     void configureLightingBake(int rays, int bounces, float spacing);  // < 0 = no cambiar

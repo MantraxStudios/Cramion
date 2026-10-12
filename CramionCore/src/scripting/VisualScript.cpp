@@ -3,6 +3,7 @@
 // La definicion de ComponentRegistry::registerComponent<T>.
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/ecs/Reflection.h"
+#include "CramionCore/scripting/NativeApi.h"
 
 #include <nlohmann/json.hpp>
 
@@ -14,7 +15,9 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <mutex>
 #include <sstream>
+#include <unordered_map>
 
 namespace cramion::vscript {
 
@@ -82,6 +85,11 @@ bool isIdentifier(const std::string& s) {
 // --- Catalogo ---
 Pin X(const char* name) { return Pin{name, PinType::Exec, {}}; }
 Pin P(const char* name, PinType type, const char* value = "") { return Pin{name, type, value}; }
+// Un pin con un desplegable de valores (no se guardan).
+Pin O(Pin pin, std::vector<std::string> options) {
+    pin.options = std::move(options);
+    return pin;
+}
 
 constexpr PinType kAny = PinType::Any;
 constexpr PinType kBool = PinType::Bool;
@@ -152,9 +160,15 @@ std::vector<NodeInfo> buildCatalog() {
     event("event.custom", "Custom Event", "Evento propio: lo lanzan Call Event, Send Event, Set Timer, la interfaz (OnClick) o un script",
           "custom evento propio funcion", {X(""), P("Valor", kAny)}, {P("Nombre", kString, "MiEvento")});
     event("event.input_action", "Input Action", "Una accion de entrada (ProjectSettings/InputActions.json): triggered, started, completed, canceled, ongoing",
-          "input accion action enhanced", {X(""), P("Valor", kAny)}, {P("Accion", kString, "Jump"), P("Evento", kString, "triggered")});
-    event("event.key", "Key Event", "Una tecla: pulsada, soltada o mantenida", "tecla key teclado keyboard",
-          {X("")}, {P("Tecla", kString, "Space"), P("Cuando", kString, "pulsada")});
+          "input accion action enhanced", {X(""), P("Valor", kAny)},
+          {P("Accion", kString, "Jump"),
+           O(P("Evento", kString, "triggered"), {"triggered", "started", "completed", "canceled", "ongoing"})});
+    event("event.key", "Key Event", "Una tecla: pulsada, soltada o mantenida",
+          "tecla key teclado keyboard pressed released pulsada soltada mantenida", {X("")},
+          {P("Tecla", kString, "Space"), O(P("Cuando", kString, "pulsada"), {"pulsada", "soltada", "mantenida"})});
+    event("event.websocket", "On WebSocket", "Evento de una conexion WebSocket por su nombre: message, open, close, error, reconnecting o any",
+          "websocket ws servidor mensaje red online mmo", {X(""), P("Evento", kAny), P("Texto", kString), P("Datos", kAny)},
+          {P("Conexion", kString, "main"), P("Tipo", kString, "message")});
 
     // --- Flujo ---
     node("Flujo", "flow.branch", "Branch", "Si la condicion es verdadera sigue por Verdadero; si no, por Falso", "if si condicion",
@@ -283,6 +297,11 @@ std::vector<NodeInfo> buildCatalog() {
 
     // --- Objetos ---
     pure("Objeto", "entity.self", "Self", "Este objeto", "self yo este objeto", {}, {P("Objeto", kEntity)});
+    // La ruta va en Node::fn (como la variable de un Get); sale al arrastrar un
+    // objeto del panel Componentes al Event Graph.
+    pure("Objeto", "entity.child", "Obtener objeto hijo (ruta)",
+         "Un objeto de este Blueprint por su ruta desde la raiz (\"Cuerpo/Malla\"): cada instancia usa el suyo",
+         "hijo child ruta path componente referencia blueprint objeto", {}, {P("Objeto", kEntity)});
     pure("Objeto", "entity.find", "Find Object", "El primer objeto con ese nombre", "buscar find nombre",
          {P("Nombre", kString, "Jugador")}, {P("Objeto", kEntity)});
     pure("Objeto", "entity.find_tag", "Find With Tag", "El primer objeto con ese tag", "buscar tag",
@@ -345,6 +364,143 @@ std::vector<NodeInfo> buildCatalog() {
     // --- Depuracion ---
     node("Depuracion", "debug.print", "Print", "Escribe en la Consola", "print log imprimir consola", {X(""), P("Texto", kAny, "Hola")}, {X("")});
     node("Depuracion", "debug.warn", "Print Warning", "Aviso en la Consola", "warning aviso", {X(""), P("Texto", kAny, "Cuidado")}, {X("")});
+
+    // --- Flujo (como Unreal) ---
+    node("Flujo", "flow.switch_int", "Switch on Int", "Sigue por la salida con el numero del Selector (si no hay, por Default)",
+         "switch caso case entero int", {X(""), P("Selector", kInt, "0")}, {X("Default"), X("0"), X("1")});
+    c.back().dynamic_outputs = true;
+    node("Flujo", "flow.switch_string", "Switch on String", "Sigue por la salida que se llama como el Selector (si no hay, por Default)",
+         "switch caso case texto string", {X(""), P("Selector", kString, "")}, {X("Default"), X("A"), X("B")});
+    c.back().dynamic_outputs = true;
+    node("Flujo", "flow.for_break", "For Loop with Break", "Como For Loop; Break lo para y sigue por Completado",
+         "bucle loop for repetir romper break", {X(""), P("Desde", kInt, "0"), P("Hasta", kInt, "9"), X("Break")},
+         {X("Cuerpo"), P("Indice", kInt), X("Completado")});
+    node("Flujo", "flow.foreach_break", "For Each with Break", "Como For Each; Break lo para y sigue por Completado",
+         "bucle lista array each romper break", {X(""), P("Lista", kAny), X("Break")},
+         {X("Cuerpo"), P("Elemento", kAny), P("Indice", kInt), X("Completado")});
+    node("Flujo", "flow.multigate", "MultiGate", "Cada vez sigue por una salida distinta (en orden o al azar) hasta usarlas todas",
+         "multigate puertas salidas orden azar",
+         {X(""), X("Reset"), P("Aleatorio", kBool, "false"), P("Repetir", kBool, "false"), P("Indice inicial", kInt, "-1")},
+         {X("Salida 0"), X("Salida 1"), X("Salida 2")});
+    c.back().dynamic_outputs = true;
+    node("Flujo", "flow.retrig_delay", "Retriggerable Delay", "Espera unos segundos; si vuelve a entrar antes, la cuenta empieza de nuevo",
+         "esperar wait delay retraso reiniciar retriggerable", {X(""), P("Segundos", kFloat, "0.2")}, {X("Completado")}, true);
+    node("Flujo", "flow.is_valid", "Is Valid", "Sigue por Valido si el objeto existe; si no, por No valido",
+         "valido existe valid nil comprobar", {X(""), P("Objeto", kAny)}, {X("Valido"), X("No valido")});
+    pure("Logica", "flow.select_int", "Select", "La opcion con el numero del Indice (desde 0)", "seleccionar elegir select indice opcion",
+         {P("Indice", kInt, "0"), P("Opcion 0", kAny), P("Opcion 1", kAny)}, {P("Resultado", kAny)});
+    c.back().dynamic_inputs = true;
+
+    // --- Matematicas extra ---
+    pure("Matematicas", "math.finterp_to", "FInterp To", "Acerca Actual a Objetivo con una velocidad (Delta vacio = el del frame)",
+         "interpolar suavizar interp to", {P("Actual", kFloat, "0"), P("Objetivo", kFloat, "1"), P("Delta", kFloat, ""),
+         P("Velocidad", kFloat, "5")}, {P("Resultado", kFloat)});
+    pure("Matematicas", "math.vinterp_to", "VInterp To", "Acerca un vector a otro con una velocidad (Delta vacio = el del frame)",
+         "interpolar suavizar interp to vector", {P("Actual", kVector, "0 0 0"), P("Objetivo", kVector, "0 0 0"), P("Delta", kFloat, ""),
+         P("Velocidad", kFloat, "5")}, {P("Resultado", kVector)});
+    pure("Matematicas", "math.nearly_equal", "Nearly Equal", "A y B se diferencian menos que la tolerancia", "casi igual nearly equal",
+         {P("A", kFloat, "0"), P("B", kFloat, "0"), P("Tolerancia", kFloat, "0.0001")}, {P("Resultado", kBool)});
+    pure("Matematicas", "math.in_range", "In Range", "El valor esta entre Min y Max", "rango entre range",
+         {P("Valor", kFloat, "0"), P("Min", kFloat, "0"), P("Max", kFloat, "1"), P("Incluir min", kBool, "true"),
+          P("Incluir max", kBool, "true")}, {P("Resultado", kBool)});
+    pure("Matematicas", "math.wrap", "Wrap", "Da la vuelta al valor dentro de Min..Max", "envolver wrap ciclo",
+         {P("Valor", kFloat, "0"), P("Min", kFloat, "0"), P("Max", kFloat, "1")}, {P("Resultado", kFloat)});
+    unary("math.sign", "Sign", "signo sign");
+    unary("math.frac", "Frac", "fraccion decimales frac");
+    unary("math.asin", "Asin", "arcoseno asin (radianes)");
+    unary("math.acos", "Acos", "arcocoseno acos (radianes)");
+    unary("math.atan", "Atan", "arcotangente atan (radianes)");
+    unary("math.exp", "Exp", "exponencial e exp");
+    unary("math.log", "Log", "logaritmo natural ln log");
+    unary("math.deg_to_rad", "Grados a radianes", "grados radianes degrees radians");
+    unary("math.rad_to_deg", "Radianes a grados", "radianes grados radians degrees");
+    pure("Matematicas", "math.random_bool", "Random Bool", "Verdadero o falso al azar", "azar random aleatorio moneda", {},
+         {P("Resultado", kBool)});
+
+    // --- Conversiones (nodos pequenos) ---
+    pure("Conversion", "conv.int_to_float", "Entero a decimal", "", "convertir int float", {P("Valor", kInt, "0")}, {P("Resultado", kFloat)});
+    pure("Conversion", "conv.float_to_int", "Decimal a entero", "Quita los decimales (hacia 0)", "convertir float int truncar",
+         {P("Valor", kFloat, "0")}, {P("Resultado", kInt)});
+    pure("Conversion", "conv.bool_to_int", "Booleano a entero", "Verdadero = 1, falso = 0", "convertir bool int",
+         {P("Valor", kBool, "false")}, {P("Resultado", kInt)});
+
+    // --- Texto extra ---
+    pure("Texto", "str.format", "Format Text", "Cambia cada {nombre} del Formato por la entrada con ese nombre",
+         "formato format texto interpolar", {P("Formato", kString, "Vida: {vida}"), P("vida", kAny)}, {P("Texto", kString)});
+    c.back().dynamic_inputs = true;
+    pure("Texto", "str.substring", "Substring", "Parte del texto (Inicio desde 0)", "subcadena substring cortar parte",
+         {P("Texto", kString, ""), P("Inicio", kInt, "0"), P("Longitud", kInt, "1")}, {P("Texto", kString)});
+    pure("Texto", "str.replace", "Replace", "Cambia cada aparicion de Buscar por Reemplazar", "reemplazar replace cambiar",
+         {P("Texto", kString, ""), P("Buscar", kString, ""), P("Reemplazar", kString, "")}, {P("Texto", kString)});
+    pure("Texto", "str.split", "Split", "Parte el texto por un separador (lista de textos)", "partir split separar lista",
+         {P("Texto", kString, ""), P("Separador", kString, ",")}, {P("Lista", kAny)});
+    pure("Texto", "str.upper", "To Upper", "En mayusculas", "mayusculas upper", {P("Texto", kString, "")}, {P("Texto", kString)});
+    pure("Texto", "str.lower", "To Lower", "En minusculas", "minusculas lower", {P("Texto", kString, "")}, {P("Texto", kString)});
+    pure("Texto", "str.trim", "Trim", "Sin espacios al principio ni al final", "trim espacios recortar", {P("Texto", kString, "")},
+         {P("Texto", kString)});
+    pure("Texto", "str.starts_with", "Starts With", "El texto empieza por el prefijo?", "empieza starts prefijo",
+         {P("Texto", kString, ""), P("Prefijo", kString, "")}, {P("Resultado", kBool)});
+    pure("Texto", "str.ends_with", "Ends With", "El texto acaba en el sufijo?", "acaba termina ends sufijo",
+         {P("Texto", kString, ""), P("Sufijo", kString, "")}, {P("Resultado", kBool)});
+    pure("Texto", "str.is_empty", "Is Empty", "El texto esta vacio?", "vacio empty", {P("Texto", kString, "")}, {P("Resultado", kBool)});
+
+    // --- Listas (Array): indices desde 1, como la API y For Each ---
+    pure("Array", "array.make", "Make Array", "Una lista con sus entradas", "lista array crear make", {P("1", kAny), P("2", kAny)},
+         {P("Lista", kAny)});
+    c.back().dynamic_inputs = true;
+    node("Array", "array.add", "Add", "Anade un elemento al final (si la lista viene de una variable, la cambia)",
+         "lista array anadir add push", {X(""), P("Lista", kAny), P("Elemento", kAny)}, {X(""), P("Lista", kAny), P("Indice", kInt)});
+    pure("Array", "array.get", "Get", "El elemento de esa posicion (desde 1)", "lista array get elemento indice",
+         {P("Lista", kAny), P("Indice", kInt, "1")}, {P("Elemento", kAny)});
+    pure("Array", "array.length", "Length", "Numero de elementos", "lista array longitud length tamano", {P("Lista", kAny)},
+         {P("Longitud", kInt)});
+    pure("Array", "array.contains", "Contains", "La lista tiene ese elemento?", "lista array contiene contains",
+         {P("Lista", kAny), P("Elemento", kAny)}, {P("Resultado", kBool)});
+    pure("Array", "array.find", "Find", "Posicion del elemento (desde 1; 0 si no esta)", "lista array buscar find indice",
+         {P("Lista", kAny), P("Elemento", kAny)}, {P("Indice", kInt)});
+    node("Array", "array.remove_index", "Remove Index", "Quita el elemento de esa posicion (desde 1)", "lista array quitar remove",
+         {X(""), P("Lista", kAny), P("Indice", kInt, "1")}, {X(""), P("Lista", kAny)});
+    node("Array", "array.clear", "Clear", "Deja la lista vacia", "lista array vaciar clear", {X(""), P("Lista", kAny)},
+         {X(""), P("Lista", kAny)});
+
+    // --- Objeto: dueno y componentes ---
+    std::vector<std::string> components;
+    std::vector<std::string> addable;
+    for (const ecs::ComponentType& type : ecs::ComponentRegistry::instance().types()) {
+        components.push_back(type.name);
+        if (type.addable && type.removable) addable.push_back(type.name);
+    }
+    pure("Objeto", "entity.owner", "Get Owner", "La raiz de su prefab o Blueprint (o el propio objeto)", "dueno owner actor raiz root",
+         {P("Objeto", kEntity)}, {P("Dueno", kEntity)});
+    pure("Objeto", "component.get", "Get Component", "El objeto (este o uno de sus hijos) que tiene ese componente",
+         "componente component get buscar", {P("Objeto", kEntity), O(P("Componente", kString, "Light"), components)},
+         {P("Objeto", kEntity), P("Encontrado", kBool)});
+    pure("Objeto", "component.has", "Has Component", "El objeto tiene ese componente?", "componente component has tiene",
+         {P("Objeto", kEntity), O(P("Componente", kString, "Rigidbody"), components)}, {P("Resultado", kBool)});
+    node("Objeto", "component.add", "Add Component", "Anade un componente por su nombre", "componente component add anadir",
+         {X(""), P("Objeto", kEntity), O(P("Componente", kString, "Rigidbody"), addable)}, {X(""), P("Hecho", kBool)});
+    node("Objeto", "component.remove", "Remove Component", "Quita un componente por su nombre", "componente component remove quitar",
+         {X(""), P("Objeto", kEntity), O(P("Componente", kString, "Rigidbody"), addable)}, {X(""), P("Hecho", kBool)});
+    pure("Objeto", "component.ref", "Component", "Un objeto de este Blueprint o prefab (por su id dentro del prefab o su nombre)",
+         "componente referencia hijo blueprint", {P("Componente", kString, "")}, {P("Objeto", kEntity)});
+
+    // --- Fisica ---
+    node("Fisica", "physics.line_trace", "Line Trace", "Un rayo de Inicio a Fin: el primer objeto que toca",
+         "raycast rayo trazar line trace fisica hit",
+         {X(""), P("Inicio", kVector, "0 0 0"), P("Fin", kVector, "0 0 10"), P("Ignorar este objeto", kBool, "true")},
+         {X(""), P("Hit", kBool), P("Objeto", kEntity), P("Punto", kVector), P("Normal", kVector), P("Distancia", kFloat),
+          P("Resultado", kAny)});
+    pure("Fisica", "physics.break_hit", "Break Hit Result", "Los datos de un Resultado de Line Trace (o de Physics.raycast)",
+         "hit resultado break raycast", {P("Resultado", kAny)},
+         {P("Hit", kBool), P("Objeto", kEntity), P("Punto", kVector), P("Normal", kVector), P("Distancia", kFloat)});
+
+    // --- Vector extra ---
+    pure("Vector", "vec.rotate", "Rotate Vector", "Gira un vector unos grados (X, Y, Z)", "girar rotar vector",
+         {P("Vector", kVector, "0 0 1"), P("Grados", kVector, "0 90 0")}, {P("Resultado", kVector)});
+    pure("Vector", "vec.unit_direction", "Get Unit Direction", "Direccion (longitud 1) de Desde a Hasta", "direccion unit direction",
+         {P("Desde", kVector, "0 0 0"), P("Hasta", kVector, "0 0 1")}, {P("Direccion", kVector)});
+    pure("Vector", "vec.distance2d", "Distance 2D", "Distancia en el suelo (X, Z), sin la altura", "distancia 2d suelo plano",
+         {P("A", kVector, "0 0 0"), P("B", kVector, "0 0 0")}, {P("Distancia", kFloat)});
 
     // --- Utilidades ---
     pure("Utilidades", "util.reroute", "Reroute", "Punto de paso para ordenar los cables", "reroute punto cable", {P("", kAny)}, {P("", kAny)});
@@ -531,10 +687,14 @@ const std::vector<NodeInfo>& nodeCatalog() {
 }
 
 const NodeInfo* findNodeInfo(const std::string& kind) {
-    for (const NodeInfo& n : nodeCatalog()) {
-        if (n.kind == kind) return &n;
-    }
-    return nullptr;
+    // Indice por clave (el interprete lo pregunta mucho).
+    static const std::unordered_map<std::string, const NodeInfo*> index = [] {
+        std::unordered_map<std::string, const NodeInfo*> out;
+        for (const NodeInfo& n : nodeCatalog()) out.emplace(n.kind, &n);
+        return out;
+    }();
+    const auto it = index.find(kind);
+    return it == index.end() ? nullptr : it->second;
 }
 
 Node makeNode(const std::string& kind, core::Vec2 position) {
@@ -566,6 +726,10 @@ std::string nodeTitle(const Node& node) {
         return "Tecla " + node.inputs[0].value;
     }
     if (node.kind == "comment") return node.comment.empty() ? std::string("Comentario") : node.comment;
+    if (node.kind == "entity.child") {
+        const std::string name = entityChildPathName(node.fn);
+        return name.empty() ? std::string("Objeto hijo ?") : name;
+    }
     if (const NodeInfo* info = findNodeInfo(node.kind)) return info->title;
     return node.kind;
 }
@@ -579,13 +743,119 @@ core::Vec3 nodeColor(const Node& node) {
     if (category == "Eventos") return core::Vec3{0.62f, 0.12f, 0.12f};
     if (category == "Flujo") return core::Vec3{0.38f, 0.38f, 0.40f};
     if (category == "Variables") return core::Vec3{0.45f, 0.30f, 0.55f};
-    if (category == "Matematicas" || category == "Logica" || category == "Vector" || category == "Texto") {
+    if (category == "Matematicas" || category == "Logica" || category == "Vector" || category == "Texto" ||
+        category == "Conversion" || category == "Array") {
         return core::Vec3{0.20f, 0.45f, 0.30f};
     }
-    if (category == "Objeto") return core::Vec3{0.18f, 0.35f, 0.62f};
+    if (category == "Objeto" || category == "Fisica") return core::Vec3{0.18f, 0.35f, 0.62f};
     if (category == "Entrada" || category == "Tiempo") return core::Vec3{0.55f, 0.40f, 0.12f};
     if (category == "Depuracion") return core::Vec3{0.30f, 0.30f, 0.32f};
     return core::Vec3{0.28f, 0.28f, 0.30f};
+}
+
+// --- Objeto hijo por ruta ------------------------------------------------------
+
+namespace {
+
+struct ChildPathPart {
+    std::string name;
+    int ordinal = 1;  // 1 = el primero con ese nombre entre sus hermanos
+};
+
+std::string escapePathName(const std::string& name) {
+    std::string out;
+    for (const char c : name) {
+        if (c == '/' || c == '[' || c == ']' || c == '\\') out += '\\';
+        out += c;
+    }
+    return out;
+}
+
+std::vector<ChildPathPart> parseChildPath(const std::string& path) {
+    std::vector<ChildPathPart> parts;
+    ChildPathPart part;
+    bool any = false;
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        const char c = path[i];
+        if (c == '\\' && i + 1 < path.size()) {
+            part.name += path[++i];
+            any = true;
+        } else if (c == '/') {
+            if (any) parts.push_back(part);
+            part = {};
+            any = false;
+        } else if (c == '[') {
+            // "[n]" al final del tramo; si no es un numero, se toma como texto.
+            const std::size_t close = path.find(']', i);
+            const std::string digits = close == std::string::npos ? std::string() : path.substr(i + 1, close - i - 1);
+            if (!digits.empty() && std::all_of(digits.begin(), digits.end(), [](unsigned char d) { return std::isdigit(d) != 0; })) {
+                part.ordinal = std::max(1, std::atoi(digits.c_str()));
+                i = close;
+            } else {
+                part.name += c;
+            }
+            any = true;
+        } else {
+            part.name += c;
+            any = true;
+        }
+    }
+    if (any) parts.push_back(part);
+    return parts;
+}
+
+}  // namespace
+
+std::string entityChildPath(const ecs::Entity& root, const ecs::Entity& e) {
+    if (!root.valid() || !e.valid() || root.handle() == e.handle() || !root.isAncestorOf(e)) return {};
+    std::vector<std::string> parts;
+    for (ecs::Entity x = e; x.valid() && x.handle() != root.handle(); x = x.parent()) {
+        const ecs::Entity parent = x.parent();
+        int ordinal = 1;
+        if (parent.valid() && parent.world() != nullptr) {
+            for (const entt::entity child : parent.children()) {
+                if (child == x.handle()) break;
+                if (parent.world()->wrap(child).name() == x.name()) ++ordinal;
+            }
+        }
+        std::string part = escapePathName(x.name());
+        if (ordinal > 1) part += "[" + std::to_string(ordinal) + "]";
+        parts.push_back(std::move(part));
+    }
+    std::string out;
+    for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
+        if (!out.empty()) out += '/';
+        out += *it;
+    }
+    return out;
+}
+
+ecs::Entity resolveEntityChildPath(const ecs::Entity& root, const std::string& path) {
+    if (!root.valid() || root.world() == nullptr) return {};
+    const std::vector<ChildPathPart> parts = parseChildPath(path);
+    if (parts.empty()) return {};
+    ecs::Entity at = root;
+    for (const ChildPathPart& part : parts) {
+        ecs::Entity next;
+        int seen = 0;
+        for (const entt::entity child : at.children()) {
+            const ecs::Entity c = at.world()->wrap(child);
+            if (c.name() == part.name && ++seen == part.ordinal) {
+                next = c;
+                break;
+            }
+        }
+        if (!next.valid()) return {};
+        at = next;
+    }
+    return at;
+}
+
+std::string entityChildPathName(const std::string& path) {
+    const std::vector<ChildPathPart> parts = parseChildPath(path);
+    if (parts.empty()) return {};
+    const ChildPathPart& last = parts.back();
+    return last.ordinal > 1 ? last.name + " [" + std::to_string(last.ordinal) + "]" : last.name;
 }
 
 bool looksPure(const std::string& callee) {
@@ -782,6 +1052,160 @@ Node makePropertyNode(const std::string& callee, bool set, const std::string& de
     return n;
 }
 
+// --- Aspecto y busqueda por contexto -------------------------------------------------
+
+namespace {
+
+// Operadores que se dibujan como un nodo pequeno con su simbolo.
+const std::unordered_map<std::string, const char*>& compactSymbols() {
+    static const std::unordered_map<std::string, const char*> symbols = {
+        {"math.add", "+"},           {"math.sub", "-"},          {"math.mul", "\xC3\x97"},    {"math.div", "\xC3\xB7"},
+        {"math.mod", "%"},           {"logic.and", "AND"},       {"logic.or", "OR"},          {"logic.xor", "XOR"},
+        {"logic.not", "NOT"},        {"logic.equal", "=="},      {"logic.not_equal", "!="},   {"logic.greater", ">"},
+        {"logic.less", "<"},         {"logic.greater_equal", ">="}, {"logic.less_equal", "<="}, {"conv.int_to_float", ""},
+        {"conv.float_to_int", ""},   {"conv.bool_to_int", ""}};
+    return symbols;
+}
+
+std::uint32_t typeMask(const std::vector<Pin>& pins) {
+    std::uint32_t mask = 0;
+    for (const Pin& p : pins) {
+        const int i = static_cast<int>(p.type);
+        if (i >= 0 && i < 32) mask |= std::uint32_t(1) << i;
+    }
+    return mask;
+}
+
+}  // namespace
+
+NodeLook nodeLook(const Node& node) {
+    if (node.kind == "comment") return NodeLook::Comment;
+    if (node.kind == "util.reroute") return NodeLook::Reroute;
+    if (node.kind == "var.get" || node.kind == "entity.child") return NodeLook::Variable;
+    if (compactSymbols().contains(node.kind)) return NodeLook::Compact;
+    const NodeInfo* info = findNodeInfo(node.kind);
+    if (info != nullptr && info->event) return NodeLook::Event;
+    if (info != nullptr && info->category == "Flujo" && !info->pure) return NodeLook::Flow;
+    if (isPureNode(node)) return NodeLook::Pure;
+    return NodeLook::Function;
+}
+
+const char* nodeSymbol(const Node& node) {
+    const auto it = compactSymbols().find(node.kind);
+    return it == compactSymbols().end() ? "" : it->second;
+}
+
+std::uint32_t inputTypeMask(const Node& node) { return typeMask(node.inputs); }
+std::uint32_t outputTypeMask(const Node& node) { return typeMask(node.outputs); }
+
+std::optional<std::string> conversionKind(PinType from, PinType to) {
+    if (from == PinType::Exec || to == PinType::Exec || pinTypesCompatible(from, to)) return std::nullopt;
+    if (from == PinType::Bool && (to == PinType::Int || to == PinType::Float)) return std::string("conv.bool_to_int");
+    if (from == PinType::Entity && to == PinType::Vector) return std::string("entity.get_position");
+    if (from == PinType::String && (to == PinType::Int || to == PinType::Float)) return std::string("str.to_number");
+    if (from == PinType::String && to == PinType::Entity) return std::string("entity.find");
+    return std::nullopt;
+}
+
+PinType typeFromDocText(const std::string& returns) {
+    std::string t = lower(trim(returns));
+    // "X (nota)" y "X o nil": cuenta X.
+    if (const std::size_t paren = t.find(" ("); paren != std::string::npos) t = trim(t.substr(0, paren));
+    if (t.size() > 6 && t.compare(t.size() - 6, 6, " o nil") == 0) t = trim(t.substr(0, t.size() - 6));
+    if (t.empty()) return PinType::Any;
+    // Listas, varias posibilidades y objetos de datos: cualquier cosa.
+    if (t.rfind("lista", 0) == 0 || t.find(',') != std::string::npos || t.find(" o ") != std::string::npos || t[0] == '{') {
+        return PinType::Any;
+    }
+    if (t == "bool" || t == "booleano" || t.rfind("true si", 0) == 0) return PinType::Bool;
+    if (t == "numero" || t.rfind("numero ", 0) == 0 || t == "entero" || t == "id" || t.rfind("id ", 0) == 0) return PinType::Float;
+    if (t == "texto" || t == "string") return PinType::String;
+    if (t == "vec3" || t == "vector") return PinType::Vector;
+    if (t == "entity") return PinType::Entity;
+    // "objeto", "valor", "Quat", "Mesh", handles y texto libre.
+    return PinType::Any;
+}
+
+namespace {
+
+// Nodo de la API con el tipo de lo que devuelve (Doc.returns).
+void retypeResult(Node& node, PinType type) {
+    if (type == PinType::Any) return;
+    for (Pin& p : node.outputs) {
+        if (p.type != PinType::Exec) p.type = type;
+    }
+}
+
+std::vector<ApiNodeTemplate> buildApiTemplates(const scripting::api::NativeApi& api) {
+    using scripting::api::Entry;
+    std::vector<ApiNodeTemplate> out;
+    for (const Entry& e : api.entries()) {
+        if (e.owner.empty() || e.name.empty() || e.name.rfind("__", 0) == 0) continue;
+        const std::string category = "API: " + e.owner;
+        const std::string keywords = e.name + " " + e.owner;
+        const PinType returns = typeFromDocText(e.doc.returns);
+        if (e.kind == Entry::Kind::Property) {
+            // De un tipo ("Entity:position": con pin del objeto) o de una tabla ("Time.deltaTime").
+            const std::string callee = e.owner + (e.member() ? ":" : ".") + e.name;
+            const std::string shown = e.owner + "." + e.name;
+            ApiNodeTemplate get{category, "Get " + shown, keywords, e.doc.description, makePropertyNode(callee, false, e.doc.description)};
+            retypeResult(get.node, returns);
+            out.push_back(std::move(get));
+            if (e.assign) {
+                ApiNodeTemplate set{category, "Set " + shown, keywords, e.doc.description, makePropertyNode(callee, true, e.doc.description)};
+                if (returns != PinType::Any && !set.node.inputs.empty()) set.node.inputs.back().type = returns;
+                out.push_back(std::move(set));
+            }
+            continue;
+        }
+        const std::string callee = e.owner + (e.member() ? ":" : ".") + e.name;
+        ApiNodeTemplate call{category, callee, keywords, e.doc.description, makeCallNode(callee, e.doc.args, e.doc.description)};
+        if (call.node.pure) {
+            // Sin pines exec (como los que crea el editor para las funciones puras).
+            std::erase_if(call.node.inputs, [](const Pin& p) { return p.type == PinType::Exec; });
+            std::erase_if(call.node.outputs, [](const Pin& p) { return p.type == PinType::Exec; });
+        }
+        if (!e.doc.returns.empty()) {
+            retypeResult(call.node, returns);
+        } else if (!e.doc.description.empty() && !call.node.pure) {
+            // Documentada y sin nada que devolver: sin pin Resultado.
+            std::erase_if(call.node.outputs, [](const Pin& p) { return p.type != PinType::Exec; });
+        }
+        out.push_back(std::move(call));
+    }
+    std::stable_sort(out.begin(), out.end(), [](const ApiNodeTemplate& a, const ApiNodeTemplate& b) {
+        return a.category != b.category ? a.category < b.category : a.title < b.title;
+    });
+    return out;
+}
+
+}  // namespace
+
+const std::vector<ApiNodeTemplate>& apiNodeTemplates(const scripting::api::NativeApi& api) {
+    static std::mutex mutex;
+    static std::map<const scripting::api::NativeApi*, std::vector<ApiNodeTemplate>> cache;
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = cache.find(&api);
+    if (it == cache.end()) it = cache.emplace(&api, buildApiTemplates(api)).first;
+    return it->second;
+}
+
+std::vector<std::string> formatTextArguments(const std::string& format) {
+    std::vector<std::string> out;
+    std::size_t at = 0;
+    while ((at = format.find('{', at)) != std::string::npos) {
+        const std::size_t close = format.find('}', at + 1);
+        if (close == std::string::npos) break;
+        const std::string name = trim(format.substr(at + 1, close - at - 1));
+        if (!name.empty() && name.find('{') == std::string::npos &&
+            std::find(out.begin(), out.end(), name) == out.end()) {
+            out.push_back(name);
+        }
+        at = close + 1;
+    }
+    return out;
+}
+
 // --- Archivo --------------------------------------------------------------------------
 
 namespace {
@@ -895,6 +1319,10 @@ bool graphFromJson(const std::string& text, Graph& out, std::string* error) {
             n.comment = jn.value("comment", std::string());
             n.size = core::Vec2{jn.value("w", 0.0f), jn.value("h", 0.0f)};
             n.breakpoint = jn.value("breakpoint", false);
+            n.disabled = jn.value("disabled", false);
+            if (jn.contains("comment_color") && jn["comment_color"].is_number_unsigned()) {
+                n.comment_color = jn["comment_color"].get<std::uint32_t>();
+            }
             const std::vector<Pin> stored_in = readPins(jn.contains("inputs") ? jn["inputs"] : json());
             const std::vector<Pin> stored_out = readPins(jn.contains("outputs") ? jn["outputs"] : json());
             if (const NodeInfo* info = findNodeInfo(n.kind)) {
@@ -906,6 +1334,20 @@ bool graphFromJson(const std::string& text, Graph& out, std::string* error) {
                         n.outputs.push_back(Pin{"Then " + std::to_string(k), PinType::Exec, {}});
                     }
                 }
+                // Pines que anadio el usuario (Switch, MultiGate, Make Array, Format Text...):
+                // los guardados mandan (nombres incluidos); las opciones salen del catalogo.
+                const auto keepStored = [](std::vector<Pin>& pins, const std::vector<Pin>& stored) {
+                    if (stored.empty()) return;
+                    std::vector<Pin> merged = stored;
+                    for (Pin& p : merged) {
+                        for (const Pin& c : pins) {
+                            if (c.name == p.name && c.type == p.type) p.options = c.options;
+                        }
+                    }
+                    pins = std::move(merged);
+                };
+                if (info->dynamic_outputs) keepStored(n.outputs, stored_out);
+                if (info->dynamic_inputs) keepStored(n.inputs, stored_in);
                 // Valores guardados: por indice si el nombre coincide, si no por nombre.
                 for (std::size_t k = 0; k < stored_in.size(); ++k) {
                     int index = k < n.inputs.size() && n.inputs[k].name == stored_in[k].name ? static_cast<int>(k) : n.input(stored_in[k].name);
@@ -996,6 +1438,8 @@ std::string graphToJson(const Graph& g) {
             jn["h"] = n.size.y;
         }
         if (n.breakpoint) jn["breakpoint"] = true;
+        if (n.disabled) jn["disabled"] = true;
+        if (n.comment_color != 0) jn["comment_color"] = n.comment_color;
         jn["inputs"] = writePins(n.inputs);
         jn["outputs"] = writePins(n.outputs);
         nodes.push_back(std::move(jn));
@@ -1182,6 +1626,11 @@ private:
         if (!reported_.insert({node, message}).second) return;
         errors_.push_back(NodeError{node, message});
     }
+    void warning(int node, const std::string& message) {
+        if (!reported_.insert({node, message}).second) return;
+        errors_.push_back(NodeError{node, message, true});
+    }
+    static bool isCall(const Node& n) { return n.kind == "call" || n.kind == "call.get" || n.kind == "call.set"; }
 
     PinType pinType(const Node& n, bool output, int index) const { return nodePinType(g_, n, output, index); }
 
@@ -1212,11 +1661,23 @@ private:
         std::set<std::string> events;
         std::set<std::string> custom_names;
         for (const Node& n : g_.nodes) {
-            if (n.kind == "event.custom" && !n.inputs.empty()) custom_names.insert(trim(n.inputs[0].value));
+            if (n.kind == "event.custom" && !n.inputs.empty() && !n.disabled) custom_names.insert(trim(n.inputs[0].value));
         }
         for (const Node& n : g_.nodes) {
             const NodeInfo* info = findNodeInfo(n.kind);
             const bool call = n.kind == "call" || n.kind == "call.get" || n.kind == "call.set";
+            if (n.disabled) {
+                // Desactivado: no se comprueba (deja pasar la ejecucion); su valor no se puede usar.
+                if (isPureNode(n) && n.kind != "comment") {
+                    for (std::size_t i = 0; i < n.outputs.size(); ++i) {
+                        if (out_links_.contains({n.id, static_cast<int>(i)})) {
+                            error(n.id, "El nodo esta desactivado y se usa su valor");
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
             if (info == nullptr && !call) {
                 error(n.id, "Tipo de nodo desconocido: " + n.kind);
                 continue;
@@ -1225,6 +1686,9 @@ private:
                 error(n.id, n.fn.empty() ? std::string("Elige una variable") : "No existe la variable \"" + n.fn + "\"");
             }
             if (call && !validCallee(n.fn)) error(n.id, "Funcion no valida: \"" + n.fn + "\"");
+            if (n.kind == "entity.child" && entityChildPathName(n.fn).empty()) {
+                error(n.id, "Escribe la ruta del objeto (Detalles), p. ej. \"Cuerpo/Malla\"");
+            }
             if (n.kind == "event.custom") {
                 const std::string name = n.inputs.empty() ? std::string() : trim(n.inputs[0].value);
                 if (name.empty()) error(n.id, "El evento necesita un nombre");
@@ -1260,8 +1724,12 @@ private:
             if ((from == PinType::Exec) != (to == PinType::Exec)) {
                 error(l.to_node, "Enlace de ejecucion con un pin de datos");
             } else if (!pinTypesCompatible(from, to)) {
-                error(l.to_node, std::string("No se puede enlazar ") + pinTypeLabel(from) + " con " + pinTypeLabel(to) + " (" +
-                                     b->second->inputs[static_cast<std::size_t>(l.to_pin)].name + ")");
+                const std::string message = std::string("No se puede enlazar ") + pinTypeLabel(from) + " con " + pinTypeLabel(to) +
+                                            " (" + b->second->inputs[static_cast<std::size_t>(l.to_pin)].name + ")";
+                // Los nodos de la API comprueban en la llamada: un enlace viejo que su tipo
+                // nuevo (Doc.returns) ya no admite es un aviso, no un error.
+                if (isCall(*a->second) || isCall(*b->second)) warning(l.to_node, message);
+                else error(l.to_node, message);
             }
         }
         for (const auto& [key, list] : out_links_) {
@@ -1289,7 +1757,7 @@ private:
             if (!ok) error(0, "\"" + v.name + "\": \"" + trim(v.value) + "\" no es un numero");
         }
         for (const Node& n : g_.nodes) {
-            if (n.kind == "comment") continue;
+            if (n.kind == "comment" || n.disabled) continue;
             for (std::size_t i = 0; i < n.inputs.size(); ++i) {
                 const PinType t = pinType(n, false, static_cast<int>(i));
                 if ((t != PinType::Int && t != PinType::Float) || in_links_.contains({n.id, static_cast<int>(i)})) continue;
@@ -1330,7 +1798,7 @@ private:
 CompileResult compileGraph(const Graph& graph, const std::string& /*chunk*/) {
     CompileResult r;
     r.errors = Validator(graph).run();
-    r.ok = r.errors.empty();
+    r.ok = std::none_of(r.errors.begin(), r.errors.end(), [](const NodeError& e) { return !e.warning; });
     return r;
 }
 

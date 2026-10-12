@@ -19,6 +19,9 @@
 //                   hebra (como el anisotropo), a = brillo secundario
 //                   (Kajiya-Kay con los dos lobulos desplazados de
 //                   Scheuermann, "Hair Rendering and Shading", GDC 2004)
+//   7 Hierba        g = translucidez, b = direccion de la brizna (como el
+//                   pelo: decodifica en la bitangente), a = brillo de la
+//                   hebra (0 = sheen ancho, 1 = estrecho). Siempre fina.
 //
 // Las funciones devuelven "BRDF x pi x N.L" (la escala del motor: las luces
 // ya llevan pi, el difuso de Lambert es albedo x N.L).
@@ -31,6 +34,7 @@ const int kShadingAnisotropic = 4;
 // 5 = Transmision (vidrio: IOR, grosor, rugosidad): solo en glass.frag.
 const int kShadingTransmission = 5;
 const int kShadingHair = 6;
+const int kShadingGrass = 7;
 
 struct ShadingModel {
     int model;
@@ -66,7 +70,7 @@ ShadingModel decodeShading(vec4 packed, vec3 n) {
     s.params = packed.gba;
     s.tangent = vec3(0.0);
     s.bitangent = vec3(0.0);
-    if (s.model == kShadingAnisotropic || s.model == kShadingHair) {
+    if (s.model == kShadingAnisotropic || s.model == kShadingHair || s.model == kShadingGrass) {
         vec3 b1;
         vec3 b2;
         shadingBasis(n, b1, b2);
@@ -101,8 +105,20 @@ vec3 disneyTint(vec3 albedo) {
 // del color base (latón barnizado, plasticos de color).
 float shadingSpecularTint(ShadingModel s) {
     if (s.model == kShadingStandard) return s.params.x;
-    if (s.model == kShadingSubsurface || s.model == kShadingHair) return 0.0;
+    if (s.model == kShadingSubsurface || s.model == kShadingHair || s.model == kShadingGrass) return 0.0;
     return s.params.z;
+}
+
+// Translucidez del modelo (0 = opaco): subsurface en b, hierba en g.
+float shadingTranslucency(ShadingModel s) {
+    if (s.model == kShadingSubsurface) return s.params.y;
+    if (s.model == kShadingGrass) return s.params.x;
+    return 0.0;
+}
+
+// Grosor (0..1) para la luz que atraviesa: la hierba siempre es fina.
+float shadingThickness(ShadingModel s) {
+    return s.model == kShadingGrass ? 0.0 : s.params.z;
 }
 
 vec3 disneyF0(ShadingModel s, vec3 albedo, float reflectance, float metallic) {
@@ -180,9 +196,30 @@ vec3 hairBrdf(ShadingModel s, vec3 n, vec3 v, vec3 l, vec3 albedo, float roughne
     return (diffuse + specular * smoothstep(0.0, 0.2, n_dot_l + 0.1)) * wrap;
 }
 
+// Hierba: una brizna fina vista como pelo. Difuso envolvente (sin terminador
+// duro: la luz rodea la brizna) y un brillo de Kajiya-Kay a lo largo de la
+// hebra, de un solo lobulo. El angulo guardado va de 0 a 180 grados, asi el
+// signo de la hebra es ambiguo: se orienta hacia arriba antes de desplazarla
+// (por eso no lleva la atenuacion direccional del pelo, que depende del signo).
+vec3 grassBrdf(ShadingModel s, vec3 n, vec3 v, vec3 l, vec3 albedo, float roughness, vec3 energy) {
+    float n_dot_l = dot(n, l);
+    float wrap = clamp((n_dot_l + 0.35) / 1.35, 0.0, 1.0);
+    if (wrap <= 0.0) return vec3(0.0);
+    vec3 strand = s.bitangent * (s.bitangent.y < 0.0 ? -1.0 : 1.0);
+    vec3 h = normalize(l + v);
+    vec3 t = normalize(strand + n * 0.08);
+    float exponent = mix(24.0, 160.0, s.params.z);
+    float t_dot_h = dot(t, h);
+    float spec = pow(sqrt(max(1.0 - t_dot_h * t_dot_h, 0.0)), exponent) * (exponent + 2.0) / (8.0 * kPi);
+    float fresnel = 0.03 + 0.97 * schlickWeight(max(dot(v, h), 0.0));
+    vec3 specular = vec3(spec * fresnel) * mix(vec3(1.0), disneyTint(albedo), 0.35) * kPi * energy;
+    return albedo * 0.9 * wrap + specular * smoothstep(-0.1, 0.2, n_dot_l);
+}
+
 vec3 disneyBrdf(ShadingModel s, vec3 n, vec3 v, vec3 l, vec3 albedo, float roughness, float metallic, vec3 f0,
                 vec3 energy, float light_size) {
     if (s.model == kShadingHair) return hairBrdf(s, n, v, l, albedo, roughness, energy);
+    if (s.model == kShadingGrass) return grassBrdf(s, n, v, l, albedo, roughness, energy);
     float n_dot_l = dot(n, l);
     if (n_dot_l <= 0.0) return vec3(0.0);
     float n_dot_v = max(dot(n, v), 1e-4);
@@ -254,17 +291,18 @@ vec3 disneyBrdf(ShadingModel s, vec3 n, vec3 v, vec3 l, vec3 albedo, float rough
 // lighting.frag). Aproximacion de Barre-Brisebois y Bouchard (2011).
 // Color de la luz que atraviesa: mas claro y saturado que el que se refleja
 // (recorre el interior: una oreja a contraluz sale roja). En lo fino (hojas,
-// params.z bajo) tira al verde amarillento de una hoja con el sol detras; con
+// grosor bajo) tira al verde amarillento de una hoja con el sol detras; con
 // el color reflejado (verde oscuro) las copas a contraluz salian negras.
 vec3 translucencyColor(ShadingModel s, vec3 albedo) {
     vec3 transmitted = pow(max(albedo, vec3(0.0)), vec3(0.6));
-    float thin = 1.0 - smoothstep(0.1, 0.3, s.params.z);
+    float thin = 1.0 - smoothstep(0.1, 0.3, shadingThickness(s));
     return transmitted * mix(vec3(1.0), vec3(1.08, 1.12, 0.62), thin);
 }
 
 vec3 disneyTranslucency(ShadingModel s, vec3 n, vec3 v, vec3 l, vec3 albedo, float metallic) {
-    if (s.model != kShadingSubsurface || s.params.y <= 0.0) return vec3(0.0);
-    float thin = 1.0 - smoothstep(0.1, 0.3, s.params.z);
+    float translucency = shadingTranslucency(s);
+    if (translucency <= 0.0) return vec3(0.0);
+    float thin = 1.0 - smoothstep(0.1, 0.3, shadingThickness(s));
     // Transmision difusa: lo que entra por la cara de atras sale repartido
     // hacia todos lados (en una hoja fina es lo principal; en algo grueso,
     // poco). Antes solo brillaba mirando justo al sol a traves de ella.
@@ -274,5 +312,5 @@ vec3 disneyTranslucency(ShadingModel s, vec3 n, vec3 v, vec3 l, vec3 albedo, flo
     float forward = pow(clamp(dot(v, -through), 0.0, 1.0), 6.0) * 2.0;
     // Y un poco de luz que da la vuelta al objeto (envoltura).
     float wrap = clamp((dot(-n, l) + 0.2) / 1.2, 0.0, 1.0) * 0.15;
-    return translucencyColor(s, albedo) * s.params.y * (diffuse + forward + wrap) * (1.0 - metallic);
+    return translucencyColor(s, albedo) * translucency * (diffuse + forward + wrap) * (1.0 - metallic);
 }

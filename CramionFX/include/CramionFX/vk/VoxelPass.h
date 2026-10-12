@@ -26,6 +26,7 @@
 
 #include "CramionFX/vk/GBuffer.h"
 #include "CramionFX/core/Math.h"
+#include "CramionFX/vk/TextureFiltering.h"
 #include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
@@ -65,6 +66,10 @@ public:
                 std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
                 std::uint32_t frames_in_flight);
     void destroy();
+    // Filtrado de las texturas de los bloques (anisotropico y sesgo de los
+    // mips): rehace el sampler y el set. Con la GPU parada; antes de create
+    // solo lo guarda.
+    void setTextureFiltering(const TextureFiltering& filtering);
 
     // Las texturas de los bloques (todas del mismo tamano, potencia de dos).
     void setTextures(std::uint32_t size, const std::vector<VoxelTextureLayer>& layers);
@@ -143,6 +148,9 @@ private:
     vk::raii::DescriptorPool pool_{nullptr};
     vk::raii::DescriptorSet set_{nullptr};
     vk::raii::Sampler sampler_{nullptr};
+    TextureFiltering filtering_{};
+    void createSampler(const VulkanDevice& device);
+    void writeSet(const VulkanDevice& device);
 
     struct ArrayTexture {
         vk::raii::DeviceMemory memory{nullptr};

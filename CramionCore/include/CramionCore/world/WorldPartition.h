@@ -26,8 +26,23 @@
 // archivo por celda, y no en la escena. El juego y el servidor solo leen las
 // celdas cercanas: el mundo entero nunca esta en memoria. El editor las
 // carga todas al abrir la escena (se ve y se edita entera).
+//
+// Hilos (CVar wp.AsyncCells, encendida): leer y parsear una celda va al grupo
+// de IO y a un hilo trabajador; el hilo principal solo recrea lo ya parseado,
+// con un presupuesto de tiempo (wp.RestoreBudgetMs) ademas del de objetos.
+// Al descargar, el hilo principal guarda el estado (serializa) y la escritura
+// del archivo va al hilo de IO; hasta que termina, lo guardado sigue en
+// memoria (volver a cargar la celda lo usa sin leer el disco). Los hilos no
+// tocan el sistema ni el mundo (solo su estado compartido).
+//
+// Origen flotante: las celdas son de la posicion absoluta (origin + local), no
+// de la local, asi que no cambian al desplazarse el origen. Lo guardado de una
+// celda lleva el origen del mundo de cuando se guardo; al recrearlo, las raices
+// se mueven (origen guardado - origen actual) y vuelven a su sitio real.
 
 #include "CramionCore/ecs/Reflection.h"
+#include "CramionCore/ecs/World.h"
+#include "CramionCore/jobs/JobSystem.h"
 
 #include <CramionFX/core/Math.h>
 
@@ -37,6 +52,7 @@
 #include <filesystem>
 #include <future>
 #include <map>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,6 +62,7 @@
 namespace cramion::ecs {
 class World;
 class Entity;
+struct ParsedEntities;
 }  // namespace cramion::ecs
 
 namespace cramion::worldpart {
@@ -104,6 +121,8 @@ struct PartitionStats {
     int external_cells = 0;        // celdas de <escena>.cells/ registradas
     int loads = 0;                 // desde el principio
     int unloads = 0;
+    int reads_in_flight = 0;       // celdas leyendose/parseandose en otros hilos
+    int writes_in_flight = 0;      // celdas escribiendose en otros hilos
 };
 
 class WorldPartitionSystem {
@@ -149,7 +168,13 @@ public:
     // Carga todo ya (antes de guardar partida, por ejemplo).
     void loadAll(ecs::World& world);
     bool cellLoaded(const CellCoord& c) const;
+    // Celda de un punto local (del mundo, con el origen flotante actual).
     CellCoord cellOf(const core::Vec3& p) const;
+    // Celda de una posicion absoluta (doble precision).
+    static CellCoord cellAt(const ecs::DVec3& absolute, float cell_size);
+    // El origen del mundo se desplazo (ecs::World::shiftOrigin con el mismo
+    // offset). update() tambien lo lee del mundo; esto lo deja bien ya.
+    void shiftOrigin(const core::Vec3& offset);
     float cellSize() const { return settings_.cell_size; }
     const PartitionStats& stats() const { return stats_; }
     // Muestra los HLOD de las celdas descargadas y oculta los demas.
@@ -161,24 +186,47 @@ public:
     static bool streamable(const ecs::Entity& root);
 
 private:
+    // Una raiz por recrear: el texto (camino sincrono) o ya parseada en otro hilo.
+    struct PendingRoot {
+        std::string text;
+        std::shared_ptr<const ecs::ParsedEntities> parsed;
+    };
+    // Lectura (+ parseo) en otros hilos. Los hilos solo tocan esto.
+    struct PendingRead;
+    // Escritura en el hilo de IO.
+    struct PendingWrite;
     struct Cell {
         bool loaded = true;
         std::vector<entt::entity> roots;  // raices cargadas que viven aqui
-        std::vector<std::string> stored;  // en memoria (si no se pudo escribir a disco)
+        // En memoria: si no se pudo escribir a disco, o mientras se escribe
+        // (compartido con el hilo de IO; nadie lo cambia).
+        std::shared_ptr<const std::vector<std::string>> stored;
         std::filesystem::path file;       // en disco: cache de la sesion o celda externa
         std::size_t bytes = 0;            // en memoria
         std::size_t disk_bytes = 0;       // en disco
+        ecs::DVec3 origin{};              // origen del mundo con el que se guardo
         int entities = 0;  // raices que viven en esta celda
-        // Cargando: el archivo se lee en otro hilo y luego se recrea por trozos.
+        // Cargando: el archivo se lee (y se parsea) en otro hilo y luego se
+        // recrea por trozos.
         bool reading = false;
-        std::future<std::vector<std::string>> job;
-        std::vector<std::string> pending;
+        std::shared_ptr<PendingRead> read;
+        std::shared_ptr<PendingWrite> write;  // escribiendose (stored sigue en memoria)
+        // Escrituras anteriores de esta celda que quiza siguen en marcha (la
+        // siguiente usa otro nombre mientras quede alguna).
+        std::vector<std::shared_ptr<PendingWrite>> older_writes;
+        std::vector<PendingRoot> pending;
         std::size_t next = 0;  // siguiente de `pending` por recrear
         bool loading() const { return reading || next < pending.size(); }
     };
     void unloadCell(ecs::World& world, const CellCoord& c, Cell& cell);
-    // Empieza a cargar (memoria: ya; disco: en otro hilo).
-    void requestLoad(Cell& cell);
+    // Empieza a cargar (memoria: ya; disco: en otro hilo). false si no pudo
+    // empezar ahora (demasiadas lecturas en marcha: se reintenta).
+    bool requestLoad(Cell& cell);
+    // Escrituras terminadas: lo guardado sale de la memoria.
+    void pollWrites();
+    // Cancela lecturas y espera a las escrituras (antes de borrar la cache).
+    void drainJobs();
+    int readsInFlight() const;
     // Lecturas terminadas y objetos por recrear, con el presupuesto del frame.
     void pumpLoads(ecs::World& world, int budget);
     // Carga entera ya (esperando al disco).
@@ -197,6 +245,7 @@ private:
     void refreshStats();
 
     WorldPartition settings_{};
+    ecs::DVec3 origin_{};  // origen flotante del mundo (cellOf con posiciones locales)
     std::map<CellCoord, Cell> cells_;
     std::filesystem::path scene_file_;
     bool cells_in_world_ = true;
@@ -208,6 +257,9 @@ private:
     // Raices ya vistas que no se pueden descargar (no se miran en cada
     // repaso; se olvidan de vez en cuando por si les ponen una malla).
     std::unordered_set<entt::entity> rejected_;
+    // Trabajos de disco en marcha (la cache no se borra hasta que acaben).
+    std::vector<jobs::JobHandle> io_jobs_;
+    std::uint64_t write_seq_ = 0;  // nombre unico por escritura en la cache
     int frame_ = 0;
     int rescans_ = 0;
     bool proxies_dirty_ = true;  // una celda cambio: los HLOD se actualizan

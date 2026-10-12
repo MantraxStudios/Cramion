@@ -124,11 +124,16 @@ void EditorApp::drawRigInspector(const std::string& type, ecs::Entity entity) {
         }
         ImGui::SetNextItemWidth(-1.0f);
         if (ImGui::BeginCombo("##socket_bone", socket->bone.empty() ? "Elegir hueso..." : socket->bone.c_str())) {
-            for (const std::string& name : pose.names) {
-                if (ImGui::Selectable(name.c_str(), name == socket->bone)) {
+            // Los modelos importados repiten nombres de nodo (o los dejan
+            // vacios): el indice va en el ID para que no choquen.
+            for (std::size_t i = 0; i < pose.names.size(); ++i) {
+                const std::string& name = pose.names[i];
+                ImGui::PushID(static_cast<int>(i));
+                if (ImGui::Selectable(name.empty() ? "(sin nombre)" : name.c_str(), name == socket->bone)) {
                     socket->bone = name;
                     commit();
                 }
+                ImGui::PopID();
             }
             ImGui::EndCombo();
         }
@@ -269,66 +274,30 @@ void EditorApp::drawRigInspector(const std::string& type, ecs::Entity entity) {
 // --- Huesos como objetos ----------------------------------------------------------------
 
 int EditorApp::createBoneObjects(ecs::Entity entity) {
-    ecs::RenderSync::SkeletonPose pose;
-    if (!sync_ || !rigPose(entity, pose, false) || !pose.source.valid()) {
+    // Del modelo en pose de reposo (Rigging.h), sin RenderSync: funciona
+    // aunque el modelo aun no se haya dibujado (escenario de un Blueprint).
+    // Siguen la animacion (BoneSocket en Seguir); el que se mueve con el
+    // gizmo pasa a mover su hueso (drawGizmo).
+    ecs::Entity skinned;
+    std::shared_ptr<const assets::ModelAsset> keep;
+    const asset::ModelData* data = skinnedModelData(entity, skinned, keep, true);
+    if (data == nullptr || !skinned.valid()) {
         std::cerr << "[Esqueleto] " << entity.name() << " no tiene esqueleto\n";
         return 0;
     }
-    ecs::Entity source = pose.source;
-    // Los que ya van en un hueso de este modelo (no se repiten).
-    std::unordered_map<std::string, ecs::Entity> existing;
-    std::vector<ecs::Entity> stack{source};
-    while (!stack.empty()) {
-        const ecs::Entity e = stack.back();
-        stack.pop_back();
-        if (const ecs::BoneSocket* s = e.tryGet<ecs::BoneSocket>(); s != nullptr && s->bone == e.name()) {
-            existing.emplace(s->bone, e);
-        }
-        for (const entt::entity child : e.children()) stack.push_back(world_.wrap(child));
-    }
-
     // En el orden del esqueleto (los padres antes): cada hueso cuelga del
     // objeto de su hueso padre, asi mover la mano mueve tambien los dedos.
-    std::vector<ecs::Entity> objects(pose.names.size());
-    int created = 0;
-    ecs::Entity first;
-    for (std::size_t i = 0; i < pose.names.size(); ++i) {
-        const std::string& bone = pose.names[i];
-        if (const auto it = existing.find(bone); it != existing.end()) {
-            objects[i] = it->second;
-            continue;
-        }
-        core::Mat4 m;
-        if (!sync_->boneWorld(world_, source, bone, m)) continue;
-        const int parent_index = pose.parents[i];
-        ecs::Entity parent = parent_index >= 0 ? objects[static_cast<std::size_t>(parent_index)] : ecs::Entity{};
-        if (!parent.valid()) parent = source;
-        ecs::Entity e = world_.create(bone, parent);
-        // En el hueso, sin su escala (el socket no la usa).
-        Vec3 position{};
-        Quat rotation{};
-        Vec3 scale{};
-        ecs::decomposeMatrix(m, position, rotation, scale);
-        e.setWorldMatrix(core::composeTrs(position, rotation, Vec3{1.0f, 1.0f, 1.0f}));
-        // Siguen la animacion; el que se mueve con el gizmo pasa a mover su
-        // hueso (drawGizmo).
-        ecs::BoneSocket& socket = e.add<ecs::BoneSocket>();
-        socket.bone = bone;
-        socket.mode = ecs::SocketMode::Follow;
-        socket.drive_position = true;
-        objects[i] = e;
-        if (!first.valid()) first = e;
-        ++created;
-    }
-    if (created == 0) {
-        std::cout << "[Esqueleto] " << source.name() << ": los huesos ya tienen objeto\n";
+    // Los que ya tienen objeto no se repiten.
+    const std::vector<ecs::Entity> created = ecs::createBoneEntities(world_, skinned, *data);
+    if (created.empty()) {
+        std::cout << "[Esqueleto] " << skinned.name() << ": los huesos ya tienen objeto\n";
         return 0;
     }
-    std::cout << "[Esqueleto] " << source.name() << ": " << created << " huesos como objetos\n";
-    selectOnly(first.uuid());
-    revealInHierarchy(first.uuid());
+    std::cout << "[Esqueleto] " << skinned.name() << ": " << created.size() << " huesos como objetos\n";
+    selectOnly(created.front().uuid());
+    revealInHierarchy(created.front().uuid());
     commit();
-    return created;
+    return static_cast<int>(created.size());
 }
 
 // --- Gizmos --------------------------------------------------------------------------

@@ -13,8 +13,9 @@
 //     en los comandos de dibujo indirecto.
 //   - Se dibuja con UNA llamada indirecta instanciada por lista (9 en total)
 //     en el G-buffer: reciben toda la iluminacion diferida (sol con sombras,
-//     cielo, SSAO, GI, niebla...). Las cercanas tambien proyectan sombra (una
-//     lista mas por especie, con el nivel medio).
+//     cielo, SSAO, GI, niebla...). Las cercanas tambien proyectan sombra (dos
+//     listas mas por especie: las muy cercanas con la malla de detalle en
+//     Alto/Ultra, el resto con el nivel medio).
 //   - Las mallas de las especies (pino, roble y abedul, en 3 niveles) se
 //     generan por codigo: color por vertice, oclusion en la copa y peso del
 //     viento (las copas se mecen).
@@ -22,16 +23,21 @@
 #include "CramionFX/asset/TreeGenerator.h"
 #include "CramionFX/vk/GBuffer.h"
 #include "CramionFX/core/Math.h"
+#include "CramionFX/vk/FrameBudget.h"
+#include "CramionFX/vk/TextureFiltering.h"
 #include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace cramion::gfx {
 
 class VulkanDevice;
+class GpuTicket;
 
 // Una instancia tal como la lee la GPU (std430, 16 bytes).
 struct FoliageInstance {
@@ -68,17 +74,33 @@ public:
     // Dibujar el G-buffer en lineas (vista Wireframe del editor).
     void setWireframe(bool wireframe) { wireframe_ = wireframe; }
     static constexpr std::uint32_t kSpecies = 3;
-    static constexpr std::uint32_t kLists = 4;  // 3 niveles + sombras
+    // 3 niveles + sombras (nivel medio) + sombras cercanas (nivel 0, Alto/Ultra).
+    static constexpr std::uint32_t kLists = 5;
     static constexpr std::uint32_t kMaxInstances = 8'000'000;
 
     void create(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
                 std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
                 std::uint32_t frames_in_flight);
     void destroy();
+    // Filtrado de las texturas de las especies (anisotropico y sesgo de los
+    // mips): rehace su sampler y los sets de dibujo. Con la GPU parada; antes
+    // de create solo lo guarda.
+    void setTextureFiltering(const TextureFiltering& filtering);
 
-    // Todas las instancias (reemplaza las que habia). Espera a la GPU.
+    // Todas las instancias (reemplaza las que habia). Crea y sube los buffers
+    // ahora (espera a esa copia), pero no a toda la GPU: los de antes se
+    // retiran unos frames (los usan los frames en vuelo).
     void setInstances(const std::vector<FoliageInstance>& instances);
     void clear() { setInstances({}); }
+    // Lo mismo en segundo plano (VulkanDevice::runTask + submitAsync): las
+    // de antes se siguen dibujando hasta que las nuevas estan en la GPU
+    // (pollAsync las cambia). Las instancias se comparten, sin copiar.
+    void setInstancesAsync(std::shared_ptr<const std::vector<FoliageInstance>> instances);
+    // Hilo principal, una vez por frame (con la fence del frame esperada):
+    // retira lo viejo y pone lo subido en segundo plano. true si cambiaron
+    // las instancias (las sombras cacheadas ya no valen).
+    bool pollAsync();
+    bool asyncPending() const { return pending_ != nullptr; }
     void setSettings(const FoliageSettings& settings) { settings_ = settings; }
     // Las 3 especies (arboles procedurales). Si cambian, se rehacen sus mallas
     // (espera a la GPU).
@@ -107,12 +129,21 @@ public:
     // real (menos pixeles o el presupuesto adaptativo: antes cambian de nivel).
     void setLodScale(float scale) { lod_scale_ = scale; }
 
+    // Nivel del hardware (FrameBudget): en Bajo las hojas se recortan en 0.5
+    // (sin el alfa con ruido) y en Alto/Ultra las sombras cercanas usan la
+    // malla de detalle. Se puede llamar antes de create(). Por defecto, Alto.
+    void setQualityTier(HardwareTier tier) { tier_ = tier; }
+    HardwareTier qualityTier() const { return tier_; }
+    // Direccion HACIA el sol (mundo, se normaliza): auto-sombra de la copa
+    // (surface_sun_shadow). Cada frame; por defecto (0, 1, 0), el sol arriba.
+    void setSun(const core::Vec3& to_sun);
+
     // --- Para el trazado de rayos (los arboles en la escena de rayos) ---
     // Solo con trazado de rayos (si no, la copia en la CPU sobra: hasta 128 MB).
     void setKeepCpuCopy(bool keep) { keep_cpu_copy_ = keep; }
     // Las instancias tal como se subieron y la malla media de cada especie.
     // Las revisiones cambian cuando se siembra de nuevo / se regeneran las especies.
-    const std::vector<FoliageInstance>& cpuInstances() const { return cpu_instances_; }
+    const std::vector<FoliageInstance>& cpuInstances() const;
     std::uint64_t instancesRevision() const { return instances_revision_; }
     const asset::TreeMeshData& rayTracingMesh(std::uint32_t species) const { return rt_meshes_[species]; }
     std::uint64_t speciesRevision() const { return species_revision_; }
@@ -138,8 +169,51 @@ private:
         vk::raii::Image image{nullptr};
         vk::raii::ImageView view{nullptr};
     };
+    // Sets de computo y dibujo de un juego de instancias. false si el pool
+    // esta lleno (demasiados juegos retirados a la vez).
+    bool allocateSets(std::vector<vk::raii::DescriptorSet>& cull_sets,
+                      std::vector<vk::raii::DescriptorSet>& draw_sets);
     void writeSets();
     void draw(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, bool shadow) const;
+
+    // Un juego de buffers de instancias, creado en cualquier hilo.
+    struct InstanceBuffers {
+        VulkanBuffer instances;
+        std::vector<VulkanBuffer> visible;
+        std::vector<VulkanBuffer> commands;
+        std::vector<VulkanBuffer> readback;
+        std::uint32_t count = 0;
+        std::array<std::uint32_t, kSpecies> species_count{};
+        std::array<std::uint32_t, kSpecies * kLists> template_first_instance{};
+        vk::DeviceSize visible_bytes = 0;
+        std::shared_ptr<const std::vector<FoliageInstance>> cpu;  // para los rayos (si se guarda)
+    };
+    // `async`: la copia con submitAsync (`ticket`, que mantiene vivo el
+    // resultado); si no, submitOneTime.
+    static std::shared_ptr<InstanceBuffers> buildInstances(const VulkanDevice& device, std::uint32_t frames,
+                                                           const std::vector<FoliageInstance>& input,
+                                                           std::shared_ptr<const std::vector<FoliageInstance>> shared,
+                                                           bool keep_cpu, bool async,
+                                                           std::shared_ptr<GpuTicket>& ticket);
+    // Pone un juego nuevo y retira el de antes. false si no hay sets ahora.
+    bool adoptInstances(const std::shared_ptr<InstanceBuffers>& buffers);
+    struct PendingInstances {
+        std::shared_ptr<InstanceBuffers> buffers;  // lo escribe la tarea
+        std::shared_ptr<GpuTicket> ticket;         // lo escribe la tarea
+        std::atomic<int> state{0};                 // 0 creando, 1 enviado, 2 fallo
+    };
+    std::shared_ptr<PendingInstances> pending_;
+    // Juegos de antes, hasta que ningun frame en vuelo los use.
+    struct RetiredInstances {
+        VulkanBuffer instances;
+        std::vector<VulkanBuffer> visible;
+        std::vector<VulkanBuffer> commands;
+        std::vector<VulkanBuffer> readback;
+        std::vector<vk::raii::DescriptorSet> cull_sets;
+        std::vector<vk::raii::DescriptorSet> draw_sets;
+        std::uint32_t frames = 0;
+    };
+    std::vector<RetiredInstances> retired_instances_;
 
     const VulkanDevice* device_ = nullptr;
     std::uint32_t frames_ = 2;
@@ -168,20 +242,22 @@ private:
     TextureArray albedo_array_;
     TextureArray normal_array_;
     vk::raii::Sampler texture_sampler_{nullptr};
+    TextureFiltering filtering_{};
+    void createTextureSampler();
     std::array<Mesh, kSpecies * 3> meshes_{};  // especie * 3 + nivel
     std::array<std::uint32_t, kSpecies * 3> triangles_{};
     std::array<asset::TreeMeshData, kSpecies> rt_meshes_{};  // nivel 1 (trazado de rayos)
     std::uint64_t species_revision_ = 0;
     std::uint32_t albedo_mips_ = 1;
     std::uint32_t albedo_layers_ = 0;
-    std::vector<FoliageInstance> cpu_instances_;
+    std::shared_ptr<const std::vector<FoliageInstance>> cpu_instances_;
     bool keep_cpu_copy_ = false;
     std::uint64_t instances_revision_ = 0;
     float lod_scale_ = 1.0f;
 
     VulkanBuffer instances_;
-    std::vector<VulkanBuffer> visible_;   // por frame: 4 listas por especie
-    std::vector<VulkanBuffer> commands_;  // por frame: 12 comandos de dibujo indirecto
+    std::vector<VulkanBuffer> visible_;   // por frame: kLists listas por especie
+    std::vector<VulkanBuffer> commands_;  // por frame: kSpecies x kLists comandos de dibujo indirecto
     std::vector<VulkanBuffer> readback_;  // por frame: los comandos (cuantos se dibujaron)
     std::vector<bool> readback_ready_;
     std::uint32_t instance_count_ = 0;
@@ -189,6 +265,8 @@ private:
     std::array<std::uint32_t, kSpecies * kLists> template_first_instance_{};
 
     core::Vec3 origin_offset_{};
+    HardwareTier tier_ = HardwareTier::High;
+    core::Vec3 to_sun_{0.0f, 1.0f, 0.0f};
     float time_ = 0.0f;
     float last_delta_ = 0.0f;  // segundos del ultimo frame (viento del frame anterior, vectores de movimiento)
 };

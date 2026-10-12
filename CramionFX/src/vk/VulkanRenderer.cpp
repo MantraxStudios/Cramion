@@ -212,6 +212,8 @@ Vec4 toVec4(const Vec3& v, float w) {
 //     (al pararse), o mas de kProbeFarDistance aunque siga corriendo: la
 //     correccion de paralaje aguanta bastantes metros.
 // Y solo una cara cada kProbeFaceInterval frames, para repartir el coste.
+// Las CVars render.probe.* cambian el reparto, el tiempo minimo entre
+// capturas y la distancia de dibujo (por defecto, segun el nivel de la GPU).
 constexpr float kProbeMoveDistance = 4.0f;
 constexpr float kProbeFarDistance = 15.0f;
 constexpr float kProbeSlowSpeed = 1.5f;  // m/s
@@ -459,6 +461,9 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
             else if (tier == "ultra") hardware_.tier = HardwareTier::Ultra;
         }
         budget_.setStartLevels(hardware_.tier);
+        // Hierba y arboles: densidad, distancias y detalle segun la gama.
+        terrain_pass_.setQualityTier(hardware_.tier);
+        foliage_pass_.setQualityTier(hardware_.tier);
         asset::setMaxTextureSize(desiredTextureSize());
         // Sin texturas BC (Mali, PowerVR...): los DDS se descomprimen al cargar.
         asset::setDecodeBlockCompressed(!device_.textureCompressionBcSupported());
@@ -3098,7 +3103,60 @@ void VulkanRenderer::setGraphicsSettings(const GraphicsSettings& settings) {
         shadow_map_dirty_ = true;
         settings_dirty_ = true;
     }
+    // Otro filtrado de texturas: se rehacen los samplers al empezar el frame.
+    if (desiredTextureFiltering() != applied_texture_filtering_) texture_filtering_dirty_ = true;
     applyEffectiveGraphics();
+}
+
+std::uint32_t VulkanRenderer::maxTextureAnisotropy() const {
+    if (!initialized_ || !device_.physicalDevice().getFeatures().samplerAnisotropy) return 1;
+    const float limit = device_.physicalDevice().getProperties().limits.maxSamplerAnisotropy;
+    return static_cast<std::uint32_t>(std::clamp(limit, 1.0f, 16.0f));
+}
+
+std::uint32_t VulkanRenderer::autoTextureAnisotropy() const {
+    // Movil: el ancho de banda es lo que mas cuesta (2x en Baja y Media, 4x
+    // en Alta y Ultra).
+    if (mobile_level_ >= 0) return mobile_level_ <= 1 ? 2u : 4u;
+    return anisotropyFor(hardware_.tier);
+}
+
+TextureFiltering VulkanRenderer::desiredTextureFiltering() const {
+    TextureFiltering filtering;
+    const int wanted = user_graphics_.texture_filtering > 0 ? user_graphics_.texture_filtering
+                                                            : static_cast<int>(autoTextureAnisotropy());
+    filtering.anisotropy = static_cast<float>(std::clamp(wanted, 1, 16));
+    filtering.lod_bias = std::isfinite(user_graphics_.texture_lod_bias)
+                             ? std::clamp(user_graphics_.texture_lod_bias, -1.0f, 2.0f)
+                             : 0.0f;
+    return filtering;
+}
+
+// Con la GPU parada (al empezar el frame, antes de grabar nada): un descriptor
+// set no se puede cambiar mientras un frame en vuelo lo usa.
+void VulkanRenderer::applyTextureFiltering() {
+    texture_filtering_dirty_ = false;
+    const TextureFiltering wanted = desiredTextureFiltering();
+    if (wanted == applied_texture_filtering_) return;
+    // Los hilos del streaming crean modelos con el sampler de la pasada: se
+    // espera a que terminen (lo que traen se reescribe al instalarlo).
+    for (ModelJob& job : model_jobs_) {
+        if (job.result.valid()) job.result.wait();
+    }
+    device_.waitIdle();
+    applied_texture_filtering_ = wanted;
+    if (skinned_pass_.setTextureFiltering(device_, wanted)) {
+        for (std::uint32_t i = 0; i < skinned_models_.size(); ++i) {
+            bindRenderTextures(i);  // primero: las vistas de los Render Textures al dia
+            skinned_models_[i].refreshSampler(device_, skinned_pass_);
+        }
+    }
+    terrain_pass_.setTextureFiltering(wanted);
+    foliage_pass_.setTextureFiltering(wanted);
+    water_pass_.setTextureFiltering(wanted);
+    voxel_pass_.setTextureFiltering(wanted);
+    std::cout << "[Vulkan] Filtrado de texturas: anisotropico " << wanted.anisotropy << "x (maximo de la GPU "
+              << maxTextureAnisotropy() << "x), sesgo de mips " << wanted.lod_bias << "\n";
 }
 
 // Los ajustes en uso: los del usuario con la resolucion interna que pida el
@@ -3583,6 +3641,11 @@ void VulkanRenderer::uploadModel(const scene::Scene& scene, std::uint32_t index)
 
 void VulkanRenderer::installModel(const scene::Scene& scene, std::uint32_t index, SkinnedModel fresh, bool restore) {
     if (index > skinned_models_.size()) return;
+    // Creado en otro hilo antes de cambiar el filtrado de texturas: sus sets
+    // apuntan al sampler de antes (aun no lo usa ningun frame).
+    if (fresh.materialSamplerRevision() != 0 && fresh.materialSamplerRevision() != skinned_pass_.samplerRevision()) {
+        fresh.refreshSampler(device_, skinned_pass_);
+    }
     // Los rayos lo veran cuando se rehaga su escena (al rato, por si se sigue
     // editando). Volver a la GPU tras el streaming no es un cambio: la escena de
     // rayos conserva su copia, salvo que se construyera mientras estaba fuera.
@@ -3831,6 +3894,16 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     light_data.sun_direction_intensity =
         toVec4(core::normalize(lights.sun.direction), lights.sun.intensity);
     light_data.sun_color_ambient = toVec4(lights.sun.color, lights.ambient.intensity);
+    // Hierba y arboles: hacia el sol, para su auto-sombra dentro de la masa
+    // (la transmitancia que escriben en el G-buffer). Antes de grabar el frame
+    // (recordGrassCull y el G-buffer de la vegetacion lo usan).
+    {
+        const Vec3 vegetation_to_sun = core::length(lights.sun.direction) > 1e-6f
+                                           ? -core::normalize(lights.sun.direction)
+                                           : Vec3{0.0f, 1.0f, 0.0f};
+        terrain_pass_.setGrassLighting(vegetation_to_sun);
+        foliage_pass_.setSun(vegetation_to_sun);
+    }
     // w: fuerza de la sombra del sol para los rayos (rt_common.glsl). Sin sol
     // (la luna bajo el horizonte) 0: su rayo de sombra en cada impacto de la
     // GI y los reflejos no cambiaria nada (su luz ya es 0).
@@ -4321,6 +4394,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     }
     if (local_shadow_maps_dirty_) applyLocalShadowMaps();
     if (shadow_cache_dirty_) applyShadowCache();
+    if (texture_filtering_dirty_) applyTextureFiltering();
     // En VR la segunda vista del editor (Escena y Juego a la vez) no se
     // dibuja: el casco necesita la GPU para llegar a sus Hz.
     if (!present && xr_eye_target_ < 0 && render_texture_target_ < 0 && xrViewsMode()) {
@@ -4358,6 +4432,11 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
         if (retired.frames_left > 0) --retired.frames_left;
     }
     std::erase_if(retired_models_, [](const RetiredModel& r) { return r.frames_left == 0; });
+    // Envios sin espera (streaming de terrenos, capas, vegetacion) que ya
+    // terminaron: sus command buffers y staging. Solo consulta fences.
+    device_.collectAsync();
+    // Vegetacion subida en segundo plano: se cambia por la de antes.
+    if (foliage_pass_.pollAsync()) staticGeometryChanged();
     // (Solo en los frames de la pantalla: la interfaz se dibuja en ellos.)
     if (render_texture_target_ < 0 && xr_eye_target_ < 0) {
         for (RetiredRenderTexture& retired : retired_render_textures_) {
@@ -4639,7 +4718,36 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
 // Sonda de reflexion
 // -----------------------------------------------------------------------------
 
+std::uint64_t VulkanRenderer::probeFaceInterval() const {
+    if (probe_limits_.face_interval > 0) return probe_limits_.face_interval;
+    switch (hardware_.tier) {
+        case HardwareTier::Low: return 4;
+        case HardwareTier::Medium: return 3;
+        default: return kProbeFaceInterval;
+    }
+}
+
+float VulkanRenderer::probeMinSeconds() const {
+    if (probe_limits_.min_seconds > 0.0f) return probe_limits_.min_seconds;
+    switch (hardware_.tier) {
+        case HardwareTier::Low: return 2.0f;
+        case HardwareTier::Medium: return 1.0f;
+        default: return 0.5f;
+    }
+}
+
+float VulkanRenderer::probeDrawDistance() const {
+    if (probe_limits_.draw_distance > 0.0f) return probe_limits_.draw_distance;
+    switch (hardware_.tier) {
+        case HardwareTier::Low: return 150.0f;
+        case HardwareTier::Medium: return 300.0f;
+        case HardwareTier::High: return 600.0f;
+        default: return 1000.0f;
+    }
+}
+
 bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
+    probe_since_capture_ += frame_delta_seconds_;
     // Hacen falta los mapas de sombra locales y la imagen HDR de un frame ya
     // dibujado (se leen tal cual en la captura).
     // Con trazado de rayos la sonda no hace falta: nada de capturas.
@@ -4661,6 +4769,12 @@ bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
     }
     if (probe_face_ >= 0) {
         return true;  // Captura a medias.
+    }
+    // Tiempo minimo entre capturas completas (render.probe.MinSeconds): al
+    // correr o con el ciclo de dia se recapturaba sin parar (cada cara, un
+    // frame entero de mas). La primera captura no espera.
+    if (probe_ready_ && probe_since_capture_ < probeMinSeconds()) {
+        return false;
     }
 
     const Vec3 to_light = -core::normalize(scene.lights().sun.direction);
@@ -4687,6 +4801,7 @@ bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
     }
 
     probe_face_ = 0;
+    probe_since_capture_ = 0.0f;
     probe_capture_position_ = position;
     probe_capture_sun_ = to_light;
     probe_capture_signature_ = std::move(signature);
@@ -4754,6 +4869,11 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
     camera.setAspectRatio(aspect);
     camera.setFovY(extent.width >= extent.height ? core::kPi * 0.5f
                                                  : 2.0f * std::atan(1.0f / aspect));
+    // Distancia de dibujo de la captura (render.probe.DrawDistance): el plano
+    // lejano recorta los clusteres en la GPU, los actores, los trozos del
+    // terreno y acorta las cascadas de sombra. Mas alla queda cielo. Con un
+    // TerrainGrid grande, lo lejano era casi todo el coste de cada cara.
+    camera.setClipPlanes(camera.nearPlane(), std::min(camera.farPlane(), probeDrawDistance()));
     const std::uint32_t side = std::min(extent.width, extent.height);
     const vk::Rect2D square{
         vk::Offset2D{static_cast<std::int32_t>((extent.width - side) / 2),
@@ -4767,6 +4887,11 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
 
     capturing_ = true;
     updateUniforms(scene, camera, current_frame_);
+    // Trozos del terreno vistos desde la cara (antes se dibujaban los de la
+    // camara de pantalla: a las caras de detras les faltaba el suelo y las
+    // de delante pintaban todo lo lejano). render.probe.Terrain = false: sin
+    // terreno. El prepare() del frame de pantalla los vuelve a elegir.
+    terrain_pass_.prepareView(probe_capture_position_, camera_view_projection_, probe_limits_.terrain);
 
     // Mismo hueco de frame que el de pantalla que viene detras: sus buffers
     // estan libres (la fence ya se espero) y se vuelven a esperar al acabar.
@@ -4823,7 +4948,7 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
     capturing_ = false;
     camera_view_projection_ = view_projection;
     previous_view_projection_ = previous_view_projection;
-    probe_next_face_frame_ = frame_count_ + kProbeFaceInterval;
+    probe_next_face_frame_ = frame_count_ + probeFaceInterval();
 
     if (last_face) {
         // Con una captura anterior, se funde desde ella; la primera entra
@@ -5486,7 +5611,9 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     drawCpuActors(cmd, frame_index);
     // El terreno, pronto: tapa mucho y entra en la piramide Hi-Z.
     terrain_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
-    terrain_pass_.recordGrassGBuffer(cmd, frame_index, skin_sets_[frame_index]);
+    // La hierba no entra en las caras de la sonda: sus briznas estan
+    // recortadas para la camara de pantalla y en un cubo de 128 no se notan.
+    if (!capturing_) terrain_pass_.recordGrassGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     // Los voxeles tambien tapan mucho: pronto, de cerca a lejos.
     voxel_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     // Vegetacion: una llamada indirecta por especie (sus 3 niveles).
@@ -5930,9 +6057,12 @@ void VulkanRenderer::recordRtReflectionFilter(const vk::raii::CommandBuffer& cmd
     // resultado en ella cada frame) recien creada: como textura, igual que la
     // deja el SSR la primera vez.
     if (!ssr_filter_history_valid_) {
+        // (Despues de las lecturas y la copia de frames anteriores.)
         pipelineBarrier(cmd, colorBarrier(*ssr_history_.handle(), vk::ImageLayout::eUndefined,
-                                          vk::ImageLayout::eShaderReadOnlyOptimal, vk::PipelineStageFlagBits2::eTopOfPipe,
-                                          vk::AccessFlagBits2::eNone, vk::PipelineStageFlagBits2::eFragmentShader,
+                                          vk::ImageLayout::eShaderReadOnlyOptimal,
+                                          vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eCopy,
+                                          vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eTransferWrite,
+                                          vk::PipelineStageFlagBits2::eFragmentShader,
                                           vk::AccessFlagBits2::eShaderSampledRead));
     }
     memoryBarrier(cmd, vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eCopy,
@@ -6268,10 +6398,14 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
     std::vector<vk::ImageMemoryBarrier2> barriers = {raw_to_sampled,
                                                      discardToAttachment(*ssr_image_.handle())};
     if (!ssr_filter_history_valid_) {
+        // Despues de las lecturas y la copia de frames anteriores (la
+        // transicion tambien escribe la imagen), como en recordFilterHistoryCopies.
         barriers.push_back(colorBarrier(*ssr_history_.handle(), vk::ImageLayout::eUndefined,
                                         vk::ImageLayout::eShaderReadOnlyOptimal,
-                                        vk::PipelineStageFlagBits2::eTopOfPipe,
-                                        vk::AccessFlagBits2::eNone,
+                                        vk::PipelineStageFlagBits2::eFragmentShader |
+                                            vk::PipelineStageFlagBits2::eCopy,
+                                        vk::AccessFlagBits2::eShaderSampledRead |
+                                            vk::AccessFlagBits2::eTransferWrite,
                                         vk::PipelineStageFlagBits2::eFragmentShader,
                                         vk::AccessFlagBits2::eShaderSampledRead));
     }
@@ -6830,6 +6964,13 @@ std::uint32_t VulkanRenderer::createTerrain(std::uint32_t resolution, std::uint3
     return id;
 }
 
+std::uint32_t VulkanRenderer::adoptTerrain(const std::shared_ptr<PreparedTerrain>& prepared) {
+    if (!initialized_) return 0;
+    const std::uint32_t id = terrain_pass_.adoptTerrain(prepared);
+    if (id != 0) cascades_valid_ = false;
+    return id;
+}
+
 void VulkanRenderer::destroyTerrain(std::uint32_t id) {
     terrain_pass_.destroyTerrain(id);
     cascades_valid_ = false;
@@ -6848,6 +6989,18 @@ void VulkanRenderer::shiftOrigin(const core::Vec3& offset) {
     voxel_pass_.shiftOrigin(offset);
     probe_position_ = probe_position_ - offset;
     probe_capture_position_ = probe_capture_position_ - offset;
+    for (core::Vec3& center : probe_centers_) center = center - offset;
+    // El mapa de oclusion del cielo esta en las coordenadas viejas: se rehace.
+    sky_map_drawn_ = false;
+    // Las vista-proyecciones de frames anteriores, a las coordenadas nuevas
+    // (los puntos se mueven -offset: p_viejo = p_nuevo + offset). Sin esto,
+    // los vectores de movimiento del frame siguiente dan un barrido completo.
+    const core::Mat4 to_old = core::translate(offset);
+    motion_view_projection_ = motion_view_projection_ * to_old;
+    history_view_projection_ = history_view_projection_ * to_old;
+    camera_view_projection_ = camera_view_projection_ * to_old;
+    previous_view_projection_ = previous_view_projection_ * to_old;
+    xr_eye1_.motion_view_projection = xr_eye1_.motion_view_projection * to_old;
     // Lo guardado del frame anterior esta en las coordenadas viejas.
     invalidateHistory();
     cascades_valid_ = false;
@@ -8745,10 +8898,12 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
 
     // --- La imagen de la swapchain pasa a destino ---
     // (la imagen compuesta ya quedo como textura en recordCompositePass).
+    // Origen = la etapa donde espera image_available (wait_stage de drawFrame):
+    // asi la transicion va despues de que el motor de presentacion la suelte.
     pipelineBarrier(cmd, colorBarrier(swapchain_.images()[image_index],
                                       vk::ImageLayout::eUndefined,
                                       vk::ImageLayout::eColorAttachmentOptimal,
-                                      vk::PipelineStageFlagBits2::eTopOfPipe,
+                                      vk::PipelineStageFlagBits2::eColorAttachmentOutput,
                                       vk::AccessFlagBits2::eNone,
                                       vk::PipelineStageFlagBits2::eColorAttachmentOutput,
                                       vk::AccessFlagBits2::eColorAttachmentWrite));

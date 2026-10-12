@@ -29,6 +29,7 @@
 #include "CramionCore/input/InputActions.h"
 #include "CramionCore/net/Http.h"
 #include "CramionCore/net/Network.h"
+#include "CramionCore/net/WebSocket.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/project/DataPack.h"
 
@@ -104,6 +105,8 @@ struct ScriptSystem::Impl {
     // la interfaz...) y variables de red que llegan (OnNetVar).
     std::function<void(ecs::Entity, const std::string&, const std::string&)> message_listener;
     std::function<void(ecs::Entity, const std::string&, const std::string&)> net_var_listener;
+    // Antes de destruir cada objeto (onDestroy de los scripts de C++).
+    std::function<void(ecs::Entity)> destroy_listener;
 
     // --- La API ---
     api::NativeApi native;
@@ -133,6 +136,7 @@ struct ScriptSystem::Impl {
     std::unique_ptr<net::NetworkSession> network;
     std::unordered_map<std::uint32_t, entt::entity> net_entities;
     std::unique_ptr<net::HttpClient> http;
+    std::unique_ptr<net::WebSocketHub> websockets;  // WebSocket.connect (las que tienen nombre sobreviven al cambio de escena)
     // Scene.load, Game.quit, Prefs.
     std::filesystem::path scene_request;
     bool quit_request = false;
@@ -161,6 +165,7 @@ struct ScriptSystem::Impl {
         // Eventos de la interfaz (callMethod) y origen flotante.
         std::vector<std::function<void(ecs::Entity target, const std::string& method, const api::Value& arg)>> event;
         std::vector<std::function<void(const core::Vec3& offset)>> origin_shift;
+        std::vector<std::function<void()>> bridge_reset;  // se reinicio el proceso de los scripts de C++
     } hooks;
     void onFrame(Phase phase, std::function<void(float)> fn) {
         hooks.frame[static_cast<std::size_t>(phase)].push_back(std::move(fn));
@@ -174,6 +179,7 @@ struct ScriptSystem::Impl {
         hooks.event.push_back(std::move(fn));
     }
     void onOriginShift(std::function<void(const core::Vec3&)> fn) { hooks.origin_shift.push_back(std::move(fn)); }
+    void onBridgeReset(std::function<void()> fn) { hooks.bridge_reset.push_back(std::move(fn)); }
 
     std::shared_ptr<VisualScriptDebugHost> vs_debug;
     std::shared_ptr<TestHost> tests;

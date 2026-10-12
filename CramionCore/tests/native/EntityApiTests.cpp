@@ -86,6 +86,24 @@ void testTransform() {
     check(t.get("parent", t.entity(a)).asEntity() == root.handle(), "parent");
     check(t.get("parent", t.entity(root)).isEntity() && t.get("parent", t.entity(root)).asEntity() == entt::null,
           "parent sin padre: entidad no valida");
+    {
+        // parent se escribe: conserva la posicion en el mundo; nil = raiz; ciclos no.
+        ecs::Entity grupo = t.world.create("Grupo");
+        ecs::Entity suelto = t.world.create("Suelto");
+        grupo.setWorldPosition(Vec3{10, 0, 0});
+        suelto.setWorldPosition(Vec3{1, 2, 3});
+        t.set("parent", t.entity(grupo), t.entity(suelto));
+        check(suelto.parent() == grupo && near(suelto.worldPosition(), Vec3{1, 2, 3}) &&
+                  near(suelto.localPosition(), Vec3{-9, 2, 3}),
+              "parent = otro (conserva la posicion en el mundo)");
+        check(fails([&] { t.set("parent", t.entity(suelto), t.entity(grupo)); }, "descendiente"),
+              "parent = un hijo suyo es un error (ciclo)");
+        check(fails([&] { t.set("parent", t.entity(suelto), t.entity(suelto)); }, "si mismo"), "parent = si mismo es un error");
+        t.set("parent", Value(), t.entity(suelto));
+        check(!suelto.parent().valid() && near(suelto.worldPosition(), Vec3{1, 2, 3}), "parent = nil lo deja en la raiz");
+        const json pr = t.bridge({{"op", "set"}, {"self", entityJson(suelto)}, {"key", "parent"}, {"value", entityJson(grupo)}});
+        check(pr["ok"] == true && suelto.parent() == grupo, "puente: set parent");
+    }
     check(near(t.get("localPosition", t.entity(a)).asVec3(), Vec3{0, 1, 0}) &&
               near(t.get("position", t.entity(a)).asVec3(), Vec3{5, 1, 0}),
           "localPosition y position con padre");
@@ -474,8 +492,8 @@ void testRegistry() {
     check(documented, "todos con documentacion y como miembros del tipo");
     const auto* parent = t.api().find("Entity:parent");
     const auto* translate = t.api().find("Entity:translate");
-    check(parent != nullptr && parent->kind == scripting::api::Entry::Kind::Property && !parent->assign,
-          "Entity:parent es una propiedad de solo lectura");
+    check(parent != nullptr && parent->kind == scripting::api::Entry::Kind::Property && parent->assign,
+          "Entity:parent es una propiedad que se puede asignar");
     check(translate != nullptr && translate->kind == scripting::api::Entry::Kind::Method, "Entity:translate es un metodo");
     check(t.api().find("Entity:getScript") == nullptr, "getScript no existe");
 }

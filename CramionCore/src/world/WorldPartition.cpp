@@ -1,10 +1,12 @@
 #include "CramionCore/world/WorldPartition.h"
 
+#include "CramionCore/cvar/CVar.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/environment/Environment.h"
 #include "CramionCore/foliage/Foliage.h"
+#include "CramionCore/jobs/JobSystem.h"
 #include "CramionCore/net/NetworkObject.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/terrain/Terrain.h"
@@ -14,6 +16,7 @@
 #include "CramionCore/xr/XrRig.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -28,7 +31,35 @@ using core::Vec3;
 
 namespace {
 WorldPartitionSystem* g_active = nullptr;
-}
+
+cvar::CVar<bool> g_async_cells("wp.AsyncCells", true,
+                               "World Partition: leer y parsear las celdas en otros hilos, recrear con presupuesto de "
+                               "tiempo y escribir al descargar en el hilo de IO (apagado: como antes)",
+                               cvar::Saved);
+cvar::CVar<float> g_restore_budget_ms("wp.RestoreBudgetMs", 2.0f,
+                                      "Milisegundos por frame para recrear objetos de las celdas que se cargan (siempre "
+                                      "entra al menos uno; ademas del limite de objetos por frame)",
+                                      cvar::Saved, 0.0f, 100.0f);
+cvar::CVar<int> g_max_reads("wp.MaxIoInFlight", 8, "Celdas leyendose de disco a la vez en otros hilos", cvar::Saved, 1,
+                            64);
+}  // namespace
+
+struct WorldPartitionSystem::PendingRead {
+    jobs::Cancel cancel = std::make_shared<jobs::CancelToken>();
+    std::atomic<bool> done{false};
+    // Lo escribe el hilo antes de done = true; el principal lo lee despues.
+    std::vector<PendingRoot> roots;
+    bool ready() const { return done.load(std::memory_order_acquire); }
+};
+
+struct WorldPartitionSystem::PendingWrite {
+    std::filesystem::path file;  // fijo antes de lanzar
+    std::atomic<bool> done{false};
+    std::atomic<bool> ok{false};
+    std::size_t bytes = 0;  // escrito antes de done = true
+    jobs::JobHandle job;
+    bool ready() const { return done.load(std::memory_order_acquire); }
+};
 
 WorldPartitionSystem* activePartition() { return g_active; }
 void setActivePartition(WorldPartitionSystem* system) { g_active = system; }
@@ -103,18 +134,31 @@ bool WorldPartitionSystem::streamable(const ecs::Entity& root) {
     return has_mesh;
 }
 
+CellCoord WorldPartitionSystem::cellAt(const ecs::DVec3& absolute, float cell_size) {
+    const double s = std::max(static_cast<double>(cell_size), 1.0);
+    return CellCoord{static_cast<int>(std::floor(absolute.x / s)), static_cast<int>(std::floor(absolute.z / s))};
+}
+
+// Las celdas son de la posicion absoluta: no cambian al moverse el origen.
 CellCoord WorldPartitionSystem::cellOf(const Vec3& p) const {
-    const float s = std::max(settings_.cell_size, 1.0f);
-    return CellCoord{static_cast<int>(std::floor(p.x / s)), static_cast<int>(std::floor(p.z / s))};
+    return cellAt(ecs::DVec3{origin_.x + p.x, origin_.y + p.y, origin_.z + p.z}, settings_.cell_size);
 }
 
 float WorldPartitionSystem::distanceToCell(const Vec3& p, const CellCoord& c) const {
-    const float s = std::max(settings_.cell_size, 1.0f);
-    const float x0 = static_cast<float>(c.x) * s;
-    const float z0 = static_cast<float>(c.z) * s;
-    const float dx = std::max({x0 - p.x, 0.0f, p.x - (x0 + s)});
-    const float dz = std::max({z0 - p.z, 0.0f, p.z - (z0 + s)});
-    return std::sqrt(dx * dx + dz * dz);
+    const double s = std::max(static_cast<double>(settings_.cell_size), 1.0);
+    const double px = origin_.x + p.x;
+    const double pz = origin_.z + p.z;
+    const double x0 = static_cast<double>(c.x) * s;
+    const double z0 = static_cast<double>(c.z) * s;
+    const double dx = std::max({x0 - px, 0.0, px - (x0 + s)});
+    const double dz = std::max({z0 - pz, 0.0, pz - (z0 + s)});
+    return static_cast<float>(std::sqrt(dx * dx + dz * dz));
+}
+
+void WorldPartitionSystem::shiftOrigin(const Vec3& offset) {
+    origin_.x += offset.x;
+    origin_.y += offset.y;
+    origin_.z += offset.z;
 }
 
 std::vector<std::pair<Vec3, float>> WorldPartitionSystem::sources(ecs::World& world, const Vec3& viewer) const {
@@ -138,7 +182,21 @@ void WorldPartitionSystem::untrack(entt::entity root) { tracked_.erase(root); }
 
 void WorldPartitionSystem::rescan(ecs::World& world) {
     // De vez en cuando se vuelven a mirar las rechazadas (les pusieron malla).
-    if (++rescans_ % 64 == 0) rejected_.clear();
+    ++rescans_;
+    if (!g_async_cells.get()) {
+        if (rescans_ % 64 == 0) rejected_.clear();
+    } else if (!rejected_.empty()) {
+        // Un trozo en cada repaso (1/64 de los cubos, en rueda) en vez de
+        // todas de golpe cada 64: sin el pico de mirar todas las raices.
+        const std::size_t buckets = rejected_.bucket_count();
+        const std::size_t slice = buckets / 64 + 1;
+        const std::size_t first = (static_cast<std::size_t>(rescans_) % 64) * slice;
+        std::vector<entt::entity> forget;
+        for (std::size_t b = first; b < std::min(buckets, first + slice); ++b) {
+            for (auto it = rejected_.begin(b); it != rejected_.end(b); ++it) forget.push_back(*it);
+        }
+        for (const entt::entity h : forget) rejected_.erase(h);
+    }
     std::unordered_map<entt::entity, CellCoord> next;
     next.reserve(tracked_.size() + 16);
     for (const entt::entity h : world.roots()) {
@@ -157,25 +215,38 @@ void WorldPartitionSystem::rescan(ecs::World& world) {
     for (auto& [coord, cell] : cells_) {
         if (cell.loaded) cell.entities = static_cast<int>(cell.roots.size());
     }
+    // Una raiz que entro en una celda descargada no se queda cargada para
+    // siempre (al lado de su HLOD): esa celda se carga entera y, si esta
+    // lejos, un update siguiente la descarga con ella dentro.
+    for (auto& [coord, cell] : cells_) {
+        if (!cell.loaded && !cell.loading() && !cell.roots.empty()) requestLoad(cell);
+    }
 }
 
 // -----------------------------------------------------------------------------
-// Archivos de celda: "#CramionCell 1 <raices>" y una raiz por linea (el JSON de
-// serializeEntity va en una sola linea).
+// Archivos de celda: "#CramionCell 2 <raices> <origen x y z>" y una raiz por
+// linea (el JSON de serializeEntity va en una sola linea). El origen es el del
+// mundo al guardar (las posiciones de las raices son relativas a el). Los de
+// version 1 no lo llevan: se toma el origen del mundo al leerlos (el de la
+// escena, con el que se guardaron).
 // -----------------------------------------------------------------------------
 
 namespace {
 
-constexpr const char* kCellHeader = "#CramionCell 1 ";
+constexpr const char* kCellMagic = "#CramionCell ";
 
-bool writeCellFile(const std::filesystem::path& file, const std::vector<std::string>& roots, std::size_t* bytes) {
+bool writeCellFile(const std::filesystem::path& file, const std::vector<std::string>& roots, const ecs::DVec3& origin,
+                   std::size_t* bytes) {
     std::error_code ec;
     std::filesystem::create_directories(file.parent_path(), ec);
     const std::filesystem::path temp = file.string() + ".tmp";
     {
         std::ofstream out(temp, std::ios::binary | std::ios::trunc);
         if (!out) return false;
-        out << kCellHeader << roots.size() << '\n';
+        char header[160];
+        std::snprintf(header, sizeof(header), "%s2 %zu %.17g %.17g %.17g\n", kCellMagic, roots.size(), origin.x, origin.y,
+                      origin.z);
+        out << header;
         for (const std::string& text : roots) out << text << '\n';
         if (!out) return false;
     }
@@ -201,12 +272,46 @@ std::vector<std::string> readCellFile(const std::filesystem::path& file) {
     return roots;
 }
 
-// Raices que dice la cabecera (sin leer el archivo entero).
-int cellFileCount(const std::filesystem::path& file) {
+// La cabecera (sin leer el archivo entero): cuantas raices y, si la lleva
+// (version 2), el origen con el que se guardaron. Devuelve si lo lleva (si
+// no, `origin` no se toca).
+bool cellFileHeader(const std::filesystem::path& file, int& count, ecs::DVec3& origin) {
+    count = 0;
     std::ifstream in(file, std::ios::binary);
     std::string line;
-    if (!std::getline(in, line) || line.rfind(kCellHeader, 0) != 0) return 0;
-    return std::atoi(line.c_str() + std::strlen(kCellHeader));
+    if (!std::getline(in, line) || line.rfind(kCellMagic, 0) != 0) return false;
+    int version = 0;
+    double x = 0.0, y = 0.0, z = 0.0;
+    const int n = std::sscanf(line.c_str() + std::strlen(kCellMagic), "%d %d %lf %lf %lf", &version, &count, &x, &y, &z);
+    if (n < 2) count = 0;
+    if (version < 2 || n < 5) return false;
+    origin = ecs::DVec3{x, y, z};
+    return true;
+}
+
+// Deja una raiz recreada (guardada con el origen `saved`) en su sitio real
+// con el origen de ahora.
+ecs::Entity placeRestored(ecs::World& world, ecs::Entity r, const ecs::DVec3& saved) {
+    if (!r.valid() || r.parent().valid() || saved == world.origin()) return r;
+    const ecs::DVec3& now = world.origin();
+    const Vec3 delta{static_cast<float>(saved.x - now.x), static_cast<float>(saved.y - now.y),
+                     static_cast<float>(saved.z - now.z)};
+    r.setLocalPosition(r.localPosition() + delta);
+    return r;
+}
+
+// Recrea una raiz guardada con el origen `saved` y la deja en su sitio real
+// con el origen de ahora. Un UUID que ya esta en el mundo no se recrea
+// (restoreEntities avisa).
+ecs::Entity restoreRoot(ecs::World& world, const std::string& text, const ecs::DVec3& saved) {
+    return placeRestored(world, ecs::restoreEntities(world, text), saved);
+}
+
+// Una raiz pendiente (ya parseada en otro hilo, o el texto).
+template <typename Pending>
+ecs::Entity restorePending(ecs::World& world, const Pending& p, const ecs::DVec3& saved) {
+    if (p.parsed) return placeRestored(world, ecs::restoreParsedEntities(world, *p.parsed), saved);
+    return restoreRoot(world, p.text, saved);
 }
 
 // "cell_X_Z.crcell" -> X, Z.
@@ -238,19 +343,17 @@ bool WorldPartitionSystem::hasExternalCells(const std::filesystem::path& scene) 
 
 int WorldPartitionSystem::writeExternalCells(ecs::World& world, float cell_size, const std::filesystem::path& scene,
                                              std::string* error) {
-    const float s = std::max(cell_size, 1.0f);
     std::map<CellCoord, std::vector<std::string>> cells;
     for (const entt::entity h : world.roots()) {
         const ecs::Entity e = world.wrap(h);
         if (e.get<ecs::EntityInfo>().transient || !streamable(e)) continue;
-        const Vec3 p = e.worldPosition();
-        const CellCoord c{static_cast<int>(std::floor(p.x / s)), static_cast<int>(std::floor(p.z / s))};
+        const CellCoord c = cellAt(world.absolute(e.worldPosition()), cell_size);
         cells[c].push_back(ecs::serializeEntity(world, e));
     }
     const std::filesystem::path folder = cellsFolder(scene);
     std::error_code ec;
     for (const auto& [c, roots] : cells) {
-        if (!writeCellFile(folder / cellName(c), roots, nullptr)) {
+        if (!writeCellFile(folder / cellName(c), roots, world.origin(), nullptr)) {
             if (error != nullptr) *error = "no se pudo escribir " + (folder / cellName(c)).string();
             return -1;
         }
@@ -280,8 +383,11 @@ int WorldPartitionSystem::loadExternalCells(ecs::World& world, const std::filesy
     for (const auto& entry : std::filesystem::directory_iterator(cellsFolder(scene), ec)) {
         CellCoord c;
         if (!parseCellName(entry.path(), c)) continue;
+        int roots = 0;
+        ecs::DVec3 saved = world.origin();  // version 1: el de la escena
+        cellFileHeader(entry.path(), roots, saved);
         for (const std::string& text : readCellFile(entry.path())) {
-            if (ecs::restoreEntities(world, text).valid()) ++count;
+            if (restoreRoot(world, text, saved).valid()) ++count;
         }
     }
     return count;
@@ -292,10 +398,43 @@ int WorldPartitionSystem::loadExternalCells(ecs::World& world, const std::filesy
 // -----------------------------------------------------------------------------
 
 WorldPartitionSystem::~WorldPartitionSystem() {
-    for (auto& [coord, cell] : cells_) {
-        if (cell.job.valid()) cell.job.wait();
-    }
+    drainJobs();
     removeCache();
+}
+
+void WorldPartitionSystem::drainJobs() {
+    // Las lecturas se cancelan (descartan lo leido); las escrituras terminan.
+    // Ningun trabajo tiene `this`: solo su estado compartido.
+    for (auto& [coord, cell] : cells_) {
+        if (cell.read) cell.read->cancel->cancelled.store(true, std::memory_order_release);
+    }
+    for (const jobs::JobHandle& h : io_jobs_) jobs::wait(h);
+    io_jobs_.clear();
+}
+
+int WorldPartitionSystem::readsInFlight() const {
+    int n = 0;
+    for (const auto& [coord, cell] : cells_) n += cell.reading ? 1 : 0;
+    return n;
+}
+
+void WorldPartitionSystem::pollWrites() {
+    io_jobs_.erase(std::remove_if(io_jobs_.begin(), io_jobs_.end(),
+                                  [](const jobs::JobHandle& h) { return !h || h->done(); }),
+                   io_jobs_.end());
+    for (auto& [coord, cell] : cells_) {
+        if (!cell.write || !cell.write->ready()) continue;
+        const std::shared_ptr<PendingWrite> w = std::move(cell.write);
+        cell.write.reset();
+        // Sigue descargada y nadie la esta cargando: ya esta en disco, fuera
+        // de la memoria. Si fallo, se queda en memoria (como antes).
+        if (w->ok.load(std::memory_order_acquire) && !cell.loaded && !cell.loading() && cell.stored) {
+            cell.file = w->file;
+            cell.disk_bytes = w->bytes;
+            cell.stored.reset();
+            cell.bytes = 0;
+        }
+    }
 }
 
 void WorldPartitionSystem::setSceneFile(const std::filesystem::path& scene, bool cells_in_world) {
@@ -326,27 +465,29 @@ void WorldPartitionSystem::registerExternalCells(ecs::World& world) {
         CellCoord c;
         if (!parseCellName(entry.path(), c)) continue;
         Cell& cell = cells_[c];
+        int roots = 0;
+        ecs::DVec3 saved = world.origin();  // version 1: el de la escena (con el que se guardo)
+        cellFileHeader(entry.path(), roots, saved);
         if (!cell.roots.empty()) {
             // Ya hay objetos de esta celda en la escena: la celda entera ya.
             for (const std::string& text : readCellFile(entry.path())) {
-                const ecs::Entity r = ecs::restoreEntities(world, text);
+                const ecs::Entity r = restoreRoot(world, text, saved);
                 if (r.valid() && !r.parent().valid()) track(r.handle(), cellOf(r.worldPosition()));
             }
             continue;
         }
         cell.loaded = false;
         cell.file = entry.path();
+        cell.origin = saved;
         cell.disk_bytes = static_cast<std::size_t>(entry.file_size(ec));
-        cell.entities = cellFileCount(entry.path());
+        cell.entities = roots;
         ++stats_.external_cells;
     }
 }
 
 void WorldPartitionSystem::begin(ecs::World& world, const Vec3& viewer) {
     registerWorldPartitionComponents();
-    for (auto& [coord, cell] : cells_) {
-        if (cell.job.valid()) cell.job.wait();
-    }
+    drainJobs();
     cells_.clear();
     tracked_.clear();
     rejected_.clear();
@@ -355,6 +496,7 @@ void WorldPartitionSystem::begin(ecs::World& world, const Vec3& viewer) {
     rescans_ = 0;
     stats_ = PartitionStats{};
     active_ = false;
+    origin_ = world.origin();
     bool found = false;
     for (const entt::entity h : world.registry().view<WorldPartition>()) {
         const ecs::Entity e = world.wrap(h);
@@ -422,20 +564,53 @@ void WorldPartitionSystem::unloadCell(ecs::World& world, const CellCoord& c, Cel
     }
     cell.roots.clear();
     cell.entities = static_cast<int>(stored.size());
-    cell.stored.clear();
+    cell.stored.reset();
     cell.bytes = 0;
     cell.disk_bytes = 0;
     cell.file.clear();
-    if (!stored.empty()) {
+    cell.origin = world.origin();  // las posiciones guardadas son relativas a este
+    if (!stored.empty() && g_async_cells.get()) {
+        // A disco en el hilo de IO. Mientras escribe, lo guardado sigue en
+        // memoria (compartido, nadie lo cambia): volver a cargarla lo usa.
+        auto texts = std::make_shared<const std::vector<std::string>>(std::move(stored));
+        for (const std::string& text : *texts) cell.bytes += text.size();
+        cell.stored = texts;
+        auto w = std::make_shared<PendingWrite>();
+        w->file = cacheFile(c);
+        // Todas las anteriores (no solo la ultima: pollWrites suelta la ultima
+        // aunque una mas vieja siga escribiendo cacheFile(c)).
+        if (cell.write) cell.older_writes.push_back(std::move(cell.write));
+        cell.older_writes.erase(std::remove_if(cell.older_writes.begin(), cell.older_writes.end(),
+                                               [](const std::shared_ptr<PendingWrite>& p) { return !p || p->ready(); }),
+                                cell.older_writes.end());
+        if (!cell.older_writes.empty()) {
+            // Otra escritura de esta celda aun en marcha: otro archivo (dos a
+            // la vez romperian el rename en Windows).
+            w->file = cache_ / ("cell_" + std::to_string(c.x) + "_" + std::to_string(c.z) + "_" +
+                                std::to_string(++write_seq_) + ".crcell");
+        }
+        // Sin `this`: solo el estado de la escritura y los textos.
+        w->job = jobs::scheduleIo(
+            [w, texts, origin = cell.origin]() {
+                std::size_t written = 0;
+                const bool ok = writeCellFile(w->file, *texts, origin, &written);
+                w->bytes = written;
+                w->ok.store(ok, std::memory_order_release);
+                w->done.store(true, std::memory_order_release);
+            },
+            jobs::Priority::Normal);
+        io_jobs_.push_back(w->job);
+        cell.write = std::move(w);
+    } else if (!stored.empty()) {
         // A disco (la cache de la sesion); si no se puede, en memoria.
         const std::filesystem::path file = cacheFile(c);
         std::size_t written = 0;
-        if (writeCellFile(file, stored, &written)) {
+        if (writeCellFile(file, stored, cell.origin, &written)) {
             cell.file = file;
             cell.disk_bytes = written;
         } else {
             for (const std::string& text : stored) cell.bytes += text.size();
-            cell.stored = std::move(stored);
+            cell.stored = std::make_shared<const std::vector<std::string>>(std::move(stored));
         }
     }
     cell.loaded = false;
@@ -443,25 +618,77 @@ void WorldPartitionSystem::unloadCell(ecs::World& world, const CellCoord& c, Cel
     ++stats_.unloads;
 }
 
-void WorldPartitionSystem::requestLoad(Cell& cell) {
-    if (cell.loaded || cell.loading()) return;
+bool WorldPartitionSystem::requestLoad(Cell& cell) {
+    if (cell.loaded || cell.loading()) return true;
     cell.pending.clear();
     cell.next = 0;
-    if (!cell.stored.empty()) {
-        cell.pending = std::move(cell.stored);
-        cell.stored.clear();
+    const bool async = g_async_cells.get();
+    if (cell.stored && async) {
+        // En memoria (o escribiendose): se parsea en un hilo trabajador. Lo
+        // guardado se queda hasta que termine (loadCellNow puede necesitarlo).
+        auto read = std::make_shared<PendingRead>();
+        cell.read = read;
+        cell.reading = true;
+        jobs::schedule(
+            [read, texts = cell.stored]() {
+                for (const std::string& text : *texts) {
+                    if (jobs::isCancelled(read->cancel)) break;
+                    if (auto parsed = ecs::parseEntities(text)) read->roots.push_back(PendingRoot{{}, std::move(parsed)});
+                }
+                read->done.store(true, std::memory_order_release);
+            },
+            nullptr, jobs::Priority::Normal);
+    } else if (cell.stored) {
+        for (const std::string& text : *cell.stored) cell.pending.push_back(PendingRoot{text, nullptr});
+        cell.stored.reset();
         cell.bytes = 0;
     } else if (!cell.file.empty()) {
+        if (async && readsInFlight() >= std::max(g_max_reads.get(), 1)) return false;  // el proximo frame
+        auto read = std::make_shared<PendingRead>();
+        cell.read = read;
         cell.reading = true;
-        cell.job = std::async(std::launch::async, [file = cell.file]() { return readCellFile(file); });
+        // Lectura en el hilo de IO y, con wp.AsyncCells, el parseo en un hilo
+        // trabajador (el de IO sigue leyendo). Sin `this`.
+        io_jobs_.push_back(jobs::scheduleIo(
+            [read, file = cell.file, async]() {
+                if (jobs::isCancelled(read->cancel)) {
+                    read->done.store(true, std::memory_order_release);
+                    return;
+                }
+                std::vector<std::string> texts = readCellFile(file);
+                if (!async || texts.empty() || jobs::isCancelled(read->cancel)) {
+                    for (std::string& text : texts) read->roots.push_back(PendingRoot{std::move(text), nullptr});
+                    read->done.store(true, std::memory_order_release);
+                    return;
+                }
+                auto shared = std::make_shared<const std::vector<std::string>>(std::move(texts));
+                jobs::schedule(
+                    [read, shared]() {
+                        for (const std::string& text : *shared) {
+                            if (jobs::isCancelled(read->cancel)) break;
+                            if (auto parsed = ecs::parseEntities(text)) {
+                                read->roots.push_back(PendingRoot{{}, std::move(parsed)});
+                            }
+                        }
+                        read->done.store(true, std::memory_order_release);
+                    },
+                    nullptr, jobs::Priority::Normal);
+            },
+            jobs::Priority::Normal));
     }
     if (!cell.loading()) finishLoad(cell);  // vacia
+    return true;
 }
 
 void WorldPartitionSystem::finishLoad(Cell& cell) {
     cell.loaded = true;
     cell.pending.clear();
+    cell.pending.shrink_to_fit();
     cell.next = 0;
+    cell.read.reset();
+    cell.reading = false;
+    cell.stored.reset();
+    cell.bytes = 0;
     cell.file.clear();
     cell.disk_bytes = 0;
     proxies_dirty_ = true;
@@ -470,38 +697,74 @@ void WorldPartitionSystem::finishLoad(Cell& cell) {
 
 void WorldPartitionSystem::pumpLoads(ecs::World& world, int budget) {
     for (auto& [coord, cell] : cells_) {
-        if (cell.reading && cell.job.valid() &&
-            cell.job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-            cell.pending = cell.job.get();
+        if (cell.reading && cell.read && cell.read->ready()) {
+            cell.pending = std::move(cell.read->roots);
+            cell.read.reset();
             cell.next = 0;
             cell.reading = false;
+            // Parseado lo que habia en memoria: ya no hace falta.
+            cell.stored.reset();
+            cell.bytes = 0;
             if (cell.pending.empty()) finishLoad(cell);
         }
     }
+    // Ademas del limite de objetos, uno de tiempo (los que ya vienen parseados).
+    const bool async = g_async_cells.get();
+    jobs::FrameBudget time_budget(g_restore_budget_ms.get());
     // track() puede crear celdas: el map no mueve las que ya hay.
     for (auto& [coord, cell] : cells_) {
         if (cell.reading || cell.next >= cell.pending.size()) continue;
         while (budget > 0 && cell.next < cell.pending.size()) {
-            const ecs::Entity r = ecs::restoreEntities(world, cell.pending[cell.next++]);
+            if (async && !time_budget.spend()) break;
+            const PendingRoot root = std::move(cell.pending[cell.next++]);
+            const ecs::Entity r = restorePending(world, root, cell.origin);
             if (r.valid() && !r.parent().valid()) track(r.handle(), cellOf(r.worldPosition()));
             --budget;
         }
         if (cell.next >= cell.pending.size()) finishLoad(cell);
-        if (budget <= 0) break;
+        if (budget <= 0 || (async && !time_budget.hasTime())) break;
     }
 }
 
 void WorldPartitionSystem::loadCellNow(ecs::World& world, Cell& cell) {
     if (cell.loaded) return;
-    if (!cell.loading()) requestLoad(cell);
-    if (cell.loaded) return;
-    if (cell.reading) {
-        cell.pending = cell.job.get();
+    if (cell.reading && cell.read && cell.read->ready()) {
+        cell.pending = std::move(cell.read->roots);
+        cell.read.reset();
         cell.next = 0;
         cell.reading = false;
+        cell.stored.reset();
+        cell.bytes = 0;
+    }
+    if (cell.reading) {
+        // Aun en otro hilo: se cancela y se lee aqui (esperando al disco).
+        if (cell.read) cell.read->cancel->cancelled.store(true, std::memory_order_release);
+        cell.read.reset();
+        cell.reading = false;
+        cell.pending.clear();
+        cell.next = 0;
+        if (cell.stored) {
+            for (const std::string& text : *cell.stored) cell.pending.push_back(PendingRoot{text, nullptr});
+            cell.stored.reset();
+            cell.bytes = 0;
+        } else if (!cell.file.empty()) {
+            for (std::string& text : readCellFile(cell.file)) cell.pending.push_back(PendingRoot{std::move(text), nullptr});
+        }
+    } else if (!cell.loading()) {
+        // Sincrono: lo de memoria o el archivo, aqui.
+        cell.pending.clear();
+        cell.next = 0;
+        if (cell.stored) {
+            for (const std::string& text : *cell.stored) cell.pending.push_back(PendingRoot{text, nullptr});
+            cell.stored.reset();
+            cell.bytes = 0;
+        } else if (!cell.file.empty()) {
+            for (std::string& text : readCellFile(cell.file)) cell.pending.push_back(PendingRoot{std::move(text), nullptr});
+        }
     }
     while (cell.next < cell.pending.size()) {
-        const ecs::Entity r = ecs::restoreEntities(world, cell.pending[cell.next++]);
+        const PendingRoot root = std::move(cell.pending[cell.next++]);
+        const ecs::Entity r = restorePending(world, root, cell.origin);
         if (r.valid() && !r.parent().valid()) track(r.handle(), cellOf(r.worldPosition()));
     }
     finishLoad(cell);
@@ -509,7 +772,10 @@ void WorldPartitionSystem::loadCellNow(ecs::World& world, Cell& cell) {
 
 void WorldPartitionSystem::update(ecs::World& world, const Vec3& viewer) {
     if (!active_) return;
+    origin_ = world.origin();
     ++frame_;
+    // Escrituras de celdas terminadas: lo guardado sale de la memoria.
+    pollWrites();
     // Lo creado, borrado o movido en Play: cada pocos frames y solo las raices
     // (antes, el arbol entero con cada hijo en cada frame).
     const bool rescanned = frame_ % 10 == 0;
@@ -538,7 +804,8 @@ void WorldPartitionSystem::update(ecs::World& world, const Vec3& viewer) {
     std::sort(to_load.begin(), to_load.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     const int budget = std::max(settings_.loads_per_frame, 1);
     for (int i = 0; i < static_cast<int>(to_load.size()) && i < budget; ++i) {
-        requestLoad(cells_[to_load[static_cast<std::size_t>(i)].second]);
+        // false: demasiadas lecturas en marcha (las mas cercanas ya van).
+        if (!requestLoad(cells_[to_load[static_cast<std::size_t>(i)].second])) break;
     }
     pumpLoads(world, std::max(settings_.restores_per_frame, 1));
     if (proxies_dirty_) {
@@ -564,6 +831,7 @@ void WorldPartitionSystem::updateProxies(ecs::World& world) const {
 }
 
 void WorldPartitionSystem::loadAll(ecs::World& world) {
+    origin_ = world.origin();
     for (auto& [coord, cell] : cells_) loadCellNow(world, cell);
     if (proxies_dirty_) {
         updateProxies(world);
@@ -574,9 +842,8 @@ void WorldPartitionSystem::loadAll(ecs::World& world) {
 
 void WorldPartitionSystem::end(ecs::World& world, bool restore) {
     if (active_ && restore) loadAll(world);
-    for (auto& [coord, cell] : cells_) {
-        if (cell.job.valid()) cell.job.wait();
-    }
+    // La cache no se borra con escrituras o lecturas en marcha.
+    drainJobs();
     cells_.clear();
     tracked_.clear();
     rejected_.clear();
@@ -605,7 +872,11 @@ void WorldPartitionSystem::refreshStats() {
     stats_.stored_bytes = 0;
     stats_.disk_bytes = 0;
     stats_.loading_cells = 0;
+    stats_.reads_in_flight = 0;
+    stats_.writes_in_flight = 0;
     for (const auto& [coord, cell] : cells_) {
+        if (cell.reading) ++stats_.reads_in_flight;
+        if (cell.write && !cell.write->ready()) ++stats_.writes_in_flight;
         if (cell.loaded) {
             ++stats_.loaded_cells;
         } else {

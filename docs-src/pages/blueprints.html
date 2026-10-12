@@ -1,0 +1,84 @@
+<p>
+  Un <strong class="text-white">Blueprint de actor</strong> es lo mismo que en Unreal: un objeto reutilizable con sus
+  <em>componentes</em> (malla, luces, colliders, sockets en los huesos...) y su lógica con nodos (<em>Event Graph</em>), todo
+  en una sola pestaña. Por dentro es un <a href="prefabs.html">prefab</a> (<code>.crprefab</code>) con un bloque
+  <code>"blueprint"</code> y un grafo de <a href="visual-scripting.html">Visual Scripting</a> (<code>.crgraph</code>) al lado:
+  sus copias en la escena son instancias del prefab y se actualizan solas al guardar.
+</p>
+
+<h3 id="bp-crear">Crear un Blueprint</h3>
+<ul>
+  <li><strong class="text-white">Doble clic en un modelo</strong> del panel Proyecto: se abre <em>Nuevo Blueprint de actor</em>.
+    Elige el nombre (<code>BP_&lt;modelo&gt;</code>), si quieres <em>Huesos: Todos</em> (un objeto por hueso) y
+    <em>Colisión</em> (una caja ajustada a la malla). <em>Crear</em> lo guarda en <code>Assets/Blueprints</code> y abre su
+    pestaña; <em>Solo ponerlo en la escena</em> hace lo de siempre.</li>
+  <li>Clic derecho en un <strong>modelo</strong>, un <strong>prefab</strong> o un <strong>material</strong> &gt;
+    <em>Crear Blueprint de actor</em> (con un material: un cubo con ese material).</li>
+  <li>Clic derecho en un prefab &gt; <em>Convertir en Blueprint</em>: el mismo archivo pasa a ser un Blueprint y sus
+    instancias reciben el grafo. Si su raíz ya tenía Visual Script, se usa ese grafo.</li>
+  <li>Clic derecho en el fondo del Proyecto &gt; <em>Crear &gt; Blueprint de actor vacío</em>.</li>
+</ul>
+<p>
+  En el Proyecto los Blueprints llevan la insignia <strong>BP</strong>. Doble clic en uno abre su pestaña (igual que
+  <em>Abrir Blueprint</em>). Arrastrarlo a la escena pone una copia.
+</p>
+
+<h3 id="bp-pestana">La pestaña Blueprint</h3>
+<table>
+  <thead><tr><th>Panel</th><th>Qué tiene</th></tr></thead>
+  <tbody>
+    <tr><td><code>Barra</code></td><td><em>Compilar</em> (con su estado: <strong>?</strong> sin compilar, ✓ bien, ⚠ avisos, ✗ errores), <em>Guardar</em>, <em>Explorar</em> (lo busca en el Proyecto), <em>Buscar</em> (nodos del grafo), <em>Valores por defecto</em> y las pestañas <em>Ventana gráfica</em> / <em>Event Graph</em>.</td></tr>
+    <tr><td><code>Componentes</code></td><td>El árbol del actor desde la raíz (<em>Self</em>), con el tipo de cada objeto, el grupo <em>Esqueleto (N)</em> y el botón <strong>+ Añadir</strong>.</td></tr>
+    <tr><td><code>Mi Blueprint</code></td><td>Las variables del grafo (nombre, tipo, valor inicial y si salen en el Inspector).</td></tr>
+    <tr><td><code>Ventana gráfica</code></td><td>La vista 3D del actor, con gizmos: se mueve y se edita como en la escena.</td></tr>
+    <tr><td><code>Event Graph</code></td><td>El grafo de nodos (eventos, flujo, variables, toda la API).</td></tr>
+    <tr><td><code>Detalles</code></td><td>El objeto elegido (el Inspector completo, con <em>Añadir componente</em>), o el nodo o la variable elegidos en el grafo, o los datos de la clase.</td></tr>
+    <tr><td><code>Resultados de compilación</code></td><td>Errores y avisos; clic en uno lleva a su nodo.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="bp-componentes">Componentes, huesos y sockets</h3>
+<ul>
+  <li><strong>+ Añadir</strong>: objetos (vacío, cubo, esfera, luces, cámara) dentro del elegido, un componente para el
+    objeto elegido o <em>Socket en hueso…</em>.</li>
+  <li><strong>Esqueleto (N)</strong> lista los huesos del modelo que aún no son objeto. Cada uno tiene
+    <em>Convertir en objeto</em> (crea ese hueso y su cadena de padres, ya siguiendo la animación) y
+    <em>Socket aquí</em> (un objeto hijo de la malla que sigue a ese hueso: para colgar un arma, una luz o un collider).</li>
+  <li>Arrastrar un objeto sobre un hueso del grupo Esqueleto lo convierte en objeto y lo emparenta con él.</li>
+  <li>Arrastrar un objeto sobre otro lo emparenta, como en la Jerarquía.</li>
+</ul>
+<div class="note">
+  Un collider en un hueso se mueve con la animación (después de la física): úsalo como <em>trigger</em> o cinemático, no como
+  cuerpo dinámico.
+</div>
+
+<h3 id="bp-guardar">Compilar y guardar</h3>
+<ul>
+  <li><strong>Compilar</strong> comprueba el grafo, lo guarda si no tiene errores y, en Play, lo recarga al momento.</li>
+  <li><strong>Guardar</strong> (<kbd>Ctrl</kbd>+<kbd>S</kbd>) escribe el grafo y, si cambiaron los componentes, el
+    <code>.crprefab</code>: todas sus copias de la escena se ponen al día al volver (respetando sus cambios propios).</li>
+  <li>Nada se guarda solo: la pestaña muestra <strong>*</strong> con cambios pendientes y al cerrarla pregunta.</li>
+  <li>Al darle a <em>Play</em>, los Blueprints con cambios se compilan y se guardan antes (como el PIE de Unreal). Si
+    un grafo no compila, no se guarda: se juega su última versión guardada y la consola lo avisa.</li>
+</ul>
+
+<h3 id="bp-atajos">Atajos</h3>
+<p>
+  Con el foco en el <em>Event Graph</em>, <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> deshacen
+  en el grafo; fuera de él, en los componentes y la vista. <kbd>Ctrl</kbd>+<kbd>S</kbd> guarda el Blueprint en los dos casos.
+</p>
+
+<h3 id="bp-variables">Variables en cada copia</h3>
+<p>
+  Las variables marcadas <em>En el Inspector</em> salen en el componente <strong>Visual Script</strong> de cada copia con el
+  control de su tipo. Cambiarla en una copia solo afecta a esa copia; <em>Por defecto</em> vuelve al valor del Blueprint.
+</p>
+
+<h3 id="bp-limites">Límites</h3>
+<ul>
+  <li>No renombres ni muevas el <code>.crgraph</code> a mano: el Blueprint lo busca por su ruta.</li>
+  <li><em>Huesos: Todos</em> añade un objeto por hueso a cada copia (60-200 en un personaje): mejor convertir solo los que
+    hagan falta.</li>
+  <li>Una copia en la que cambias una variable guarda todas sus variables como cambio propio: un nuevo valor por defecto en el
+    Blueprint no le llega.</li>
+</ul>

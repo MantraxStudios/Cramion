@@ -1,11 +1,11 @@
 #include "CramionCore/foliage/Foliage.h"
 
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/jobs/JobSystem.h"
 #include "CramionCore/terrain/TerrainTools.h"
 
 #include <algorithm>
 #include <cmath>
-#include <thread>
 
 namespace cramion::foliage {
 
@@ -17,6 +17,46 @@ std::uint64_t mix(std::uint64_t x) {
     x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
     x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
     return x ^ (x >> 31);
+}
+
+// Altura 0..1 de un snapshot en uv (0..1), bilineal: lo mismo que
+// TerrainData::sample pero sobre datos inmutables (seguro en otro hilo).
+float sampleSnapshot(const terrain::TerrainSnapshot& s, float u, float v) {
+    if (!s.heights || s.resolution < 2 || s.heights->size() < static_cast<std::size_t>(s.resolution) * s.resolution) {
+        return 0.0f;
+    }
+    const std::vector<float>& h = *s.heights;
+    const std::uint32_t res = s.resolution;
+    const float n = static_cast<float>(res - 1);
+    const float x = std::clamp(u, 0.0f, 1.0f) * n;
+    const float y = std::clamp(v, 0.0f, 1.0f) * n;
+    const auto x0 = static_cast<std::uint32_t>(std::min(std::floor(x), n - 1.0f));
+    const auto y0 = static_cast<std::uint32_t>(std::min(std::floor(y), n - 1.0f));
+    const float tx = x - static_cast<float>(x0);
+    const float ty = y - static_cast<float>(y0);
+    const auto at = [&](std::uint32_t px, std::uint32_t py) { return h[static_cast<std::size_t>(py) * res + px]; };
+    const float a = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * tx;
+    const float b = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * tx;
+    return a + (b - a) * ty;
+}
+
+// Altura en el mundo bajo (x, z): del snapshot si lo hay, si no de los datos.
+float groundHeightAt(const FoliageGround& g, float x, float z) {
+    if (g.snapshot) {
+        const float size = std::max(g.terrain.size, 1.0f);
+        return g.origin.y + sampleSnapshot(*g.snapshot, (x - g.origin.x) / size, (z - g.origin.z) / size) * g.terrain.height;
+    }
+    return terrain::heightAt(*g.data, g.terrain, g.origin, x, z);
+}
+
+core::Vec3 groundNormalAt(const FoliageGround& g, float x, float z) {
+    if (!g.snapshot) return terrain::normalAt(*g.data, g.terrain, g.origin, x, z);
+    const float e = g.terrain.size / static_cast<float>(std::max<std::uint32_t>(g.snapshot->resolution - 1, 1));
+    const float hl = groundHeightAt(g, x - e, z);
+    const float hr = groundHeightAt(g, x + e, z);
+    const float hd = groundHeightAt(g, x, z - e);
+    const float hu = groundHeightAt(g, x, z + e);
+    return core::normalize(core::Vec3{hl - hr, 2.0f * e, hd - hu});
 }
 
 struct Random {
@@ -133,13 +173,17 @@ FoliageResult generateFoliage(const Foliage& f, const core::Vec3& center, const 
     const float x0 = center.x - area * 0.5f;
     const float z0 = center.z - area * 0.5f;
 
-    const unsigned threads = std::clamp(std::thread::hardware_concurrency(), 1u, 16u);
-    std::vector<std::vector<gfx::FoliageInstance>> parts(threads);
-    std::vector<std::uint64_t> rejected(threads, 0);
-    const auto work = [&](unsigned t) {
+    // Filas repartidas en trozos fijos con el job system (no hilos propios):
+    // el resultado sale en el mismo orden con cualquier numero de hilos.
+    const std::size_t chunks = static_cast<std::size_t>(std::min<std::uint64_t>(per_side, 256));
+    std::vector<std::vector<gfx::FoliageInstance>> parts(chunks);
+    std::vector<std::uint64_t> rejected(chunks, 0);
+    const auto work = [&](std::size_t t) {
         std::vector<gfx::FoliageInstance>& out = parts[t];
-        out.reserve(static_cast<std::size_t>(result.candidates / threads + 16));
-        for (std::uint64_t row = t; row < per_side; row += threads) {
+        const std::uint64_t row_begin = per_side * t / chunks;
+        const std::uint64_t row_end = per_side * (t + 1) / chunks;
+        out.reserve(static_cast<std::size_t>((row_end - row_begin) * per_side + 16));
+        for (std::uint64_t row = row_begin; row < row_end; ++row) {
             for (std::uint64_t col = 0; col < per_side; ++col) {
                 Random rng{mix(static_cast<std::uint64_t>(f.seed) * 0x100000001B3ull ^ (row << 32) ^ col)};
                 const float x = x0 + (static_cast<float>(col) + rng.next()) * cell;
@@ -161,10 +205,13 @@ FoliageResult generateFoliage(const Foliage& f, const core::Vec3& center, const 
                 if (f.on_terrain) {
                     for (const FoliageGround& g : ground) {
                         const float size = std::max(g.terrain.size, 1.0f);
-                        if (!g.data || x < g.origin.x || z < g.origin.z || x > g.origin.x + size || z > g.origin.z + size) continue;
-                        const core::Vec3 n = terrain::normalAt(*g.data, g.terrain, g.origin, x, z);
+                        if ((!g.data && !g.snapshot) || x < g.origin.x || z < g.origin.z || x > g.origin.x + size ||
+                            z > g.origin.z + size) {
+                            continue;
+                        }
+                        const core::Vec3 n = groundNormalAt(g, x, z);
                         if (n.y < min_normal_y) break;  // demasiado empinado
-                        y = terrain::heightAt(*g.data, g.terrain, g.origin, x, z);
+                        y = groundHeightAt(g, x, z);
                         placed = true;
                         break;
                     }
@@ -205,10 +252,9 @@ FoliageResult generateFoliage(const Foliage& f, const core::Vec3& center, const 
             }
         }
     };
-    std::vector<std::thread> pool;
-    for (unsigned t = 1; t < threads; ++t) pool.emplace_back(work, t);
-    work(0);
-    for (std::thread& th : pool) th.join();
+    jobs::parallelFor(chunks, 1, [&](std::size_t begin, std::size_t end) {
+        for (std::size_t t = begin; t < end; ++t) work(t);
+    });
     std::size_t total = 0;
     for (const auto& p : parts) total += p.size();
     result.instances.reserve(total);
@@ -224,14 +270,15 @@ void Grass::reflect(ecs::PropertyVisitor& v) {
     v.field({"dry_layer", "Capa seca", "Donde el terreno tiene esta capa, la hierba se seca (-1 = ninguna)"}, dry_layer,
             -1, 7);
     v.field({"density", "Densidad", "Briznas por metro cuadrado (de cerca)"}, density,
-            ecs::FloatRange{1.0f, 400.0f, 0.5f, "%.0f / m2"});
+            ecs::FloatRange{1.0f, 2000.0f, 1.0f, "%.0f / m2"});
     v.field({"max_distance", "Distancia", "Hasta donde se dibuja; lejos, menos briznas y mas anchas"}, max_distance,
             ecs::FloatRange{5.0f, 400.0f, 1.0f, "%.0f m"});
     v.field({"detail_distance", "Detalle hasta", "Briznas curvas y con todo el detalle hasta esta distancia"},
             detail_distance, ecs::FloatRange{1.0f, 200.0f, 0.5f, "%.0f m"});
     v.field({"height", "Altura"}, height, ecs::FloatRange{0.02f, 3.0f, 0.01f, "%.2f m"});
     v.field({"height_variation", "Variacion de altura"}, height_variation, ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
-    v.field({"width", "Anchura"}, width, ecs::FloatRange{0.005f, 0.3f, 0.001f, "%.3f m"});
+    v.field({"width", "Anchura", "Anchura de cada brizna en la base. Finas (0.005-0.01) y muchas = pelo"}, width,
+            ecs::FloatRange{0.002f, 0.3f, 0.0005f, "%.4f m"});
     v.field({"bend", "Curvatura", "Cuanto se doblan solas"}, bend, ecs::FloatRange{0.0f, 1.5f, 0.01f, "%.2f"});
     v.field({"base_color", "Color base"}, base_color, ecs::Vec3Kind::Color);
     v.field({"tip_color", "Color de la punta"}, tip_color, ecs::Vec3Kind::Color);
@@ -259,6 +306,13 @@ gfx::GrassDesc Grass::desc() const {
     d.height = height;
     d.height_variation = height_variation;
     d.width = width;
+    // Escenas guardadas con los valores de fabrica de antes (0.028 m y 70 por
+    // m2, briznas anchas: "de papel"): si nadie los toco, los de ahora (finas
+    // y muchas: pelo). Lo que el usuario cambio se respeta.
+    if (std::abs(width - 0.028f) < 1e-5f && std::abs(density - 70.0f) < 1e-3f) {
+        d.width = 0.007f;
+        d.density = 500.0f;
+    }
     d.bend = bend;
     d.base_color = base_color;
     d.tip_color = tip_color;

@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 
 namespace cramion::gfx {
@@ -33,16 +34,32 @@ struct CullPush {
     core::Mat4 view_projection;
     core::Vec4 camera;   // xyz, w distancia maxima
     core::Vec4 lod;      // x nivel 1, y nivel 2, z sombras, w proyectan (0/1)
+    // x total de instancias, y distancia de las sombras con la malla de
+    // detalle (bits de un float; 0 = todas con el nivel medio).
     std::uint32_t counts[4] = {0, 0, 0, 0};
     core::Vec4 offset;
 };
 static_assert(sizeof(CullPush) == 128, "el minimo que garantiza Vulkan");
 
+// Vertices y fragmentos (foliage.vert / foliage.frag, mismo bloque).
 struct DrawPush {
     core::Mat4 light_view_projection;
     core::Vec4 params;  // x segundos, y sombra, z viento, w segundos del ultimo frame
-    core::Vec4 offset;
+    core::Vec4 offset;  // xyz origen flotante, w alfa con ruido en las hojas (0/1)
+    core::Vec4 sun;     // xyz hacia el sol, w distancia de las sombras
 };
+static_assert(sizeof(DrawPush) == 112, "FoliagePush de foliage.vert/.frag");
+
+constexpr vk::ShaderStageFlags kDrawPushStages = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+
+// Hasta donde las sombras usan la malla de detalle (nivel 0) en Alto/Ultra:
+// de cerca la sombra de las hojas del nivel medio (menos tarjetas y mas
+// grandes) se ve a manchas.
+constexpr float kNearShadowDistance = 40.0f;
+
+// Juegos de sets de instancias que caben en el pool a la vez (el actual y los
+// retirados esperando a los frames en vuelo).
+constexpr std::uint32_t kSetGenerations = 6;
 
 void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access,
                    vk::PipelineStageFlags2 dst_stage, vk::AccessFlags2 dst_access) {
@@ -120,19 +137,21 @@ void FoliagePass::create(const VulkanDevice& device, const vk::raii::DescriptorS
         info.setBindings(bindings);
         draw_set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), info);
         const std::array<vk::DescriptorSetLayout, 2> layouts = {*frame_layout, *draw_set_layout_};
-        vk::PushConstantRange push{vk::ShaderStageFlagBits::eVertex, 0, sizeof(DrawPush)};
+        vk::PushConstantRange push{kDrawPushStages, 0, sizeof(DrawPush)};
         vk::PipelineLayoutCreateInfo layout_info{};
         layout_info.setSetLayouts(layouts);
         layout_info.setPushConstantRanges(push);
         draw_layout_ = vk::raii::PipelineLayout(device.handle(), layout_info);
     }
+    // Sitio para kSetGenerations juegos de sets: el actual y los retirados que
+    // aun usan los frames en vuelo (cambiar las instancias no para la GPU).
     const std::array<vk::DescriptorPoolSize, 2> sizes = {{
-        {vk::DescriptorType::eStorageBuffer, 6 * frames_in_flight},
-        {vk::DescriptorType::eCombinedImageSampler, 2 * frames_in_flight},
+        {vk::DescriptorType::eStorageBuffer, 6 * frames_in_flight * kSetGenerations},
+        {vk::DescriptorType::eCombinedImageSampler, 2 * frames_in_flight * kSetGenerations},
     }};
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    pool_info.maxSets = 2 * frames_in_flight;
+    pool_info.maxSets = 2 * frames_in_flight * kSetGenerations;
     pool_info.setPoolSizes(sizes);
     pool_ = vk::raii::DescriptorPool(device.handle(), pool_info);
 
@@ -149,6 +168,11 @@ void FoliagePass::create(const VulkanDevice& device, const vk::raii::DescriptorS
 }
 
 void FoliagePass::destroy() {
+    // Una subida en segundo plano puede estar creando buffers: que termine.
+    if (device_ != nullptr) device_->drainTasks();
+    pending_.reset();
+    retired_instances_.clear();
+    cpu_instances_.reset();
     cull_sets_.clear();
     draw_sets_.clear();
     instances_.destroy();
@@ -269,8 +293,10 @@ void FoliagePass::createPipelines(const VulkanDevice& device, std::array<vk::For
         raster.lineWidth = 1.0f;
         raster.depthClampEnable = device.depthClampSupported() ? VK_TRUE : VK_FALSE;
         raster.depthBiasEnable = VK_TRUE;
-        raster.depthBiasConstantFactor = 1.0f;
-        raster.depthBiasSlopeFactor = 1.75f;
+        // Bias menor: con 1.0 / 1.75 la sombra se despegaba de las ramas y las
+        // hojas (copas que flotaban sobre su sombra). Vigilar el acne en la corteza.
+        raster.depthBiasConstantFactor = 0.5f;
+        raster.depthBiasSlopeFactor = 1.0f;
         vk::PipelineColorBlendStateCreateInfo blend{};
         vk::PipelineRenderingCreateInfo rendering{};
         rendering.depthAttachmentFormat = shadow_format;
@@ -411,104 +437,259 @@ void FoliagePass::createTextures() {
     albedo_layers_ = static_cast<std::uint32_t>(t.albedo.size());
     upload(normal_array_, t.normal, vk::Format::eR8G8B8A8Unorm);
 
+    createTextureSampler();
+}
+
+// Repetido, trilineal y con el filtrado de la configuracion grafica.
+void FoliagePass::createTextureSampler() {
     vk::SamplerCreateInfo sampler{};
     sampler.magFilter = vk::Filter::eLinear;
     sampler.minFilter = vk::Filter::eLinear;
     sampler.mipmapMode = vk::SamplerMipmapMode::eLinear;
     sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = vk::SamplerAddressMode::eRepeat;
     sampler.maxLod = VK_LOD_CLAMP_NONE;
-    const vk::PhysicalDeviceFeatures features = device_->physicalDevice().getFeatures();
-    if (features.samplerAnisotropy) {
-        sampler.anisotropyEnable = VK_TRUE;
-        sampler.maxAnisotropy = std::min(8.0f, device_->physicalDevice().getProperties().limits.maxSamplerAnisotropy);
-    }
+    applyTextureFiltering(sampler, device_->physicalDevice(), filtering_);
     texture_sampler_ = vk::raii::Sampler(device_->handle(), sampler);
+}
+
+void FoliagePass::setTextureFiltering(const TextureFiltering& filtering) {
+    if (filtering == filtering_) return;
+    filtering_ = filtering;
+    if (device_ == nullptr || !*texture_sampler_) return;
+    createTextureSampler();
+    // Solo las dos texturas de los sets de dibujo (los buffers no cambian).
+    for (std::size_t f = 0; f < draw_sets_.size(); ++f) {
+        const vk::DescriptorImageInfo albedo{*texture_sampler_, *albedo_array_.view, vk::ImageLayout::eShaderReadOnlyOptimal};
+        const vk::DescriptorImageInfo normal{*texture_sampler_, *normal_array_.view, vk::ImageLayout::eShaderReadOnlyOptimal};
+        std::array<vk::WriteDescriptorSet, 2> writes{};
+        writes[0].dstSet = *draw_sets_[f];
+        writes[0].dstBinding = 2;
+        writes[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[0].setImageInfo(albedo);
+        writes[1].dstSet = *draw_sets_[f];
+        writes[1].dstBinding = 3;
+        writes[1].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[1].setImageInfo(normal);
+        device_->handle().updateDescriptorSets(writes, nullptr);
+    }
 }
 
 // -----------------------------------------------------------------------------
 // Instancias
 // -----------------------------------------------------------------------------
 
+const std::vector<FoliageInstance>& FoliagePass::cpuInstances() const {
+    static const std::vector<FoliageInstance> kEmpty;
+    return cpu_instances_ ? *cpu_instances_ : kEmpty;
+}
+
+std::shared_ptr<FoliagePass::InstanceBuffers> FoliagePass::buildInstances(
+    const VulkanDevice& device, std::uint32_t frames, const std::vector<FoliageInstance>& input,
+    std::shared_ptr<const std::vector<FoliageInstance>> shared, bool keep_cpu, bool async,
+    std::shared_ptr<GpuTicket>& ticket) {
+    auto out = std::make_shared<InstanceBuffers>();
+    const std::size_t count = std::min<std::size_t>(input.size(), kMaxInstances);
+    out->count = static_cast<std::uint32_t>(count);
+    if (keep_cpu) {
+        // Los rayos leen las mismas (sin copiar si son todas).
+        out->cpu = shared && count == input.size()
+                       ? std::move(shared)
+                       : std::make_shared<const std::vector<FoliageInstance>>(
+                             input.begin(), input.begin() + static_cast<std::ptrdiff_t>(count));
+    }
+    if (count == 0) return out;
+    for (std::size_t i = 0; i < count; ++i) {
+        ++out->species_count[std::min<std::uint32_t>((input[i].packed >> 18) & 3u, kSpecies - 1)];
+    }
+    const vk::DeviceSize instance_bytes = count * sizeof(FoliageInstance);
+    if (async) {
+        auto staging = std::make_shared<VulkanBuffer>();
+        staging->create(device, instance_bytes, vk::BufferUsageFlagBits::eTransferSrc,
+                        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        staging->write(input.data(), instance_bytes);
+        out->instances.create(device, instance_bytes,
+                              vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
+                              vk::MemoryPropertyFlagBits::eDeviceLocal);
+        const vk::Buffer source = *staging->handle();
+        const vk::Buffer target = *out->instances.handle();
+        // El destino (todo `out`) y el staging viven hasta que la GPU termina.
+        ticket = device.submitAsync(
+            [&](const vk::raii::CommandBuffer& cmd) {
+                vk::BufferCopy region{};
+                region.size = instance_bytes;
+                cmd.copyBuffer(source, target, region);
+                memoryBarrier(cmd, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+                              vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eVertexShader,
+                              vk::AccessFlagBits2::eShaderStorageRead);
+            },
+            {staging, out});
+    } else {
+        out->instances = VulkanBuffer::createDeviceLocal(device, input.data(), instance_bytes,
+                                                         vk::BufferUsageFlagBits::eStorageBuffer);
+    }
+    // Cada lista cabe todas las de su especie: kLists listas por especie.
+    out->visible_bytes = static_cast<vk::DeviceSize>(count) * kLists * sizeof(std::uint32_t);
+    std::uint32_t offset = 0;
+    for (std::uint32_t s = 0; s < kSpecies; ++s) {
+        for (std::uint32_t l = 0; l < kLists; ++l) {
+            out->template_first_instance[s * kLists + l] = offset * kLists + l * out->species_count[s];
+        }
+        offset += out->species_count[s];
+    }
+    for (std::uint32_t f = 0; f < frames; ++f) {
+        VulkanBuffer visible;
+        visible.create(device, out->visible_bytes, vk::BufferUsageFlagBits::eStorageBuffer,
+                       vk::MemoryPropertyFlagBits::eDeviceLocal);
+        out->visible.push_back(std::move(visible));
+        VulkanBuffer commands;
+        commands.create(device, sizeof(DrawCommand) * kSpecies * kLists,
+                        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndirectBuffer |
+                            vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eTransferSrc,
+                        vk::MemoryPropertyFlagBits::eDeviceLocal);
+        out->commands.push_back(std::move(commands));
+        VulkanBuffer readback;
+        readback.create(device, sizeof(DrawCommand) * kSpecies * kLists, vk::BufferUsageFlagBits::eTransferDst,
+                        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        out->readback.push_back(std::move(readback));
+    }
+    return out;
+}
+
+bool FoliagePass::adoptInstances(const std::shared_ptr<InstanceBuffers>& buffers) {
+    InstanceBuffers& b = *buffers;
+    std::vector<vk::raii::DescriptorSet> cull_sets;
+    std::vector<vk::raii::DescriptorSet> draw_sets;
+    if (b.count > 0) {
+        if (albedo_layers_ == 0) {
+            // Las texturas de los arboles, con los primeros (una vez).
+            createTextures();
+            ++species_revision_;  // la escena de rayos las incluye al rehacerse
+        }
+        if (!allocateSets(cull_sets, draw_sets)) return false;
+    }
+    // Lo de antes lo pueden estar usando los frames en vuelo: se retira.
+    if (instances_.isValid() || !cull_sets_.empty() || !draw_sets_.empty()) {
+        RetiredInstances old;
+        old.instances = std::move(instances_);
+        old.visible = std::move(visible_);
+        old.commands = std::move(commands_);
+        old.readback = std::move(readback_);
+        old.cull_sets = std::move(cull_sets_);
+        old.draw_sets = std::move(draw_sets_);
+        old.frames = frames_ + 1;
+        retired_instances_.push_back(std::move(old));
+    }
+    instances_ = std::move(b.instances);
+    visible_ = std::move(b.visible);
+    commands_ = std::move(b.commands);
+    readback_ = std::move(b.readback);
+    cull_sets_ = std::move(cull_sets);
+    draw_sets_ = std::move(draw_sets);
+    instance_count_ = b.count;
+    species_count_ = b.species_count;
+    template_first_instance_ = b.template_first_instance;
+    readback_ready_.assign(frames_, false);
+    stats_ = FoliageStats{};
+    stats_.instances = b.count;
+    stats_.memory_bytes = static_cast<std::uint64_t>(b.count) * sizeof(FoliageInstance) + b.visible_bytes * frames_;
+    cpu_instances_ = keep_cpu_copy_ ? std::move(b.cpu) : nullptr;
+    ++instances_revision_;
+    if (instance_count_ > 0) writeSets();
+    return true;
+}
+
 void FoliagePass::setInstances(const std::vector<FoliageInstance>& input_all) {
     if (device_ == nullptr) return;
+    // Lo que se estuviera subiendo en segundo plano queda viejo.
+    pending_.reset();
     // GPU sin firstInstance en los comandos indirectos (algunos moviles): las
     // listas de cada especie empiezan en otro sitio del buffer y no se pueden
     // dibujar asi. Sin arboles instanciados (mejor que un render roto).
     static const std::vector<FoliageInstance> kNone;
     const std::vector<FoliageInstance>& input = device_->drawIndirectFirstInstanceSupported() ? input_all : kNone;
-    device_->waitIdle();
-    cull_sets_.clear();
-    draw_sets_.clear();
-    instances_.destroy();
-    for (VulkanBuffer& b : visible_) b.destroy();
-    for (VulkanBuffer& b : commands_) b.destroy();
-    for (VulkanBuffer& b : readback_) b.destroy();
-    visible_.clear();
-    commands_.clear();
-    readback_.clear();
-    readback_ready_.assign(frames_, false);
-    species_count_.fill(0);
-    stats_ = FoliageStats{};
-
-    const std::size_t count = std::min<std::size_t>(input.size(), kMaxInstances);
-    instance_count_ = static_cast<std::uint32_t>(count);
-    if (keep_cpu_copy_) {
-        cpu_instances_.assign(input.begin(), input.begin() + static_cast<std::ptrdiff_t>(count));
-    } else {
-        cpu_instances_.clear();
+    // Sin waitIdle: buffers nuevos (su copia si se espera, submitOneTime) y
+    // los de antes se retiran unos frames.
+    std::shared_ptr<GpuTicket> ticket;
+    std::shared_ptr<InstanceBuffers> buffers =
+        buildInstances(*device_, frames_, input, nullptr, keep_cpu_copy_, false, ticket);
+    if (!adoptInstances(buffers)) {
+        // Pool lleno de juegos retirados (muchos cambios seguidos): solo
+        // entonces se espera a la GPU para soltarlos.
+        device_->waitIdle();
+        retired_instances_.clear();
+        adoptInstances(buffers);
     }
-    ++instances_revision_;
-    if (count == 0) return;
-    if (albedo_layers_ == 0) {
-        createTextures();
-        ++species_revision_;  // la escena de rayos las incluye al rehacerse
-    }
-    for (std::size_t i = 0; i < count; ++i) ++species_count_[std::min<std::uint32_t>((input[i].packed >> 18) & 3u, kSpecies - 1)];
+}
 
-    instances_ = VulkanBuffer::createDeviceLocal(*device_, input.data(), count * sizeof(FoliageInstance),
-                                                 vk::BufferUsageFlagBits::eStorageBuffer);
-    // Cada lista cabe todas las de su especie: 4 listas por especie.
-    const vk::DeviceSize visible_bytes = static_cast<vk::DeviceSize>(count) * kLists * sizeof(std::uint32_t);
-    std::uint32_t offset = 0;
-    for (std::uint32_t s = 0; s < kSpecies; ++s) {
-        for (std::uint32_t l = 0; l < kLists; ++l) {
-            template_first_instance_[s * kLists + l] = offset * kLists + l * species_count_[s];
+void FoliagePass::setInstancesAsync(std::shared_ptr<const std::vector<FoliageInstance>> instances) {
+    if (device_ == nullptr) return;
+    if (!instances) instances = std::make_shared<const std::vector<FoliageInstance>>();
+    if (!device_->drawIndirectFirstInstanceSupported()) instances = std::make_shared<const std::vector<FoliageInstance>>();
+    // La nueva sustituye a la que se estuviera subiendo (su resultado se
+    // descarta; sus buffers viven en su ticket hasta que la GPU termina).
+    auto pending = std::make_shared<PendingInstances>();
+    pending_ = pending;
+    const VulkanDevice* device = device_;
+    const std::uint32_t frames = frames_;
+    const bool keep_cpu = keep_cpu_copy_;
+    device_->runTask([device, frames, keep_cpu, pending, instances = std::move(instances)]() {
+        try {
+            std::shared_ptr<GpuTicket> ticket;
+            std::shared_ptr<InstanceBuffers> buffers =
+                buildInstances(*device, frames, *instances, instances, keep_cpu, true, ticket);
+            pending->buffers = std::move(buffers);
+            pending->ticket = std::move(ticket);
+            pending->state.store(1, std::memory_order_release);
+        } catch (const std::exception& e) {
+            std::cerr << "[Vegetacion] No se pudieron subir las instancias: " << e.what() << "\n";
+            pending->state.store(2, std::memory_order_release);
         }
-        offset += species_count_[s];
+    });
+}
+
+bool FoliagePass::pollAsync() {
+    for (RetiredInstances& r : retired_instances_) {
+        if (r.frames > 0) --r.frames;
     }
-    for (std::uint32_t f = 0; f < frames_; ++f) {
-        VulkanBuffer visible;
-        visible.create(*device_, visible_bytes, vk::BufferUsageFlagBits::eStorageBuffer, vk::MemoryPropertyFlagBits::eDeviceLocal);
-        visible_.push_back(std::move(visible));
-        VulkanBuffer commands;
-        commands.create(*device_, sizeof(DrawCommand) * kSpecies * kLists,
-                        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndirectBuffer |
-                            vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eTransferSrc,
-                        vk::MemoryPropertyFlagBits::eDeviceLocal);
-        commands_.push_back(std::move(commands));
-        VulkanBuffer readback;
-        readback.create(*device_, sizeof(DrawCommand) * kSpecies * kLists, vk::BufferUsageFlagBits::eTransferDst,
-                        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-        readback_.push_back(std::move(readback));
+    std::erase_if(retired_instances_, [](const RetiredInstances& r) { return r.frames == 0; });
+    if (!pending_) return false;
+    const int state = pending_->state.load(std::memory_order_acquire);
+    if (state == 0) return false;
+    if (state == 2 || !pending_->buffers) {
+        pending_.reset();
+        return false;
     }
-    stats_.instances = count;
-    stats_.memory_bytes = count * sizeof(FoliageInstance) + visible_bytes * frames_;
-    writeSets();
+    if (pending_->ticket && !pending_->ticket->done()) return false;
+    if (!adoptInstances(pending_->buffers)) return false;  // sin sets ahora: el frame siguiente
+    pending_.reset();
+    return true;
+}
+
+bool FoliagePass::allocateSets(std::vector<vk::raii::DescriptorSet>& cull_sets,
+                               std::vector<vk::raii::DescriptorSet>& draw_sets) {
+    const vk::raii::Device& device = device_->handle();
+    std::vector<vk::DescriptorSetLayout> cull_layouts(frames_, *cull_set_layout_);
+    std::vector<vk::DescriptorSetLayout> draw_layouts(frames_, *draw_set_layout_);
+    try {
+        vk::DescriptorSetAllocateInfo cull_info{};
+        cull_info.descriptorPool = *pool_;
+        cull_info.setSetLayouts(cull_layouts);
+        cull_sets = vk::raii::DescriptorSets(device, cull_info);
+        vk::DescriptorSetAllocateInfo draw_info{};
+        draw_info.descriptorPool = *pool_;
+        draw_info.setSetLayouts(draw_layouts);
+        draw_sets = vk::raii::DescriptorSets(device, draw_info);
+    } catch (const std::exception&) {
+        cull_sets.clear();
+        draw_sets.clear();
+        return false;
+    }
+    return true;
 }
 
 void FoliagePass::writeSets() {
     const vk::raii::Device& device = device_->handle();
-    std::vector<vk::DescriptorSetLayout> cull_layouts(frames_, *cull_set_layout_);
-    std::vector<vk::DescriptorSetLayout> draw_layouts(frames_, *draw_set_layout_);
-    vk::DescriptorSetAllocateInfo cull_info{};
-    cull_info.descriptorPool = *pool_;
-    cull_info.setSetLayouts(cull_layouts);
-    cull_sets_ = vk::raii::DescriptorSets(device, cull_info);
-    vk::DescriptorSetAllocateInfo draw_info{};
-    draw_info.descriptorPool = *pool_;
-    draw_info.setSetLayouts(draw_layouts);
-    draw_sets_ = vk::raii::DescriptorSets(device, draw_info);
-    for (std::uint32_t f = 0; f < frames_; ++f) {
+    for (std::uint32_t f = 0; f < frames_ && f < cull_sets_.size() && f < draw_sets_.size(); ++f) {
         const vk::DescriptorBufferInfo instances{*instances_.handle(), 0, VK_WHOLE_SIZE};
         const vk::DescriptorBufferInfo visible{*visible_[f].handle(), 0, VK_WHOLE_SIZE};
         const vk::DescriptorBufferInfo commands{*commands_[f].handle(), 0, VK_WHOLE_SIZE};
@@ -545,6 +726,11 @@ void FoliagePass::writeSets() {
 // Por frame
 // -----------------------------------------------------------------------------
 
+void FoliagePass::setSun(const core::Vec3& to_sun) {
+    const float len = core::length(to_sun);
+    to_sun_ = len > 1e-6f ? to_sun * (1.0f / len) : core::Vec3{0.0f, 1.0f, 0.0f};
+}
+
 void FoliagePass::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, const core::Vec3& camera_position,
                              const core::Mat4& view_projection, float delta_seconds) {
     using Stage = vk::PipelineStageFlagBits2;
@@ -565,7 +751,7 @@ void FoliagePass::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t f
                 stats_.visible[l] += n;
                 stats_.triangles += static_cast<std::uint64_t>(n) * triangles_[s * 3 + l];
             }
-            stats_.shadow_casters += done[s * kLists + 3].instance_count;
+            stats_.shadow_casters += done[s * kLists + 3].instance_count + done[s * kLists + 4].instance_count;
         }
     }
 
@@ -573,7 +759,8 @@ void FoliagePass::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t f
     std::array<DrawCommand, kSpecies * kLists> commands{};
     for (std::uint32_t s = 0; s < kSpecies; ++s) {
         for (std::uint32_t l = 0; l < kLists; ++l) {
-            const Mesh& mesh = meshes_[s * 3 + (l < 3 ? l : 1)];
+            // Listas 0-2: su nivel; 3: sombras (nivel medio); 4: sombras cercanas (nivel 0).
+            const Mesh& mesh = meshes_[s * 3 + (l < 3 ? l : (l == 3 ? 1 : 0))];
             DrawCommand& c = commands[s * kLists + l];
             c.index_count = mesh.index_count;
             c.first_index = mesh.first_index;
@@ -594,6 +781,11 @@ void FoliagePass::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t f
     push.lod = core::Vec4{lod1, std::max(settings_.lod2_distance * lod_scale_, lod1), settings_.shadow_distance,
                           settings_.cast_shadows ? 1.0f : 0.0f};
     push.counts[0] = instance_count_;
+    // Sombras cercanas con la malla de detalle solo en Alto/Ultra (cuesta
+    // los triangulos del nivel 0 en el mapa de sombras).
+    const bool near_shadows = tier_ == HardwareTier::High || tier_ == HardwareTier::Ultra;
+    const float near_shadow = near_shadows ? std::min(kNearShadowDistance, settings_.shadow_distance) : 0.0f;
+    std::memcpy(&push.counts[1], &near_shadow, sizeof(float));
     push.offset = core::Vec4{origin_offset_.x, origin_offset_.y, origin_offset_.z, 0.0f};
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *cull_pipeline_);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *cull_layout_, 0, *cull_sets_[frame], nullptr);
@@ -617,7 +809,9 @@ void FoliagePass::draw(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, 
     for (std::uint32_t s = 0; s < kSpecies; ++s) {
         if (species_count_[s] == 0) continue;
         if (shadow) {
+            // Nivel medio y, de cerca (Alto/Ultra; si no, con 0 instancias), el de detalle.
             cmd.drawIndexedIndirect(*commands_[frame].handle(), (s * kLists + 3) * sizeof(DrawCommand), 1, sizeof(DrawCommand));
+            cmd.drawIndexedIndirect(*commands_[frame].handle(), (s * kLists + 4) * sizeof(DrawCommand), 1, sizeof(DrawCommand));
         } else {
             // Tres niveles de detalle, uno por llamada (sin multiDrawIndirect en muchos moviles).
             for (std::uint32_t level = 0; level < 3; ++level) {
@@ -636,8 +830,11 @@ void FoliagePass::recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *draw_layout_, 0, *frame_set, nullptr);
     DrawPush push{};
     push.params = core::Vec4{time_, 0.0f, settings_.wind, last_delta_};
-    push.offset = core::Vec4{origin_offset_.x, origin_offset_.y, origin_offset_.z, 0.0f};
-    cmd.pushConstants<DrawPush>(*draw_layout_, vk::ShaderStageFlagBits::eVertex, 0, push);
+    // Alfa con ruido en el borde de las hojas (el TAA lo funde): no en Bajo.
+    const float hashed_alpha = tier_ == HardwareTier::Low ? 0.0f : 1.0f;
+    push.offset = core::Vec4{origin_offset_.x, origin_offset_.y, origin_offset_.z, hashed_alpha};
+    push.sun = core::Vec4{to_sun_.x, to_sun_.y, to_sun_.z, settings_.cast_shadows ? settings_.shadow_distance : 0.0f};
+    cmd.pushConstants<DrawPush>(*draw_layout_, kDrawPushStages, 0, push);
     draw(cmd, frame, false);
 }
 
@@ -650,7 +847,8 @@ void FoliagePass::recordShadow(const vk::raii::CommandBuffer& cmd, std::uint32_t
     push.light_view_projection = light_view_projection;
     push.params = core::Vec4{time_, 1.0f, settings_.wind, 0.0f};
     push.offset = core::Vec4{origin_offset_.x, origin_offset_.y, origin_offset_.z, 0.0f};
-    cmd.pushConstants<DrawPush>(*draw_layout_, vk::ShaderStageFlagBits::eVertex, 0, push);
+    push.sun = core::Vec4{to_sun_.x, to_sun_.y, to_sun_.z, settings_.shadow_distance};
+    cmd.pushConstants<DrawPush>(*draw_layout_, kDrawPushStages, 0, push);
     draw(cmd, frame, true);
 }
 

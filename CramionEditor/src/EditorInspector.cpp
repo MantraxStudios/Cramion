@@ -112,17 +112,22 @@ void EditorApp::drawInspector() {
         endArea();
         return;
     }
+    drawInspectorContents();
+    endArea();
+}
+
+// El contenido del Inspector sin su ventana: tambien lo usa el panel
+// Detalles de la pestana Blueprint (EditorBlueprint.cpp).
+void EditorApp::drawInspectorContents() {
     // Una Render Texture elegida en el Proyecto: su tamano y lo que tiene.
     if (inspected_render_texture_.valid()) {
         drawRenderTextureEditor(inspected_render_texture_);
-        endArea();
         return;
     }
     // Un material elegido en el Proyecto: su editor (como Unity).
     if (inspected_material_.valid()) {
         if (database_->find(inspected_material_)) {
             drawMaterialEditor(inspected_material_);
-            endArea();
             return;
         }
         inspected_material_ = {};
@@ -132,7 +137,6 @@ void EditorApp::drawInspector() {
     if (inspected_model_.valid()) {
         if (active_ == inspected_model_active_ && database_ && database_->find(inspected_model_)) {
             drawModelImportSettings(inspected_model_);
-            endArea();
             return;
         }
         inspected_model_ = {};
@@ -144,7 +148,6 @@ void EditorApp::drawInspector() {
     }
     if (!entity.valid()) {
         ImGui::TextDisabled("Selecciona un objeto en la Jerarquía o en la Escena.");
-        endArea();
         return;
     }
 
@@ -479,6 +482,8 @@ void EditorApp::drawInspector() {
             }
             // C++ Script: el archivo (soltar el .cpp) y la clase, encima de sus propiedades.
             if (type.name == "CppScript") drawCppScriptInspector(entity, true);
+            // Visual Script: sus variables expuestas con el control de su tipo (EditorBlueprint.cpp).
+            if (type.name == "VisualScript" && !multi) drawVisualScriptVariables(entity);
             visitor.beginComponent(multi ? &mixed : nullptr);
             if (type.reflect(world_, entity.handle(), visitor)) {
                 dirty_ = true;
@@ -708,7 +713,6 @@ void EditorApp::drawInspector() {
         ImGui::SetNextWindowSizeConstraints(ImVec2(300.0f, 240.0f), ImVec2(1200.0f, 1000.0f));
     }
     drawAddComponent(entity);
-    endArea();
 }
 
 void EditorApp::drawComponentPresets(const std::string& component, const std::vector<ecs::Entity>& targets) {
@@ -738,6 +742,9 @@ void EditorApp::drawComponentPresets(const std::string& component, const std::ve
             ImGui::SeparatorText("Del proyecto");
             project_title = true;
         }
+        // Un preset del proyecto puede llamarse igual que uno de fabrica: el
+        // origen va en el ID para que las dos filas no choquen.
+        ImGui::PushID(preset.builtin ? "builtin" : "project");
         ImGui::PushID(preset.name.c_str());
         if (ImGui::MenuItem(preset.name.c_str())) apply(preset);
         if (!preset.description.empty()) ImGui::SetItemTooltip("%s", preset.description.c_str());
@@ -749,6 +756,7 @@ void EditorApp::drawComponentPresets(const std::string& component, const std::ve
             }
             ImGui::EndPopup();
         }
+        ImGui::PopID();
         ImGui::PopID();
     }
     if (!project_title) {

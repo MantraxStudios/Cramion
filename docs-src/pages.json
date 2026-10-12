@@ -126,6 +126,11 @@
           "desc": "Sonidos sueltos, filtros y oclusión por paredes."
         },
         {
+          "slug": "cpp-base64",
+          "title": "Base64",
+          "desc": "Texto o bytes a base64 y al reves."
+        },
+        {
           "slug": "cpp-behaviortree",
           "title": "BehaviorTree",
           "desc": "Behavior Trees: tareas de script, ruidos y avisos a todos los árboles."
@@ -244,6 +249,11 @@
           "slug": "cpp-weather",
           "title": "Weather",
           "desc": "Lo mismo que Environment (otro nombre)."
+        },
+        {
+          "slug": "cpp-websocket",
+          "title": "WebSocket",
+          "desc": "Conexiones WebSocket (ws/wss) con tu servidor; WsClient."
         },
         {
           "slug": "cpp-xr",
@@ -374,6 +384,11 @@
           "slug": "visual-scripting",
           "title": "Visual Scripting",
           "desc": "Lógica con nodos (Blueprints): eventos, flujo, variables y toda la API."
+        },
+        {
+          "slug": "blueprints",
+          "title": "Blueprints de actor",
+          "desc": "Como en Unreal: un modelo o prefab con sus componentes, huesos, sockets y su Event Graph en una sola pestaña."
         },
         {
           "slug": "behavior-trees",
@@ -569,6 +584,11 @@
           "slug": "http",
           "title": "Http y Json",
           "desc": "Enviar y recibir datos de servidores y webs por HTTPS, de forma segura; JSON a valores."
+        },
+        {
+          "slug": "websocket",
+          "title": "WebSocket (servidor propio)",
+          "desc": "Conexion permanente con tu servidor (MMO, chat, lobby): mensajes en los dos sentidos, reconexion y seguridad."
         },
         {
           "slug": "realidad-virtual",

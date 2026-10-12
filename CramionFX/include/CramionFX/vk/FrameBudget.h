@@ -50,6 +50,8 @@ std::uint32_t shadowResolutionFor(HardwareTier tier);
 // limite): 2048 / 4096 / 8192 / sin limite. Una textura de 16K sin comprimir
 // son 1.3 GB de VRAM; con 8K, 340 MB.
 std::uint32_t textureSizeFor(HardwareTier tier);
+// Filtrado anisotropico de las texturas para cada nivel: 4x / 8x / 16x / 16x.
+std::uint32_t anisotropyFor(HardwareTier tier);
 
 // Palancas, de la que menos se nota a la que mas.
 enum class Lever : std::uint8_t {

@@ -502,7 +502,7 @@ void NativeApi::invoke(const Value& fn, const Value::Array& args) {
     if (!sink_) return;
     nlohmann::json list = nlohmann::json::array();
     for (const Value& a : args) list.push_back(toJson(a));
-    sink_(fn.callbackId(), list.dump());
+    sink_(fn.callbackId(), list.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 }
 
 std::string NativeApi::bridgeCall(const nlohmann::json& request) {
@@ -523,7 +523,7 @@ std::string NativeApi::bridgeCall(const nlohmann::json& request) {
             }
         }
         const std::string key = op == "call" ? fn : request.value("key", fn);
-        if (op == "get") return json{{"ok", true}, {"result", toJson(get(key, self))}}.dump();
+        if (op == "get") return json{{"ok", true}, {"result", toJson(get(key, self))}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
         if (op == "set") {
             set(key, fromJson(request.contains("value") ? request["value"] : json()), self);
             return json{{"ok", true}, {"result", nullptr}}.dump();
@@ -532,12 +532,12 @@ std::string NativeApi::bridgeCall(const nlohmann::json& request) {
         if (request.contains("args") && request["args"].is_array()) {
             for (const json& a : request["args"]) args.push_back(fromJson(a));
         }
-        return json{{"ok", true}, {"result", toJson(call(key, args, self))}}.dump();
+        return json{{"ok", true}, {"result", toJson(call(key, args, self))}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     } catch (const std::exception& e) {
         const std::string what = e.what();
         // El nombre delante, salvo que el error ya lo lleve ("no existe X").
         const bool named = what.find(fn) != std::string::npos;
-        return json{{"ok", false}, {"error", named ? what : fn + ": " + what}}.dump();
+        return json{{"ok", false}, {"error", named ? what : fn + ": " + what}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     }
 }
 

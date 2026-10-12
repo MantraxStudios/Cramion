@@ -21,6 +21,7 @@
 
 #include "CramionFX/core/Math.h"
 #include "CramionFX/vk/ComputePass.h"
+#include "CramionFX/vk/TextureFiltering.h"
 #include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
@@ -84,6 +85,10 @@ public:
                 const vk::raii::DescriptorSetLayout& scene_layout, vk::Format color_format, vk::Format depth_format,
                 std::uint32_t frames_in_flight);
     void destroy();
+    // Anisotropico de los mapas del oceano (el sesgo de los mips no: el
+    // desplazamiento se lee en el vertex shader y cambiaria las olas). Rehace
+    // el sampler y los sets. Con la GPU parada; antes de create solo lo guarda.
+    void setTextureFiltering(const TextureFiltering& filtering);
 
     // `underwater` = cuerpo en el que esta la camara (-1 = ninguno): se tine
     // lo que se ve bajo su superficie.
@@ -159,6 +164,8 @@ private:
     OceanImage displacement_;    // rgba16f, mipmaps
     OceanImage derivatives_;     // rgba16f, mipmaps
     vk::raii::Sampler ocean_sampler_{nullptr};
+    TextureFiltering filtering_{};
+    void createOceanSampler(const VulkanDevice& device);
     std::uint32_t ocean_mips_ = 1;
     bool ocean_ready_ = false;   // las imagenes ya tienen un frame (la espuma sigue)
     float last_simulated_ = -1.0f;

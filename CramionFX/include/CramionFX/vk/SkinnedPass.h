@@ -1,6 +1,7 @@
 #ifndef CRAMION_VK_SKINNED_PASS_H
 #define CRAMION_VK_SKINNED_PASS_H
 
+#include "CramionFX/vk/TextureFiltering.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
 #include <array>
@@ -67,6 +68,15 @@ public:
 
     const vk::raii::DescriptorSetLayout& materialSetLayout() const { return material_set_layout_; }
     const vk::raii::Sampler& sampler() const { return sampler_; }
+    // Filtrado de las texturas de los materiales (anisotropico y sesgo de los
+    // mips). Con la pasada creada rehace el sampler y devuelve true: los
+    // modelos tienen que volver a escribir sus sets (SkinnedModel::refreshSampler),
+    // con la GPU parada. Antes de create solo lo guarda.
+    bool setTextureFiltering(const VulkanDevice& device, const TextureFiltering& filtering);
+    const TextureFiltering& textureFiltering() const { return filtering_; }
+    // Sube con cada sampler nuevo (un handle destruido se puede reutilizar:
+    // comparar handles no basta para saber si un set es de antes).
+    std::uint64_t samplerRevision() const { return sampler_revision_; }
 
     const vk::raii::Pipeline& geometryPipeline() const { return geometry_pipeline_; }
     // Wireframe: la misma geometria en lineas (G-buffer). Sin soporte de la
@@ -183,6 +193,8 @@ private:
     vk::raii::Pipeline createMeshGeometryPipeline(const VulkanDevice& device) const;
 
     vk::raii::Sampler sampler_{nullptr};
+    TextureFiltering filtering_{};
+    std::uint64_t sampler_revision_ = 0;
     vk::raii::DescriptorSetLayout frame_set_layout_{nullptr};
     vk::raii::DescriptorSetLayout material_set_layout_{nullptr};
 

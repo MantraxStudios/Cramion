@@ -122,3 +122,19 @@ void Jugador::update(float dt) {
   <li>Para jugar por Internet, quien crea la partida tiene que abrir el puerto UDP (7777) en su router, o usar una red virtual (Radmin VPN, ZeroTier, Tailscale). En la misma casa basta la IP local (<code>ipconfig</code>).</li>
   <li>El Firewall de Windows pregunta la primera vez si el editor o el juego pueden usar la red: acéptalo.</li>
 </ul>
+
+<h3 id="websocket">Network o WebSocket</h3>
+<table>
+  <thead><tr><th></th><th><code>Network</code> (ENet)</th><th><a href="websocket.html"><code>WebSocket</code></a></th></tr></thead>
+  <tbody>
+    <tr><td>Con quién</td><td>Entre jugadores: uno crea la partida (o <code>CramionServer</code>) y los demás se unen.</td><td>Con <em>tu</em> servidor (Node, Go, Python, C#...), siempre el mismo.</td></tr>
+    <tr><td>Para qué</td><td>Partidas en tiempo real: posiciones, objetos y variables sincronizados.</td><td>MMO, chat, lobby, emparejamiento, inventario, avisos en directo, juegos por turnos.</td></tr>
+    <tr><td>Transporte</td><td>UDP: mensajes fiables o rápidos (se pueden perder), poca latencia.</td><td>TCP (<code>wss://</code> cifrado): todo llega y en orden; pasa por proxies y cortafuegos como la web.</td></tr>
+    <tr><td>Abrir puertos</td><td>Quien crea la partida (UDP 7777) o un servidor dedicado.</td><td>Nada en el jugador: él conecta hacia fuera.</td></tr>
+    <tr><td>Se corta</td><td><code>onDisconnected</code>; volver a unirse es cosa tuya.</td><td>Se reconecta solo (con espera creciente).</td></tr>
+  </tbody>
+</table>
+<p>
+  Se pueden usar juntos: el lobby y el emparejamiento por <code>WebSocket</code> con tu servidor, que da la IP y el puerto
+  de la partida, y la partida por <code>Network</code>.
+</p>

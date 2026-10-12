@@ -125,6 +125,8 @@ void EditorApp::drawGameView() {
     if (scene_dock_id_ != 0) ImGui::SetNextWindowDockID(scene_dock_id_, ImGuiCond_FirstUseEver);
     if (focus_game_) {
         ImGui::SetNextWindowFocus();
+        // Delante en su area ya (como focus_scene_ en drawSceneView).
+        showAreaEditor(AreaEditor::Game);
         focus_game_ = false;
     }
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -706,7 +708,10 @@ void EditorApp::drawCinematicWindow() {
     if (ImGui::BeginCombo("##seq", seq_entity.name().c_str())) {
         for (const entt::entity h : world_.registry().view<cinema::CinematicSequence>()) {
             const ecs::Entity e = world_.wrap(h);
+            // Id por entidad: varias secuencias pueden llamarse igual ("Cinematica").
+            ImGui::PushID(static_cast<int>(entt::to_integral(h)));
             if (ImGui::Selectable(e.name().c_str(), e == seq_entity)) timeline_sequence_ = e.uuid();
+            ImGui::PopID();
         }
         ImGui::EndCombo();
     }
@@ -953,7 +958,11 @@ void EditorApp::drawCinematicWindow() {
             if (ImGui::BeginMenu("Añadir plano con...")) {
                 for (const entt::entity h : world_.registry().view<cinema::VirtualCamera>()) {
                     const ecs::Entity cam = world_.wrap(h);
-                    if (ImGui::MenuItem(cam.name().c_str())) {
+                    // Id por entidad: las camaras virtuales repiten nombre por defecto.
+                    ImGui::PushID(static_cast<int>(entt::to_integral(h)));
+                    const bool picked = ImGui::MenuItem(cam.name().c_str());
+                    ImGui::PopID();
+                    if (picked) {
                         s.shots.push_back(cinema::CinematicShot{cam.uuid(), at, 3.0f, 1.0f, cinema::BlendCurve::EaseInOut});
                         commit();
                     }

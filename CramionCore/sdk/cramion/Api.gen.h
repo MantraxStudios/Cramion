@@ -84,6 +84,23 @@ inline Value setOcclusion(const T0& activar = {}) {
 }
 }  // namespace Audio
 
+namespace Base64 {
+/// Base64.decode("base64")
+/// base64 -> texto o bytes (nil y un aviso si no es valido)
+/// Devuelve: texto
+template <typename T0 = Value>
+inline Value decode(const T0& texto = {}) {
+    return detail::api("Base64.decode", Values{Value(texto)});
+}
+/// Base64.encode("texto")
+/// texto o bytes -> base64
+/// Devuelve: texto
+template <typename T0 = Value>
+inline Value encode(const T0& texto = {}) {
+    return detail::api("Base64.encode", Values{Value(texto)});
+}
+}  // namespace Base64
+
 namespace Camera {
 /// Camera.shake(0.6, 0.4, 18)
 /// temblor de camara (intensidad 0..1, segundos, Hz)
@@ -836,6 +853,62 @@ template <typename T0 = Value>
 inline Value setQuality(const T0& texto = {}) {
     return detail::api("Graphics.setQuality", Values{Value(texto)});
 }
+/// Graphics.setTextureFiltering(16)
+/// filtrado anisotropico: 0 = auto, 1 = apagado, 2, 4, 8 o 16 (o "auto", "off", "16x"); al momento
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value setTextureFiltering(const T0& valor = {}) {
+    return detail::api("Graphics.setTextureFiltering", Values{Value(valor)});
+}
+/// Graphics.setTextureLodBias(0.5)
+/// sesgo de los mipmaps (-1..2): negativo = mas nitidas, positivo = mas suaves; al momento
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value setTextureLodBias(const T0& valor = {}) {
+    return detail::api("Graphics.setTextureLodBias", Values{Value(valor)});
+}
+/// Graphics.setTextureQuality("high")
+/// calidad de las texturas: auto, low, medium, high, ultra o max (para lo que se carga despues)
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value setTextureQuality(const T0& texto = {}) {
+    return detail::api("Graphics.setTextureQuality", Values{Value(texto)});
+}
+/// Graphics.textureFiltering()
+/// anisotropico en uso (1 = apagado; con auto, el del perfil del PC)
+/// Devuelve: numero
+template <typename... Mas>
+inline Value textureFiltering(Mas&&... mas) {
+    return detail::api("Graphics.textureFiltering", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Graphics.textureFilteringLevels()
+/// filtrados posibles (auto, off, 2x, 4x, 8x, 16x)
+/// Devuelve: lista de texto
+template <typename... Mas>
+inline Value textureFilteringLevels(Mas&&... mas) {
+    return detail::api("Graphics.textureFilteringLevels", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Graphics.textureLodBias()
+/// sesgo de los mipmaps
+/// Devuelve: numero
+template <typename... Mas>
+inline Value textureLodBias(Mas&&... mas) {
+    return detail::api("Graphics.textureLodBias", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Graphics.textureQuality()
+/// calidad de las texturas elegida (auto, low... o custom)
+/// Devuelve: texto
+template <typename... Mas>
+inline Value textureQuality(Mas&&... mas) {
+    return detail::api("Graphics.textureQuality", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Graphics.textureQualityLevels()
+/// calidades de textura posibles
+/// Devuelve: lista de texto
+template <typename... Mas>
+inline Value textureQualityLevels(Mas&&... mas) {
+    return detail::api("Graphics.textureQualityLevels", Values{Value(std::forward<Mas>(mas))...});
+}
 }  // namespace Graphics
 
 namespace Http {
@@ -1522,6 +1595,13 @@ template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
 inline Value ignoreCollision(const T0& a = {}, const T1& b = {}, const T2& activar = {}) {
     return detail::api("Physics.ignoreCollision", Values{Value(a), Value(b), Value(activar)});
 }
+/// Physics.simulatedTime()
+/// Segundos de fisica simulados desde el Play (pasos fijos dados)
+/// Devuelve: numero
+template <typename... Mas>
+inline Value simulatedTime(Mas&&... mas) {
+    return detail::api("Physics.simulatedTime", Values{Value(std::forward<Mas>(mas))...});
+}
 }  // namespace Physics
 
 namespace Physics2D {
@@ -2003,7 +2083,7 @@ inline Value setValue(const T0& texto = {}, const T1& valor = {}) {
 
 namespace Scene {
 /// Scene.destroy(entity)
-/// Lo destruye al final del frame
+/// Lo destruye al final del frame (en la consola fuera de Play, al terminar el comando)
 template <typename T0 = Value>
 inline Value destroy(const T0& entity = {}) {
     return detail::api("Scene.destroy", Values{Value(entity)});
@@ -3062,6 +3142,111 @@ inline Value transition(Mas&&... mas) {
     return detail::api("Weather.transition", Values{Value(std::forward<Mas>(mas))...});
 }
 }  // namespace Weather
+
+namespace WebSocket {
+/// WebSocket.close(id, 1000, "motivo")
+/// cierre limpio (1000, o 3000-4999 propios); no reconecta
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value close(const T0& id = {}, const T1& valor = {}, const T2& texto = {}) {
+    return detail::api("WebSocket.close", Values{Value(id), Value(valor), Value(texto)});
+}
+/// WebSocket.closeAll(1000, "motivo")
+/// cierra todas las conexiones
+template <typename T0 = Value, typename T1 = Value>
+inline Value closeAll(const T0& valor = {}, const T1& texto = {}) {
+    return detail::api("WebSocket.closeAll", Values{Value(valor), Value(texto)});
+}
+/// WebSocket.connect({ url = "wss://...", name = "mmo", headers = {}, protocols = {}, reconnect = true, timeout = 10, maxSize = 4194304, pingInterval = 20, idleTimeout = 60, heartbeat = "" })
+/// abre una conexion WebSocket (no espera); con name, si ya hay una viva devuelve esa
+/// Devuelve: id de la conexion (nil si no vale)
+template <typename T0 = Value>
+inline Value connect(const T0& tabla = {}) {
+    return detail::api("WebSocket.connect", Values{Value(tabla)});
+}
+/// WebSocket.count()
+/// conexiones vivas (no cerradas)
+/// Devuelve: numero
+template <typename... Mas>
+inline Value count(Mas&&... mas) {
+    return detail::api("WebSocket.count", Values{Value(std::forward<Mas>(mas))...});
+}
+/// WebSocket.find("mmo")
+/// la conexion con ese nombre
+/// Devuelve: id (nil si no hay)
+template <typename T0 = Value>
+inline Value find(const T0& texto = {}) {
+    return detail::api("WebSocket.find", Values{Value(texto)});
+}
+/// WebSocket.info(id)
+/// datos de la conexion
+/// Devuelve: { id, name, url, state, protocol, sent, received, sentBytes, receivedBytes, buffered, rtt, reconnects } (nil si no existe)
+template <typename T0 = Value>
+inline Value info(const T0& id = {}) {
+    return detail::api("WebSocket.info", Values{Value(id)});
+}
+/// WebSocket.list()
+/// conexiones vivas
+/// Devuelve: lista de { id, name, state, url }
+template <typename... Mas>
+inline Value list(Mas&&... mas) {
+    return detail::api("WebSocket.list", Values{Value(std::forward<Mas>(mas))...});
+}
+/// WebSocket.off(escucha)
+/// deja de escuchar (el numero que devolvio on)
+template <typename T0 = Value>
+inline Value off(const T0& escucha = {}) {
+    return detail::api("WebSocket.off", Values{Value(escucha)});
+}
+/// WebSocket.on(id, "message", function(ev) end)
+/// escucha un evento: open, message, close, error, reconnecting o any (id o nombre)
+/// Devuelve: numero de la escucha (para off)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value on(const T0& id = {}, const T1& texto = {}, const T2& callback = {}) {
+    return detail::api("WebSocket.on", Values{Value(id), Value(texto), Value(callback)});
+}
+/// WebSocket.poll(id, 100)
+/// saca los eventos pendientes (si no usas on); un viaje por frame
+/// Devuelve: lista de eventos
+template <typename T0 = Value, typename T1 = Value>
+inline Value poll(const T0& id = {}, const T1& valor = {}) {
+    return detail::api("WebSocket.poll", Values{Value(id), Value(valor)});
+}
+/// WebSocket.send(id, "texto")
+/// envia texto (UTF-8)
+/// Devuelve: true si se encolo
+template <typename T0 = Value, typename T1 = Value>
+inline Value send(const T0& id = {}, const T1& texto = {}) {
+    return detail::api("WebSocket.send", Values{Value(id), Value(texto)});
+}
+/// WebSocket.sendBinary(id, "base64")
+/// envia bytes (en base64)
+/// Devuelve: true si se encolo
+template <typename T0 = Value, typename T1 = Value>
+inline Value sendBinary(const T0& id = {}, const T1& texto = {}) {
+    return detail::api("WebSocket.sendBinary", Values{Value(id), Value(texto)});
+}
+/// WebSocket.sendJson(id, tabla)
+/// envia la tabla como texto JSON
+/// Devuelve: true si se encolo
+template <typename T0 = Value, typename T1 = Value>
+inline Value sendJson(const T0& id = {}, const T1& tabla = {}) {
+    return detail::api("WebSocket.sendJson", Values{Value(id), Value(tabla)});
+}
+/// WebSocket.setHeader(id, "Authorization", "Bearer ...")
+/// cabecera para la proxima reconexion (vacio la quita)
+/// Devuelve: true si vale
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value setHeader(const T0& id = {}, const T1& texto = {}, const T2& texto2 = {}) {
+    return detail::api("WebSocket.setHeader", Values{Value(id), Value(texto), Value(texto2)});
+}
+/// WebSocket.state(id)
+/// connecting, open, closing, closed o reconnecting
+/// Devuelve: texto ("closed" si no existe)
+template <typename T0 = Value>
+inline Value state(const T0& id = {}) {
+    return detail::api("WebSocket.state", Values{Value(id)});
+}
+}  // namespace WebSocket
 
 namespace WorldPartition {
 /// WorldPartition.active()

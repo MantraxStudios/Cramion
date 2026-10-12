@@ -62,10 +62,18 @@ vec4 surface_shading = vec4(0.0);
 
 // Movimiento en pantalla de este pixel, de las posiciones de recorte (sin
 // jitter) de este frame y del anterior.
+// Si el punto estaba detras de la camara el frame anterior (w <= 0) no hay
+// movimiento valido: dividir por 1e-6 daba valores que se salian de RG16F
+// (inf) y el motion blur/TAA/escaladores los convertian en NaN. Va a cero y,
+// por si acaso, acotado (mas de 16 pantallas no significa nada).
 void writeVelocity(vec4 current_clip, vec4 previous_clip) {
-    vec2 current = current_clip.xy / max(current_clip.w, 1e-6);
-    vec2 previous = previous_clip.xy / max(previous_clip.w, 1e-6);
-    out_velocity = (current - previous) * 0.5;
+    if (current_clip.w <= 1e-6 || previous_clip.w <= 1e-6) {
+        out_velocity = vec2(0.0);
+        return;
+    }
+    vec2 current = current_clip.xy / current_clip.w;
+    vec2 previous = previous_clip.xy / previous_clip.w;
+    out_velocity = clamp((current - previous) * 0.5, vec2(-16.0), vec2(16.0));
 }
 
 #include "rain_common.glsl"

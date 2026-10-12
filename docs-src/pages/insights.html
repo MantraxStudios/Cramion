@@ -59,6 +59,10 @@ for (const Value&amp; z : Profiler::zones(5).items()) {
     <tr><td><code>fx.particles.Budget</code></td><td>30000</td><td>Partículas vivas como mucho en toda la escena: al acercarse al límite los emisores emiten menos, y nunca se pasa.</td></tr>
     <tr><td><code>fx.particles.CullDistance</code></td><td>120 m</td><td>Más lejos los emisores no emiten.</td></tr>
     <tr><td><code>fx.particles.CollisionDistance</code></td><td>40 m</td><td>Más lejos (o detrás de la cámara) las partículas no chocan con la física.</td></tr>
+    <tr><td><code>render.probe.FaceInterval</code></td><td>0 (auto)</td><td>Sonda de reflexión (sin trazado de rayos): frames entre una cara y la siguiente de la captura. En automático, 4 en GPU de nivel Bajo, 3 en Medio y 2 en Alto/Ultra.</td></tr>
+    <tr><td><code>render.probe.MinSeconds</code></td><td>0 (auto)</td><td>Segundos mínimos entre dos capturas completas de la sonda (al correr o con el ciclo de día se recapturaba sin parar). En automático, 2 s en Bajo, 1 s en Medio y 0,5 s en Alto/Ultra.</td></tr>
+    <tr><td><code>render.probe.DrawDistance</code></td><td>0 (auto)</td><td>Distancia de dibujo de la captura de la sonda: más lejos se refleja el cielo. En automático, 150 m en Bajo, 300 m en Medio, 600 m en Alto y 1000 m en Ultra (nunca más que el plano lejano de la cámara). Con un <code>TerrainGrid</code> grande es lo que más ahorra.</td></tr>
+    <tr><td><code>render.probe.Terrain</code></td><td>sí</td><td>Dibujar el terreno en la captura de la sonda. Apagado es más barato con terrenos grandes, pero el suelo de fuera de pantalla no se refleja ni rebota luz.</td></tr>
     <tr><td><code>audio.MaxVoices</code></td><td>32</td><td>Sonidos que se mezclan de verdad. Los que menos se oyen pasan a <em>virtuales</em>: siguen "sonando" para el juego (<code>isPlaying</code>) y vuelven por donde tocarían.</td></tr>
     <tr><td><code>scripts.BudgetMs</code></td><td>2 ms</td><td>Aviso cuando los scripts se comen el frame (0 = sin aviso).</td></tr>
     <tr><td><code>prof.HitchMs</code></td><td>50 ms</td><td>Umbral de las capturas automáticas de tirones (0 = sin capturas).</td></tr>

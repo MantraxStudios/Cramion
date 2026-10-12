@@ -727,6 +727,8 @@ struct Builder {
             for (int k = 0; k < cols; ++k) {
                 const std::uint32_t p0 = first + static_cast<std::uint32_t>(r * ncol + k);
                 const std::uint32_t p1 = p0 + static_cast<std::uint32_t>(ncol);
+                // (+lado, +direccion): la normal geometrica es -face, el enves.
+                // foliage.frag decide la cara vista con esto (kLeafFrontIsFace).
                 mesh.indices.insert(mesh.indices.end(), {p0, p0 + 1, p1, p0 + 1, p1 + 1, p1});
             }
         }
@@ -1125,7 +1127,10 @@ struct Builder {
                 for (int k = 0; k < cols; ++k) {
                     const std::uint32_t p0 = first + static_cast<std::uint32_t>(s) * ncol + static_cast<std::uint32_t>(k);
                     const std::uint32_t p1 = p0 + ncol;
-                    mesh.indices.insert(mesh.indices.end(), {p0, p0 + 1, p1, p0 + 1, p1 + 1, p1});
+                    // Mismo sentido que las tarjetas (emitCard): normal geometrica = el
+                    // enves (foliage.frag, kLeafFrontIsFace). Aqui las columnas van
+                    // hacia +sd y cross(sd, d) es la haz (ul), asi que se invierte.
+                    mesh.indices.insert(mesh.indices.end(), {p0, p1, p0 + 1, p0 + 1, p1, p1 + 1});
                 }
             }
         }
@@ -1219,12 +1224,16 @@ struct Builder {
 // Lienzo en floats: color (sRGB), alfa, altura, oclusion y extra (rugosidad
 // en la corteza, translucidez en las hojas). `xs`: ancho fisico de un pixel
 // en unidades de pixel vertical (tarjetas mas estrechas que altas).
+// `tx`, `ty`: inclinacion propia de cada hoja pintada (se suma a la pendiente
+// de la altura en la normal): sin ella las ~25 hojas de una tarjeta
+// compartian un plano y la copa se leia como papel.
 struct Canvas {
     int size;
     float xs = 1.0f;
-    std::vector<float> r, g, b, a, h, ao, ex;
+    std::vector<float> r, g, b, a, h, ao, ex, tx, ty;
     explicit Canvas(int s)
-        : size(s), r(static_cast<std::size_t>(s) * s, 0.0f), g(r), b(r), a(r), h(r), ao(static_cast<std::size_t>(s) * s, 1.0f), ex(r) {}
+        : size(s), r(static_cast<std::size_t>(s) * s, 0.0f), g(r), b(r), a(r), h(r), ao(static_cast<std::size_t>(s) * s, 1.0f), ex(r),
+          tx(r), ty(r) {}
     std::size_t at(int x, int y) const {
         return static_cast<std::size_t>(((y % size) + size) % size) * static_cast<std::size_t>(size) +
                static_cast<std::size_t>(((x % size) + size) % size);
@@ -1446,6 +1455,16 @@ void paintLeaf(Canvas& c, const LeafPaint& L, bool shadow = false) {
                c.put(i, mixV(c.get(i), col, cov));
                c.a[i] = std::max(c.a[i], cov);
                c.h[i] = mixF(c.h[i], height, cov);
+               // Inclinacion de esta hoja (cada una en su plano: la luz cae
+               // distinta en cada una) y sus mitades caidas desde el nervio
+               // (el lado es (-sa, ca)).
+               {
+                   const float ta = hashF(static_cast<int>(L.seed), 41, 97U) * 2.0f * kPi;
+                   const float tm = 0.25f + 0.35f * hashF(static_cast<int>(L.seed), 42, 98U);
+                   const float cup = rel * side * 0.25f;
+                   c.tx[i] = mixF(c.tx[i], std::cos(ta) * tm - sa * cup, cov);
+                   c.ty[i] = mixF(c.ty[i], std::sin(ta) * tm + ca * cup, cov);
+               }
                c.ao[i] = mixF(c.ao[i], L.depth_ao * (0.9f + 0.1f * dome), cov);
                c.ex[i] = mixF(c.ex[i], L.translucency * (1.0f - 0.35f * mid - 0.2f * vein - 0.5f * dry), cov);
            });
@@ -2190,8 +2209,9 @@ void toLevels(Canvas c, bool alpha_test, float normal_strength, std::vector<std:
                 };
                 const float dx = (hat(x + 1, y) - hat(x - 1, y)) * strength / c.xs;
                 const float dy = (hat(x, y + 1) - hat(x, y - 1)) * strength;
-                const Vec3 nn = core::normalize(Vec3{-dx, -dy, 1.0f});
                 const std::size_t i = c.at(x, y);
+                // Pendiente de la altura + la inclinacion propia de la hoja.
+                const Vec3 nn = core::normalize(Vec3{-dx + c.tx[i], -dy + c.ty[i], 1.0f});
                 nx[i] = nn.x;
                 ny[i] = nn.y;
             }

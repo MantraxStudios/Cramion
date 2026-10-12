@@ -27,6 +27,7 @@ void EditorApp::applyOriginShift(const Vec3& offset, bool move_world) {
     voxels_.shiftOrigin(offset);
     cinematics_.shiftOrigin(offset);
     audio_.shiftOrigin(offset);
+    world_partition_.shiftOrigin(offset);  // sus celdas son absolutas: solo sigue al origen
     if (playing()) scripts_.shiftOrigin(offset);
     if (playing()) cpp_scripts_.shiftOrigin(offset);
     renderer_.shiftOrigin(offset);

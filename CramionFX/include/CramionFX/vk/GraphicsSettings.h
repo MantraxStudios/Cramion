@@ -45,6 +45,13 @@ struct GraphicsSettings {
     // Lado maximo de las texturas de los modelos; 0 = segun el perfil de
     // hardware. Se aplica a lo que se carga despues (reabrir la escena).
     std::int32_t texture_max_size = 0;
+    // Filtrado anisotropico de las texturas de los materiales: 1 = apagado
+    // (trilineal), 2, 4, 8 o 16; 0 = segun el perfil de hardware. Se aplica
+    // al momento (rehace los samplers).
+    std::int32_t texture_filtering = 0;
+    // Sesgo de los mips (-1..2): negativo = texturas mas nitidas (y mas
+    // parpadeo de lejos), positivo = mas suaves. Se aplica al momento.
+    float texture_lod_bias = 0.0f;
 
     friend bool operator==(const GraphicsSettings&, const GraphicsSettings&) = default;
 };

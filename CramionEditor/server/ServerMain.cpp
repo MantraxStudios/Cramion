@@ -28,7 +28,9 @@
 #include <CramionCore/gameplay/Localization.h>
 #include <CramionCore/jobs/JobSystem.h>
 #include <CramionCore/navigation/Navigation.h>
+#include <CramionCore/net/Network.h>
 #include <CramionCore/net/NetworkObject.h>
+#include <CramionCore/net/WebSocket.h>
 #include <CramionCore/physics/PhysicsComponents.h>
 #include <CramionCore/physics/PhysicsSettings.h>
 #include <CramionCore/physics/PhysicsSystem.h>
@@ -52,6 +54,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <string>
 #include <thread>
@@ -309,6 +312,82 @@ int main(int argc, char** argv) {
 
     ecs::World world;
     bool hosted = false;
+    // Fuentes de carga del servidor (World Partition y teselas de terreno):
+    // una por jugador conectado (donde esta su objeto de red) mas el punto de
+    // aparicion, para que el que entra no caiga al vacio. Sin jugadores, solo
+    // el punto de aparicion (como antes, (0,0,0) si la escena no tiene).
+    core::Vec3 spawn_point{};
+    std::map<std::uint32_t, entt::entity> player_sources;  // dueno -> fuente
+    entt::entity spawn_source = entt::null;
+    const auto find_spawn_point = [&]() {
+        spawn_point = core::Vec3{};
+        for (const entt::entity h : world.registry().view<physics::CharacterController>()) {
+            const ecs::Entity e = world.wrap(h);
+            if (e.activeInHierarchy()) {
+                spawn_point = e.worldPosition();
+                return;
+            }
+        }
+        world.forEachDepthFirst([&](ecs::Entity e) {
+            if (spawn_point.x == 0.0f && spawn_point.y == 0.0f && spawn_point.z == 0.0f && e.compareTag("Player")) {
+                spawn_point = e.worldPosition();
+            }
+        });
+    };
+    const auto make_source = [&](const char* name, const core::Vec3& p) {
+        ecs::Entity e = world.create(name);
+        e.add<worldpart::StreamingSource>();
+        e.setWorldPosition(p);
+        return e.handle();
+    };
+    const auto sync_sources = [&]() {
+        // Jugadores: sus objetos de red (el primero de cada dueno). Los que ya
+        // llevan StreamingSource cuentan solos.
+        struct Player {
+            core::Vec3 position{};
+            bool own_source = false;  // su objeto ya lleva StreamingSource
+        };
+        std::map<std::uint32_t, Player> players;
+        for (const entt::entity h : world.registry().view<net::NetworkObject>()) {
+            const ecs::Entity e = world.wrap(h);
+            const net::NetworkObject& n = e.get<net::NetworkObject>();
+            if (n.net_id == 0 || n.owner == 0 || n.owner == net::kServerId || !e.activeInHierarchy()) continue;
+            Player& pl = players[n.owner];
+            if (e.has<worldpart::StreamingSource>()) pl.own_source = true;
+            pl.position = e.worldPosition();
+        }
+        const auto drop = [&](entt::entity source) {
+            if (source != entt::null && world.registry().valid(source)) world.destroy(world.wrap(source));
+        };
+        for (auto it = player_sources.begin(); it != player_sources.end();) {
+            const auto p = players.find(it->first);
+            if (p == players.end() || p->second.own_source) {
+                drop(it->second);
+                it = player_sources.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (const auto& [owner, pl] : players) {
+            if (pl.own_source) continue;
+            const auto it = player_sources.find(owner);
+            if (it == player_sources.end() || !world.registry().valid(it->second)) {
+                player_sources[owner] = make_source("[Servidor] Fuente de carga (jugador)", pl.position);
+            } else {
+                world.wrap(it->second).setWorldPosition(pl.position);
+            }
+        }
+        // El punto de aparicion: mientras haya jugadores (sin ellos ya es el
+        // `viewer` de reserva de update()).
+        const bool want_spawn = !players.empty();
+        const bool has_spawn = spawn_source != entt::null && world.registry().valid(spawn_source);
+        if (want_spawn && !has_spawn) {
+            spawn_source = make_source("[Servidor] Fuente de carga (aparicion)", spawn_point);
+        } else if (!want_spawn && has_spawn) {
+            world.destroy(world.wrap(spawn_source));
+            spawn_source = entt::null;
+        }
+    };
     const auto load = [&](const std::filesystem::path& file) -> bool {
         if (scripts.running()) scripts.stop();
         cpp_scripts.stop();
@@ -322,9 +401,15 @@ int main(int argc, char** argv) {
         const std::u8string stem = file.stem().u8string();
         scripts.setSceneName(std::string(stem.begin(), stem.end()));
         partition.setSceneFile(file, false);  // sus celdas en disco se leen al acercarse un jugador
-        partition.begin(world, core::Vec3{});
-        terrain_streamer.loadNow(world, terrains, core::Vec3{});
+        player_sources.clear();  // otro mundo: las fuentes de antes ya no existen
+        spawn_source = entt::null;
+        find_spawn_point();
+        partition.begin(world, spawn_point);
+        terrain_streamer.loadNow(world, terrains, spawn_point);
         physics.start(world);
+        // La colision de las teselas se prepara en otro hilo: lista antes de
+        // que entre nadie.
+        physics.flushPendingTerrain();
         nav.waitForBuild(world, 30.0f);
         crowds.begin(world);
         scripts.start(world);
@@ -359,8 +444,9 @@ int main(int argc, char** argv) {
         nav.update(world, dt, true, nav_settings.runtime_generation);
         fire::updateFires(world, dt, fire::FireMode::Play, &terrains);
         spline::updateSplineFollowers(world, dt);
-        partition.update(world, core::Vec3{});
-        terrain_streamer.update(world, terrains, core::Vec3{}, true, false);
+        sync_sources();
+        partition.update(world, spawn_point);
+        terrain_streamer.update(world, terrains, spawn_point, true, false);
         crowds.update(world, dt, core::Vec3{});
         scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
         cpp_scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
@@ -382,6 +468,7 @@ int main(int argc, char** argv) {
     }
     std::cout << "[Servidor] Cerrando...\n";
     scripts.shutdownNetwork();
+    cramion::net::shutdownWebSockets(500);
     cpp_scripts.stop();
     scripts.stop();
     physics.stop();
