@@ -1,8 +1,8 @@
 # Cambios
 
-## 2.4.8
+## 2.4.9
 
-**Blueprints de actor, cliente WebSocket, hierba realista y un mundo que se carga en otros hilos.** Los prefabs pasan a ser Blueprints con su propio editor de nodos al estilo de Unreal y 56 nodos nuevos; los scripts hablan con servidores por WebSocket (`ws://` y `wss://`) en Windows, Linux y Android; la hierba y los árboles se ven con volumen; y el terreno, la física, la navegación y el World Partition leen, preparan y suben lo que entra en otros hilos con un presupuesto de milisegundos por frame. Además, se corrigen los siete fallos del informe de fallos y una larga lista de fallos de render, de escenas y del editor. (La 2.4.7 no se publicó.)
+**Blueprints de actor, cliente WebSocket, hierba realista y un mundo que se carga en otros hilos.** Los prefabs pasan a ser Blueprints con su propio editor de nodos al estilo de Unreal y 56 nodos nuevos; los scripts hablan con servidores por WebSocket (`ws://` y `wss://`) en Windows, Linux y Android; la hierba y los árboles se ven con volumen; y el terreno, la física, la navegación y el World Partition leen, preparan y suben lo que entra en otros hilos con un presupuesto de milisegundos por frame. Además, se corrigen los siete fallos del informe de fallos y una larga lista de fallos de render, de escenas y del editor. (La 2.4.7 y la 2.4.8 no se publicaron.)
 
 ### Blueprints de actor
 - **Un Blueprint es un `.crprefab` con un bloque `"blueprint"`** (padre, grafo, descripción, categoría, tick) y un `.crgraph` al lado. Se crea desde un modelo, desde un prefab o vacío, y un prefab existente se puede convertir.

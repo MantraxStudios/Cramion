@@ -1,8 +1,8 @@
-# Cramion 2.4.8
+# Cramion 2.4.9
 
 **Blueprints de actor, cliente WebSocket, hierba realista y un mundo que se carga en otros hilos.**
 
-Esta versión sigue a la 2.4.6 (la 2.4.7 no se publicó). Trae Blueprints de actor con un editor de nodos al estilo de Unreal y 56 nodos nuevos, un cliente WebSocket para los scripts en Windows, Linux y Android, hierba y árboles con volumen, y streaming del terreno, la física, la navegación y el World Partition fuera del hilo principal. También corrige los siete fallos del informe de fallos y muchos fallos de render, de escenas y del editor.
+Esta versión sigue a la 2.4.6 (la 2.4.7 y la 2.4.8 no se publicaron). Trae Blueprints de actor con un editor de nodos al estilo de Unreal y 56 nodos nuevos, un cliente WebSocket para los scripts en Windows, Linux y Android, hierba y árboles con volumen, y streaming del terreno, la física, la navegación y el World Partition fuera del hilo principal. También corrige los siete fallos del informe de fallos y muchos fallos de render, de escenas y del editor.
 
 ## Lo más destacado
 
@@ -169,7 +169,7 @@ Variable de entorno nueva: `CRAMION_PERF_LOG=1` (Player).
    ```
 
    Los dos valores deben coincidir. En Linux o Git Bash: `sha256sum -c Cramion-win64.zip.sha256`.
-3. Descomprime y abre `CramionEditor.exe`. Si ya tienes Cramion, el actualizador del editor ofrece la 2.4.8.
+3. Descomprime y abre `CramionEditor.exe`. Si ya tienes Cramion, el actualizador del editor ofrece la 2.4.9.
 
 Requisitos: Windows 10/11 x64 y una GPU con Vulkan.
 

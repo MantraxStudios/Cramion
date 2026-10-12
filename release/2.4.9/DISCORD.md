@@ -1,6 +1,6 @@
-## 🚀 Cramion 2.4.8 ya está aquí
+## 🚀 Cramion 2.4.9 ya está aquí
 
-Blueprints de actor, cliente WebSocket, hierba realista y un mundo que se carga en otros hilos. (La 2.4.7 no se publicó.)
+Blueprints de actor, cliente WebSocket, hierba realista y un mundo que se carga en otros hilos. (La 2.4.7 y la 2.4.8 no se publicaron.)
 
 **🧩 Blueprints de actor**
 - Un prefab con su Event Graph y su propia pestaña: Componentes, Detalles, Ventana gráfica y Resultados de compilación
@@ -33,4 +33,4 @@ Blueprints de actor, cliente WebSocket, hierba realista y un mundo que se carga 
 - La recarga en caliente no conserva las corrutinas: relánzalas en `onAfterReload`
 - El editor de Visual Script ya no guarda solo (F7 o Guardar)
 
-📥 Descarga y notas completas: https://github.com/MantraxStudios/Cramion/releases/tag/v2.4.8
+📥 Descarga y notas completas: https://github.com/MantraxStudios/Cramion/releases/tag/v2.4.9

@@ -511,7 +511,7 @@ hub_main = f"""
     <main class="doc">
       <div class="doc-inner" style="max-width: 1040px">
         <section class="hero">
-          <a class="badge" href="novedades-24.html#v248"><b>Nuevo en la {VERSION}</b> Blueprints de actor, cliente WebSocket, hierba realista y streaming en otros hilos {icon("arrow")}</a>
+          <a class="badge" href="novedades-24.html#v249"><b>Nuevo en la {VERSION}</b> Blueprints de actor, cliente WebSocket, hierba realista y streaming en otros hilos {icon("arrow")}</a>
           <h1>Documentación de Cramion</h1>
           <div class="intro">{intro_html}</div>
           <div class="actions">
