@@ -125,6 +125,10 @@ public:
     // del original entre sus hermanos.
     Entity duplicate(Entity entity);
     void clear();
+    // Como clear() pero las raices transitorias (EntityInfo::transient: las
+    // teselas de un TerrainGrid) se quedan: deshacer o parar Play no las
+    // vuelve a crear ni a subir a la GPU.
+    void clearPersistent();
 
     Entity find(const Uuid& uuid) const;
     Entity findByName(std::string_view name) const;  // la primera

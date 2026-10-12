@@ -4,6 +4,8 @@
 
 #include "EditorApp.h"
 
+#include "Dialogs.h"
+
 #include <CramionFX/asset/ProxyMesh.h>
 
 #include <imgui.h>
@@ -26,9 +28,19 @@ void EditorApp::drawWorldPartitionInspector(ecs::Entity entity) {
         const worldpart::PartitionStats& s = world_partition_.stats();
         ImGui::Text("Celdas cargadas: %d de %d", s.loaded_cells, s.cells);
         ImGui::Text("Objetos descargados: %d de %d", s.unloaded_entities, s.streamed_entities);
-        ImGui::Text("Guardado en memoria: %.1f KB  (cargas %d, descargas %d)", static_cast<double>(s.stored_bytes) / 1024.0,
-                    s.loads, s.unloads);
+        ImGui::Text("En disco: %.1f KB  |  en memoria: %.1f KB", static_cast<double>(s.disk_bytes) / 1024.0,
+                    static_cast<double>(s.stored_bytes) / 1024.0);
+        ImGui::Text("Cargas %d, descargas %d%s", s.loads, s.unloads, s.loading_cells > 0 ? "  (leyendo...)" : "");
         return;
+    }
+    if (wp->external_cells) {
+        if (scene_path_.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Guarda la escena para crear sus celdas en disco");
+        } else {
+            ImGui::TextDisabled("Al guardar: %s/ (un archivo por celda)",
+                                dialogs::utf8(worldpart::WorldPartitionSystem::cellsFolder(scene_path_).filename()).c_str());
+        }
+        ImGui::TextDisabled("El juego y el servidor solo leen las celdas cercanas a cada jugador.");
     }
     // Fuera de Play: lo que pasaria al darle.
     int streamable = 0;

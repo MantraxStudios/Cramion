@@ -1,0 +1,93 @@
+<p>
+  Cómo hacer un mundo de 10 a 16 km (un MMO, un mundo abierto) sin tenerlo nunca entero en memoria: el
+  <strong class="text-white">terreno por teselas</strong> que se carga por zonas, el <strong class="text-white">World
+  Partition con celdas en disco</strong> para los objetos y la <strong class="text-white">importación de mapas de
+  alturas</strong>. El juego y el servidor dedicado solo cargan lo que hay alrededor de cada jugador.
+</p>
+
+<h3 id="cuanto">Cuánto cabe</h3>
+<table>
+  <thead><tr><th>Mundo</th><th>Teselas</th><th>Detalle</th><th>Disco</th><th>En memoria (a 2,5 km)</th></tr></thead>
+  <tbody>
+    <tr><td>12 × 12 km</td><td>8 × 8 de 1536 m, 1025 alturas</td><td>1,5 m por vértice</td><td>~800 MB</td><td>~20 teselas, ~250 MB</td></tr>
+    <tr><td>16 × 16 km</td><td>8 × 8 de 2048 m, 1025 alturas</td><td>2 m por vértice</td><td>~800 MB</td><td>~12 teselas, ~150 MB</td></tr>
+    <tr><td>8 × 8 km</td><td>4 × 4 de 2048 m, 2049 alturas</td><td>1 m por vértice</td><td>~400 MB</td><td>~9 teselas, ~225 MB</td></tr>
+  </tbody>
+</table>
+<p>
+  Cada tesela ocupa sus alturas (4 bytes por vértice) más su pintura (8 bytes por texel). Las texturas de las capas se
+  comparten entre todas las teselas: no ocupan más VRAM por tener más teselas. El Inspector del Terreno grande dice el
+  tamaño del mundo, los metros por vértice, lo que ocupa en disco y lo que hay cargado ahora.
+</p>
+
+<h3 id="terreno">Terreno grande (teselas)</h3>
+<ol>
+  <li><em>GameObject &gt; Terreno grande (teselas)</em> crea un <code>TerrainGrid</code> de 12 × 12 km centrado en el
+    origen (8 × 8 teselas de 1536 m). Su posición es la esquina (x, z mínimas) y la altura 0.</li>
+  <li>En el Inspector, <strong>Importar mapa de alturas (RAW / PNG 16 bits)...</strong> reparte el mapa entre las teselas
+    en segundo plano (barra de progreso y <em>Cancelar</em>). También se puede pasar un terreno de la escena: <strong>Desde
+    un terreno de la escena...</strong>, o en el Inspector de un terreno normal, <strong>Convertir en Terreno grande
+    (teselas)</strong>.</li>
+  <li>Las capas, la hierba (<code>Grass</code> en la misma entidad), las sombras y la colisión del Terreno grande valen
+    para todas las teselas.</li>
+</ol>
+<p>
+  Cada tesela es un archivo <code>&lt;carpeta&gt;/tile_X_Z.crterrain</code> y comparte con sus vecinas los vértices del
+  borde: el mapa se muestrea con un filtro bicúbico en cada vértice del mundo, así que los dos lados del borde salen
+  idénticos (sin grietas) y un mapa más pequeño que el mundo se amplía suave, sin escalones.
+</p>
+<p>
+  <strong class="text-white">Carga por zonas.</strong> Solo están en memoria las teselas a la <em>Distancia de carga</em> de
+  una <code>StreamingSource</code> (el jugador) o, si no hay, de la cámara. Se leen de disco en otros hilos (<em>Lecturas a
+  la vez</em>) y entran unas pocas por frame (<em>Teselas por frame</em>); las que se alejan más del <em>Margen de
+  descarga</em> se sueltan. Antes de empezar la partida se carga ya la tesela del jugador, para que no caiga al vacío. Cada
+  tesela cargada es un <code>Terrain</code> normal (render, física, hierba, vegetación, navegación) que no se guarda en la
+  escena ni sale en la Jerarquía; se elige con un clic en la Escena.
+</p>
+<p>
+  <strong class="text-white">En el editor</strong> también se cargan solo las cercanas a la cámara (<em>Tambien en el
+  editor</em>). Esculpir y pintar funcionan en cada tesela; al terminar el trazo, su borde pasa a las vecinas. Lo esculpido
+  se guarda al soltar la tesela o al guardar la escena (en Play se queda en memoria hasta guardar).
+</p>
+
+<h3 id="importar">Mapas de alturas</h3>
+<table>
+  <thead><tr><th>Formato</th><th>Cómo se lee</th></tr></thead>
+  <tbody>
+    <tr><td><code>.raw</code>, <code>.r16</code></td><td>16 bits sin signo, little endian, cuadrado (el lado sale del tamaño del archivo). Es el RAW de Unity, Unreal, World Machine y Gaea.</td></tr>
+    <tr><td><code>.r32</code></td><td>Float de 32 bits, cuadrado. Si no está en 0..1 se normaliza entre su mínimo y su máximo (y la consola dice el rango, para poner la <em>Altura máxima</em>).</td></tr>
+    <tr><td><code>.png</code> (y <code>.tga</code>, <code>.bmp</code>)</td><td>PNG de 16 bits en gris. Uno de 8 bits también vale, con escalones de altura.</td></tr>
+  </tbody>
+</table>
+<p>
+  El 0 del mapa es la altura de la entidad y el máximo es su <em>Altura máxima</em>. <em>Voltear en Z</em> pone la fila de
+  arriba de la imagen al norte (+Z) si el mapa sale al revés. <em>Pintar roca en las pendientes</em> pinta la capa 2 por
+  encima de 35°.
+</p>
+
+<h3 id="celdas">World Partition con celdas en disco</h3>
+<p>
+  El <code>WorldPartition</code> reparte los objetos en celdas. Al descargarse, una celda ya no se guarda en memoria: va a un
+  archivo en la caché de la sesión (en el temporal del sistema, que se borra al terminar) y al volver se lee en otro hilo y
+  se recrea por trozos (<em>Objetos por frame</em>).
+</p>
+<p>
+  Con <strong>Celdas en disco</strong> activo, al guardar la escena el editor escribe los objetos que se descargan en
+  <code>&lt;escena&gt;.cells/cell_X_Z.crcell</code> (un archivo por celda) y no en la escena. El juego y el servidor dedicado
+  abren la escena sin ellos y solo leen las celdas cercanas a cada jugador: los objetos del mundo entero nunca están a la vez
+  en memoria. El editor las carga todas al abrir la escena, así que se ve y se edita entera; al apagar la opción y guardar,
+  todo vuelve a la escena y la carpeta se borra. La carpeta va dentro de Assets y se exporta con el juego.
+</p>
+
+<h3 id="mmo">Servidor y jugadores</h3>
+<ul>
+  <li>Pon una <code>StreamingSource</code> en el prefab del jugador. En el servidor dedicado cada jugador carga lo suyo: las
+    teselas (con su colisión) y las celdas alrededor de todos los jugadores conectados.</li>
+  <li>Lo que debe estar siempre (puntos de aparición, gestores) lleva <code>AlwaysLoaded</code>. Los objetos de red
+    (<code>NetworkObject</code>), las cámaras, el agua y el ambiente no se descargan nunca.</li>
+  <li>Con 12 km las coordenadas siguen siendo precisas (milímetros). Para más, el origen flotante del mundo ya está.</li>
+</ul>
+<p>
+  Lo que aún no hace: el terreno más allá de la distancia de carga no se dibuja (usa niebla, o súbela si la VRAM da), y el
+  pincel solo esculpe la tesela elegida (el borde se cose al soltarlo).
+</p>

@@ -1,5 +1,36 @@
 # Cambios
 
+## 2.4.6
+
+**Mundos de 12 a 16 km que nunca están enteros en memoria.** El terreno se reparte en teselas que se leen de disco solo alrededor de cada jugador, los mapas de alturas de World Machine, Gaea, Unity o Unreal se importan directamente, y el World Partition guarda en disco lo que descarga. El juego y el servidor dedicado cargan solo la zona de cada jugador: lo que pedía un MMO.
+
+### Terreno grande por teselas
+- **Nuevo componente `TerrainGrid`** (*GameObject > Terreno grande (teselas)*): un mundo de **12 × 12 km** por defecto (8 × 8 teselas de 1536 m con 1025 × 1025 alturas, **1,5 m por vértice**). Cada tesela es un archivo `tile_X_Z.crterrain` y comparte con sus vecinas los vértices del borde: **sin grietas**.
+- **Carga por zonas en otros hilos**: solo están en memoria las teselas a la *Distancia de carga* de una `StreamingSource` (el jugador) o de la cámara. Se leen de disco en segundo plano, entran unas pocas por frame y las lejanas se sueltan (con histéresis). Antes de empezar la partida se carga la tesela del jugador para que no caiga al vacío.
+- **También en el editor**: solo se cargan las teselas cerca de la cámara, así que un mundo de 144 km² se edita en un PC normal. Esculpir y pintar funcionan en cada tesela; al terminar el trazo, el borde pasa a las vecinas. Lo esculpido se guarda al soltar la tesela o al guardar la escena.
+- Cada tesela cargada es un `Terrain` normal (render, física, hierba, vegetación, navegación) que no se guarda en la escena ni sale en la Jerarquía; las capas, la hierba, las sombras y la colisión se ponen una vez en el Terreno grande.
+- **Juego y servidor dedicado**: el servidor carga las teselas (y su colisión) alrededor de todos los jugadores conectados.
+- El Inspector dice el tamaño del mundo, los metros por vértice, lo que ocupa en disco y lo que hay cargado ahora.
+
+### Importar mapas de alturas
+- **RAW/R16 de 16 bits** (el de Unity, Unreal, World Machine y Gaea), **R32** (float; se normaliza si no está en 0..1) y **PNG de 16 bits** (o de 8 bits).
+- A las teselas de un Terreno grande, en segundo plano con barra de progreso y *Cancelar*, o a un terreno normal (con deshacer). Muestreo **bicúbico**: un mapa pequeño se amplía suave, sin escalones, y los bordes de las teselas salen idénticos. *Voltear en Z* y *Pintar roca en las pendientes*.
+- **Convertir en Terreno grande**: un terreno de la escena (el continente del Generador, por ejemplo) pasa a las teselas ampliado al tamaño del mundo.
+
+### World Partition en disco
+- **Lo descargado va a disco, no a memoria**: cada celda descargada se escribe en la caché de la sesión (en el temporal del sistema, que se borra al terminar) y al volver se lee en otro hilo y se recrea por trozos (*Objetos por frame*, sin tirones).
+- **Celdas en disco** (nueva opción del `WorldPartition`): al guardar la escena, los objetos que se descargan van a `<escena>.cells/cell_X_Z.crcell`, un archivo por celda, y no a la escena. **El juego y el servidor solo leen las celdas cercanas a cada jugador**; las lejanas nunca entran en memoria. El editor las carga todas al abrir la escena (se ve y se edita entera). Se exportan con el juego.
+- El Inspector del World Partition muestra lo guardado en disco y en memoria y las celdas que se están leyendo.
+
+### Rendimiento
+- **Texturas de las capas compartidas**: los terrenos con las mismas capas (las teselas) comparten las texturas en la GPU. Antes cada terreno leía y subía las suyas: con 25 teselas habrían sido varios GB de VRAM.
+- **Quitar un terreno ya no para la GPU**: se borra unos frames después, cuando ningún frame en vuelo lo usa (antes, un `waitIdle` por terreno). Caben hasta 160 terrenos a la vez (antes 16).
+- **Deshacer y parar Play no vuelven a subir los terrenos**: el render los reconoce por su UUID y las teselas sobreviven a rehacer la escena.
+
+### Pruebas
+- Terreno: leer un RAW de 16 bits, repartirlo en teselas con los bordes y la esquina idénticos, cargar solo la tesela de la cámara, que las teselas no se guarden en la escena ni se recreen al deshacer, coser el borde esculpido y guardarlo al soltar la tesela.
+- World Partition: lo descargado va a disco y vuelve con el mismo UUID; celdas en disco de la escena (escribir, registrar sin leer, leer al acercarse, todo de vuelta al parar).
+
 ## 2.4.5
 
 **Interfaz como Blender, texturas comprimidas como Unity y escenas grandes que abren sin congelarse.** El editor estrena el aspecto y la distribución de Blender; las texturas se comprimen a BC7 al abrir el proyecto (cuatro veces menos memoria de vídeo, a la vista igual) y una casa con cientos de texturas de 4K ya no deja el editor un minuto colgado ni lo cierra por falta de memoria. Además: pueblos y ciudades medievales, casas con interior, terreno que se aplana bajo los edificios, splines, interfaz completa, World Partition con HLOD y carga en hilos, netcode con servidor dedicado y chat de voz, multitudes, accesibilidad, mods, informe de cierres, el código fuente abierto y Linux.

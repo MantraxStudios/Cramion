@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -189,6 +190,15 @@ private:
         vk::raii::Image image{nullptr};
         vk::raii::ImageView view{nullptr};
     };
+    // Las texturas de las capas: compartidas por los terrenos con las mismas
+    // (las teselas de un TerrainGrid usan todas el mismo juego).
+    struct LayerSet {
+        ArrayTexture albedo;
+        ArrayTexture normal;
+        std::array<std::filesystem::path, kMaxTerrainLayers> albedo_paths{};  // las que se leyeron
+        std::array<std::filesystem::path, kMaxTerrainLayers> normal_paths{};
+        std::array<core::Vec3, kMaxTerrainLayers> average{};  // media de cada textura (sRGB)
+    };
     struct Grass {
         VulkanBuffer blades;               // 2 listas (cerca, lejos) de `capacity`
         VulkanBuffer args;                 // 2 comandos de dibujo indirecto
@@ -204,11 +214,9 @@ private:
         VulkanImage heights;
         VulkanImage splat0;
         VulkanImage splat1;
-        ArrayTexture albedo_array;
-        ArrayTexture normal_array;
-        std::array<std::filesystem::path, kMaxTerrainLayers> albedo_paths{};
+        std::shared_ptr<LayerSet> layer_set;  // nullptr hasta el primer setDesc (no se dibuja)
+        std::array<std::filesystem::path, kMaxTerrainLayers> albedo_paths{};  // las pedidas
         std::array<std::filesystem::path, kMaxTerrainLayers> normal_paths{};
-        bool arrays_ready = false;
         std::vector<VulkanBuffer> params;  // uno por frame en vuelo
         std::vector<vk::raii::DescriptorSet> sets;
         std::vector<Chunk> chunks;
@@ -217,7 +225,6 @@ private:
         std::vector<float> cpu_heights;
         std::vector<std::uint8_t> cpu_splat0;
         std::vector<std::uint8_t> cpu_splat1;
-        std::array<core::Vec3, kMaxTerrainLayers> layer_average{};  // media de cada textura (sRGB)
         std::uint64_t height_revision = 0;
         std::uint64_t look_revision = 0;
         std::uint64_t look_signature = 0;
@@ -250,6 +257,15 @@ private:
     VulkanBuffer patch_indices_;
     std::uint32_t patch_index_count_ = 0;
     std::unordered_map<std::uint32_t, std::unique_ptr<Terrain>> terrains_;
+    std::unordered_map<std::string, std::weak_ptr<LayerSet>> layer_sets_;
+    // Lo quitado espera a que ningun frame en vuelo lo use (sin parar la GPU:
+    // el streaming de teselas quita terrenos a menudo).
+    struct Retired {
+        std::unique_ptr<Terrain> terrain;
+        std::shared_ptr<LayerSet> layers;
+        std::uint32_t frames = 0;
+    };
+    std::vector<Retired> retired_;
     std::uint32_t next_id_ = 1;
     // Camara del ultimo prepare(): decide el LOD tambien en los mapas de las
     // luces locales.

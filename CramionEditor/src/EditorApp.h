@@ -56,7 +56,9 @@
 #include <CramionCore/ai/StateMachine.h>
 #include <functional>
 #include <CramionCore/asset/ModelMaterials.h>
+#include <CramionCore/terrain/HeightmapImport.h>
 #include <CramionCore/terrain/TerrainGenerator.h>
+#include <CramionCore/terrain/TerrainGrid.h>
 #include <CramionCore/terrain/TerrainTools.h>
 #include <CramionFX/asset/HouseGenerator.h>
 #include <CramionFX/asset/MedievalBuildings.h>
@@ -596,6 +598,13 @@ private:
     ecs::Entity terrainUnderMouse(float x, float y, core::Vec3* point = nullptr) const;
     bool drawTerrainTool(float delta_seconds);
     void drawTerrainInspector(ecs::Entity entity);
+    // Terreno grande por teselas (TerrainGrid, EditorTerrainGrid.cpp).
+    ecs::Entity createTerrainGridEntity();
+    void drawTerrainGridInspector(ecs::Entity entity);
+    void updateTerrainStreaming();
+    // Importa un mapa de alturas (o pasa un terreno) a las teselas en otro hilo.
+    void startGridImport(ecs::Entity grid_entity, terrain::Heightmap map, const terrain::GridImportOptions& options);
+    void pollGridImport();
 
     // --- Scripting y audio (EditorScripting.cpp) ---
 public:
@@ -1797,6 +1806,16 @@ private:
 
     // Terreno.
     terrain::TerrainStore terrain_store_;
+    terrain::TerrainStreamer terrain_streamer_;  // teselas de los TerrainGrid cerca de la camara/jugador
+    struct GridImport {
+        Uuid grid{};
+        std::string folder;
+        std::shared_ptr<terrain::GridImportProgress> progress;
+        std::future<std::string> job;  // vacio = bien; si no, el error
+    };
+    std::unique_ptr<GridImport> grid_import_;
+    bool grid_import_flip_ = false;
+    bool grid_import_paint_ = true;
     terrain::TerrainBrush terrain_brush_;
     bool terrain_edit_ = false;
     bool terrain_stroke_ = false;

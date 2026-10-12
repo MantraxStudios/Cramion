@@ -52,6 +52,9 @@ struct EntityInfo {
     // no lo dibuja aparte (la fisica y los scripts lo siguen viendo). Solo lo
     // pone la exportacion, en la copia de la escena que va al juego.
     bool static_batched = false;
+    // Lo crea el motor en marcha (las teselas de un TerrainGrid): no se guarda
+    // en la escena ni se copia con su padre. No se serializa.
+    bool transient = false;
 };
 
 // Jerarquia: padre e hijos EN ORDEN (el de la ventana Jerarquia).

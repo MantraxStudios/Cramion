@@ -26,6 +26,15 @@ bool loadImageRgba8(const std::filesystem::path& file, ImageRgba8& image, std::u
 // modelo). false si no se pudo decodificar.
 bool decodeImageRgba8(const std::uint8_t* data, std::size_t size, ImageRgba8& image);
 
+// Una imagen en gris de 16 bits (mapas de alturas: PNG de 16 bits; las de 8
+// bits y las de color se convierten). Fila de arriba primero.
+struct ImageGray16 {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint16_t> pixels;
+};
+bool loadImageGray16(const std::filesystem::path& file, ImageGray16& image);
+
 // Guarda la imagen como PNG (miniaturas en cache). false si no se pudo.
 bool saveImagePng(const std::filesystem::path& file, const ImageRgba8& image);
 

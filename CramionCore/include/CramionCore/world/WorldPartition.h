@@ -15,9 +15,17 @@
 // Se descargan las entidades raiz (sin padre) con mallas que no son
 // camaras, terrenos, agua, ambiente, luces del sol, interfaz, jugadores
 // (Character Controller, XR) ni objetos de red. Descargar una celda guarda
-// sus entidades (con su estado actual) en memoria y las quita del mundo: no
-// se dibujan, no tienen fisica ni scripts. Al volver, se recrean con el
-// mismo UUID (las referencias entre objetos siguen valiendo).
+// sus entidades (con su estado actual) en un archivo de la cache de la
+// sesion (en disco, no en memoria) y las quita del mundo: no se dibujan, no
+// tienen fisica ni scripts. Al volver, el archivo se lee en otro hilo y se
+// recrean con el mismo UUID (las referencias entre objetos siguen valiendo),
+// unas pocas por frame.
+//
+// Celdas en disco (mundos grandes, MMO): con "Celdas en disco" activo, al
+// guardar la escena el editor escribe esos objetos en <escena>.cells/, un
+// archivo por celda, y no en la escena. El juego y el servidor solo leen las
+// celdas cercanas: el mundo entero nunca esta en memoria. El editor las
+// carga todas al abrir la escena (se ve y se edita entera).
 
 #include "CramionCore/ecs/Reflection.h"
 
@@ -26,6 +34,8 @@
 #include <entt/entity/entity.hpp>
 
 #include <cstdint>
+#include <filesystem>
+#include <future>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -47,6 +57,8 @@ struct WorldPartition {
     float unload_margin = 64.0f;  // histeresis: se descarga a load_range + esto
     int loads_per_frame = 2;      // celdas que se recrean por frame (sin tirones)
     int unloads_per_frame = 4;    // celdas que se guardan y quitan por frame
+    int restores_per_frame = 256; // objetos que se recrean por frame
+    bool external_cells = false;  // al guardar, un archivo por celda (<escena>.cells/)
     bool show_grid = true;        // rejilla en la vista de escena
     void reflect(ecs::PropertyVisitor& v);
 };
@@ -87,12 +99,43 @@ struct PartitionStats {
     int streamed_entities = 0;     // entidades raiz que se pueden descargar
     int unloaded_entities = 0;     // descargadas ahora
     std::size_t stored_bytes = 0;  // lo guardado en memoria de las descargadas
+    std::size_t disk_bytes = 0;    // lo guardado en disco (cache o celdas externas)
+    int loading_cells = 0;         // leyendose o recreandose
+    int external_cells = 0;        // celdas de <escena>.cells/ registradas
     int loads = 0;                 // desde el principio
     int unloads = 0;
 };
 
 class WorldPartitionSystem {
 public:
+    WorldPartitionSystem() = default;
+    WorldPartitionSystem(const WorldPartitionSystem&) = delete;
+    WorldPartitionSystem& operator=(const WorldPartitionSystem&) = delete;
+    ~WorldPartitionSystem();
+
+    // La escena abierta (antes de begin). `cells_in_world`: sus celdas en
+    // disco ya estan en el mundo (el editor las carga al abrir); si no (el
+    // juego, el servidor), begin() las registra descargadas y las lee al
+    // acercarse.
+    void setSceneFile(const std::filesystem::path& scene, bool cells_in_world);
+    // Carpeta para las celdas descargadas (por defecto, una en el temporal
+    // del sistema que se borra al terminar).
+    void setCacheFolder(const std::filesystem::path& folder) { cache_root_ = folder; }
+
+    // --- Celdas en disco de una escena (<escena>.cells/cell_X_Z.crcell) ---
+    static std::filesystem::path cellsFolder(const std::filesystem::path& scene);
+    static bool hasExternalCells(const std::filesystem::path& scene);
+    // Editor, al guardar: las raices que se descargan, un archivo por celda.
+    // Borra las celdas que ya no tienen nada. Devuelve cuantas celdas; -1 si
+    // fallo (con `error`).
+    static int writeExternalCells(ecs::World& world, float cell_size, const std::filesystem::path& scene,
+                                  std::string* error = nullptr);
+    // Borra <escena>.cells/ (se apago "Celdas en disco").
+    static void removeExternalCells(const std::filesystem::path& scene);
+    // Todas las celdas al mundo (el editor al abrir la escena). Devuelve
+    // cuantos objetos raiz.
+    static int loadExternalCells(ecs::World& world, const std::filesystem::path& scene);
+
     // Al empezar Play / el juego: reparte las entidades en celdas y descarga
     // las lejanas de `viewer` (y de las StreamingSource).
     void begin(ecs::World& world, const core::Vec3& viewer);
@@ -121,12 +164,29 @@ private:
     struct Cell {
         bool loaded = true;
         std::vector<entt::entity> roots;  // raices cargadas que viven aqui
-        std::vector<std::string> stored;  // entidades guardadas (una raiz por texto)
-        std::size_t bytes = 0;
+        std::vector<std::string> stored;  // en memoria (si no se pudo escribir a disco)
+        std::filesystem::path file;       // en disco: cache de la sesion o celda externa
+        std::size_t bytes = 0;            // en memoria
+        std::size_t disk_bytes = 0;       // en disco
         int entities = 0;  // raices que viven en esta celda
+        // Cargando: el archivo se lee en otro hilo y luego se recrea por trozos.
+        bool reading = false;
+        std::future<std::vector<std::string>> job;
+        std::vector<std::string> pending;
+        std::size_t next = 0;  // siguiente de `pending` por recrear
+        bool loading() const { return reading || next < pending.size(); }
     };
     void unloadCell(ecs::World& world, const CellCoord& c, Cell& cell);
-    void loadCell(ecs::World& world, Cell& cell);
+    // Empieza a cargar (memoria: ya; disco: en otro hilo).
+    void requestLoad(Cell& cell);
+    // Lecturas terminadas y objetos por recrear, con el presupuesto del frame.
+    void pumpLoads(ecs::World& world, int budget);
+    // Carga entera ya (esperando al disco).
+    void loadCellNow(ecs::World& world, Cell& cell);
+    void finishLoad(Cell& cell);
+    std::filesystem::path cacheFile(const CellCoord& c);
+    void registerExternalCells(ecs::World& world);
+    void removeCache();
     std::vector<std::pair<core::Vec3, float>> sources(ecs::World& world, const core::Vec3& viewer) const;
     float distanceToCell(const core::Vec3& p, const CellCoord& c) const;
     void track(entt::entity root, const CellCoord& c);
@@ -138,6 +198,10 @@ private:
 
     WorldPartition settings_{};
     std::map<CellCoord, Cell> cells_;
+    std::filesystem::path scene_file_;
+    bool cells_in_world_ = true;
+    std::filesystem::path cache_root_;  // vacia = temporal del sistema
+    std::filesystem::path cache_;       // la de esta sesion (se crea al descargar)
     // Raiz cargada que se puede descargar -> su celda. Con esto cada frame no
     // recorre el mundo entero (antes: todo el arbol y cada hijo, cada frame).
     std::unordered_map<entt::entity, CellCoord> tracked_;

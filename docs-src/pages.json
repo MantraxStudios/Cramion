@@ -311,6 +311,11 @@
           "desc": "Terreno con erosión, ríos y mar, hierba en la GPU, árboles procedurales y casas y aldeas."
         },
         {
+          "slug": "mundos-grandes",
+          "title": "Mundos grandes (MMO)",
+          "desc": "Terreno de 12-16 km por teselas que se carga por zonas, mapas de alturas RAW/PNG de 16 bits y celdas en disco."
+        },
+        {
           "slug": "ambiente",
           "title": "Ambiente y clima",
           "desc": "Lluvia, nieve, tormentas, hora, fecha, estaciones y viento."

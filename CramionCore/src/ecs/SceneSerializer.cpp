@@ -49,6 +49,7 @@ void collectSubtree(World& world, Entity root, json& entities) {
     while (!stack.empty()) {
         Entity e = stack.back();
         stack.pop_back();
+        if (e != root && e.get<EntityInfo>().transient) continue;  // teselas de terreno
         entities.push_back(entityRecord(world, e, e == root));
         const auto& children = e.children();
         for (auto it = children.rbegin(); it != children.rend(); ++it) {
@@ -111,7 +112,9 @@ using detail::buildEntities;
 using detail::entityRecord;
 using detail::collectSubtree;
 
-std::string serializeWorld(const World& const_world) {
+std::string serializeWorld(const World& const_world) { return serializeWorld(const_world, {}); }
+
+std::string serializeWorld(const World& const_world, const std::function<bool(const Entity&)>& skip_root) {
     World& world = const_cast<World&>(const_world);  // reflect() no escribe al guardar
     json root;
     root["format"] = "CramionScene";
@@ -124,7 +127,9 @@ std::string serializeWorld(const World& const_world) {
     }
     json entities = json::array();
     for (const entt::entity r : world.roots()) {
-        collectSubtree(world, world.wrap(r), entities);
+        const Entity e = world.wrap(r);
+        if (e.get<EntityInfo>().transient || (skip_root && skip_root(e))) continue;
+        collectSubtree(world, e, entities);
     }
     // Las raices sin "parent": collectSubtree marca la raiz de cada arbol
     // como raiz de copia (parent null), que en una escena es lo correcto.
@@ -167,7 +172,7 @@ bool deserializeWorld(World& world, const std::string& text, std::string* error)
                   << kSceneFormatVersion << "): se lee lo que se entienda\n";
     }
     migrateScene(root, version);
-    world.clear();
+    world.clearPersistent();  // las teselas de terreno se quedan
     const Uuid uuid = Uuid::parse(root.value("uuid", std::string{}));
     world.setSceneUuid(uuid.valid() ? uuid : Uuid::generate());
     world.setSceneName(root.value("name", std::string{"Escena"}));
@@ -181,6 +186,11 @@ bool deserializeWorld(World& world, const std::string& text, std::string* error)
 }
 
 bool saveScene(const World& world, const std::filesystem::path& path, std::string* error) {
+    return saveScene(world, path, error, {});
+}
+
+bool saveScene(const World& world, const std::filesystem::path& path, std::string* error,
+               const std::function<bool(const Entity&)>& skip_root) {
     const std::filesystem::path temporary = path.string() + ".tmp";
     {
         std::ofstream file(temporary, std::ios::binary);
@@ -188,7 +198,7 @@ bool saveScene(const World& world, const std::filesystem::path& path, std::strin
             if (error) *error = "no se pudo escribir " + path.string();
             return false;
         }
-        file << serializeWorld(world);
+        file << serializeWorld(world, skip_root);
         if (!file) {
             if (error) *error = "error escribiendo " + path.string();
             return false;

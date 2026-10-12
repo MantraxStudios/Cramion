@@ -1,6 +1,7 @@
 #include "CramionCore/terrain/Terrain.h"
 
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/terrain/TerrainGrid.h"
 
 #include <algorithm>
 #include <array>
@@ -50,6 +51,10 @@ void Terrain::reflect(ecs::PropertyVisitor& v) {
     v.field({"friction", "Friccion"}, friction, FloatRange{0.0f, 2.0f, 0.01f, "%.2f", true});
     v.field({"lod_distance", "Detalle a distancia", "Mas = mas triangulos lejos"}, lod_distance,
             FloatRange{0.5f, 8.0f, 0.05f, "%.2f", true});
+    reflectTerrainLayers(v, layers);
+}
+
+void reflectTerrainLayers(ecs::PropertyVisitor& v, std::vector<TerrainLayer>& layers) {
     ecs::listField(v, {"layers", "Capas"}, layers, [](TerrainLayer& layer, ecs::PropertyVisitor& item) {
         item.field({"name", "Nombre"}, layer.name);
         item.field({"tint", "Color"}, layer.tint, Vec3Kind::Color);
@@ -81,6 +86,7 @@ void TerrainFlatten::reflect(ecs::PropertyVisitor& v) {
 void registerTerrainComponents() {
     ecs::ComponentRegistry::instance().registerComponent<Terrain>("Terrain", "Terreno", "Entorno");
     ecs::ComponentRegistry::instance().registerComponent<TerrainFlatten>("TerrainFlatten", "Aplanar terreno", "Entorno");
+    registerTerrainGridComponent();
 }
 
 // -----------------------------------------------------------------------------

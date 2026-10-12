@@ -39,6 +39,7 @@
 #include <CramionCore/scripting/Scripting.h>
 #include <CramionCore/spline/Spline.h>
 #include <CramionCore/terrain/Terrain.h>
+#include <CramionCore/terrain/TerrainGrid.h>
 #include <CramionCore/ui/UI.h>
 #include <CramionCore/voxel/Voxel.h>
 #include <CramionCore/water/Water.h>
@@ -279,6 +280,9 @@ int main(int argc, char** argv) {
     }
     worldpart::WorldPartitionSystem partition;
     worldpart::setActivePartition(&partition);
+    // Teselas de los TerrainGrid alrededor de cada jugador (StreamingSource):
+    // la colision del terreno solo donde hay alguien.
+    terrain::TerrainStreamer terrain_streamer;
     ai::CrowdSystem crowds;
     crowds.setNavigation(&nav);
     crowds.setPrefabResolver([&database](const Uuid& uuid) -> std::filesystem::path {
@@ -317,7 +321,9 @@ int main(int argc, char** argv) {
         }
         const std::u8string stem = file.stem().u8string();
         scripts.setSceneName(std::string(stem.begin(), stem.end()));
+        partition.setSceneFile(file, false);  // sus celdas en disco se leen al acercarse un jugador
         partition.begin(world, core::Vec3{});
+        terrain_streamer.loadNow(world, terrains, core::Vec3{});
         physics.start(world);
         nav.waitForBuild(world, 30.0f);
         crowds.begin(world);
@@ -354,6 +360,7 @@ int main(int argc, char** argv) {
         fire::updateFires(world, dt, fire::FireMode::Play, &terrains);
         spline::updateSplineFollowers(world, dt);
         partition.update(world, core::Vec3{});
+        terrain_streamer.update(world, terrains, core::Vec3{}, true, false);
         crowds.update(world, dt, core::Vec3{});
         scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
         cpp_scripts.fixedUpdate(world, physics_settings.fixed_step, steps);

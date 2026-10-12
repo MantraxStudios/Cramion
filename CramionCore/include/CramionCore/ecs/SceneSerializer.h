@@ -19,6 +19,7 @@
 #include "CramionCore/ecs/World.h"
 
 #include <filesystem>
+#include <functional>
 #include <string>
 
 namespace cramion::ecs {
@@ -32,6 +33,11 @@ std::string serializeWorld(const World& world);
 bool deserializeWorld(World& world, const std::string& json, std::string* error = nullptr);
 
 bool saveScene(const World& world, const std::filesystem::path& path, std::string* error = nullptr);
+// Sin las raices que diga `skip_root` (las de las celdas en disco del World
+// Partition, que van en su propio archivo). Las transitorias nunca se guardan.
+std::string serializeWorld(const World& world, const std::function<bool(const Entity&)>& skip_root);
+bool saveScene(const World& world, const std::filesystem::path& path, std::string* error,
+               const std::function<bool(const Entity&)>& skip_root);
 bool loadScene(World& world, const std::filesystem::path& path, std::string* error = nullptr);
 
 // Una entidad y sus hijos (copiar/pegar, prefabs). pasteEntities crea copias

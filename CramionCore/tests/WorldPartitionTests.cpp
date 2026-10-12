@@ -9,7 +9,9 @@
 
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <string>
+#include <thread>
 
 using namespace cramion;
 using core::Vec3;
@@ -36,6 +38,16 @@ ecs::Entity prop(ecs::World& world, const std::string& name, float x, float z) {
 ecs::World& row(ecs::World& world, int count) {
     for (int i = 0; i < count; ++i) prop(world, "Roca" + std::to_string(i), 50.0f + 100.0f * static_cast<float>(i), 50.0f);
     return world;
+}
+
+// Unos frames hasta que no quede nada leyendose de disco (otro hilo).
+void settle(worldpart::WorldPartitionSystem& wp, ecs::World& world) {
+    for (int i = 0; i < 3; ++i) wp.update(world, Vec3{});
+    for (int i = 0; i < 400 && wp.stats().loading_cells > 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        wp.update(world, Vec3{});
+    }
+    for (int i = 0; i < 3; ++i) wp.update(world, Vec3{});
 }
 
 ecs::Entity partition(ecs::World& world, int loads, int unloads) {
@@ -79,7 +91,7 @@ int main() {
 
         std::printf("Mover la fuente\n");
         player.setWorldPosition(Vec3{950.0f, 0.0f, 50.0f});
-        for (int i = 0; i < 3; ++i) wp.update(world, Vec3{});
+        settle(wp, world);
         check(wp.cellLoaded({9, 0}), "la celda del jugador se carga al llegar");
         check(world.find(roca9).valid(), "la roca vuelve con el mismo UUID");
         check(!wp.cellLoaded({0, 0}), "la celda de donde salio se descarga");
@@ -89,7 +101,7 @@ int main() {
         const Uuid spawned_uuid = spawned.uuid();
         for (int i = 0; i < 12; ++i) wp.update(world, Vec3{});  // un repaso cada 10 frames
         player.setWorldPosition(Vec3{50.0f, 0.0f, 50.0f});
-        for (int i = 0; i < 3; ++i) wp.update(world, Vec3{});
+        settle(wp, world);
         check(!world.find(spawned_uuid).valid(), "lo creado en Play tambien se descarga");
 
         std::printf("Al parar\n");
@@ -116,8 +128,84 @@ int main() {
         check(wp.stats().loaded_cells == 0, "y al rato, todas");
         player.get<worldpart::StreamingSource>().range_scale = 100.0f;
         wp.update(world, Vec3{});
-        check(wp.stats().loaded_cells == 1, "1 carga por frame como mucho");
+        check(wp.stats().loaded_cells + wp.stats().loading_cells == 1, "1 carga por frame como mucho");
         wp.end(world, true);
+    }
+
+    std::printf("Celdas descargadas en disco\n");
+    {
+        namespace fs = std::filesystem;
+        const fs::path cache = fs::temp_directory_path() / "cramion_wp_cache_test";
+        std::error_code ec;
+        fs::remove_all(cache, ec);
+        ecs::World world;
+        partition(world, 64, 64);
+        row(world, 10);
+        ecs::Entity player = world.create("Jugador");
+        player.add<worldpart::StreamingSource>();
+        player.setWorldPosition(Vec3{50.0f, 0.0f, 50.0f});
+        Uuid roca9{};
+        world.forEachDepthFirst([&](ecs::Entity e) {
+            if (e.name() == "Roca9") roca9 = e.uuid();
+        });
+        worldpart::WorldPartitionSystem wp;
+        wp.setCacheFolder(cache);
+        wp.begin(world, Vec3{});
+        check(wp.stats().disk_bytes > 0 && wp.stats().stored_bytes == 0, "lo descargado va a disco, no a memoria");
+        player.setWorldPosition(Vec3{950.0f, 0.0f, 50.0f});
+        bool back = false;
+        for (int i = 0; i < 400 && !back; ++i) {
+            wp.update(world, Vec3{});
+            back = world.find(roca9).valid();
+            if (!back) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        check(back, "se lee en otro hilo y vuelve con el mismo UUID");
+        wp.end(world, true);
+        check(world.entityCount() == 10 + 2, "al parar, todo de vuelta");
+        check(!fs::exists(cache) || fs::is_empty(cache), "la cache de la sesion se borra");
+        fs::remove_all(cache, ec);
+    }
+
+    std::printf("Celdas en disco de la escena (mundos grandes)\n");
+    {
+        namespace fs = std::filesystem;
+        const fs::path folder = fs::temp_directory_path() / "cramion_wp_scene_test";
+        std::error_code ec;
+        fs::remove_all(folder, ec);
+        fs::create_directories(folder, ec);
+        const fs::path scene = folder / "Mundo.crscene";
+        {
+            ecs::World editor;
+            row(editor, 10);
+            check(worldpart::WorldPartitionSystem::writeExternalCells(editor, 100.0f, scene) == 10, "una celda por archivo (10)");
+            check(fs::exists(worldpart::WorldPartitionSystem::cellsFolder(scene) / "cell_9_0.crcell"), "en Mundo.cells/");
+            ecs::World reopened;
+            check(worldpart::WorldPartitionSystem::loadExternalCells(reopened, scene) == 10, "el editor las vuelve a leer todas");
+        }
+        // El juego: la escena sin esos objetos; solo se leen los cercanos.
+        ecs::World world;
+        partition(world, 64, 64);
+        ecs::Entity player = world.create("Jugador");
+        player.add<worldpart::StreamingSource>();
+        player.setWorldPosition(Vec3{50.0f, 0.0f, 50.0f});
+        worldpart::WorldPartitionSystem wp;
+        wp.setCacheFolder(folder / "cache");
+        wp.setSceneFile(scene, false);
+        wp.begin(world, Vec3{});
+        check(wp.stats().external_cells == 10, "las 10 celdas registradas sin leerlas");
+        check(world.entityCount() >= 2 + 2 && world.entityCount() <= 3 + 2 && !world.findByName("Roca9").valid(),
+              "al empezar, solo las cercanas en el mundo");
+        player.setWorldPosition(Vec3{950.0f, 0.0f, 50.0f});
+        for (int i = 0; i < 400 && !wp.cellLoaded({9, 0}); ++i) {
+            wp.update(world, Vec3{});
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        check(wp.cellLoaded({9, 0}) && world.findByName("Roca9").valid(), "al llegar, la celda se lee de disco");
+        wp.end(world, true);
+        check(world.entityCount() == 10 + 2, "al parar, las 10");
+        worldpart::WorldPartitionSystem::removeExternalCells(scene);
+        check(!worldpart::WorldPartitionSystem::hasExternalCells(scene), "y se borran al apagarlo");
+        fs::remove_all(folder, ec);
     }
 
     std::printf("Muchos objetos\n");

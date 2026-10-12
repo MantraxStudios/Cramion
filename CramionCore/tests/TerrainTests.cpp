@@ -6,7 +6,9 @@
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
+#include "CramionCore/terrain/HeightmapImport.h"
 #include "CramionCore/terrain/Terrain.h"
+#include "CramionCore/terrain/TerrainGrid.h"
 #include "CramionCore/terrain/TerrainGenerator.h"
 #include "CramionCore/terrain/TerrainTools.h"
 
@@ -22,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <thread>
 
 using namespace cramion;
 using namespace cramion::terrain;
@@ -638,6 +641,119 @@ void testSettlements() {
     }
 }
 
+// Terreno grande por teselas: importar un RAW de 16 bits, repartirlo en
+// teselas con los bordes iguales, cargarlas por zonas y soltarlas, que no se
+// guarden en la escena y que se cosan los bordes tras esculpir.
+void testGrid() {
+    std::printf("Terreno grande (teselas)\n");
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "cramion_grid_test";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+
+    // RAW de 65 x 65 (16 bits, little endian): una rampa en X con un bulto.
+    const int side = 65;
+    {
+        std::FILE* f = std::fopen((root / "mapa.r16").string().c_str(), "wb");
+        for (int y = 0; y < side; ++y) {
+            for (int x = 0; x < side; ++x) {
+                const float v = static_cast<float>(x) / (side - 1) * 0.5f + (x == 32 && y == 32 ? 0.25f : 0.0f);
+                const auto u = static_cast<std::uint16_t>(v * 65535.0f);
+                const unsigned char bytes[2] = {static_cast<unsigned char>(u & 0xFF), static_cast<unsigned char>(u >> 8)};
+                std::fwrite(bytes, 1, 2, f);
+            }
+        }
+        std::fclose(f);
+    }
+    Heightmap map;
+    std::string error;
+    check(loadHeightmap(root / "mapa.r16", map, &error) && map.width == 65 && map.height == 65, "leer un RAW de 16 bits");
+    check(std::abs(map.values[64] - 0.5f) < 0.001f && std::abs(sampleHeightmap(map, 0.5f, 0.0f) - 0.25f) < 0.01f,
+          "sus valores (y el muestreo bicubico)");
+
+    TerrainGrid grid;
+    grid.folder = "Grid";
+    grid.tiles_x = 3;
+    grid.tiles_z = 2;
+    grid.tile_size = 100.0f;
+    grid.height = 100.0f;
+    grid.tile_resolution = 33;
+    grid.splat_resolution = 16;
+    grid.load_range = 40.0f;
+    grid.unload_margin = 10.0f;
+    grid.loads_per_frame = 8;
+    grid.max_loading = 8;
+    GridImportProgress progress;
+    check(writeTerrainGrid(map, grid, root, GridImportOptions{}, &progress, &error) && progress.done == 6,
+          "escribir las 6 teselas");
+    TerrainData a, b, c, d;
+    const bool read = a.load(root / tilePath(grid, 0, 0)) && b.load(root / tilePath(grid, 1, 0)) &&
+                      c.load(root / tilePath(grid, 0, 1)) && d.load(root / tilePath(grid, 1, 1));
+    bool same_edge = read;
+    for (int i = 0; read && i < 33; ++i) {
+        same_edge = same_edge && a.heights()[static_cast<std::size_t>(i) * 33 + 32] == b.heights()[static_cast<std::size_t>(i) * 33];
+        same_edge = same_edge && a.heights()[32 * 33 + i] == c.heights()[i];
+    }
+    check(same_edge, "los bordes compartidos son identicos (sin grietas)");
+    check(read && a.heights()[32 * 33 + 32] == d.heights()[0], "y la esquina de las cuatro");
+    check(read && std::abs(a.heights()[0]) < 0.01f && b.heights()[32] > a.heights()[32], "la rampa sigue de tesela en tesela");
+
+    // Streaming.
+    registerTerrainComponents();
+    TerrainStore store;
+    store.setRoot(root);
+    ecs::World world;
+    ecs::Entity grid_entity = world.create("Mundo");
+    grid_entity.add<TerrainGrid>() = grid;
+    TerrainStreamer streamer;
+    const auto pump = [&](const Vec3& viewer, int want) {
+        for (int i = 0; i < 400; ++i) {
+            streamer.update(world, store, viewer, false, true);
+            if (streamer.stats().tiles_loaded == want && streamer.stats().tiles_loading == 0) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return false;
+    };
+    check(pump(Vec3{10.0f, 0.0f, 10.0f}, 1), "solo la tesela de la camara se carga");
+    ecs::Entity tile;
+    world.forEachDepthFirst([&](ecs::Entity e) {
+        if (e.has<TerrainTile>()) tile = e;
+    });
+    check(tile.valid() && tile.get<ecs::EntityInfo>().transient && tile.get<Terrain>().data == tilePath(grid, 0, 0),
+          "una entidad transitoria con su Terrain");
+    check(store.loadedCount() == 1, "y solo sus datos en memoria");
+    check(ecs::serializeWorld(world).find("Tesela") == std::string::npos, "las teselas no se guardan en la escena");
+    const entt::entity handle = tile.handle();
+    ecs::deserializeWorld(world, ecs::serializeWorld(world));
+    check(world.valid(handle) && world.findByName("Mundo").valid(), "rehacer la escena (deshacer) no toca las teselas");
+    grid_entity = world.findByName("Mundo");
+
+    check(pump(Vec3{100.0f, 0.0f, 100.0f}, 4), "en una esquina, las cuatro de alrededor");
+    // Esculpir el borde de la (0,0) y terminar el trazo: pasa a la vecina.
+    if (auto data00 = store.findPath(tilePath(grid, 0, 0))) {
+        data00->heights()[10 * 33 + 32] = 0.9f;
+        data00->markHeights(32, 10, 32, 10);
+        data00->commitCollision();
+    }
+    streamer.update(world, store, Vec3{100.0f, 0.0f, 100.0f}, false, true);
+    const auto data10 = store.findPath(tilePath(grid, 1, 0));
+    check(data10 && data10->heights()[10 * 33] == 0.9f, "el borde esculpido se cose en la vecina");
+
+    check(pump(Vec3{5000.0f, 0.0f, 5000.0f}, 0), "lejos: todas fuera");
+    check(store.loadedCount() == 0, "y sus datos sueltos de la memoria");
+    TerrainData saved;
+    check(saved.load(root / tilePath(grid, 1, 0)) && saved.heights()[10 * 33] == 0.9f,
+          "lo esculpido se guardo al soltarla (editor)");
+
+    // Un terreno normal desde un mapa.
+    TerrainData single;
+    single.create(129, 32);
+    importIntoTerrain(map, single);
+    check(std::abs(single.heights()[128] - 0.5f) < 0.01f && single.unsaved(), "importar a un terreno normal");
+    fs::remove_all(root, ec);
+}
+
 void dumpTextures(const char* folder) {
     namespace fs = std::filesystem;
     fs::create_directories(folder);
@@ -672,6 +788,7 @@ int main() {
     testFootprints();
     testBuildings();
     testSettlements();
+    testGrid();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

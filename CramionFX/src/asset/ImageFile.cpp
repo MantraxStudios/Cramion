@@ -139,4 +139,22 @@ bool saveImagePng(const std::filesystem::path& file, const ImageRgba8& image) {
     return !error;
 }
 
+bool loadImageGray16(const std::filesystem::path& file, ImageGray16& image) {
+    FILE* handle = openFile(file);
+    if (handle == nullptr) return false;
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    // stb pasa las de 8 bits a 16 (x257) y las de color a gris.
+    stbi_us* data = stbi_load_from_file_16(handle, &width, &height, &channels, 1);
+    std::fclose(handle);
+    image = ImageGray16{};
+    if (data == nullptr) return false;
+    image.width = static_cast<std::uint32_t>(width);
+    image.height = static_cast<std::uint32_t>(height);
+    image.pixels.assign(data, data + static_cast<std::size_t>(width) * height);
+    stbi_image_free(data);
+    return true;
+}
+
 }  // namespace cramion::asset

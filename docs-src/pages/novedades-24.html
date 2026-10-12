@@ -4,6 +4,17 @@
   lightmap de superficie, accesibilidad, mods, informe de cierres, job system y Linux.
 </p>
 
+<h3 id="v246">2.4.6: mundos de 12 a 16 km</h3>
+<ul>
+  <li><strong>Terreno grande por teselas</strong> (<code>TerrainGrid</code>): un mundo de 12 × 12 km con 1,5 m por vértice,
+    repartido en teselas sin grietas que se leen de disco en otros hilos solo alrededor de cada jugador (y de la cámara en el
+    editor).</li>
+  <li><strong>Importar mapas de alturas</strong>: RAW/R16 de 16 bits, R32 y PNG de 16 bits, a un terreno o a las teselas.</li>
+  <li><strong>World Partition en disco</strong>: lo descargado va a disco y vuelve leído en otro hilo; con <em>Celdas en
+    disco</em> los objetos de cada celda se guardan aparte y el juego y el servidor solo leen las cercanas.</li>
+</ul>
+<p>Ver <a href="mundos-grandes.html">Mundos grandes</a>.</p>
+
 <h3 id="splines">Splines</h3>
 <p>
   <em>GameObject &gt; Spline</em>: carretera (con líneas), camino, río, muro, valla, tubería, raíles o cinta. Los puntos se

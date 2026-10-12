@@ -315,6 +315,7 @@ void EditorApp::closeProject() {
         assets_watch_ = nullptr;
     }
     refresh_at_ = -1.0;
+    terrain_streamer_.clear(world_, terrain_store_, false);
     terrain_store_.clear();
     folder_nodes_.clear();
     current_subfolders_.clear();
@@ -359,6 +360,12 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
                   << "\n";
         return false;
     }
+    // World Partition con celdas en disco: el editor las carga todas (la
+    // escena se ve y se edita entera; el juego solo lee las cercanas).
+    if (const int streamed = worldpart::WorldPartitionSystem::loadExternalCells(world_, path); streamed > 0) {
+        std::cout << "[Editor] " << streamed << " objetos de las celdas en disco ("
+                  << dialogs::utf8(worldpart::WorldPartitionSystem::cellsFolder(path).filename()) << ")\n";
+    }
     alignOriginAfterLoad(origin_before);
     // Los modelos y texturas de la escena anterior, fuera de la GPU y de la
     // RAM (antes se quedaban: las dos escenas a la vez en la VRAM hasta que
@@ -395,7 +402,26 @@ bool EditorApp::saveScene() {
     if (const int terrains = terrain_store_.saveAll(); terrains > 0) {
         std::cout << "[Editor] " << terrains << " terreno(s) guardado(s)\n";
     }
-    if (!ecs::saveScene(world_, scene_path_, &error)) {
+    // World Partition con "Celdas en disco": los objetos que se descargan van a
+    // <escena>.cells/ (un archivo por celda) y no a la escena.
+    const worldpart::WorldPartition* external = nullptr;
+    for (const entt::entity h : world_.registry().view<worldpart::WorldPartition>()) {
+        const worldpart::WorldPartition& wp = world_.registry().get<worldpart::WorldPartition>(h);
+        if (wp.enabled && wp.external_cells) external = &wp;
+    }
+    if (external != nullptr) {
+        const int cells = worldpart::WorldPartitionSystem::writeExternalCells(world_, external->cell_size, scene_path_, &error);
+        if (cells < 0) {
+            std::cerr << "[Editor] No se pudieron guardar las celdas: " << error << "\n";
+            return false;
+        }
+        std::cout << "[Editor] " << cells << " celdas en disco guardadas\n";
+    } else {
+        worldpart::WorldPartitionSystem::removeExternalCells(scene_path_);  // ya no se usan
+    }
+    std::function<bool(const ecs::Entity&)> in_cell_file;
+    if (external != nullptr) in_cell_file = [](const ecs::Entity& e) { return worldpart::WorldPartitionSystem::streamable(e); };
+    if (!ecs::saveScene(world_, scene_path_, &error, in_cell_file)) {
         std::cerr << "[Editor] No se pudo guardar: " << error << "\n";
         return false;
     }
@@ -1624,6 +1650,7 @@ void EditorApp::drawAddMenuItems() {
         ImGui::EndMenu();
     }
     if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+    if (ImGui::MenuItem("Terreno grande (teselas)")) createTerrainGridEntity();
     if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
     if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
     if (ImGui::MenuItem("Ambiente (clima y hora)")) createEnvironmentEntity();

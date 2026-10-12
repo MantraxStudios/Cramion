@@ -50,7 +50,7 @@
   </tbody>
 </table>
 <h3 id="WorldPartition">World Partition <code>WorldPartition</code></h3>
-<p>Divide el mundo en celdas: en Play y en el juego solo estan cargadas las cercanas a las fuentes de carga (o a la camara); lo lejano sale del mundo y vuelve al acercarse. <em>Construir HLOD</em> crea una malla simplificada por celda que se ve de lejos.</p>
+<p>Divide el mundo en celdas: en Play y en el juego solo estan cargadas las cercanas a las fuentes de carga (o a la camara); lo lejano sale del mundo (a un archivo de la cache, no a la memoria) y vuelve al acercarse, leido en otro hilo. Con <em>Celdas en disco</em>, al guardar, los objetos de cada celda van a <code>&lt;escena&gt;.cells/</code> y el juego y el servidor solo leen las cercanas. <em>Construir HLOD</em> crea una malla simplificada por celda que se ve de lejos. Ver <a href="mundos-grandes.html">Mundos grandes</a>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -60,6 +60,8 @@
     <tr><td>Margen de descarga<br><code>unload_margin</code></td><td>numero</td><td>64</td><td>0 a 2000</td><td>Se descarga a la distancia de carga mas esto (sin parpadeos)</td></tr>
     <tr><td>Celdas por frame<br><code>loads_per_frame</code></td><td>entero</td><td>2</td><td>1 a 64</td><td>Celdas que se recrean cada frame (menos = sin tirones)</td></tr>
     <tr><td>Descargas por frame<br><code>unloads_per_frame</code></td><td>entero</td><td>4</td><td>1 a 64</td><td>Celdas que se guardan y quitan cada frame (menos = sin tirones)</td></tr>
+    <tr><td>Objetos por frame<br><code>restores_per_frame</code></td><td>entero</td><td>256</td><td>8 a 100000</td><td>Objetos que se recrean cada frame al cargar una celda</td></tr>
+    <tr><td>Celdas en disco<br><code>external_cells</code></td><td>si/no</td><td>no</td><td></td><td>Al guardar, los objetos que se descargan van a &lt;escena&gt;.cells/ (un archivo por celda) y no a la escena: el juego y el servidor solo leen las celdas cercanas (mundos grandes, MMO)</td></tr>
     <tr><td>Mostrar la rejilla<br><code>show_grid</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
   </tbody>
 </table>

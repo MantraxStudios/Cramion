@@ -256,6 +256,13 @@ bool EditorApp::drawTerrainTool(float delta_seconds) {
 void EditorApp::drawTerrainInspector(ecs::Entity entity) {
     terrain::Terrain& comp = entity.get<terrain::Terrain>();
     const std::shared_ptr<terrain::TerrainData> data = terrain_store_.get(comp);
+    if (const terrain::TerrainTile* tile = entity.tryGet<terrain::TerrainTile>()) {
+        const ecs::Entity grid = world_.find(tile->grid);
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Tesela %d,%d de \"%s\"", tile->x, tile->z,
+                           grid.valid() ? grid.name().c_str() : "?");
+        ImGui::TextDisabled("Capas, hierba y tamano se cambian en el Terreno grande. Esculpir y pintar, aqui.");
+        if (grid.valid() && ImGui::Button("Seleccionar el Terreno grande", ImVec2(-1.0f, 0.0f))) selectOnly(grid.uuid());
+    }
     ImGui::SeparatorText("Herramientas");
     if (ImGui::Checkbox("Editar terreno", &terrain_edit_)) terrain_ramp_started_ = false;
     ImGui::SameLine();
@@ -383,6 +390,46 @@ void EditorApp::drawTerrainInspector(ecs::Entity entity) {
             pushTerrainUndo(comp.data, std::move(before));
         }
         ImGui::TextDisabled("Ej.: roca en pendientes de 35 a 90°, nieve por encima de 0.8");
+    }
+    if (ImGui::CollapsingHeader("Importar mapa de alturas")) {
+        if (ImGui::Button("Importar RAW / R16 / R32 / PNG 16 bits...", ImVec2(-1.0f, 0.0f)) && data) {
+            const std::filesystem::path file = dialogs::openFile(
+                window_.handle(),
+                L"Mapas de alturas (*.raw;*.r16;*.r32;*.png;*.tga;*.bmp)\0*.raw;*.r16;*.r32;*.png;*.tga;*.bmp\0Todos\0*.*\0",
+                project_.assetsFolder());
+            terrain::Heightmap map;
+            std::string error;
+            if (!file.empty() && !terrain::loadHeightmap(file, map, &error)) {
+                pushToast("No se pudo leer el mapa de alturas", error, 3);
+            } else if (!file.empty()) {
+                if (grid_import_flip_) terrain::flipHeightmapZ(map);
+                auto before = std::make_shared<terrain::TerrainData>(*data);
+                terrain::importIntoTerrain(map, *data);
+                pushTerrainUndo(comp.data, std::move(before));
+                pushToast("Mapa de alturas importado", std::to_string(map.width) + " x " + std::to_string(map.height) + " -> " +
+                                                           std::to_string(data->resolution()) + " x " +
+                                                           std::to_string(data->resolution()));
+            }
+        }
+        ImGui::Checkbox("Voltear en Z##hm", &grid_import_flip_);
+        ImGui::TextDisabled("Se ajusta a la resolucion del terreno (bicubico). La altura maxima la da \"Altura maxima\".");
+        if (!entity.has<terrain::TerrainTile>() && data &&
+            ImGui::Button("Convertir en Terreno grande (teselas)...", ImVec2(-1.0f, 0.0f))) {
+            // El mismo relieve ampliado a una rejilla (12 km por defecto) que se
+            // carga por zonas: el continente del Generador, a tamano MMO.
+            ecs::Entity grid_entity = createTerrainGridEntity();
+            terrain::TerrainGrid& grid = grid_entity.get<terrain::TerrainGrid>();
+            grid.height = comp.height;
+            grid.layers = comp.layers;
+            Vec3 p = grid_entity.worldPosition();
+            p.y = entity.worldPosition().y;
+            grid_entity.setWorldPosition(p);
+            entity.setActive(false);  // el original se queda, apagado
+            commit();
+            terrain::GridImportOptions options;
+            options.auto_paint = grid_import_paint_;
+            startGridImport(grid_entity, terrain::heightmapFromTerrain(*data), options);
+        }
     }
 }
 

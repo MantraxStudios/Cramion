@@ -2252,7 +2252,7 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
     grass_eye_ = eye;
     terrain_samples_.clear();
     renderer_ = &renderer;
-    std::unordered_set<entt::entity> alive;
+    std::unordered_set<Uuid> alive;
     if (terrain_store_ != nullptr) {
         for (const entt::entity handle : world.registry().view<terrain::Terrain>()) {
             const Entity e = world.wrap(handle);
@@ -2260,9 +2260,9 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
             const terrain::Terrain& comp = e.get<terrain::Terrain>();
             const std::shared_ptr<terrain::TerrainData> data = terrain_store_->get(comp);
             if (!data) continue;
-            alive.insert(handle);
+            alive.insert(e.uuid());
             terrain_samples_.push_back({data, comp, e.worldPosition()});
-            TerrainGpu& gpu = terrains_[handle];
+            TerrainGpu& gpu = terrains_[e.uuid()];
             if (gpu.id == 0 || gpu.data != data || gpu.resolution != data->resolution() ||
                 gpu.splat_resolution != data->splatResolution()) {
                 if (gpu.id != 0) renderer.destroyTerrain(gpu.id);

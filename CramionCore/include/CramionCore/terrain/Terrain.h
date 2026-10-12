@@ -149,6 +149,11 @@ public:
         const auto it = data_.find(relative);
         return it != data_.end() ? it->second : nullptr;
     }
+    // Unos datos ya leidos (el streaming de teselas los lee en otro hilo).
+    void put(const std::string& relative, std::shared_ptr<TerrainData> data) { data_[relative] = std::move(data); }
+    // Los suelta de la memoria (quien aun los use se queda su referencia).
+    void release(const std::string& relative) { data_.erase(relative); }
+    std::size_t loadedCount() const { return data_.size(); }
     // Guarda los que tienen cambios. Devuelve cuantos.
     int saveAll();
     void clear() { data_.clear(); }
@@ -160,6 +165,9 @@ private:
 
 // Registra el componente Terrain (idempotente).
 void registerTerrainComponents();
+
+// La lista de capas en el Inspector (la usan Terrain y TerrainGrid).
+void reflectTerrainLayers(ecs::PropertyVisitor& v, std::vector<TerrainLayer>& layers);
 
 }  // namespace cramion::terrain
 

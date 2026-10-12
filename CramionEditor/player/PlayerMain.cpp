@@ -17,6 +17,7 @@
 // raton, teclas y ejes con los controles en pantalla (dm::TouchControls).
 
 #include <CramionCore/spline/Spline.h>
+#include <CramionCore/terrain/TerrainGrid.h>
 #include <CramionCore/world/WorldPartition.h>
 #include <CramionCore/gameplay/Accessibility.h>
 #include <CramionCore/project/Mods.h>
@@ -783,6 +784,7 @@ int runPlayer() {
         voxel::VoxelSystem voxels;
         worldpart::WorldPartitionSystem partition;  // celdas cerca del jugador (WorldPartition)
         worldpart::setActivePartition(&partition);
+        terrain::TerrainStreamer terrain_streamer;  // teselas de los TerrainGrid cerca del jugador
         ai::CrowdSystem crowds;  // multitudes (CrowdSpawner)
         crowds.setNavigation(&nav);
         crowds.setPrefabResolver([&database](const Uuid& uuid) -> std::filesystem::path {
@@ -1004,6 +1006,8 @@ int runPlayer() {
                     if (load.file.empty() || !ecs::loadScene(world, load.file, &error)) {
                         std::cerr << "[Juego] No se pudo abrir la escena " << load.file.string() << " " << error << "\n";
                     }
+                    // Sus celdas en disco (World Partition) se leen al acercarse.
+                    partition.setSceneFile(load.file, false);
                     // Iluminacion horneada de la escena (<escena>.crbake).
                     {
                         gfx::BakedLighting baked;
@@ -1083,6 +1087,11 @@ int runPlayer() {
                         core::Vec3 position, forward;
                         main_camera(position, forward);
                         partition.begin(world, position);
+                        // El terreno bajo el jugador, cargado antes de la fisica (no cae al vacio).
+                        terrain_streamer.loadNow(world, terrains, position);
+                        for (const entt::entity h : world.registry().view<worldpart::StreamingSource>()) {
+                            terrain_streamer.loadNow(world, terrains, world.wrap(h).worldPosition());
+                        }
                     }
                     physics.start(world);
                     twod_system.start(world);  // fisica 2D del nivel
@@ -1317,6 +1326,7 @@ int runPlayer() {
                 fire::updateFires(world, dt, fire::FireMode::Play, &terrains);
                 spline::updateSplineFollowers(world, dt);
                 partition.update(world, scene.camera().position());
+                terrain_streamer.update(world, terrains, scene.camera().position(), true, false);
                 crowds.update(world, dt, scene.camera().position());
                 {
                     const gameplay::AccessibilitySettings& a = gameplay::accessibility();

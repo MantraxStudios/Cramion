@@ -324,6 +324,20 @@ void World::clear() {
     ++structure_version_;
 }
 
+void World::clearPersistent() {
+    std::vector<entt::entity> doomed;
+    for (const entt::entity root : roots_) {
+        if (!registry_.get<EntityInfo>(root).transient) doomed.push_back(root);
+    }
+    if (doomed.size() == roots_.size()) {
+        clear();
+        return;
+    }
+    for (const entt::entity root : doomed) destroy(wrap(root));
+    origin_ = DVec3{};
+    ++structure_version_;
+}
+
 void World::shiftOrigin(const core::Vec3& offset) {
     if (offset.x == 0.0f && offset.y == 0.0f && offset.z == 0.0f) return;
     // Solo las raices: los hijos son relativos a su padre.

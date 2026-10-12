@@ -436,7 +436,9 @@ private:
     };
     terrain::TerrainStore* terrain_store_ = nullptr;
     gfx::VulkanRenderer* renderer_ = nullptr;
-    std::unordered_map<entt::entity, TerrainGpu> terrains_;
+    // Por UUID: deshacer o parar Play recrea las entidades (otro handle) y el
+    // terreno no se vuelve a subir a la GPU.
+    std::unordered_map<Uuid, TerrainGpu> terrains_;
 
     assets::AssetManager& assets_;
 

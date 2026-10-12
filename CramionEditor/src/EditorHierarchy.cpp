@@ -150,6 +150,7 @@ void EditorApp::drawHierarchy() {
         ImGui::Separator();
         item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::MenuItem("Terreno grande (teselas)")) createTerrainGridEntity();
         if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
@@ -290,6 +291,7 @@ void EditorApp::drawHierarchy() {
         ImGui::Separator();
         item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::MenuItem("Terreno grande (teselas)")) createTerrainGridEntity();
         if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
@@ -367,7 +369,11 @@ void EditorApp::buildHierarchyRows() {
     std::vector<HierarchyRow> stack;
     const std::vector<entt::entity>& roots = world_.roots();
     for (auto it = roots.rbegin(); it != roots.rend(); ++it) {
-        if (!isStageHelper(world_.wrap(*it).uuid())) stack.push_back(HierarchyRow{*it, 0});
+        const ecs::Entity root = world_.wrap(*it);
+        // Las teselas de un Terreno grande las pone y quita el streaming: no
+        // salen (se eligen con un clic en la Escena).
+        if (root.get<ecs::EntityInfo>().transient) continue;
+        if (!isStageHelper(root.uuid())) stack.push_back(HierarchyRow{*it, 0});
     }
     while (!stack.empty()) {
         const HierarchyRow row = stack.back();
@@ -614,6 +620,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
         ImGui::Separator();
         item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::MenuItem("Terreno grande (teselas)")) createTerrainGridEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
         if (ImGui::MenuItem("Volumen de niebla")) createFogVolumeEntity();

@@ -174,7 +174,9 @@ void EditorApp::enterPlay() {
     particles_.clear();
     fluids_.clear();  // la vista previa del editor no pasa al juego
     fluid_preview_ = false;
-    // World Partition: lo lejano sale del mundo antes de crear la fisica.
+    // World Partition: lo lejano sale del mundo antes de crear la fisica. Las
+    // celdas en disco ya estan en el mundo (se cargan al abrir la escena).
+    world_partition_.setSceneFile(scene_path_, true);
     world_partition_.begin(world_, scene_.camera().position());
     physics_.start(world_);
     effectsEnterPlay();  // VFX, fisica 2D y repeticiones (EditorEffects.cpp)
@@ -431,6 +433,7 @@ void EditorApp::updatePhysics(float delta_seconds) {
                                                                             : fire::FireMode::Edit;
         fire::updateFires(world_, delta_seconds, fire_mode, &terrain_store_);
     }
+    updateTerrainStreaming();  // teselas de los Terrenos grandes cerca de la camara (EditorTerrainGrid.cpp)
     if (play_state_ == PlayState::Playing) {
         spline::updateSplineFollowers(world_, delta_seconds);
         world_partition_.update(world_, scene_.camera().position());  // celdas cerca del jugador

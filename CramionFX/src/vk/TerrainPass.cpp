@@ -135,8 +135,8 @@ void TerrainPass::create(const VulkanDevice& device, const vk::raii::DescriptorS
     layout_info.setPushConstantRanges(push);
     layout_ = vk::raii::PipelineLayout(device.handle(), layout_info);
 
-    // Hasta 16 terrenos con un set por frame en vuelo.
-    const std::uint32_t max_sets = 16 * frames_in_flight;
+    // Hasta 160 terrenos (teselas de un TerrainGrid) con un set por frame en vuelo.
+    const std::uint32_t max_sets = 160 * frames_in_flight;
     const std::array<vk::DescriptorPoolSize, 2> sizes = {{
         {vk::DescriptorType::eCombinedImageSampler, max_sets * 5},
         {vk::DescriptorType::eUniformBuffer, max_sets},
@@ -175,6 +175,8 @@ void TerrainPass::create(const VulkanDevice& device, const vk::raii::DescriptorS
 
 void TerrainPass::destroy() {
     terrains_.clear();
+    retired_.clear();
+    layer_sets_.clear();
     grass_pipeline_ = nullptr;
     grass_draw_layout_ = nullptr;
     grass_cull_pipeline_ = nullptr;
@@ -351,7 +353,7 @@ void TerrainPass::createGrassPipelines(const VulkanDevice& device, const vk::rai
     set_info.setBindings(bindings);
     grass_set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), set_info);
 
-    const std::uint32_t max_sets = 16 * frames_;
+    const std::uint32_t max_sets = 160 * frames_;
     const std::array<vk::DescriptorPoolSize, 2> sizes = {{
         {vk::DescriptorType::eUniformBuffer, max_sets},
         {vk::DescriptorType::eStorageBuffer, max_sets * 2},
@@ -494,7 +496,7 @@ void TerrainPass::recordGrassCull(const vk::raii::CommandBuffer& cmd, std::uint3
         Terrain& t = *terrain;
         const GrassDesc& g = t.desc.grass;
         if (t.grass) t.grass->culled = false;
-        if (!g.enabled || !t.desc.visible || frame >= t.sets.size() || !t.arrays_ready) continue;
+        if (!g.enabled || !t.desc.visible || frame >= t.sets.size() || !t.layer_set) continue;
         if (!ensureGrass(t)) continue;
         Grass& grass = *t.grass;
 
@@ -678,14 +680,16 @@ std::uint32_t TerrainPass::createTerrain(std::uint32_t resolution, std::uint32_t
     allocate.descriptorPool = *pool_;
     allocate.setSetLayouts(layouts);
     t.sets = vk::raii::DescriptorSets(device_->handle(), allocate);
-    loadLayerTextures(t);
+    // Las capas llegan con el primer setDesc (hasta entonces no se dibuja).
     return id;
 }
 
 void TerrainPass::destroyTerrain(std::uint32_t id) {
-    if (terrains_.count(id) == 0) return;
-    device_->waitIdle();  // algun frame en vuelo puede estar usandolo
-    terrains_.erase(id);
+    const auto it = terrains_.find(id);
+    if (it == terrains_.end()) return;
+    // Algun frame en vuelo puede estar usandolo: se borra unos frames despues.
+    retired_.push_back(Retired{std::move(it->second), nullptr, frames_ + 1});
+    terrains_.erase(it);
     uploads_.erase(std::remove_if(uploads_.begin(), uploads_.end(), [&](const Upload& u) { return u.id == id; }),
                    uploads_.end());
 }
@@ -697,14 +701,15 @@ void TerrainPass::setDesc(std::uint32_t id, const TerrainDesc& desc) {
     t.desc = desc;
     if (t.desc.layers.size() > kMaxTerrainLayers) t.desc.layers.resize(kMaxTerrainLayers);
     // Las texturas de las capas solo se recargan si cambian sus rutas.
-    bool changed = !t.arrays_ready;
+    bool changed = !t.layer_set;
     for (std::uint32_t i = 0; i < kMaxTerrainLayers; ++i) {
         const std::filesystem::path albedo = i < t.desc.layers.size() ? t.desc.layers[i].albedo : std::filesystem::path{};
         const std::filesystem::path normal = i < t.desc.layers.size() ? t.desc.layers[i].normal : std::filesystem::path{};
         changed = changed || albedo != t.albedo_paths[i] || normal != t.normal_paths[i];
     }
     if (changed) {
-        device_->waitIdle();
+        // Las de antes (si las habia) y sus descriptores pueden estar en vuelo.
+        if (t.layer_set) device_->waitIdle();
         loadLayerTextures(t);
     }
     // Lo que cambia el color del terreno para los rayos: capas, tintes y hierba.
@@ -808,44 +813,59 @@ void TerrainPass::createArrayTexture(ArrayTexture& texture, const std::vector<st
 }
 
 void TerrainPass::loadLayerTextures(Terrain& terrain) {
-    std::vector<std::vector<std::uint8_t>> albedo(kMaxTerrainLayers);
-    std::vector<std::vector<std::uint8_t>> normal(kMaxTerrainLayers);
+    std::string key;
     for (std::uint32_t i = 0; i < kMaxTerrainLayers; ++i) {
         const TerrainLayerDesc* layer = i < terrain.desc.layers.size() ? &terrain.desc.layers[i] : nullptr;
         terrain.albedo_paths[i] = layer != nullptr ? layer->albedo : std::filesystem::path{};
         terrain.normal_paths[i] = layer != nullptr ? layer->normal : std::filesystem::path{};
-        asset::ImageRgba8 image;
-        if (!terrain.albedo_paths[i].empty() && asset::loadImageRgba8(terrain.albedo_paths[i], image, 2048)) {
-            albedo[i] = resizeSquare(image);
-        } else {
-            if (!terrain.albedo_paths[i].empty()) {
-                std::cerr << "[Terreno] No se pudo leer " << terrain.albedo_paths[i].string() << "\n";
-                terrain.albedo_paths[i].clear();
+        key += terrain.albedo_paths[i].string() + "|" + terrain.normal_paths[i].string() + "|";
+    }
+    // Otro terreno con las mismas texturas (las teselas de una rejilla): se
+    // comparten, ni se vuelven a leer ni ocupan VRAM otra vez.
+    std::shared_ptr<LayerSet> set = layer_sets_[key].lock();
+    if (!set) {
+        set = std::make_shared<LayerSet>();
+        std::vector<std::vector<std::uint8_t>> albedo(kMaxTerrainLayers);
+        std::vector<std::vector<std::uint8_t>> normal(kMaxTerrainLayers);
+        for (std::uint32_t i = 0; i < kMaxTerrainLayers; ++i) {
+            set->albedo_paths[i] = terrain.albedo_paths[i];
+            set->normal_paths[i] = terrain.normal_paths[i];
+            asset::ImageRgba8 image;
+            if (!set->albedo_paths[i].empty() && asset::loadImageRgba8(set->albedo_paths[i], image, 2048)) {
+                albedo[i] = resizeSquare(image);
+            } else {
+                if (!set->albedo_paths[i].empty()) {
+                    std::cerr << "[Terreno] No se pudo leer " << set->albedo_paths[i].string() << "\n";
+                    set->albedo_paths[i].clear();
+                }
+                albedo[i] = solidLayer(255, 255, 255, 255);
             }
-            albedo[i] = solidLayer(255, 255, 255, 255);
+            if (!set->normal_paths[i].empty() && asset::loadImageRgba8(set->normal_paths[i], image, 2048)) {
+                normal[i] = resizeSquare(image);
+            } else {
+                set->normal_paths[i].clear();
+                normal[i] = solidLayer(128, 128, 255, 255);
+            }
         }
-        if (!terrain.normal_paths[i].empty() && asset::loadImageRgba8(terrain.normal_paths[i], image, 2048)) {
-            normal[i] = resizeSquare(image);
-        } else {
-            terrain.normal_paths[i].clear();
-            normal[i] = solidLayer(128, 128, 255, 255);
+        createArrayTexture(set->albedo, albedo);
+        createArrayTexture(set->normal, normal);
+        // Color medio de cada capa (lo que se ve de lejos, y lo que ven los rayos).
+        for (std::uint32_t i = 0; i < kMaxTerrainLayers; ++i) {
+            double sum[3] = {0.0, 0.0, 0.0};
+            const std::vector<std::uint8_t>& pixels = albedo[i];
+            const std::size_t count = pixels.size() / 4;
+            for (std::size_t p = 0; p < count; ++p) {
+                for (std::size_t c = 0; c < 3; ++c) sum[c] += pixels[p * 4 + c];
+            }
+            const double scale = count > 0 ? 1.0 / (255.0 * static_cast<double>(count)) : 0.0;
+            set->average[i] = core::Vec3{static_cast<float>(sum[0] * scale), static_cast<float>(sum[1] * scale),
+                                         static_cast<float>(sum[2] * scale)};
         }
+        layer_sets_[key] = set;
     }
-    createArrayTexture(terrain.albedo_array, albedo);
-    createArrayTexture(terrain.normal_array, normal);
-    terrain.arrays_ready = true;
-    // Color medio de cada capa (lo que se ve de lejos, y lo que ven los rayos).
-    for (std::uint32_t i = 0; i < kMaxTerrainLayers; ++i) {
-        double sum[3] = {0.0, 0.0, 0.0};
-        const std::vector<std::uint8_t>& pixels = albedo[i];
-        const std::size_t count = pixels.size() / 4;
-        for (std::size_t p = 0; p < count; ++p) {
-            for (std::size_t c = 0; c < 3; ++c) sum[c] += pixels[p * 4 + c];
-        }
-        const double scale = count > 0 ? 1.0 / (255.0 * static_cast<double>(count)) : 0.0;
-        terrain.layer_average[i] = core::Vec3{static_cast<float>(sum[0] * scale), static_cast<float>(sum[1] * scale),
-                                              static_cast<float>(sum[2] * scale)};
-    }
+    // Las de antes esperan unos frames (un frame en vuelo las puede usar).
+    if (terrain.layer_set && terrain.layer_set != set) retired_.push_back(Retired{nullptr, terrain.layer_set, frames_ + 1});
+    terrain.layer_set = std::move(set);
     ++terrain.look_revision;
     writeDescriptors(terrain);
 }
@@ -856,8 +876,8 @@ void TerrainPass::writeDescriptors(Terrain& terrain) {
         const vk::DescriptorBufferInfo params{*terrain.params[frame].handle(), 0, sizeof(GpuTerrainParams)};
         const vk::DescriptorImageInfo splat0{*clamp_sampler_, *terrain.splat0.view(), vk::ImageLayout::eShaderReadOnlyOptimal};
         const vk::DescriptorImageInfo splat1{*clamp_sampler_, *terrain.splat1.view(), vk::ImageLayout::eShaderReadOnlyOptimal};
-        const vk::DescriptorImageInfo albedo{*repeat_sampler_, *terrain.albedo_array.view, vk::ImageLayout::eShaderReadOnlyOptimal};
-        const vk::DescriptorImageInfo normal{*repeat_sampler_, *terrain.normal_array.view, vk::ImageLayout::eShaderReadOnlyOptimal};
+        const vk::DescriptorImageInfo albedo{*repeat_sampler_, *terrain.layer_set->albedo.view, vk::ImageLayout::eShaderReadOnlyOptimal};
+        const vk::DescriptorImageInfo normal{*repeat_sampler_, *terrain.layer_set->normal.view, vk::ImageLayout::eShaderReadOnlyOptimal};
         const vk::DescriptorSet set = *terrain.sets[frame];
         const std::array<vk::WriteDescriptorSet, 6> writes = {{
             {set, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &heights},
@@ -955,7 +975,7 @@ std::vector<TerrainPass::RayTracingSource> TerrainPass::rayTracingSources() cons
         for (std::uint32_t i = 0; i < kMaxTerrainLayers; ++i) {
             // Sin textura, terrain.frag pinta su tinte con manchas de media ~1.
             const core::Vec3 tint = i < t.desc.layers.size() ? t.desc.layers[i].tint : core::Vec3{1.0f, 1.0f, 1.0f};
-            const core::Vec3 base = t.layer_average[i];
+            const core::Vec3 base = t.layer_set ? t.layer_set->average[i] : core::Vec3{1.0f, 1.0f, 1.0f};
             s.layer_color[i] = core::Vec3{base.x * tint.x, base.y * tint.y, base.z * tint.z};
         }
         s.height_revision = t.height_revision;
@@ -1111,7 +1131,15 @@ std::uint64_t TerrainPass::localSignature(const core::Vec3& position, float rang
 
 void TerrainPass::prepare(std::uint32_t frame, const core::Vec3& camera_position, const core::Mat4& view_projection) {
     lod_camera_ = camera_position;
+    // Lo quitado hace frames_ + 1 frames ya no lo usa ningun frame en vuelo.
+    for (Retired& r : retired_) --r.frames;
+    std::erase_if(retired_, [](const Retired& r) { return r.frames == 0; });
+    std::erase_if(layer_sets_, [](const auto& entry) { return entry.second.expired(); });
     for (auto& [id, terrain] : terrains_) {
+        if (!terrain->layer_set) {
+            terrain->chunks.clear();  // sin capas aun: no se dibuja
+            continue;
+        }
         selectChunks(*terrain, camera_position, view_projection);
         if (frame >= terrain->params.size()) continue;
         const TerrainDesc& d = terrain->desc;
@@ -1125,8 +1153,9 @@ void TerrainPass::prepare(std::uint32_t frame, const core::Vec3& camera_position
             params.layer_params[i] = core::Vec4{std::max(layer.tiling, 0.01f), layer.roughness, layer.metallic,
                                                 layer.normal_strength};
             params.layer_tint[i] = core::Vec4{layer.tint.x, layer.tint.y, layer.tint.z,
-                                              terrain->albedo_paths[i].empty() ? 0.0f : 1.0f};
-            params.layer_extra[i] = core::Vec4{terrain->normal_paths[i].empty() ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f};
+                                              terrain->layer_set->albedo_paths[i].empty() ? 0.0f : 1.0f};
+            params.layer_extra[i] =
+                core::Vec4{terrain->layer_set->normal_paths[i].empty() ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f};
         }
         terrain->params[frame].write(&params, sizeof(params));
     }
