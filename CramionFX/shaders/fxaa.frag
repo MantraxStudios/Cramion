@@ -17,8 +17,8 @@ layout(set = 0, binding = 0) uniform sampler2D scene_color;
 
 layout(push_constant) uniform PushConstants {
     vec2 inverse_resolution;  // 1 / (ancho, alto)
-    float enabled;            // 0 = pasar la imagen tal cual
-    float unused;
+    float enabled;            // 0 = sin FXAA
+    float sharpen;            // 0..1 nitidez adaptativa (tipo AMD CAS); 0 = nada
 } push;
 
 layout(location = 0) in vec2 v_uv;
@@ -42,11 +42,27 @@ vec3 sampleOffset(vec2 uv, vec2 offset_pixels) {
     return texture(scene_color, uv + offset_pixels * push.inverse_resolution).rgb;
 }
 
+// Nitidez adaptativa al contraste (AMD CAS simplificado): enfoca menos donde
+// el vecindario ya tiene mucho contraste, para no crear halos. Solo se aplica
+// donde el FXAA no suaviza (enfocar un borde ya suavizado le haria anillos).
+vec3 sharpen(vec3 c) {
+    if (push.sharpen <= 0.0) return c;
+    vec3 n = sampleOffset(v_uv, vec2(0.0, -1.0));
+    vec3 s = sampleOffset(v_uv, vec2(0.0, 1.0));
+    vec3 e = sampleOffset(v_uv, vec2(1.0, 0.0));
+    vec3 w = sampleOffset(v_uv, vec2(-1.0, 0.0));
+    vec3 mn = min(c, min(min(n, s), min(e, w)));
+    vec3 mx = max(c, max(max(n, s), max(e, w)));
+    vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+    vec3 weight = amp * (-1.0 / mix(8.0, 5.0, push.sharpen));
+    return clamp((c + (n + s + e + w) * weight) / (1.0 + 4.0 * weight), 0.0, 1.0);
+}
+
 void main() {
     vec3 center = texture(scene_color, v_uv).rgb;
 
     if (push.enabled < 0.5) {
-        out_color = vec4(center, 1.0);
+        out_color = vec4(sharpen(center), 1.0);
         return;
     }
 
@@ -63,7 +79,7 @@ void main() {
 
     // --- 2) Sin contraste suficiente no hay borde que suavizar ---
     if (contrast < max(kEdgeThresholdMin, luma_max * kEdgeThreshold)) {
-        out_color = vec4(center, 1.0);
+        out_color = vec4(sharpen(center), 1.0);
         return;
     }
 

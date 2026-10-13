@@ -7,8 +7,9 @@
 
 <h3 id="generar">Generar</h3>
 <ol>
-  <li>Marca como <strong>Static</strong> (Inspector) los objetos que no se mueven y deben aportar luz rebotada. Si no hay ninguno
-    marcado, cuentan todas las mallas que no caen con física. El terreno cuenta siempre.</li>
+  <li>Marca como <strong>Static</strong> (Inspector) los objetos que no se mueven y deben aportar luz rebotada. Basta con marcar
+    el padre: la raíz de un modelo importado o de una instancia de prefab cubre a todos sus hijos. Si no hay ninguno marcado,
+    cuentan todas las mallas que no se mueven. El terreno cuenta siempre (desde su mapa de alturas, tenga o no colisión).</li>
   <li>Opcional: pon uno o varios <strong>Light Probe Volume</strong> (componente o el botón de la ventana): una caja centrada en
     el objeto llena de sondas cada <em>Separación</em> metros. Más juntas = más detalle (y más tiempo). Si no hay ninguno, se
     usa uno automático que cubre la escena.</li>
@@ -20,6 +21,45 @@
   exportado. <em>Borrar la iluminación horneada</em> vuelve al tiempo real.
 </p>
 
+<h3 id="que-entra">Qué entra en el horneado</h3>
+<p>
+  Si sale <em>Nada que hornear</em>, el aviso dice cuántas mallas se miraron y por qué no entró ninguna. Lo mismo, entero, en
+  la ventana (<em>Último horneado: qué entró</em>) y en el MCP (<code>lighting_state.gather_report</code>). No entran:
+</p>
+<ul>
+  <li>los objetos desactivados o con el MeshRenderer invisible;</li>
+  <li>los que tienen un <strong>Rigidbody Dynamic</strong> y no son Static (si son Static entran igual, con un aviso: pon el
+    Rigidbody en Kinematic);</li>
+  <li>las mallas que mueve un <strong>Animator</strong> que reproduce. Los modelos con animaciones (FBX, GLB) sin Animator sí
+    entran, en su pose de reposo, como se ven en el editor;</li>
+  <li>si hay objetos Static, los que no lo son.</li>
+</ul>
+
+<h3 id="luces">Luz directa y sombras horneadas</h3>
+<p>
+  Cada luz tiene un <strong>Modo (horneado)</strong> en el Inspector, como el Mode de las luces de Unity:
+</p>
+<table>
+  <thead><tr><th>Modo</th><th>Luz directa y sombras</th><th>Rebote</th></tr></thead>
+  <tbody>
+    <tr><td>Mixta (por defecto)</td><td>En tiempo real (mapas de sombra)</td><td>Horneado</td></tr>
+    <tr><td>Horneada</td><td>Horneadas, con sombras suaves (el <em>Radio de la fuente</em> da la penumbra). En modo Horneada
+      la luz deja de dibujarse en tiempo real: no cuesta nada en el juego.</td><td>Horneado</td></tr>
+    <tr><td>Solo tiempo real</td><td>En tiempo real</td><td>No aporta</td></tr>
+  </tbody>
+</table>
+<p>
+  El sol toma el modo de su Light direccional; si la escena no tiene, el de <em>Sol</em> en la ventana. La luz horneada va a
+  las sondas y al <strong>lightmap de superficie</strong> (texeles en el mundo pegados a la geometría, sin UV2), que se enciende
+  solo a 0.5 m si hay luces horneadas; con texeles más pequeños las sombras salen más nítidas (y el horneado tarda más). Lo que
+  se mueve recibe la luz horneada de las sondas (con su sombra), pero no proyecta sombra de las luces horneadas.
+</p>
+<div class="note">
+  Al aire libre conviene el sol <strong>Mixto</strong>: un sol horneado deja de valer en cuanto la hora del día lo mueve (más
+  de 2 grados): entonces vuelve a tiempo real y hay que volver a hornear. Las luces de interior que no cambian (lámparas,
+  antorchas fijas) son las candidatas a <strong>Horneada</strong>.
+</div>
+
 <h3 id="ajustes">Ajustes</h3>
 <table>
   <thead><tr><th>Ajuste</th><th>Qué hace</th></tr></thead>
@@ -29,6 +69,9 @@
     <tr><td>Rebotes</td><td>Rebotes además del primero</td></tr>
     <tr><td>Intensidad del cielo</td><td>Cuánto ilumina el cielo a las superficies (y lo que rebota de ellas)</td></tr>
     <tr><td>Separación automática</td><td>De las sondas del volumen automático</td></tr>
+    <tr><td>Lightmap de superficie</td><td>Texeles de luz en el mundo; su tamaño fija el detalle de las sombras horneadas</td></tr>
+    <tr><td>Sol</td><td>Modo del sol si no hay Light direccional</td></tr>
+    <tr><td>Rayos de sombra por luz</td><td>Más = penumbras más suaves y menos ruido en las luces horneadas</td></tr>
   </tbody>
 </table>
 
@@ -37,7 +80,8 @@
   Cada sonda guarda la luz rebotada que le llega (armónicos esféricos L2) y cuánto cielo ve en cada dirección. En el render,
   un pase a media resolución interpola las 8 sondas de alrededor de cada píxel (con pesos que evitan fugas a través de las
   paredes) y escribe la misma imagen de luz rebotada que leería la iluminación. Sirve igual para lo estático y para lo que se
-  mueve (personajes, objetos con física). La luz directa (sol, luces, sombras) sigue siendo en tiempo real.
+  mueve (personajes, objetos con física). La luz directa de las luces Mixtas sigue siendo en tiempo real; la de las
+  Horneadas va dentro de la misma imagen, ya con sus sombras.
 </p>
 <div class="note">
   Vuelve a generar si cambias la escena, la hora del sol o las luces: lo horneado no se entera. Las sondas que caen dentro de

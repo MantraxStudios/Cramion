@@ -56,7 +56,13 @@ std::string EditorApp::mcpTools21(const std::string& name, const std::string& ar
         return json{{"running", testRunActive()}, {"results", json::parse(testResultsJson(), nullptr, false)}}.dump();
     }
     if (name == "bake_lighting") {
-        configureLightingBake(args.value("rays", -1), args.value("bounces", -1), args.value("spacing", -1.0f));
+        int sun_mode = -1;
+        if (args.contains("sun_mode") && args["sun_mode"].is_string()) {
+            const std::string m = args["sun_mode"].get<std::string>();
+            sun_mode = m == "baked" ? 1 : (m == "realtime" ? 2 : (m == "mixed" ? 0 : -1));
+        }
+        configureLightingBake(args.value("rays", -1), args.value("bounces", -1), args.value("spacing", -1.0f), sun_mode,
+                              args.value("surface_texel", -1.0f), args.value("direct_samples", -1));
         startLightingBake();
         return lightingStateJson();
     }

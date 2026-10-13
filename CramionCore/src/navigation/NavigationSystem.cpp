@@ -234,6 +234,9 @@ struct TileJob {
     int x = 0;
     int z = 0;
     std::uint64_t version = 0;
+    // Epoca de Impl al lanzarse (sube con resetTiles/clear: cambio de escena,
+    // reconstruir todo). Un resultado de otra epoca nunca entra en la malla.
+    std::uint64_t epoch = 0;
     NavigationSettings settings;
     float bmin[3]{};
     float bmax[3]{};
@@ -250,6 +253,7 @@ struct TileResult {
     int x = 0;
     int z = 0;
     std::uint64_t version = 0;
+    std::uint64_t epoch = 0;  // la del TileJob
     unsigned char* data = nullptr;  // dtAlloc; nullptr = baldosa vacia
     int size = 0;
     float milliseconds = 0.0f;
@@ -601,6 +605,13 @@ struct NavigationSystem::Impl {
     std::vector<TileResult> results;
     bool quit = false;
     int in_flight = 0;
+    // Sube con resetTiles (y clear): los trabajos que aun corren en los hilos
+    // vuelven con la vieja y se tiran sin tocar las baldosas nuevas (antes
+    // una baldosa de la escena anterior con la misma version entraba en la
+    // malla de la nueva).
+    std::uint64_t epoch = 1;
+    // World::sceneGeneration de lo que hay en la malla (0 = aun nada).
+    std::uint64_t scene_generation = 0;
 
     // --- Dibujo ---
     NavDebugMesh debug;
@@ -648,6 +659,7 @@ struct NavigationSystem::Impl {
                     }
                     job->terrains.clear();  // suelta los snapshots
                     TileResult r = buildTile(*job);
+                    r.epoch = job->epoch;
                     std::lock_guard lock(mutex);
                     results.push_back(r);
                 }
@@ -729,12 +741,21 @@ struct NavigationSystem::Impl {
     void resetTiles() {
         {
             std::lock_guard lock(mutex);
+            // Los trabajos en cola y los resultados sin recoger contaban en
+            // `in_flight`: se descuentan (antes se perdian y, tras unos
+            // cuantos cambios de escena a medio construir, dispatch() no
+            // lanzaba nada mas: la malla dejaba de construirse para siempre).
+            in_flight -= static_cast<int>(jobs.size() + results.size());
             jobs.clear();
             for (TileResult& r : results) dtFree(r.data);
             results.clear();
+            ++epoch;  // los que siguen en los hilos vuelven con la epoca vieja
         }
-        // Las que estan en los hilos volveran con una version vieja.
+        in_flight = std::max(in_flight, 0);
+        // Las que estan en los hilos volveran con una version y una epoca
+        // viejas (se tiran en collect sin tocar la baldosa).
         for (auto& [key, tile] : tiles) {
+            tile.in_flight = false;
             ++tile.version;
             tile.has_data = false;
             tile.triangles.clear();
@@ -1218,6 +1239,7 @@ struct NavigationSystem::Impl {
             job->x = tileX(key);
             job->z = tileZ(key);
             job->version = tile.version;
+            job->epoch = epoch;
             job->settings = settings;
             const float size = settings.tileWorldSize();
             float ymin = kBig, ymax = -kBig;
@@ -1264,7 +1286,13 @@ struct NavigationSystem::Impl {
         }
         for (TileResult& r : done) {
             const TileKey key = tileKey(r.x, r.z);
-            --in_flight;
+            in_flight = std::max(in_flight - 1, 0);
+            if (r.epoch != epoch) {
+                // De antes de un resetTiles/clear (otra escena): ni entra ni
+                // toca la baldosa de ahora (puede tener su propio trabajo en marcha).
+                dtFree(r.data);
+                continue;
+            }
             auto it = tiles.find(key);
             if (it == tiles.end()) {
                 dtFree(r.data);
@@ -1601,6 +1629,12 @@ void NavigationSystem::update(ecs::World& world, float delta_seconds, bool simul
     Impl& d = *impl_;
     if (d.world != &world) {
         d.world = &world;
+    }
+    // Otra escena (World::sceneGeneration): la malla de la anterior fuera
+    // antes de escanear (red de seguridad si quien cambio no llamo a clear).
+    if (world.sceneGeneration() != d.scene_generation) {
+        if (d.scene_generation != 0) clear();
+        d.scene_generation = world.sceneGeneration();
     }
     d.time += delta_seconds;
     // Sin generacion en tiempo real: solo la primera vez (malla vacia).

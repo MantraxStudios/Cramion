@@ -9,7 +9,7 @@
 // solo al final suma sus 256 cubos al histograma global.
 //
 // Medicion ponderada al centro: los pixeles del centro de la pantalla cuentan
-// hasta 3 veces mas que los del borde, como el "Metering Mode: Center
+// hasta 2 veces mas que los del borde, como el "Metering Mode: Center
 // Weighted" de Unreal. Lo que miras manda sobre lo que queda en la periferia.
 
 // Modo compatible (moviles): grupos de 128 hilos (el minimo que garantiza
@@ -63,7 +63,10 @@ void main() {
 
             vec2 centered = (vec2(pixel) + 0.5) / vec2(size) - 0.5;
             centered.x *= float(size.x) / float(size.y);
-            uint weight = 1u + uint(2.0 * exp(-dot(centered, centered) * 6.0) + 0.5);
+            // Peso 2..4 (= 1x..2x, en pasos de medio): con 1x..3x una luz que
+            // pasaba del borde al centro movia mucho la medicion (bombeo al
+            // girar la cabeza en VR).
+            uint weight = 2u + uint(2.0 * exp(-dot(centered, centered) * 6.0) + 0.5);
 
             atomicAdd(local_bins[binFor(luminance)], weight);
         }

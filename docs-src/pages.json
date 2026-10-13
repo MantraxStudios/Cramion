@@ -426,6 +426,11 @@
           "desc": "Lo que ve una cámara en una textura: pantallas, cámaras de seguridad, espejos y minimapas."
         },
         {
+          "slug": "video",
+          "title": "Vídeo",
+          "desc": "VideoPlayer: pantallas, Render Textures, fondos y sonido de vídeo en 3D o por varios altavoces."
+        },
+        {
           "slug": "render",
           "title": "Render y rendimiento",
           "desc": "Sombras, GI, trazado de rayos, escalado, presupuesto adaptativo y LODs."

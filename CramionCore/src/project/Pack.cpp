@@ -111,6 +111,8 @@ bool writePack(const std::filesystem::path& file, const std::vector<PackInput>& 
         entry.path = input.path;
         entry.offset = static_cast<std::uint64_t>(out.tellp());
         ZSTD_CCtx_reset(cctx.get(), ZSTD_reset_session_only);
+        // Nivel por entrada (videos a 1); entre frames se puede cambiar.
+        ZSTD_CCtx_setParameter(cctx.get(), ZSTD_c_compressionLevel, input.level > 0 ? input.level : level);
         const std::uint64_t source_size = std::filesystem::file_size(input.source, ec);
         if (!ec) ZSTD_CCtx_setPledgedSrcSize(cctx.get(), source_size);
         bool last = false;

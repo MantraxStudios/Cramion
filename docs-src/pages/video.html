@@ -1,0 +1,197 @@
+<p>
+  El componente <strong>VideoPlayer</strong> (<em>Reproductor de vídeo</em>) reproduce vídeos en la escena, como el
+  <em>VideoPlayer</em> de Unity: pantallas de cine, televisores, vallas publicitarias, cinemáticas en una
+  <a href="render-textures.html">Render Texture</a>, un fondo de vídeo detrás de la escena o retransmisiones por URL. El
+  sonido del vídeo pasa por el audio del motor, así que suena en 3D, se tapa detrás de las paredes y puede salir por
+  varios altavoces a la vez.
+</p>
+
+<h3 id="empezar">En 10 segundos</h3>
+<ol>
+  <li>Copia un <code>.mp4</code> a <code>Assets/</code> (o arrástralo desde el Explorador al Proyecto). Al abrir el
+    proyecto se lee su resolución, duración y pistas de audio, y sale su miniatura en el navegador.</li>
+  <li>Arrástralo del Proyecto a la <strong>Escena</strong>: aparece una <em>Pantalla de vídeo</em>, un plano con la proporción
+    del vídeo que lo muestra en su emisión (brilla sola) y suena desde la propia pantalla. Es un solo paso de deshacer.</li>
+  <li>Dale a <strong>Play</strong>.</li>
+</ol>
+<p>
+  Sin entrar en Play, el Inspector del VideoPlayer tiene una <strong>vista previa</strong> con reproducir, pausa, parar,
+  frame a frame y barra de tiempo. Haz doble clic en un vídeo del Proyecto para verlo en una ventana.
+</p>
+
+<h3 id="arrastrar">Arrastrar y soltar</h3>
+<table>
+  <thead><tr><th>Dónde lo sueltas</th><th>Qué pasa</th></tr></thead>
+  <tbody>
+    <tr><td>Escena</td><td>Pantalla de vídeo nueva donde lo sueltas (de pie sobre el suelo, mirando a la cámara): plano con la proporción del vídeo, <em>Salida</em> = MaterialOverride en la emisión y audio Direct en 3D.</td></tr>
+    <tr><td>Jerarquía (sobre un objeto)</td><td>Le añade un VideoPlayer (o usa el que tiene) con ese clip.</td></tr>
+    <tr><td>Campo <em>Clip de vídeo</em> del Inspector</td><td>Pone ese vídeo.</td></tr>
+    <tr><td>Hueco de textura de un <a href="materiales.html">material</a></td><td>Pregunta «¿Crear Render Texture de vídeo?»: crea una <code>.crrt</code> junto al vídeo y un objeto con un VideoPlayer en modo Render Texture. El material (y cualquier otro o una UI Image que use esa <code>.crrt</code>) muestra el vídeo.</td></tr>
+    <tr><td>Pegar (Ctrl+V) una URL <code>https://...</code> en la Escena</td><td>Pantalla de vídeo con <em>Fuente</em> = URL.</td></tr>
+  </tbody>
+</table>
+<p>
+  Mover un vídeo a otra carpeta en el navegador actualiza los VideoPlayer de la escena abierta. Como los clips de audio,
+  el vídeo se guarda por ruta: las otras escenas que lo usen conservan la ruta antigua.
+</p>
+
+<h3 id="fuente">Fuente: clip o URL</h3>
+<ul>
+  <li><strong>Clip</strong>: un archivo de Assets (<code>.mp4 .m4v .mov .webm .mkv .avi .wmv</code>). Entra en el juego
+    exportado.</li>
+  <li><strong>URL</strong>: <code>https://</code> (o <code>http://</code> solo hacia este PC, <code>localhost</code>), con la
+    misma política que <a href="cpp-http.html">Http</a>. También listas HLS <code>.m3u8</code> en Windows. El botón
+    <strong>Probar URL</strong> del Inspector la abre en otro hilo y muestra sus datos o el motivo exacto por el que no se
+    puede (política, códec que falta, red...).</li>
+</ul>
+<p>
+  <strong>Formatos recomendados: H.264 + AAC en MP4.</strong> Windows los decodifica por hardware en cualquier GPU. HEVC
+  (H.265) necesita las <em>HEVC Video Extensions</em> de la Microsoft Store; VP9 y AV1, las extensiones gratuitas <em>Web
+  Media</em> y <em>AV1</em>. En Windows N y KN hay que instalar el <em>Media Feature Pack</em>: sin él el editor y el juego
+  arrancan igual, pero el vídeo da un error que lo explica.
+</p>
+
+<h3 id="salida">Imagen: dónde se ve</h3>
+<table>
+  <thead><tr><th>Salida</th><th>Uso</th></tr></thead>
+  <tbody>
+    <tr><td><code>MaterialOverride</code></td><td>Sustituye una textura de los materiales del objeto (o del <em>Objeto</em> elegido): <em>Emisión</em> (pantalla encendida; si el material tiene la emisión en negro se pone blanca por la <em>Intensidad</em>), <em>Color</em> (con la luz de la escena) o <em>Ambas</em>. <em>Hueco de material</em> -1 = todos. Funciona también en modelos sin <code>.crmat</code> propio, y al quitarlo vuelve el material original.</td></tr>
+    <tr><td><code>RenderTexture</code></td><td>Escribe en una <code>.crrt</code>: se ve en todos los materiales y UI Image que la usen. El tamaño es el de la <code>.crrt</code>; el vídeo se escala con la <em>Proporción</em>.</td></tr>
+    <tr><td><code>CameraFarPlane</code></td><td>Detrás de la escena (sustituye al cielo) en la vista del juego, con <em>Opacidad</em>.</td></tr>
+    <tr><td><code>CameraNearPlane</code></td><td>Delante de todo en la vista del juego (con <em>Opacidad</em> 0,5, un velo de vídeo encima de la escena). No pasa por la exposición ni el tonemapping.</td></tr>
+    <tr><td><code>ApiOnly</code></td><td>Solo para scripts: <code>videoTexture</code> da el id de la textura.</td></tr>
+  </tbody>
+</table>
+<p>
+  <em>Proporción</em>: Stretch (estirar), FitInside (entero, con bandas), FitOutside (llenar, recortando), FitHorizontally,
+  FitVertically o NoScaling. La imagen sale siempre en sRGB; <em>Color = Linear</em> solo cambia algo con <code>ApiOnly</code>.
+</p>
+
+<h3 id="audio">Audio: Direct, varias fuentes y varias pistas</h3>
+<table>
+  <thead><tr><th>Salida de audio</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Direct</code></td><td>Suena desde el propio objeto: 3D con <em>Distancia mínima</em> y <em>máxima</em>, o 2D sin <em>3D</em>. Se tapa con las paredes si el <a href="componentes-audio.html#AudioListener">Audio Listener</a> tiene la oclusión.</td></tr>
+    <tr><td><code>AudioSource</code></td><td>Cada <strong>pista</strong> suena por las <strong>fuentes</strong> que elijas (objetos con <a href="componentes-audio.html#AudioSource">Audio Source</a>), con el volumen, el 3D, los efectos (paso bajo, eco...), la oclusión y la reverberación de cada una. Una pista en 3 fuentes = el mismo sonido en 3 altavoces; pistas distintas en fuentes distintas (idiomas, música y voces separadas...). Mientras el vídeo usa una fuente, su clip propio se calla.</td></tr>
+    <tr><td><code>ApiOnly</code></td><td>Los scripts leen las muestras con <code>videoReadSamples</code> (bloques de unos 20-50 ms desde el hilo principal; no sirve para DSP en tiempo real).</td></tr>
+    <tr><td><code>None</code></td><td>Sin sonido.</td></tr>
+  </tbody>
+</table>
+<p>
+  En el Inspector, la sección <strong>Pistas de audio</strong> tiene <em>Crear las N pistas del vídeo</em> (con los nombres e
+  idiomas del archivo), y por pista <em>Activa</em>, <em>Silenciar</em>, <em>Volumen</em> (se oye al momento en Play), la lista
+  de fuentes, <em>+ Fuente...</em> (elige un objeto con Audio Source o arrastra objetos de la Jerarquía) y <strong>+ Crear fuente
+  hija</strong>, que crea un altavoz hijo con su Audio Source (sin clip) y pasa la salida a <code>AudioSource</code>.
+</p>
+<p>
+  El <strong>reloj</strong> por defecto es el del audio (<code>AudioClock</code>): los labios van a tiempo con la voz. Sin
+  audio, o con <code>GameTime</code>, manda el tiempo del juego por la <em>Velocidad</em>; <code>UnscaledTime</code> ignora la
+  escala de tiempo. Pausar el editor o el juego congela imagen y sonido.
+</p>
+
+<h3 id="reproduccion">Reproducción y eventos</h3>
+<p>
+  <em>Reproducir al empezar</em>, <em>Esperar al primer frame</em> (el reloj no corre hasta tener imagen), <em>Bucle</em>,
+  <em>Saltar frames</em> (si el decodificador se retrasa, no se queda atrás), <em>Velocidad</em> (0,1 a 4; el audio sube o baja
+  de tono como en Unity), <em>Empezar en</em> y <em>Fin</em> (con Bucle repite solo esa sección).
+</p>
+<p>
+  Eventos para <a href="visual-scripting.html">Visual Scripting</a> (nodo <em>Evento de vídeo</em>) y para los scripts de C++
+  (<code>onMessage</code>): <code>OnVideoPrepared</code>, <code>OnVideoStarted</code>, <code>OnVideoLoopPointReached</code>,
+  <code>OnVideoFrameReady</code> (solo con <em>Enviar OnVideoFrameReady</em>: uno por frame, cuesta),
+  <code>OnVideoSeekCompleted</code>, <code>OnVideoError</code>, <code>OnVideoFrameDropped</code>, <code>OnVideoBuffering</code> y
+  <code>OnVideoResumed</code>. Al cambiar de escena los vídeos se paran y no llegan eventos de la escena anterior.
+</p>
+
+<h3 id="scripts">Desde un script</h3>
+<pre><code>// En el script de una entidad con VideoPlayer
+entity().videoSeek(30.0);                 // a los 30 s
+entity().videoSetTrackVolume(1, 0.0f);    // la pista 1 en silencio
+entity().videoSetUrl("https://ejemplo.com/directo.m3u8");
+entity().videoPause();</code></pre>
+<p>
+  Métodos: <code>videoPlay</code>, <code>videoPause</code>, <code>videoStop</code>, <code>videoPrepare</code>,
+  <code>videoSeek</code>, <code>videoSeekFrame</code>, <code>videoStepForward</code>, <code>videoSetClip</code>,
+  <code>videoSetUrl</code>, <code>videoSetTrackVolume</code>, <code>videoSetTrackMute</code>,
+  <code>videoSetTrackTargets</code> y <code>videoReadSamples</code>. Propiedades: <code>videoTime</code>,
+  <code>videoFrame</code>, <code>videoLength</code>, <code>videoFrameCount</code>, <code>videoFrameRate</code>,
+  <code>videoWidth</code>, <code>videoHeight</code>, <code>videoIsPlaying</code>, <code>videoIsPrepared</code>,
+  <code>videoIsLive</code>, <code>videoState</code>, <code>videoPlaybackSpeed</code>, <code>videoLoop</code>,
+  <code>videoVolume</code>, <code>videoDroppedFrames</code> y <code>videoTexture</code>. Globales:
+  <code>Video.isSupported(uri)</code> y <code>Video.info(path)</code>. La referencia completa está en la
+  <a href="cpp-api.html">API de C++</a>.
+</p>
+
+<h3 id="editor">En el editor</h3>
+<ul>
+  <li><strong>Importación</strong>: al <em>abrir el proyecto</em> (nunca al abrir una escena), los vídeos sin datos o cambiados
+    se leen en uno o dos hilos y se guardan en <code>Library/Cache/Video</code> (datos en <code>.json</code> y miniatura en
+    <code>.png</code>). La barra de estado muestra «Leyendo vídeos n/m». Un vídeo que llega después se lee en cuanto se ve
+    en el navegador; clic derecho &gt; <em>Volver a leer</em> lo fuerza.</li>
+  <li><strong>Navegador</strong>: filtro <em>Vídeo</em>, miniatura con la duración, y al pasar el ratón la resolución, los fps,
+    el códec y las pistas. Clic derecho: <em>Vista previa</em>, <em>Crear pantalla en la escena</em>, <em>Asignar a la
+    selección</em>.</li>
+  <li><strong>Inspector</strong>: vista previa sin Play (con el audio en 2D), en Play la imagen del juego, y las
+    estadísticas: hardware o software, códec, frames perdidos y segundos en el búfer. Al dar Play la vista previa se para
+    (no se decodifica el mismo vídeo dos veces).</li>
+</ul>
+
+<h3 id="calidad">Calidad y rendimiento</h3>
+<ul>
+  <li><em>Resolución máxima</em> (Nativa, 2160 ... 360), <em>Decodificación</em> (Auto = hardware si se puede, Hardware o
+    Software), <em>Búfer</em> (segundos de datos comprimidos o de red y de audio; nunca de imágenes ya decodificadas),
+    <em>Frames en cola</em> (2 a 8) y <em>Baja latencia</em> (directos).</li>
+  <li>Un vídeo 1080p H.264 con decodificación por hardware gasta poca CPU. Un <strong>4K</strong> ocupa mucha memoria (cientos
+    de MB por reproductor entre el decodificador, la cola y las texturas; en una gráfica integrada es RAM del sistema): usa
+    <em>Resolución máxima</em> 1080 si la pantalla no se ve tan grande.</li>
+  <li>Cada pantalla que no se vea puede pararse con <code>videoPause</code>; un vídeo parado no decodifica.</li>
+</ul>
+
+<h3 id="exportar">Juego exportado, Android y servidor</h3>
+<ul>
+  <li>Los vídeos de Assets entran en el paquete <code>.crpack</code> comprimidos a nivel 1 (ya vienen comprimidos: así no se
+    gasta tiempo al exportar). Los paquetes de versiones anteriores se siguen leyendo.</li>
+  <li><strong>Windows</strong>: Media Foundation, la del sistema (sin librerías extra ni licencias para tu juego).</li>
+  <li><strong>Android</strong>: el componente se carga y se guarda, pero todavía no reproduce (llegará en una versión
+    posterior); <code>OnVideoError</code> lo indica.</li>
+  <li>El <strong>servidor dedicado</strong> de Linux carga las escenas con VideoPlayer y lo ignora (no decodifica nada).</li>
+</ul>
+
+<h3 id="VideoPlayer">Referencia: Video Player <code>VideoPlayer</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td>Fuente<br><code>source</code></td><td>opción</td><td>Clip</td><td>Clip, Url</td><td>Un vídeo de Assets o una URL</td></tr>
+    <tr><td>Clip de vídeo<br><code>clip</code></td><td>texto</td><td>(vacío)</td><td></td><td>Archivo de Assets (.mp4 .m4v .mov .webm .mkv .avi .wmv)</td></tr>
+    <tr><td>URL<br><code>url</code></td><td>texto</td><td>(vacío)</td><td></td><td>https://... (o http://localhost...)</td></tr>
+    <tr><td>Reproducir al empezar<br><code>play_on_awake</code></td><td>sí/no</td><td>sí</td><td></td><td></td></tr>
+    <tr><td>Esperar al primer frame<br><code>wait_for_first_frame</code></td><td>sí/no</td><td>sí</td><td></td><td>El reloj no avanza hasta tener la primera imagen</td></tr>
+    <tr><td>Bucle<br><code>loop</code></td><td>sí/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Saltar frames<br><code>skip_on_drop</code></td><td>sí/no</td><td>sí</td><td></td><td>Si el decodificador se retrasa, salta frames</td></tr>
+    <tr><td>Velocidad<br><code>playback_speed</code></td><td>número</td><td>1</td><td>0,1 a 4</td><td></td></tr>
+    <tr><td>Empezar en<br><code>start_time</code></td><td>número</td><td>0</td><td>segundos</td><td></td></tr>
+    <tr><td>Fin<br><code>end_time</code></td><td>número</td><td>0</td><td>segundos</td><td>0 = hasta el final; con Bucle repite la sección</td></tr>
+    <tr><td>Reloj<br><code>time_source</code></td><td>opción</td><td>AudioClock</td><td>AudioClock, GameTime, UnscaledTime</td><td></td></tr>
+    <tr><td>Enviar OnVideoFrameReady<br><code>send_frame_ready</code></td><td>sí/no</td><td>no</td><td></td><td>Un evento por frame</td></tr>
+    <tr><td>Salida<br><code>render_mode</code></td><td>opción</td><td>MaterialOverride</td><td>RenderTexture, MaterialOverride, CameraFarPlane, CameraNearPlane, ApiOnly</td><td></td></tr>
+    <tr><td>Render Texture<br><code>target_texture</code></td><td>asset</td><td>(ninguna)</td><td>.crrt</td><td>Con Salida RenderTexture</td></tr>
+    <tr><td>Objeto<br><code>target_renderer</code></td><td>objeto</td><td>(este)</td><td></td><td>Con MaterialOverride</td></tr>
+    <tr><td>Hueco de material<br><code>material_slot</code></td><td>entero</td><td>-1</td><td>-1 a 64</td><td>-1 = todos</td></tr>
+    <tr><td>Propiedad<br><code>material_property</code></td><td>opción</td><td>Emissive</td><td>Emissive, Albedo, Both</td><td></td></tr>
+    <tr><td>Intensidad<br><code>emissive_intensity</code></td><td>número</td><td>1</td><td>0 a 20</td><td></td></tr>
+    <tr><td>Opacidad<br><code>camera_alpha</code></td><td>número</td><td>1</td><td>0 a 1</td><td>Planos de cámara</td></tr>
+    <tr><td>Proporción<br><code>aspect</code></td><td>opción</td><td>FitInside</td><td>Stretch, FitInside, FitOutside, FitHorizontally, FitVertically, NoScaling</td><td></td></tr>
+    <tr><td>Salida de audio<br><code>audio_output</code></td><td>opción</td><td>Direct</td><td>None, Direct, AudioSource, ApiOnly</td><td></td></tr>
+    <tr><td>Volumen<br><code>volume</code></td><td>número</td><td>1</td><td>0 a 2</td><td></td></tr>
+    <tr><td>3D<br><code>direct_spatial</code></td><td>sí/no</td><td>sí</td><td></td><td>Con Direct</td></tr>
+    <tr><td>Distancia mínima<br><code>direct_min_distance</code></td><td>número</td><td>2</td><td>metros</td><td></td></tr>
+    <tr><td>Distancia máxima<br><code>direct_max_distance</code></td><td>número</td><td>40</td><td>metros</td><td></td></tr>
+    <tr><td>Pistas de audio<br><code>tracks</code></td><td>lista</td><td>(vacía)</td><td></td><td>Por pista: <code>enabled</code>, <code>volume</code>, <code>mute</code> y <code>targets</code> (objetos con Audio Source)</td></tr>
+    <tr><td>Resolución máxima<br><code>max_resolution</code></td><td>opción</td><td>Native</td><td>Native, P2160, P1440, P1080, P720, P480, P360</td><td></td></tr>
+    <tr><td>Decodificación<br><code>decode</code></td><td>opción</td><td>Auto</td><td>Auto, Hardware, Software</td><td></td></tr>
+    <tr><td>Búfer<br><code>buffer_seconds</code></td><td>número</td><td>1</td><td>0,1 a 30</td><td>Datos comprimidos/red y audio</td></tr>
+    <tr><td>Frames en cola<br><code>max_queued_frames</code></td><td>entero</td><td>4</td><td>2 a 8</td><td></td></tr>
+    <tr><td>Baja latencia<br><code>low_latency</code></td><td>sí/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Color<br><code>color</code></td><td>opción</td><td>Srgb</td><td>Srgb, Linear</td><td>Linear solo con Salida ApiOnly</td></tr>
+  </tbody>
+</table>

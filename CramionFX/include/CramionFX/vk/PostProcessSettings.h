@@ -14,7 +14,11 @@ enum class Tonemapper : std::int32_t {
     Neutral = 0,  // Khronos PBR Neutral (por defecto)
     Aces = 1,     // ACES (ajuste de Stephen Hill)
     None = 2,     // lineal recortado (para depurar)
-    Agx = 3,      // AgX (Blender 4): respuesta de pelicula, luces fuertes que se desaturan como en camara
+    // AgX base (Blender 4): respuesta de pelicula, luces fuertes que se
+    // desaturan como en camara. Neutro y plano: pensado para gradar encima.
+    Agx = 3,
+    // AgX + look "Punchy" suave y exposicion igualada a ACES: fotografico.
+    AgxPunchy = 4,
 };
 
 // Todo lo configurable del post-proceso y de los efectos de pantalla. Los
@@ -25,11 +29,13 @@ struct PostProcessSettings {
     bool auto_exposure = true;
     float exposure_compensation = 0.0f;  // EV (tambien con la manual)
     float manual_exposure = 1.0f;        // multiplicador con auto_exposure = false
-    // Limites del ajuste de la auto-exposicion, en EV (log2 del
-    // multiplicador): -2 = como mucho 4 veces mas oscuro, 1.4 = como mucho
-    // ~2.6 veces mas claro que la exposicion neutra.
-    float min_ev = -2.0f;
-    float max_ev = 1.4f;
+    // Limites de seguridad de la auto-exposicion, en EV (log2 del
+    // multiplicador). La noche ya no depende del tope: por encima de 0.75 EV
+    // solo se adapta una parte (exposure_average.comp), asi que una noche
+    // con luna queda en ~x3 y una farola en la vista la baja. 2 = como mucho
+    // 4 veces mas claro (noche sin luna); -4 = 16 veces mas oscuro.
+    float min_ev = -4.0f;
+    float max_ev = 2.0f;
     float adaptation_speed_up = 3.0f;    // hacia una escena mas brillante (por segundo)
     float adaptation_speed_down = 1.2f;  // hacia una escena mas oscura
     // Vision nocturna del ojo (efecto Purkinje): con poca luz ven los
@@ -96,6 +102,8 @@ struct PostProcessSettings {
 
     // --- Antialiasing ---
     bool fxaa = true;
+    // Nitidez adaptativa al contraste tras el FXAA (0 = nada, 1 = fuerte).
+    float sharpen = 0.0f;
 
     // --- Efectos de pantalla (on/off y parametros principales) ---
     bool ambient_occlusion = true;
@@ -106,10 +114,11 @@ struct PostProcessSettings {
     // que las cascadas no resuelven. Largo del rayo en metros.
     bool contact_shadows = true;
     float contact_shadow_length = 0.5f;
-    // Polvo del aire (1/m). 0.004: aire de un dia claro, se ven los rayos de
-    // sol entre los arboles sin velar el paisaje. (Era 0.02: con el cielo
-    // iluminando el polvo, a 30 m ya tapaba la mitad de la escena: todo se
-    // veia lechoso.)
+    // Polvo del aire (1/m). 0.004 es una bruma ligera (~1 km de visibilidad).
+    // El aire limpio real ronda 1e-5..1e-4 /m; en la practica 0.0005..0.001
+    // si se quieren seguir viendo los rayos de sol entre los arboles. (Era
+    // 0.02: con el cielo iluminando el polvo, a 30 m ya tapaba la mitad de la
+    // escena: todo se veia lechoso.)
     float volumetric_density = 0.004f;
     float volumetric_anisotropy = 0.6f;
     // Niebla por altura: densidad a la altura 0 (1/m) y lo rapido que se

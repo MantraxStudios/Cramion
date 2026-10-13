@@ -21,6 +21,7 @@
 
 #include "CramionFX/core/Math.h"
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -73,8 +74,31 @@ struct BakedLighting {
     std::vector<BakedProbeVolume> volumes;  // del mas pequeno al mas grande (gana el primero que contiene el punto)
     std::vector<core::Vec4> probes;         // kBakedProbeVec4 por sonda
     SurfaceLightmap surface;                // opcional (texel en el mundo)
+    // Luces "Horneadas" (modo de la luz, como Unity): su luz DIRECTA y sus
+    // sombras ya estan dentro de las sondas y del lightmap de superficie. En
+    // modo horneado el renderizador no las dibuja en tiempo real (no hay luz
+    // doble ni mapas de sombra suyos). Version 3 del .crbake.
+    bool sun_baked = false;                 // el sol se horneo entero (directa + sombras)
+    core::Vec3 sun_direction{};             // hacia donde iban sus rayos al hornear
+    std::vector<std::array<std::uint64_t, 2>> baked_lights;  // UUID (alto, bajo) de las puntuales/focos horneados
     bool empty() const { return (volumes.empty() || probes.empty()) && surface.empty(); }
+    bool lightBaked(std::uint64_t high, std::uint64_t low) const {
+        for (const auto& id : baked_lights) {
+            if (id[0] == high && id[1] == low) return true;
+        }
+        return false;
+    }
 };
+
+// Si el sol de ahora sigue siendo el horneado (la hora del dia no lo ha
+// movido mas de ~2 grados). Si se movio, el sol vuelve a tiempo real.
+inline bool bakedSunMatches(const BakedLighting& baked, const core::Vec3& sun_direction) {
+    if (!baked.sun_baked) return false;
+    const float la = core::length(baked.sun_direction);
+    const float lb = core::length(sun_direction);
+    if (la < 1e-6f || lb < 1e-6f) return false;
+    return core::dot(baked.sun_direction, sun_direction) / (la * lb) > 0.99939f;  // cos(2 grados)
+}
 
 enum class LightingMode : int {
     Realtime = 0,  // SSGI o trazado de rayos (lo de siempre)

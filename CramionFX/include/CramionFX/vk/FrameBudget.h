@@ -85,6 +85,11 @@ public:
     // limitan la pantalla del juego y el escalado del preset, asi que la
     // resolucion interna empieza a tope y solo baja si hace falta).
     void setStartLevel(Lever lever, std::uint8_t level);
+    // Tope de una palanca (por debajo de su maximo): el gobernador no la baja
+    // mas alla y el punto de partida tampoco. VR: la resolucion interna se
+    // queda en 0.87 como poco (en el casco se nota mucho) y baja antes lo
+    // demas. 255 = sin tope (su maximo).
+    void setLevelCap(Lever lever, std::uint8_t cap);
 
     // El usuario cambio la calidad (ajustes graficos, un efecto prendido):
     // se vuelve al punto de partida y se mide de nuevo, sin los bloqueos de
@@ -128,6 +133,8 @@ private:
     float target_fps_ = 60.0f;
     std::array<std::uint8_t, kLeverCount> levels_{};
     std::array<std::uint8_t, kLeverCount> start_levels_{};
+    std::array<std::uint8_t, kLeverCount> caps_{};  // = maxLevel salvo setLevelCap
+    void clampToCaps();
 
     float ema_ms_ = 0.0f;
     bool has_sample_ = false;

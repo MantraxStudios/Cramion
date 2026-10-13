@@ -1488,6 +1488,8 @@ struct PhysicsSystem::Impl {
         std::shared_ptr<TerrainBuild> build;
         int frames = 0;         // frames esperando
         std::uint64_t seen = 0;  // ultima sincronizacion en que seguia haciendo falta
+        // World::sceneGeneration al lanzarse: el de otra escena no se mete nunca.
+        std::uint64_t generation = 0;
     };
     std::unordered_map<entt::entity, PendingTerrain> pending_terrain;
     // La proxima sincronizacion lo hace todo al momento (terrenos y modelos de
@@ -2698,8 +2700,11 @@ struct PhysicsSystem::Impl {
         const bool has_collider = it != entries.end() && !it->second.solid.IsInvalid();
         const Vec3 corner{world_matrix.m[3][0], world_matrix.m[3][1], world_matrix.m[3][2]};
 
+        // Generacion de escena: un collider lanzado para la escena anterior
+        // (handle reutilizado) se tira y se hace otro.
+        const std::uint64_t generation = entity.world() != nullptr ? entity.world()->sceneGeneration() : 0;
         auto pit = pending_terrain.find(handle);
-        if (pit == pending_terrain.end() || pit->second.key != key) {
+        if (pit == pending_terrain.end() || pit->second.key != key || pit->second.generation != generation) {
             if (pit != pending_terrain.end()) {
                 pit->second.build->cancel->cancelled.store(true, std::memory_order_release);
             }
@@ -2721,6 +2726,7 @@ struct PhysicsSystem::Impl {
             PendingTerrain& fresh = pending_terrain[handle];
             fresh = PendingTerrain{};
             fresh.key = key;
+            fresh.generation = generation;
             fresh.build = std::move(build);
             pit = pending_terrain.find(handle);
         }

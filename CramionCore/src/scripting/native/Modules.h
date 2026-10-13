@@ -50,6 +50,7 @@ void registerSteamApi(Runtime& rt);          // Steam
 void registerTestApi(Runtime& rt);           // Test / Assert (pruebas del juego)
 void registerVisualScriptRuntime(Runtime& rt);  // Visual Scripts (.crgraph)
 void registerAiApi(Runtime& rt);             // StateMachine, BehaviorTree
+void registerVideoApi(Runtime& rt);          // Entity:video*, Video, eventos OnVideo*
 
 // Todos, en orden (ScriptSystem::ScriptSystem).
 inline void registerAll(Runtime& rt) {
@@ -73,6 +74,7 @@ inline void registerAll(Runtime& rt) {
     registerTestApi(rt);
     registerVisualScriptRuntime(rt);
     registerAiApi(rt);
+    registerVideoApi(rt);
 }
 
 }  // namespace cramion::scripting::native

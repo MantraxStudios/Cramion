@@ -409,6 +409,16 @@ void EditorApp::drawSceneView() {
             revealInHierarchy(e.uuid());
             commit();
         }
+        // Video: "Pantalla de video" donde se suelta (plano con la proporcion
+        // del video, Material Override sobre la emision y sonido 3D).
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kVideoPayload)) {
+            Vec3 point{};
+            Vec3 normal{};
+            std::optional<Vec3> place;
+            if (surfaceHit(ImGui::GetMousePos().x, ImGui::GetMousePos().y, point, normal)) place = point;
+            const std::filesystem::path file = dialogs::fromUtf8(static_cast<const char*>(payload->Data));
+            createVideoScreen(assetRelative(file), false, place);
+        }
         // Imagen: se estampa donde se suelta (como arrastrar un material de
         // decal en Unreal).
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kImagePayload)) {
@@ -529,7 +539,8 @@ void EditorApp::drawSceneView() {
         }
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicateSelection();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C, false)) copySelection();
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) pasteClipboard();
+        // Texto http(s) en el portapapeles: pantalla de video con esa URL.
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false) && !pasteVideoUrl()) pasteClipboard();
     }
 
     flushOverlay();

@@ -204,7 +204,8 @@
 <h3 id="presets">Presets de post-procesado</h3>
 <p>
   El botón <strong>Presets...</strong> del Post-procesado (o clic derecho en cualquier componente &gt; <em>Presets</em>)
-  aplica un preset de fábrica (Realista, Ultra realista (todos los efectos prendidos), Cinematográfico, Día soleado, Atardecer, Noche de luna, Terror, Tormenta,
+  aplica un preset de fábrica (Realista, Ultra realista (todos los efectos prendidos; los dos usan AgX Punchy, aire
+  limpio y un poco de nitidez), Cinematográfico, Día soleado, Atardecer, Noche de luna, Terror, Tormenta,
   Invierno, Retro, Blanco y negro) o uno del proyecto. <em>Guardar estos valores como preset...</em> lo crea en
   <code>Assets/Presets/&lt;Componente&gt;/</code> (un <code>.crpreset</code> que viaja con el proyecto; clic derecho en
   él para borrarlo). Con varios objetos seleccionados se aplica a todos; en un volumen se conservan su forma, tamaño,
@@ -317,6 +318,17 @@
   frame la que basta según lo grande que se ve en pantalla; las sombras lejanas usan versiones aún más simples y los objetos
   diminutos se dejan de dibujar. Las <a href="editor-interfaz.html#paneles">Estadísticas</a> muestran cuántos triángulos y
   objetos se ahorran.
+</p>
+
+<h3 id="video">Vídeo en la escena</h3>
+<p>
+  Un <a href="video.html">VideoPlayer</a> lleva un vídeo a la imagen de cuatro formas: sustituye la textura de color o de
+  emisión de los materiales de un objeto (<em>Material Override</em>, también en modelos sin <code>.crmat</code> propio),
+  escribe en una <a href="render-textures.html">Render Texture</a> (todos los materiales y UI Image que la usen lo
+  muestran), o se dibuja detrás de la escena (en lugar del cielo) o delante de todo en la vista del juego. La imagen se
+  sube a la GPU dentro del frame (NV12 convertido a color en un compute shader) y sale siempre en sRGB; los planos de
+  cámara no pasan por la exposición ni el tonemapping. La primera vez que un objeto recibe un vídeo puede verse un frame
+  con su material normal mientras se prepara la variante.
 </p>
 
 <h3 id="optimizar">Consejos de rendimiento</h3>

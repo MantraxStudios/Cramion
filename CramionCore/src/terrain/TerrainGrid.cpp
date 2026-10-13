@@ -288,6 +288,7 @@ struct TerrainStreamer::LoadJob {
     // Versiones de las vecinas con las que se cosio (0 = no estaba).
     std::array<std::uint64_t, 9> neighbour_version{};
     bool async = false;  // cosida en el hilo (si no, se cose al entrar, como antes)
+    std::uint64_t generation = 0;  // World::sceneGeneration al lanzarse
     bool ready() const { return done.load(std::memory_order_acquire); }
 };
 
@@ -341,6 +342,7 @@ void TerrainStreamer::startLoad(TerrainStore& store, const GridState& state, int
     const auto splat = static_cast<std::uint32_t>(std::clamp(state.settings.splat_resolution, 16, 4096));
     auto job = std::make_shared<LoadJob>();
     job->async = async;
+    job->generation = scene_generation_;
     // Fotos de las vecinas en memoria (aqui, en el hilo principal): el hilo
     // trabajador cose con ellas sin tocar los datos vivos.
     std::vector<NeighbourShot> shots;
@@ -409,6 +411,8 @@ bool TerrainStreamer::collect(TerrainStore& store, const GridState& state, int x
     tile.job.reset();
     tile.loading = false;
     if (!job->data) return false;
+    // Leida para otra escena (cambio de escena mientras se leia): nunca entra.
+    if (job->generation != scene_generation_) return false;
     // Si mientras tanto ya hay datos en el almacen (un deshacer del editor
     // los devolvio), mandan esos: el archivo es mas viejo.
     const std::string& path = pathOf(state, x, z, tile);
@@ -567,7 +571,12 @@ void TerrainStreamer::syncGrid(ecs::World& world, TerrainStore& store, ecs::Enti
     for (auto& [key, tile] : state.tiles) {
         if (!tileAlive(world, tile)) continue;
         ecs::Entity te = world.wrap(tile.entity);
-        if (Terrain* t = te.tryGet<Terrain>()) applyGridSettings(g, *t);
+        if (Terrain* t = te.tryGet<Terrain>()) {
+            applyGridSettings(g, *t);
+            // Siempre los datos de esta rejilla (nunca los de otra carpeta).
+            const std::string& path = pathOf(state, key.first, key.second, tile);
+            if (t->data != path) t->data = path;
+        }
         const Vec3 want = corner + Vec3{static_cast<float>(key.first) * size, 0.0f, static_cast<float>(key.second) * size};
         const Vec3 now = te.localPosition();
         if (now.x != want.x || now.y != want.y || now.z != want.z) te.setLocalPosition(want);
@@ -593,6 +602,10 @@ void TerrainStreamer::update(ecs::World& world, TerrainStore& store, const Vec3&
     draining_.erase(std::remove_if(draining_.begin(), draining_.end(),
                                    [](const std::shared_ptr<LoadJob>& j) { return j->ready(); }),
                     draining_.end());
+    // Otra escena: lo de la anterior fuera antes de nada.
+    syncSceneGeneration(world, store);
+    // Las rejillas muertas primero (ver pruneDeadGrids).
+    pruneDeadGrids(world, store, save_on_unload, async);
     jobs::FrameBudget frame_budget(mainBudgetMs());
     stats_.integrated = 0;
     for (auto& [uuid, state] : grids_) state.alive = false;
@@ -666,24 +679,52 @@ void TerrainStreamer::update(ecs::World& world, TerrainStore& store, const Vec3&
 }
 
 void TerrainStreamer::loadNow(ecs::World& world, TerrainStore& store, const Vec3& p, float range) {
+    // Otra escena: lo de la anterior fuera. Y las rejillas que ya no estan,
+    // tambien (antes solo lo hacia update(), que en el juego no corre hasta
+    // despues de la fisica y la navegacion: el terreno del nivel anterior
+    // entraba en la colision y en la malla del nuevo).
+    syncSceneGeneration(world, store);
+    pruneDeadGrids(world, store, /*save=*/false, /*async=*/false);
     for (const entt::entity h : world.registry().view<TerrainGrid>()) {
         ecs::Entity e = world.wrap(h);
         if (!e.activeInHierarchy()) continue;
         const TerrainGrid& g = e.get<TerrainGrid>();
         if (paused_folders_.count(g.folder) != 0) continue;
         GridState& state = grids_[e.uuid()];
-        if (!sameLayout(state.settings, g)) {
-            // Rutas cacheadas de otra carpeta: fuera (no deberia haber nada).
-            for (auto& [key, tile] : state.tiles) cancel(tile);
-            for (auto& [key, tile] : state.tiles) tile.path.clear();
+        if (!sameLayout(state.settings, g) && !state.tiles.empty()) {
+            // Otra carpeta o tamano (la misma rejilla con otros ajustes en
+            // otro nivel): lo cargado ya no vale. Se suelta con los ajustes
+            // VIEJOS (sus rutas) y fuera sus entidades. Antes solo se
+            // cancelaba: las teselas viejas se quedaban para siempre,
+            // estiradas a la rejilla nueva, y su memoria nunca se soltaba.
+            for (auto& [key, tile] : state.tiles) {
+                unload(world, store, state, key.first, key.second, tile, /*save=*/false, /*async=*/false);
+            }
+            state.tiles.clear();
         }
         state.settings = g;
         state.alive = true;
         const Vec3 corner = e.worldPosition();
+        const float size = std::max(g.tile_size, 1.0f);
         const float r = range > 0.0f ? range : std::min(g.load_range, g.tile_size);
+        // Las que ya estan, en su sitio YA (antes solo lo hacia el siguiente
+        // update: la fisica se creaba con la posicion de antes).
+        for (auto& [key, tile] : state.tiles) {
+            if (!tileAlive(world, tile)) continue;
+            ecs::Entity te = world.wrap(tile.entity);
+            const Vec3 want =
+                corner + Vec3{static_cast<float>(key.first) * size, 0.0f, static_cast<float>(key.second) * size};
+            const Vec3 now = te.localPosition();
+            if (now.x != want.x || now.y != want.y || now.z != want.z) te.setLocalPosition(want);
+            if (Terrain* t = te.tryGet<Terrain>()) {
+                applyGridSettings(g, *t);
+                const std::string& path = pathOf(state, key.first, key.second, tile);
+                if (t->data != path) t->data = path;
+            }
+        }
         for (int z = 0; z < g.tiles_z; ++z) {
             for (int x = 0; x < g.tiles_x; ++x) {
-                if (distanceToTile(p, corner, std::max(g.tile_size, 1.0f), x, z) > r) continue;
+                if (distanceToTile(p, corner, size, x, z) > r) continue;
                 Tile& tile = state.tiles[{x, z}];
                 if (tileAlive(world, tile)) continue;
                 const std::string& path = pathOf(state, x, z, tile);
@@ -721,9 +762,47 @@ void TerrainStreamer::clear(ecs::World& world, TerrainStore& store, bool save) {
         }
     }
     grids_.clear();
+    // Teselas que el streamer ya no conoce pero siguen en el mundo (un mundo
+    // restaurado con ellas dentro): fuera tambien. Ninguna sobrevive.
+    std::vector<entt::entity> orphans;
+    for (const entt::entity h : world.registry().view<TerrainTile>()) orphans.push_back(h);
+    for (const entt::entity h : orphans) {
+        if (world.valid(h)) world.destroy(world.wrap(h));
+    }
+    // Lo que se cargue despues es de la generacion del mundo de entonces: las
+    // cargas canceladas que aun corren (draining_) nunca entran.
+    scene_generation_ = 0;
     // Las escrituras de teselas soltadas antes, terminadas.
     if (save) store.flushSaves();
     stats_ = TerrainStreamStats{};
+}
+
+void TerrainStreamer::syncSceneGeneration(ecs::World& world, TerrainStore& store) {
+    const std::uint64_t now = world.sceneGeneration();
+    if (now == scene_generation_) return;
+    // Sin guardar: lo que tenga cambios se queda en el almacen (el que cambia
+    // de escena decide con resetSceneState si se guarda o se tira).
+    if (!grids_.empty()) clear(world, store, /*save=*/false);
+    scene_generation_ = now;
+}
+
+void TerrainStreamer::pruneDeadGrids(ecs::World& world, TerrainStore& store, bool save, bool async) {
+    if (grids_.empty()) return;
+    std::set<Uuid> live;
+    for (const entt::entity h : world.registry().view<TerrainGrid>()) {
+        const ecs::Entity e = world.wrap(h);
+        if (e.activeInHierarchy()) live.insert(e.uuid());
+    }
+    for (auto it = grids_.begin(); it != grids_.end();) {
+        if (live.count(it->first) != 0) {
+            ++it;
+            continue;
+        }
+        for (auto& [key, tile] : it->second.tiles) {
+            unload(world, store, it->second, key.first, key.second, tile, save, async);
+        }
+        it = grids_.erase(it);
+    }
 }
 
 std::vector<std::pair<std::pair<int, int>, bool>> TerrainStreamer::tiles(const Uuid& grid) const {

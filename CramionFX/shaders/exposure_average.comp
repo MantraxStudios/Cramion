@@ -10,8 +10,17 @@
 //                        la disparan.
 //   Speed Up / Down      el ojo se adapta rapido a la luz (salir de una cueva
 //                        deslumbra un momento) y despacio a la oscuridad.
-//   Min / Max EV         limites: de noche la escena queda oscura en vez de
-//                        convertirse en dia gris y ruidoso.
+//   Min / Max EV         limites de seguridad del multiplicador.
+//
+// De noche no se compensa entera la oscuridad (eso la convertiria en dia gris
+// y ruidoso) pero tampoco se clava en max_ev: por encima de kKnee EV solo se
+// adapta una fraccion (kSlope). Asi la noche sigue pareciendo noche y una
+// farola en la vista si oscurece el resto (antes, con el objetivo muy por
+// encima del tope, la medicion no cambiaba nada hasta que la luz llenaba un
+// tercio de la pantalla, y entonces caia de golpe). Las luces fuertes (media
+// del 95-99.5%) tiran ademas de la parte "extra" de la noche, como el ojo.
+//
+// Misma matematica en la CPU (para las pruebas): AutoExposureMath.h.
 //
 // Un solo grupo de 256 hilos: carga el histograma, lo deja a cero para el
 // frame siguiente y el hilo 0 hace el recorrido de percentiles.
@@ -40,7 +49,7 @@ layout(push_constant) uniform PushConstants {
     float delta_seconds;
     float low_percent;    // 0..1
     float high_percent;   // 0..1
-    float unused;
+    float reset;          // 1 = corte de camara: salta al objetivo sin transicion
     // Limites del multiplicador de exposicion (log2, en EV) y velocidades de
     // adaptacion (EV por segundo, aprox.): PostProcessSettings.
     float min_log_exposure;  // p. ej. -2
@@ -56,6 +65,15 @@ const float kLogLuminanceRange = 18.0;
 // Luminancia de la escena que debe quedar como gris medio tras el tono ACES.
 const float kTargetLuminance = 0.36;
 
+// Deben coincidir con AutoExposureMath.h.
+const float kHighlightLow = 0.95;
+const float kHighlightHigh = 0.995;
+const float kKnee = 0.75;
+const float kSlope = 0.25;
+const float kHighlightLuminance = 4.0;
+const float kHighlightWeight = 0.5;
+const float kDeadband = 0.05;
+const float kMaxEvPerSecond = 4.0;
 
 shared uint bins[256];
 
@@ -81,40 +99,61 @@ void main() {
         return;
     }
 
+    // Media de log2(luminancia) solo con la parte del histograma entre los dos
+    // percentiles (cada cubo aporta la fraccion de sus pixeles que cae
+    // dentro), y la de las luces fuertes, en el mismo recorrido.
     float low = total * push.low_percent;
     float high = total * push.high_percent;
-
-    // Media de log2(luminancia) solo con la parte del histograma entre los dos
-    // percentiles: cada cubo aporta la fraccion de sus pixeles que cae dentro.
+    float hl_low = total * kHighlightLow;
+    float hl_high = total * kHighlightHigh;
     float accumulated = 0.0;
     float weighted_sum = 0.0;
     float weight_total = 0.0;
+    float hl_sum = 0.0;
+    float hl_total = 0.0;
     for (int i = 1; i < 256; ++i) {
         float count = float(bins[i]);
         float start = accumulated;
         float end = accumulated + count;
         accumulated = end;
 
+        float log_luminance = kMinLogLuminance + (float(i) - 0.5) / 254.0 * kLogLuminanceRange;
         float inside = max(min(end, high) - max(start, low), 0.0);
-        if (inside > 0.0) {
-            float log_luminance = kMinLogLuminance +
-                                  (float(i) - 0.5) / 254.0 * kLogLuminanceRange;
-            weighted_sum += log_luminance * inside;
-            weight_total += inside;
-        }
+        weighted_sum += log_luminance * inside;
+        weight_total += inside;
+        float hl_inside = max(min(end, hl_high) - max(start, hl_low), 0.0);
+        hl_sum += log_luminance * hl_inside;
+        hl_total += hl_inside;
     }
 
     float average_log = weight_total > 0.0 ? weighted_sum / weight_total : log2(kTargetLuminance);
-    float target = clamp(log2(kTargetLuminance) - average_log, push.min_log_exposure,
+    float highlight_log = hl_total > 0.0 ? hl_sum / hl_total : average_log;
+
+    // Objetivo: entero hasta kKnee EV, parcial por encima (noche).
+    float full = log2(kTargetLuminance) - average_log;
+    float soft = full > kKnee ? kKnee + (full - kKnee) * kSlope : full;
+    // Una luz fuerte en la vista quita parte de la apertura nocturna, nunca
+    // por debajo de lo que pediria el dia (min(full, kKnee)).
+    float limit = log2(kHighlightLuminance) - highlight_log;
+    float pulled = limit < soft ? mix(soft, limit, kHighlightWeight) : soft;
+    float target = clamp(max(pulled, min(full, kKnee)), push.min_log_exposure,
                          push.max_log_exposure);
+    if (isnan(target) || isinf(target)) {
+        target = 0.0;
+    }
 
     float current = state.log_exposure;
-    if (state.initialized < 0.5) {
+    if (state.initialized < 0.5 || push.reset > 0.5 || isnan(current) || isinf(current)) {
         current = target;
     } else {
-        // Exposicion que baja = la escena se ha vuelto mas brillante.
+        // Exposicion que baja = la escena se ha vuelto mas brillante. Zona
+        // muerta pequena (no persigue el ruido) y tope de EV por segundo (sin
+        // bombeo al girar la cabeza delante de una luz).
+        float diff = target - current;
+        float error = diff - clamp(diff, -kDeadband, kDeadband);
         float speed = target < current ? push.speed_up : push.speed_down;
-        current += (target - current) * (1.0 - exp(-push.delta_seconds * speed));
+        float max_step = kMaxEvPerSecond * push.delta_seconds;
+        current += clamp(error * (1.0 - exp(-push.delta_seconds * speed)), -max_step, max_step);
     }
 
     state.log_exposure = current;

@@ -2626,6 +2626,23 @@ inline Value systemLanguage(Mas&&... mas) {
 }
 }  // namespace Text
 
+namespace Video {
+/// Video.info("Videos/intro.mp4")
+/// {width, height, fps, duration, frameCount, seekable, live, codec, backend, hardware, audioTracks} o nil
+/// Devuelve: objeto o nil
+template <typename T0 = Value>
+inline Value info(const T0& texto = {}) {
+    return detail::api("Video.info", Values{Value(texto)});
+}
+/// Video.isSupported("Videos/intro.mp4")
+/// se puede reproducir este archivo (o URL) en esta plataforma?
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value isSupported(const T0& texto = {}) {
+    return detail::api("Video.isSupported", Values{Value(texto)});
+}
+}  // namespace Video
+
 namespace Voice {
 /// Voice.isMuted(id)
 /// Devuelve: bool

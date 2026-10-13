@@ -497,6 +497,7 @@ void WorldPartitionSystem::begin(ecs::World& world, const Vec3& viewer) {
     stats_ = PartitionStats{};
     active_ = false;
     origin_ = world.origin();
+    scene_generation_ = world.sceneGeneration();
     bool found = false;
     for (const entt::entity h : world.registry().view<WorldPartition>()) {
         const ecs::Entity e = world.wrap(h);
@@ -772,6 +773,12 @@ void WorldPartitionSystem::loadCellNow(ecs::World& world, Cell& cell) {
 
 void WorldPartitionSystem::update(ecs::World& world, const Vec3& viewer) {
     if (!active_) return;
+    if (world.sceneGeneration() != scene_generation_) {
+        // Otra escena sin end(): lecturas canceladas, celdas olvidadas (sin
+        // restaurar nada: sus objetos eran de la escena anterior).
+        end(world, /*restore=*/false);
+        return;
+    }
     origin_ = world.origin();
     ++frame_;
     // Escrituras de celdas terminadas: lo guardado sale de la memoria.

@@ -35,27 +35,32 @@ ComponentPreset post(const char* name, const char* description, json fields) {
 std::vector<ComponentPreset> postProcessingPresets() {
     std::vector<ComponentPreset> out;
     out.push_back(post("Por defecto", "Los valores de fabrica del motor", json::object()));
-    out.push_back(post("Realista", "Fotografico: respuesta de pelicula (AgX), poco efecto, motion blur de camara",
-                       {{"tonemapper", "AgX"}, {"auto_exposure", true}, {"bloom", true},
-                        {"bloom_intensity", 0.04}, {"bloom_threshold", 0.6}, {"contrast", 1.03},
-                        {"saturation", 1.0}, {"vibrance", 0.1}, {"vignette", true}, {"vignette_intensity", 0.2},
-                        {"film_grain", 0.04}, {"lens_flare", 0.25}, {"motion_blur", true},
-                        {"motion_blur_intensity", 0.5}, {"volumetric_light", true}}));
+    out.push_back(post("Realista", "Fotografico: AgX con look Punchy, aire limpio, poco efecto, motion blur de camara",
+                       {{"tonemapper", "AgX Punchy"}, {"auto_exposure", true}, {"exposure_compensation", 0.0},
+                        {"bloom", true}, {"bloom_intensity", 0.03}, {"bloom_threshold", 1.0},
+                        {"contrast", 1.08}, {"saturation", 1.05}, {"vibrance", 0.15}, {"temperature", 0.0},
+                        {"vignette", true}, {"vignette_intensity", 0.18}, {"film_grain", 0.03},
+                        {"chromatic_aberration", 0.0}, {"lens_distortion", 0.0}, {"lens_flare", 0.2},
+                        {"motion_blur", true}, {"motion_blur_intensity", 0.5}, {"sharpen", 0.25},
+                        {"volumetric_light", true}, {"volumetric_density", 0.001}, {"volumetric_anisotropy", 0.7},
+                        {"fog_density", 0.0003}, {"fog_height_falloff", 0.1}, {"override_antialiasing", true}}));
     // Todo prendido con valores de camara real: cada efecto sutil para que
-    // sume sin notarse como filtro. Es el mas caro de la lista.
-    json ultra = {{"auto_exposure", true}, {"exposure_compensation", 0.0}, {"min_ev", -3.0}, {"max_ev", 2.5},
-                  {"adaptation_speed_up", 2.5}, {"adaptation_speed_down", 0.8}, {"tonemapper", "AgX"},
-                  {"bloom", true}, {"bloom_intensity", 0.05}, {"bloom_threshold", 0.8}, {"bloom_scatter", 1.2},
-                  {"contrast", 1.05}, {"saturation", 1.0}, {"vibrance", 0.1}, {"vignette", true},
-                  {"vignette_intensity", 0.22}, {"vignette_smoothness", 0.6}, {"chromatic_aberration", 0.05},
-                  {"film_grain", 0.03}, {"lens_distortion", 0.02}, {"lens_flare", 0.3}, {"motion_blur", true},
-                  {"motion_blur_intensity", 0.5}, {"motion_blur_max", 0.04}, {"depth_of_field", true},
-                  {"dof_auto_focus", true}, {"dof_aperture", 4.0}, {"dof_focal_length", 35.0},
-                  {"light_shafts", true}, {"light_shaft_intensity", 1.0}, {"fxaa", true},
+    // sume sin notarse como filtro. Aire limpio (visibilidad de kilometros):
+    // la bruma densa era lo que dejaba las sombras grises. Es el mas caro.
+    json ultra = {{"auto_exposure", true}, {"exposure_compensation", 0.0}, {"min_ev", -5.0}, {"max_ev", 2.5},
+                  {"adaptation_speed_up", 2.5}, {"adaptation_speed_down", 0.8}, {"tonemapper", "AgX Punchy"},
+                  {"bloom", true}, {"bloom_intensity", 0.03}, {"bloom_threshold", 1.0}, {"bloom_scatter", 1.2},
+                  {"contrast", 1.1}, {"saturation", 1.05}, {"vibrance", 0.18}, {"temperature", 0.0},
+                  {"vignette", true}, {"vignette_intensity", 0.18}, {"vignette_smoothness", 0.6},
+                  {"chromatic_aberration", 0.02}, {"film_grain", 0.025}, {"lens_distortion", 0.0},
+                  {"lens_flare", 0.25}, {"motion_blur", true}, {"motion_blur_intensity", 0.5},
+                  {"motion_blur_max", 0.04}, {"depth_of_field", true}, {"dof_auto_focus", true},
+                  {"dof_aperture", 5.6}, {"dof_focal_length", 35.0}, {"light_shafts", true},
+                  {"light_shaft_intensity", 1.0}, {"fxaa", true}, {"sharpen", 0.3},
                   {"ambient_occlusion", true}, {"global_illumination", true}, {"reflections", true},
                   {"contact_shadows", true}, {"contact_shadow_length", 1.0}, {"volumetric_light", true},
-                  {"volumetric_density", 0.006}, {"volumetric_anisotropy", 0.7}, {"fog_density", 0.0008},
-                  {"fog_height_falloff", 0.06}, {"lods", true}, {"lod_pixel_error", 0.5},
+                  {"volumetric_density", 0.0008}, {"volumetric_anisotropy", 0.7}, {"fog_density", 0.0002},
+                  {"fog_height_falloff", 0.1}, {"lods", true}, {"lod_pixel_error", 0.5},
                   {"override_antialiasing", true}, {"override_performance", true}};
     out.push_back(post("Ultra realista",
                        "Todos los efectos prendidos con valores de camara real: GI, reflejos, SSAO, volumetrica, "

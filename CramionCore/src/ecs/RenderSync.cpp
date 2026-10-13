@@ -517,7 +517,8 @@ std::vector<asset::TextureData> RenderSync::materialTextureSources() {
     return out;
 }
 
-asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const std::vector<Uuid>& overrides) {
+asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const std::vector<Uuid>& overrides,
+                                          const VideoOverride& video) {
     registerPackResolver();
     // Primero los materiales; la malla se copia al final (con el tiling).
     asset::ModelData v;
@@ -646,13 +647,31 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         }
         std::shared_ptr<const assets::MaterialAsset> mat =
             m < overrides.size() && overrides[m].valid() ? material(overrides[m]) : nullptr;
+        // Video (VideoPlayer en Material Override) en este hueco: su textura
+        // sustituye a la del color o la emision, tenga o no .crmat propio.
+        const bool video_here = video.texture >= 0 && (video.slot < 0 || static_cast<std::size_t>(video.slot) == m);
+        const bool video_emissive = video_here && (video.property == 0 || video.property == 2);
+        const bool video_albedo = video_here && (video.property == 1 || video.property == 2);
+        const auto apply_video = [&](asset::MaterialData& d) {
+            if (video_emissive) {
+                d.emissive_texture = -1;
+                d.emissive_render_texture = video.texture;
+                // Emision blanca por la intensidad (negra, la pantalla saldria apagada).
+                d.emissive = core::Vec3{video.intensity, video.intensity, video.intensity};
+            }
+            if (video_albedo) {
+                d.albedo_texture = -1;
+                d.albedo_render_texture = video.texture;
+            }
+        };
         if (!mat) {
             asset::MaterialData copy = original;
-            copy.albedo_texture = keep(original.albedo_texture);
+            copy.albedo_texture = video_albedo ? -1 : keep(original.albedo_texture);
             copy.metallic_roughness_texture = keep(original.metallic_roughness_texture);
             copy.normal_texture = keep(original.normal_texture);
             copy.occlusion_texture = keep(original.occlusion_texture);
-            copy.emissive_texture = keep(original.emissive_texture);
+            copy.emissive_texture = video_emissive ? -1 : keep(original.emissive_texture);
+            apply_video(copy);
             v.materials.push_back(copy);
             continue;
         }
@@ -686,6 +705,7 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         if (d.occlusion_texture < 0) d.height_scale = 0.0f;
         const std::function<std::int32_t(const std::string&)> texture = [&](const std::string& path) { return file(path); };
         applySurface(d, *mat, &texture);
+        apply_video(d);
         v.materials.push_back(d);
 
         // Tiling y desplazamiento: se hornean en las UV de sus submallas.
@@ -721,7 +741,7 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
 }
 
 std::uint32_t RenderSync::resolveVariant(std::uint32_t base, const std::vector<assets::AssetRef>& overrides,
-                                         scene::Scene& scene, bool& added) {
+                                         scene::Scene& scene, bool& added, const VideoOverride* video) {
     const asset::ModelData& data = *scene.models()[base];
     // Clave binaria (el modelo y los 16 bytes de cada Uuid), en buffers que se
     // reutilizan: se busca para cada objeto con materiales propios en cada
@@ -738,6 +758,18 @@ std::uint32_t RenderSync::resolveVariant(std::uint32_t base, const std::vector<a
         }
         variant_key_.append(reinterpret_cast<const char*>(&variant_slots_[i].high), sizeof(std::uint64_t));
         variant_key_.append(reinterpret_cast<const char*>(&variant_slots_[i].low), sizeof(std::uint64_t));
+    }
+    // Video: textura, hueco y propiedad (no la intensidad: cambiarla no rehace
+    // la variante). Fuerza variante aunque no haya ningun .crmat propio.
+    VideoOverride video_key{};
+    if (video != nullptr && video->texture >= 0) {
+        video_key = *video;
+        video_key.intensity = 1.0f;
+        variant_key_.push_back('V');
+        variant_key_.append(reinterpret_cast<const char*>(&video_key.texture), sizeof(video_key.texture));
+        variant_key_.append(reinterpret_cast<const char*>(&video_key.slot), sizeof(video_key.slot));
+        variant_key_.append(reinterpret_cast<const char*>(&video_key.property), sizeof(video_key.property));
+        any = true;
     }
     if (!any) return base;
     if (const auto it = variant_lookup_.find(variant_key_); it != variant_lookup_.end()) {
@@ -759,7 +791,7 @@ std::uint32_t RenderSync::resolveVariant(std::uint32_t base, const std::vector<a
     const auto build_start = std::chrono::steady_clock::now();
     asset::ModelData variant;
     try {
-        variant = buildVariant(data, slots);
+        variant = buildVariant(data, slots, video_key);
     } catch (const std::exception& e) {
         std::cerr << "[RenderSync] Material: " << e.what() << "\n";
         return base;
@@ -770,7 +802,7 @@ std::uint32_t RenderSync::resolveVariant(std::uint32_t base, const std::vector<a
     if (model_bounds_.size() <= index) model_bounds_.resize(index + 1);
     model_bounds_[index] = model_bounds_[base];
     variant_lookup_[key] = static_cast<std::uint32_t>(variants_.size());
-    variants_.push_back(Variant{base, index, std::move(slots)});
+    variants_.push_back(Variant{base, index, std::move(slots), video_key});
     added = true;
     return index;
 }
@@ -845,7 +877,7 @@ std::optional<std::uint32_t> RenderSync::resolveRuntimeMesh(const std::shared_pt
     for (const Variant& variant : variants_) {
         if (variant.base != index) continue;
         try {
-            scene.replaceModel(variant.index, buildVariant(stored, variant.overrides));
+            scene.replaceModel(variant.index, buildVariant(stored, variant.overrides, variant.video));
             if (model_bounds_.size() <= variant.index) model_bounds_.resize(variant.index + 1);
             model_bounds_[variant.index] = model_bounds_[index];
             if (variant.index < renderer.uploadedModelCount()) renderer.uploadModel(scene, variant.index);
@@ -965,7 +997,7 @@ void RenderSync::applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& 
         }
         if (rebuild) {
             try {
-                scene.replaceModel(variant.index, buildVariant(*scene.models()[variant.base], variant.overrides));
+                scene.replaceModel(variant.index, buildVariant(*scene.models()[variant.base], variant.overrides, variant.video));
                 // Ya en la GPU: se sube de nuevo (si no, la cola la subira).
                 if (variant.index < renderer.uploadedModelCount()) renderer.uploadModel(scene, variant.index);
             } catch (const std::exception& e) {
@@ -1179,8 +1211,8 @@ void RenderSync::reset(scene::Scene& scene) {
     actor_entities_.clear();
     marca("previous_entities_");
     previous_entities_.clear();
-    marca("destroyTerrains");
-    destroyTerrains();
+    marca("clearSceneStreaming");
+    clearSceneStreaming();
     marca("actor_models_");
     actor_models_.clear();
     marca("entity_actor_");
@@ -2089,6 +2121,18 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
                       float delta_seconds, const Options& options) {
     CR_PROFILE_SCOPE("RenderSync");
     renderer_ = &renderer;  // los .crshader se compilan al construir variantes
+    // Otra escena (World::sceneGeneration): los terrenos y la vegetacion de la
+    // anterior fuera antes de sincronizar nada (red de seguridad si quien
+    // cambio de escena no llamo a clearSceneStreaming).
+    if (world.sceneGeneration() != scene_generation_) {
+        if (scene_generation_ != 0) clearSceneStreaming();
+        scene_generation_ = world.sceneGeneration();
+    }
+    // Video en materiales de entidades que ya no existen (entt::entity lleva
+    // la version: un id reciclado por otra entidad no hereda el video).
+    if (!video_overrides_.empty()) {
+        std::erase_if(video_overrides_, [&](const auto& entry) { return !world.registry().valid(entry.first); });
+    }
     // Mallas editables (modelado) -> su malla del MeshRenderer.
     modeling::updateEditableMeshes(world);
     // Splines con extrusion (carreteras, muros, rios...) -> su malla / su rio.
@@ -2144,6 +2188,43 @@ std::int32_t RenderSync::renderTextureForPath(const std::filesystem::path& file)
 
 std::int32_t RenderSync::renderTextureIdForAsset(const std::string& relative) {
     return renderTextureForPath(assets_.database().root() / fromUtf8(relative));
+}
+
+void RenderSync::setVideoOverride(entt::entity renderer, int slot, int property, std::int32_t texture,
+                                  float intensity) {
+    VideoOverride& o = video_overrides_[renderer];
+    o.slot = slot < 0 ? -1 : slot;
+    o.property = std::clamp(property, 0, 2);
+    o.texture = texture;
+    o.intensity = std::max(intensity, 0.0f);
+}
+
+void RenderSync::clearVideoOverride(entt::entity renderer) {
+    // Sin el video, el objeto vuelve a resolverse a su modelo (o a la variante
+    // de sus .crmat) en el siguiente sync. La variante con video se queda en
+    // la tabla: si el video vuelve con la misma textura (mismo id), se reutiliza.
+    video_overrides_.erase(renderer);
+}
+
+void RenderSync::applyVideoIntensity(std::uint32_t variant_model, const VideoOverride& video, scene::Scene& scene,
+                                     gfx::VulkanRenderer& renderer) {
+    if (video.property == 1) return;  // solo el color: la emision no cambia
+    for (Variant& variant : variants_) {
+        if (variant.index != variant_model || variant.video.texture != video.texture) continue;
+        if (variant.video.intensity == video.intensity) return;
+        variant.video.intensity = video.intensity;  // y las variantes rehechas la conservan
+        asset::ModelData* data = scene.modelData(variant.index);
+        if (data == nullptr) return;
+        for (std::size_t m = 0; m < data->materials.size(); ++m) {
+            asset::MaterialData& d = data->materials[m];
+            if (d.emissive_render_texture != video.texture) continue;
+            d.emissive = core::Vec3{video.intensity, video.intensity, video.intensity};
+            if (variant.index < renderer.uploadedModelCount()) {
+                renderer.updateModelMaterial(variant.index, static_cast<std::uint32_t>(m), d);
+            }
+        }
+        return;
+    }
 }
 
 std::int32_t RenderSync::renderTextureFor(const Uuid& uuid) {
@@ -2235,6 +2316,25 @@ void RenderSync::destroyTerrains() {
     }
     terrains_.clear();
     draining_terrains_.clear();
+}
+
+void RenderSync::clearSceneStreaming() {
+    // Terrenos de la escena anterior (y sus preparaciones en otros hilos).
+    destroyTerrains();
+    terrain_samples_.clear();
+    // Vegetacion: la siembra en marcha es de la escena anterior. El job solo
+    // tiene sus fotos y su resultado (shared_ptr), no `this`: se abandona sin
+    // esperar y su resultado no se sube nunca.
+    foliage_job_.reset();
+    foliage_result_.reset();
+    foliage_job_signature_ = 0;
+    foliage_job_generation_ = 0;
+    foliage_signature_ = 0;
+    foliage_count_ = 0;
+    // Lo que hay en la GPU (o subiendose) tambien fuera: antes los arboles de
+    // la escena anterior seguian hasta que la nueva terminaba de sembrar.
+    if (renderer_ != nullptr) renderer_->clearFoliage();
+    foliage_uploaded_ = false;
 }
 
 // Vegetacion: firma de todo lo que influye en la siembra; si cambia, se
@@ -2364,6 +2464,12 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
     }
 
     // Termino una siembra: a la GPU (sin parar la GPU: se cambia al subirse).
+    if (foliage_job_ && foliage_job_->done() && foliage_job_generation_ != world.sceneGeneration()) {
+        // Sembrada para otra escena: no se sube (se vuelve a sembrar abajo).
+        foliage_job_.reset();
+        foliage_result_.reset();
+        foliage_signature_ = 0;
+    }
     if (foliage_job_ && foliage_job_->done()) {
         std::shared_ptr<std::vector<gfx::FoliageInstance>> instances = std::move(foliage_result_);
         foliage_job_.reset();
@@ -2389,6 +2495,7 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
     }
     if (signature != foliage_signature_ && !foliage_job_) {
         foliage_job_signature_ = signature;
+        foliage_job_generation_ = world.sceneGeneration();
         // El job solo ve snapshots inmutables del terreno (no los datos vivos,
         // que el editor esculpe y el streamer cose en este hilo).
         for (Job& job : forests) {
@@ -2767,8 +2874,16 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         if (!model) {
             return;
         }
-        if (!renderer_component->materials.empty()) {
-            model = resolveVariant(*model, renderer_component->materials, scene, added);
+        // Video en sus materiales (VideoPlayer en Material Override): variante
+        // aunque no tenga .crmat propio.
+        const VideoOverride* video = nullptr;
+        if (!video_overrides_.empty()) {
+            const auto found = video_overrides_.find(e.handle());
+            if (found != video_overrides_.end() && found->second.texture >= 0) video = &found->second;
+        }
+        if (!renderer_component->materials.empty() || video != nullptr) {
+            model = resolveVariant(*model, renderer_component->materials, scene, added, video);
+            if (video != nullptr) applyVideoIntensity(*model, *video, scene, renderer);
         }
         const asset::ModelData& data = *scene.models()[*model];
 
@@ -3276,6 +3391,9 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
         Entity entity;
     };
     std::vector<Volume> volumes;
+    // Luces horneadas enteras (modo Horneada, ya dentro de la GI horneada):
+    // en modo horneado no se dibujan otra vez (ni sus mapas de sombra).
+    const bool baked_active = renderer.bakedGiActive() && !renderer.bakedLighting().baked_lights.empty();
 
     world.forEachDepthFirst([&](Entity e) {
         // Primero si tiene algo que interese (casi ningun objeto): subir por la
@@ -3287,7 +3405,12 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
         if (!e.activeInHierarchy()) {
             return;
         }
-        if (const Light* light = e.tryGet<Light>()) {
+        const Light* light = e.tryGet<Light>();
+        if (light != nullptr && baked_active && light->type != LightType::Directional &&
+            light->bake_mode == LightBakeMode::Baked && renderer.bakedLighting().lightBaked(e.uuid().high, e.uuid().low)) {
+            light = nullptr;
+        }
+        if (light != nullptr) {
             switch (light->type) {
                 case LightType::Directional:
                     if (!directional.valid()) {

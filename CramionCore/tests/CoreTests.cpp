@@ -7,10 +7,13 @@
 #include "CramionCore/ecs/ModelInstantiation.h"
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionFX/vk/AutoExposureMath.h"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace cramion;
@@ -273,7 +276,79 @@ void testUltraRealisticPreset() {
           "todos los efectos prendidos");
     check(s.film_grain > 0.0f && s.chromatic_aberration > 0.0f && s.lens_flare > 0.0f && s.fog_density > 0.0f,
           "lente y niebla activas");
-    check(s.tonemapper == gfx::Tonemapper::Agx && s.lod_pixel_error < 1.0f, "AgX y LODs finos");
+    check(s.tonemapper == gfx::Tonemapper::AgxPunchy && s.lod_pixel_error < 1.0f, "AgX Punchy y LODs finos");
+    check(s.volumetric_density <= 0.001f && s.fog_density <= 0.0005f && s.sharpen > 0.0f, "aire limpio y nitidez");
+}
+
+// Auto-exposicion (AutoExposureMath.h = exposure_average.comp) con
+// histogramas sinteticos: noche con luna, una farola que entra en la vista y
+// el dia.
+void testAutoExposureMetering() {
+    std::printf("Auto-exposicion\n");
+    namespace ae = gfx::auto_exposure;
+    using Bins = std::array<std::uint32_t, 256>;
+    // Partes: {log2(luminancia), pixeles}.
+    auto histogram = [](std::initializer_list<std::pair<float, std::uint32_t>> parts) {
+        Bins bins{};
+        for (const auto& [log_luminance, count] : parts) bins[ae::binFor(std::exp2(log_luminance))] += count;
+        return bins;
+    };
+    const float min_ev = -4.0f, max_ev = 2.0f;  // PostProcessSettings por defecto
+    const float ground = -5.6f;                  // suelo con luna (~0.02)
+    const float pool = -0.5f;                    // lo que ilumina una farola (~0.7)
+    auto night_with_pool = [&](std::uint32_t percent) {
+        const Bins b = histogram({{ground, 1000u - 10u * percent}, {pool, 10u * percent}});
+        return ae::meterHistogram(b.data(), min_ev, max_ev);
+    };
+
+    // Dia: igual que antes (se compensa entera, sin rodilla ni luces).
+    const Bins day = histogram({{-2.5f, 300u}, {-1.5f, 500u}, {0.5f, 150u}, {3.5f, 50u}});
+    float day_mean = 0.0f;
+    check(ae::windowMeanLog(day.data(), ae::kLowPercent, ae::kHighPercent, day_mean), "dia: hay medicion");
+    check(approx(ae::meterHistogram(day.data(), min_ev, max_ev), std::log2(ae::kTargetLuminance) - day_mean),
+          "dia: objetivo sin cambios");
+
+    // Noche sola: abre la exposicion (~x3) pero sin llegar al tope.
+    const float night = night_with_pool(0);
+    check(night > 1.3f && night < 1.9f, "noche: ~x3, como la manual");
+    check(night < max_ev - 0.05f, "noche: no se clava en max_ev");
+
+    // La farola: cuanto mas ocupa, mas oscuro; sin escalones grandes.
+    float previous = night;
+    bool monotonic = true, smooth = true;
+    for (std::uint32_t percent = 5u; percent <= 40u; percent += 5u) {
+        const float t = night_with_pool(percent);
+        if (t > previous + 1e-4f) monotonic = false;
+        if (previous - t > 0.6f) smooth = false;
+        previous = t;
+    }
+    check(monotonic, "farola: la exposicion nunca sube al crecer la luz");
+    check(smooth, "farola: sin saltos de mas de 0.6 EV por cada 5%");
+    check(night_with_pool(10u) < night - 0.05f, "farola al 10%: ya oscurece (antes no cambiaba nada)");
+    check(night_with_pool(30u) < night - 0.4f, "farola al 30%: bastante mas oscuro");
+
+    // La bombilla en la vista (3%) quita parte de la apertura nocturna.
+    const Bins no_bulb = histogram({{ground, 900u}, {pool, 100u}});
+    const Bins bulb = histogram({{ground, 870u}, {pool, 100u}, {3.0f, 30u}});
+    const float without = ae::meterHistogram(no_bulb.data(), min_ev, max_ev);
+    const float with = ae::meterHistogram(bulb.data(), min_ev, max_ev);
+    check(with < without - 0.3f, "bombilla en la vista: mas oscuro");
+    check(with >= ae::kKnee - 1e-4f, "bombilla: nunca por debajo de la exposicion de dia");
+
+    // Sin pixeles: exposicion neutra.
+    const Bins empty{};
+    check(approx(ae::meterHistogram(empty.data(), min_ev, max_ev), 0.0f), "histograma vacio: neutra");
+
+    // Adaptacion temporal.
+    check(approx(ae::adapt(std::nanf(""), 1.0f, 0.016f, 3.0f, 1.2f, true), 1.0f), "estado NaN: salta al objetivo");
+    check(approx(ae::adapt(INFINITY, 1.0f, 0.016f, 3.0f, 1.2f, true), 1.0f), "estado infinito: salta al objetivo");
+    check(approx(ae::adapt(-2.0f, 1.0f, 0.016f, 3.0f, 1.2f, true, true), 1.0f), "corte de camara: sin transicion");
+    check(approx(ae::adapt(-2.0f, 1.0f, 0.016f, 3.0f, 1.2f, false), 1.0f), "primer frame: sin transicion");
+    check(approx(ae::adapt(1.0f, 1.03f, 0.016f, 3.0f, 1.2f, true), 1.0f, 1e-6f), "zona muerta: no persigue 0.03 EV");
+    const float step = ae::adapt(2.0f, -4.0f, 0.1f, 20.0f, 1.2f, true) - 2.0f;
+    check(step < 0.0f && step >= -ae::kMaxEvPerSecond * 0.1f - 1e-4f, "tope de EV por segundo");
+    const float up = ae::adapt(0.0f, 2.0f, 0.016f, 3.0f, 1.2f, true);
+    check(up > 0.0f && up < 2.0f, "hacia una escena mas oscura: gradual");
 }
 
 }  // namespace
@@ -285,6 +360,7 @@ int main() {
     testModelInstantiation();
     testPostVolumes();
     testUltraRealisticPreset();
+    testAutoExposureMetering();
     std::printf("%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

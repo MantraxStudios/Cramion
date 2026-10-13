@@ -372,6 +372,12 @@ std::shared_ptr<TerrainData> TerrainStore::get(const Terrain& terrain) {
     if (terrain.data.empty()) return nullptr;
     auto& slot = data_[terrain.data];
     if (slot) return slot;
+    // Se estaba guardando en otro hilo: vuelven esos datos (leer el archivo
+    // ahora daria el de antes del cambio, o uno a medio escribir).
+    if (std::shared_ptr<TerrainData> saving = takeSaving(terrain.data)) {
+        slot = std::move(saving);
+        return slot;
+    }
     slot = std::make_shared<TerrainData>();
     if (!slot->load(absolute(terrain.data))) {
         // Nuevo: con la resolucion del componente (2^n + 1).

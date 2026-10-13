@@ -578,6 +578,8 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         overlay_pass_.create(device_, kLdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
         // UI en el mundo: sus texturas y sus paneles (igual: tras el tono).
         world_ui_pass_.create(device_, kLdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
+        // Video: conversion YUV -> RGBA de las texturas de video y planos de camara.
+        video_textures_.create(device_, kLdrFormat, kMaxFramesInFlight);
         // Particulas: sobre la imagen HDR, antes del bloom.
         particle_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
         // VFX Graph: particulas simuladas en la GPU (igual: sobre la HDR).
@@ -993,6 +995,7 @@ void VulkanRenderer::shutdown() {
     outline_pass_.destroy();
     overlay_pass_.destroy();
     world_ui_pass_.destroy();
+    video_textures_.destroy();
     particle_pass_.destroy();
     vfx_pass_.destroy();
     sprite_pass_.destroy();
@@ -3054,7 +3057,12 @@ void VulkanRenderer::recreateRenderTargets() {
     updatePostDescriptors();
     taa_history_valid_ = false;
     jitter_index_ = 0;
-    invalidateHistory();
+    {
+        // Otro tamano no es otra vista: la exposicion se conserva.
+        const bool keep_exposure_reset = exposure_reset_pending_;
+        invalidateHistory();
+        exposure_reset_pending_ = keep_exposure_reset;
+    }
     ++scene_image_generation_;
 }
 
@@ -3065,6 +3073,8 @@ void VulkanRenderer::computeRenderExtent() {
         std::max(1u, static_cast<std::uint32_t>(std::lround(static_cast<float>(output.width) * scale))),
         std::max(1u, static_cast<std::uint32_t>(std::lround(static_cast<float>(output.height) * scale)))};
     upscaling_ = graphics_.upscaler != Upscaler::Off;
+    // Otra resolucion interna: otro sesgo de mips (desiredTextureFiltering).
+    if (desiredTextureFiltering() != applied_texture_filtering_) texture_filtering_dirty_ = true;
 }
 
 std::uint32_t VulkanRenderer::desiredShadowResolution() const {
@@ -3129,6 +3139,14 @@ TextureFiltering VulkanRenderer::desiredTextureFiltering() const {
     filtering.lod_bias = std::isfinite(user_graphics_.texture_lod_bias)
                              ? std::clamp(user_graphics_.texture_lod_bias, -1.0f, 2.0f)
                              : 0.0f;
+    // Dibujando por debajo de la salida (escalador, presupuesto, VR): las
+    // texturas eligen mips para la imagen pequena y, escaladas, salian
+    // borrosas. Se compensa con log2(interna / salida) (FSR, DLSS).
+    const vk::Extent2D output = outputExtent();
+    if (upscaling_ && output.width > 0 && render_extent_.width > 0) {
+        const float ratio = static_cast<float>(render_extent_.width) / static_cast<float>(output.width);
+        filtering.lod_bias = std::clamp(filtering.lod_bias + upscaleMipBias(ratio, graphics_.upscaler), -1.0f, 2.0f);
+    }
     return filtering;
 }
 
@@ -3168,30 +3186,61 @@ void VulkanRenderer::applyEffectiveGraphics() {
     xr_forced_taa_ = ((xr_output_extent_.width > 0 && xr_.stereo()) || stereo_emulation_) &&
                      (settings.upscaler == Upscaler::Fsr3 || settings.upscaler == Upscaler::Dlss);
     if (xr_forced_taa_) settings.upscaler = Upscaler::Taa;
+    // VR (el casco en marcha): los presets de escritorio (Baja 50 %, Media
+    // 58 %, Alta 67 %) no bajan los ojos; manda vr_render_scale (1 = la
+    // resolucion que recomienda el casco). Y siempre con antialiasing: el FXAA
+    // y la nitidez solo se aplican a la ventana (despues de copiar el ojo al
+    // casco), asi que sin escalador el ojo no tenia ninguno. El TAA del motor
+    // (con RCAS) lleva la historia por ojo; FSR 1 solo si el usuario lo eligio
+    // (espacial y sin jitter: escala una imagen con dientes de sierra).
+    const bool xr_eyes = xr_output_extent_.width > 0 && xr_output_extent_.height > 0;
+    if (xr_eyes) {
+        // Movil (GPU de telefono / casco autonomo): el preset sigue siendo el
+        // techo, no se dibuja mas que en la pantalla.
+        const float preset_cap = mobile_level_ >= 0 ? renderScale(settings) : 1.0f;
+        const float vr_scale = std::min(std::isfinite(user_graphics_.vr_render_scale)
+                                            ? std::clamp(user_graphics_.vr_render_scale, 0.5f, 1.0f)
+                                            : 1.0f,
+                                        preset_cap);
+        if (settings.upscaler != Upscaler::Fsr1) settings.upscaler = Upscaler::Taa;
+        settings.quality = vr_scale >= 0.999f ? UpscaleQuality::Native : UpscaleQuality::Custom;
+        settings.custom_scale = vr_scale;
+    }
+    const float base_scale = renderScale(settings);
     const float budget_scale = budget_.renderScale();
     applied_budget_scale_ = budget_scale;
     if (budget_scale < 0.999f) {
-        const float scale = renderScale(user_graphics_) * budget_scale;
+        const float scale = base_scale * budget_scale;
         if (settings.upscaler == Upscaler::Off) settings.upscaler = Upscaler::Fsr1;
         settings.quality = UpscaleQuality::Custom;
         settings.custom_scale = std::clamp(scale, 0.25f, 1.0f);
     }
     // VR: el ojo del casco (2528x2704 en Quest 3) son 3,3 veces los pixeles de
     // 1080p y cada destino (G-buffer, GI, reflejos, historias por ojo) va a ese
-    // tamano: con 8 GB la escena ya no cabia (ErrorOutOfDeviceMemory al subir
-    // sus texturas). Con menos de 12 GB, como mucho ~1,5 veces 1080p por ojo.
-    if (xr_output_extent_.width > 0 && xr_output_extent_.height > 0 && hardware_.vram_mb > 0 &&
-        hardware_.vram_mb < 12 * 1024) {
-        constexpr double kMaxEyePixels = 1920.0 * 1080.0 * 1.5;
-        const double eye_pixels = static_cast<double>(xr_output_extent_.width) * xr_output_extent_.height;
-        const float cap = static_cast<float>(std::sqrt(std::min(1.0, kMaxEyePixels / eye_pixels)));
-        if (renderScale(settings) > cap + 0.001f) {
-            if (settings.upscaler == Upscaler::Off) settings.upscaler = Upscaler::Fsr1;
+    // tamano: con 8 GB el ojo entero no cabia (ErrorOutOfDeviceMemory al subir
+    // las texturas). Tope segun la VRAM (vrVramScaleCap): antes 1,5 veces
+    // 1080p con cualquier GPU de menos de 12 GB (0.67 en Quest 3); ahora
+    // crece con la memoria (8 GB: 0.87) y desde 12 GB no hay tope.
+    float vram_cap = 1.0f;
+    if (xr_eyes) {
+        vram_cap = vrVramScaleCap(hardware_.vram_mb, xr_output_extent_.width, xr_output_extent_.height);
+        if (renderScale(settings) > vram_cap + 0.001f) {
+            if (settings.upscaler == Upscaler::Off) settings.upscaler = Upscaler::Taa;
             settings.quality = UpscaleQuality::Custom;
-            settings.custom_scale = std::clamp(cap, 0.25f, 1.0f);
+            settings.custom_scale = std::clamp(vram_cap, 0.25f, 1.0f);
         }
     }
     if (settings == graphics_) return;
+    if (xr_eyes) {
+        // Lo que de verdad se dibuja por ojo (y por que), para no adivinar
+        // por que el casco se ve con menos resolucion.
+        const float s = renderScale(settings);
+        std::cout << "[VR] Ojo " << std::lround(xr_output_extent_.width * s) << "x"
+                  << std::lround(xr_output_extent_.height * s) << " de " << xr_output_extent_.width << "x"
+                  << xr_output_extent_.height << " (escala " << s << ": VR " << base_scale << ", presupuesto "
+                  << budget_scale << ", tope VRAM " << vram_cap << "), "
+                  << (settings.upscaler == Upscaler::Fsr1 ? "FSR 1" : "TAA por ojo") << "\n";
+    }
     const bool vsync_changed = settings.vsync != graphics_.vsync;
     const bool rebuild = renderScale(settings) != renderScale(graphics_) || settings.upscaler != graphics_.upscaler ||
                          settings.quality != graphics_.quality;
@@ -4145,6 +4194,9 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         light_data.sky_map = sky_map_drawn_ && skyMapWanted() ? sky_map_params_ : Vec4{};
         light_data.sky_map_depth = sky_map_depth_;
     }
+    // w: el sol esta horneado entero (su luz directa y sus sombras van en la
+    // GI horneada): lighting.frag no lo suma otra vez.
+    light_data.sky_map_depth.w = bakedSunActive(lights.sun.direction) ? 1.0f : 0.0f;
 
     // --- Rayos de luz: el sol proyectado en pantalla ---
     // Con w = 0 se proyecta la direccion (un punto en el infinito).
@@ -4443,6 +4495,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
             if (retired.frames_left > 0) --retired.frames_left;
         }
         std::erase_if(retired_render_textures_, [](const RetiredRenderTexture& r) { return r.frames_left == 0; });
+        video_textures_.collectRetired();
     }
 
     // Autoenfoque: lo que midio la GPU la ultima vez que se uso este hueco.
@@ -4530,6 +4583,14 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
             post_.lens_distortion = 0.0f;
             post_.chromatic_aberration = 0.0f;
             post_.film_grain = 0.0f;
+            // Efectos de pantalla calculados en la pantalla de cada ojo (con
+            // proyecciones descentradas): los fantasmas del destello, la
+            // vineta y los rayos radiales caen en sitios distintos en cada ojo
+            // y no se fusionan (luces flotantes). La luz volumetrica si se
+            // queda: va por rayos en el mundo.
+            post_.lens_flare = 0.0f;
+            post_.vignette = false;
+            post_.light_shafts = false;
         }
         if (budget_.renderScale() != applied_budget_scale_) applyEffectiveGraphics();
     }
@@ -4562,9 +4623,21 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     }
     frame_timings_.actors_ms += since(stage);
 
-    if (render_texture_target_ < 0 && xr_eye_target_ < 0 && !mirror_only_ && probeCaptureDue(scene)) {
+    // VR: la sonda se recaptura en el primer ojo (antes nunca: los ojos tienen
+    // xr_eye_target_ >= 0 y la ventana es solo espejo, asi que el cubo de
+    // antes de entrar al casco se quedaba para siempre, p. ej. reflejos de
+    // dia de noche).
+    // Con el casco activo, solo la cabeza: otra vista del editor movia
+    // probe_last_camera_ y la posicion de captura entre cabeza y editor.
+    const bool probe_view = xr_view_frame_ ? !xrSecondEye() : (xr_eye_target_ < 0 && !xrViewsMode());
+    if (render_texture_target_ < 0 && probe_view && !mirror_only_ && probeCaptureDue(scene)) {
         stage = TimingClock::now();
+        // Las caras ajustan sus cascadas a su propia camara (no a la de la
+        // cabeza, que dejaba sin sombras las caras de detras).
+        const scene::Camera* shadow_override = shadow_camera_override_;
+        shadow_camera_override_ = nullptr;
         captureProbeFace(scene);
+        shadow_camera_override_ = shadow_override;
         frame_timings_.probe_ms += since(stage);
     }
     stage = TimingClock::now();
@@ -4596,9 +4669,20 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    frame_delta_seconds_ =
-        (frame_count_ == 0) ? 0.0f : std::chrono::duration<float>(now - last_frame_time_).count();
-    last_frame_time_ = now;
+    // La vista secundaria (Escena y Juego visibles a la vez: la otra, sin
+    // presentar) no avanza el reloj: si lo hacia, la principal solo veia el
+    // trozo de frame desde la secundaria y la auto-exposicion (y el
+    // presupuesto) iban varias veces mas lentos en el editor que en el juego.
+    // Misma condicion que secondary_view_ (mas abajo).
+    if (!xr_view_frame_ && (!present || xr_views_active_)) {
+        frame_delta_seconds_ = 0.0f;
+    } else {
+        frame_delta_seconds_ =
+            (frame_count_ == 0 || last_frame_time_.time_since_epoch().count() == 0)
+                ? 0.0f
+                : std::chrono::duration<float>(now - last_frame_time_).count();
+        last_frame_time_ = now;
+    }
     if (xr_view_frame_ && !xrSecondEye()) {
         // La vista del casco avanza el tiempo (nubes, agua, particulas): desde
         // la anterior del casco, no desde el espejo de la ventana.
@@ -4747,7 +4831,17 @@ float VulkanRenderer::probeDrawDistance() const {
 }
 
 bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
-    probe_since_capture_ += frame_delta_seconds_;
+    // VR: frame_delta_seconds_ aun es el de la vista anterior (segundo ojo o
+    // espejo: 0), asi que nunca pasaba el tiempo minimo. Se mide desde el
+    // primer ojo anterior (last_xr_view_time_ se actualiza despues).
+    float dt = frame_delta_seconds_;
+    if (xr_view_frame_) {
+        dt = last_xr_view_time_.time_since_epoch().count() == 0
+                 ? 0.0f
+                 : std::min(std::chrono::duration<float>(std::chrono::steady_clock::now() - last_xr_view_time_).count(),
+                            0.25f);
+    }
+    probe_since_capture_ += dt;
     // Hacen falta los mapas de sombra locales y la imagen HDR de un frame ya
     // dibujado (se leen tal cual en la captura).
     // Con trazado de rayos la sonda no hace falta: nada de capturas.
@@ -4756,10 +4850,12 @@ bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
         return false;
     }
 
-    const Vec3 position = scene.camera().position();
-    const float speed = frame_delta_seconds_ > 0.0f
-                            ? core::length(position - probe_last_camera_) / frame_delta_seconds_
-                            : 0.0f;
+    // VR: la cabeza (centro de los ojos), no la camara del editor.
+    const scene::Camera& view = xr_view_frame_ && shadow_camera_override_ != nullptr ? *shadow_camera_override_
+                                : xr_view_frame_ && camera_override_ != nullptr     ? *camera_override_
+                                                                                    : scene.camera();
+    const Vec3 position = view.position();
+    const float speed = dt > 0.0f ? core::length(position - probe_last_camera_) / dt : 0.0f;
     probe_last_camera_ = position;
 
     // Una cara cada pocos frames, y ninguna captura nueva hasta que la
@@ -4996,6 +5092,13 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     gpu_profiler_.begin(cmd, frame_index);
     pass_start_ = std::chrono::steady_clock::now();
     output_depth_ready_ = false;
+    // Video: los frames pendientes a sus texturas, en el primer frame que se
+    // graba (de la pantalla o de una Render Texture) y antes de que nadie las
+    // lea en este command buffer (tambien la UI en el mundo, que las muestra).
+    if (video_textures_.hasPending()) {
+        recordVideoUploads(cmd, frame_index);
+        markPass(cmd, frame_index, "Video (subidas)");
+    }
     // UI en el mundo: sus texturas, una vez por frame (la primera vista).
     if (world_ui_pass_.needsPaint() && !capturing_) {
         world_ui_pass_.recordPaint(device_, cmd, frame_index);
@@ -5125,12 +5228,22 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     markPass(cmd, frame_index, "Bloom");
     recordLightShaftPass(cmd);
     markPass(cmd, frame_index, "Rayos de luz");
-    // La exposicion es de la vista principal (en VR, del primer ojo: la misma
-    // en los dos).
-    if (!secondary_view_ && !xrSecondEye()) recordAutoExposurePass(cmd);
+    // La exposicion es de la vista principal. En VR miden los dos ojos: el
+    // segundo solo suma su histograma, que el primero promedia (con el suyo)
+    // en el frame siguiente; asi los dos ojos usan la misma exposicion y una
+    // luz que solo ve un ojo no la hace saltar.
+    if (!secondary_view_) recordAutoExposurePass(cmd);
     markPass(cmd, frame_index, "Auto-exposicion");
     recordCompositePass(cmd, frame_index);
     markPass(cmd, frame_index, "Composicion");
+    // Planos de camara del video (lejano: donde no hay geometria; cercano:
+    // encima). Solo en la vista de juego, antes de la UI en el mundo.
+    if (video_planes_enabled_ && video_textures_.hasPlanes() && !editor_helpers_ && !capturing_ &&
+        render_texture_target_ < 0 && xr_eye_target_ < 0 && !xr_view_frame_ &&
+        drawModeNow() != SceneDrawMode::Wireframe) {
+        recordVideoPlanes(cmd, frame_index);
+        markPass(cmd, frame_index, "Video (planos de camara)");
+    }
     if (!world_ui_pass_.empty() && !capturing_ && drawModeNow() != SceneDrawMode::Wireframe) {
         recordWorldUiPass(cmd, frame_index);
         markPass(cmd, frame_index, "UI en el mundo");
@@ -6234,10 +6347,13 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
         }
     } else if (baked) {
         // Sondas dinamicas (DDGI): unas cuantas se rehacen con rayos antes de usarlas.
-        if (dynamicProbesActive()) {
+        // VR: solo en el primer ojo (el buffer de sondas es uno: el segundo ojo
+        // rehacia otras n a mitad de frame, cada ojo con otra luz y el doble
+        // de coste). Semilla de noise_frame_ (la misma en los dos ojos).
+        if (dynamicProbesActive() && !xrSecondEye()) {
             RayTracing::Push probe_push{};
             const std::uint32_t n = std::min(dynamic_probes_per_frame_, baked_probe_count_);
-            probe_push.params = Vec4{static_cast<float>(frame_count_ % 1024), static_cast<float>(dynamic_probe_cursor_),
+            probe_push.params = Vec4{static_cast<float>(noise_frame_ % 1024), static_cast<float>(dynamic_probe_cursor_),
                                      static_cast<float>(n), 0.85f};
             ray_tracing_.recordProbeUpdate(cmd, frame_index, *probe_update_layout_, *probe_update_sets_[0], probe_push, n);
             dynamic_probe_cursor_ = (dynamic_probe_cursor_ + n) % std::max(baked_probe_count_, 1u);
@@ -7001,8 +7117,11 @@ void VulkanRenderer::shiftOrigin(const core::Vec3& offset) {
     camera_view_projection_ = camera_view_projection_ * to_old;
     previous_view_projection_ = previous_view_projection_ * to_old;
     xr_eye1_.motion_view_projection = xr_eye1_.motion_view_projection * to_old;
-    // Lo guardado del frame anterior esta en las coordenadas viejas.
+    // Lo guardado del frame anterior esta en las coordenadas viejas (la
+    // exposicion no: mover el origen no es un corte).
+    const bool keep_exposure_reset = exposure_reset_pending_;
     invalidateHistory();
+    exposure_reset_pending_ = keep_exposure_reset;
     cascades_valid_ = false;
     local_shadows_.invalidate();
     rain_map_ready_ = false;
@@ -7020,6 +7139,10 @@ void VulkanRenderer::invalidateHistory() {
     rt_reflection_history_valid_ = false;
     xr_eye1_.taa_valid = xr_eye1_.ssr_valid = xr_eye1_.gi_valid = false;  // el otro ojo
     xr_eye1_.rt_shadow_valid = xr_eye1_.rt_reflection_valid = false;
+    // Corte de camara, cambio de vista o escena nueva: la exposicion no viene
+    // de la vista anterior. (El desplazamiento del origen y el cambio de
+    // tamano de los destinos la conservan: ver sus llamadas.)
+    exposure_reset_pending_ = true;
 }
 
 // El resultado del frame (imagen compuesta con contorno y gizmos) a la imagen
@@ -7136,6 +7259,9 @@ void VulkanRenderer::resizeRenderTexture(std::int32_t id, std::uint32_t width, s
 void VulkanRenderer::destroyRenderTexture(std::int32_t id) {
     if (!renderTextureValid(id)) return;
     device_.waitIdle();
+    // Si un video escribia en ella: su pendiente, planos internos y sets fuera
+    // (si no, quedarian vivos y el id reutilizado heredaria el hueco).
+    video_textures_.forget(id);
     render_textures_[id]->alive = false;
     rebindRenderTexture(id);  // sus materiales vuelven a la textura por defecto
     retireRenderTextureImage(*render_textures_[id]);
@@ -7169,6 +7295,57 @@ void VulkanRenderer::rebindRenderTexture(std::int32_t id) {
             }
         }
     }
+}
+
+// -----------------------------------------------------------------------------
+// Video (VideoTextures.h): texturas de video en el espacio de ids de las
+// Render Textures, subidas dentro del command buffer y planos de camara.
+// -----------------------------------------------------------------------------
+
+std::int32_t VulkanRenderer::createVideoTexture(std::uint32_t width, std::uint32_t height) {
+    if (!video_textures_.created()) return -1;
+    return createRenderTexture(width, height);
+}
+
+void VulkanRenderer::destroyVideoTexture(std::int32_t id) {
+    if (!renderTextureValid(id)) return;
+    video_textures_.forget(id);  // pendiente, planos internos y sets: retirados
+    destroyRenderTexture(id);
+}
+
+void VulkanRenderer::releaseVideoFrames(std::int32_t id) {
+    if (id >= 0) video_textures_.forget(id);
+}
+
+bool VulkanRenderer::submitVideoFrame(std::int32_t id, const VideoUpload& upload) {
+    if (!initialized_ || !renderTextureValid(id)) return false;
+    return video_textures_.submit(id, upload);
+}
+
+void VulkanRenderer::setVideoPlane(int plane, std::int32_t id, float alpha, int aspect) {
+    video_textures_.setPlane(plane, renderTextureValid(id) ? id : -1, alpha, aspect);
+}
+
+VideoTarget VulkanRenderer::videoTarget(std::int32_t id) const {
+    VideoTarget target;
+    if (!renderTextureValid(id)) return target;
+    const RenderTextureSlot& slot = *render_textures_[id];
+    if (!slot.image.isValid()) return target;
+    target.image = *slot.image.handle();
+    target.view = *slot.ui_view;
+    target.extent = slot.image.extent();
+    return target;
+}
+
+void VulkanRenderer::recordVideoUploads(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
+    video_textures_.recordUploads(device_, cmd, frame_index, [this](std::int32_t id) { return videoTarget(id); });
+}
+
+void VulkanRenderer::recordVideoPlanes(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
+    // La profundidad de la escena a su resolucion (con escalado, la interna):
+    // el shader la lee con UV normalizadas, sin copiarla.
+    video_textures_.recordPlanes(device_, cmd, frame_index, ldr_color_, gbuffer_.depth(), compat::depthReadOnlyLayout(),
+                                 [this](std::int32_t id) { return videoTarget(id); });
 }
 
 void VulkanRenderer::renderToTexture(const scene::Scene& scene, const scene::Camera& camera, std::int32_t id) {
@@ -8394,7 +8571,9 @@ void VulkanRenderer::recordVendorUpscale(const vk::raii::CommandBuffer& cmd) {
     d.jitter_x = jitter_ndc_.x * 0.5f * static_cast<float>(render.width);
     d.jitter_y = jitter_ndc_.y * 0.5f * static_cast<float>(render.height);
     d.reset = !taa_history_valid_;
-    d.frame_ms = std::max(frame_delta_seconds_, 0.0001f) * 1000.0f;
+    // La vista secundaria y el segundo ojo no avanzan el reloj (delta 0): un
+    // frame normal para el escalador en vez de 0.1 ms.
+    d.frame_ms = frame_delta_seconds_ > 0.0f ? std::max(frame_delta_seconds_, 0.0001f) * 1000.0f : 16.7f;
     d.near_plane = camera_near_;
     d.far_plane = camera_far_;
     d.fov_y = camera_fov_;
@@ -8813,6 +8992,12 @@ void VulkanRenderer::recordAutoExposurePass(const vk::raii::CommandBuffer& cmd) 
                            *histogram_sets_[0], nullptr);
     cmd.dispatch((extent.width + 15) / 16, (extent.height + 15) / 16, 1);
 
+    // Segundo ojo en VR: su histograma se queda acumulado para el promedio
+    // del primer ojo del frame siguiente (la composicion de este ojo usa la
+    // misma exposicion que el primero). La barrera del principio del pase
+    // siguiente lo hace visible.
+    if (xrSecondEye()) return;
+
     memoryBarrier(cmd, vk::PipelineStageFlagBits2::eComputeShader,
                   vk::AccessFlagBits2::eShaderStorageWrite,
                   vk::PipelineStageFlagBits2::eComputeShader,
@@ -8823,7 +9008,10 @@ void VulkanRenderer::recordAutoExposurePass(const vk::raii::CommandBuffer& cmd) 
     GpuExposurePush push{};
     // Un frame muy largo (carga, ventana arrastrada) no debe saltar la
     // adaptacion de golpe.
-    push.delta_seconds = std::min(frame_delta_seconds_, 0.1f);
+    push.delta_seconds = std::min(std::max(frame_delta_seconds_, 0.0f), 0.1f);
+    // Corte de camara / cambio de vista: sin transicion desde la anterior.
+    push.reset = exposure_reset_pending_ ? 1.0f : 0.0f;
+    exposure_reset_pending_ = false;
     push.min_log_exposure = std::min(post_.min_ev, post_.max_ev);
     push.max_log_exposure = std::max(post_.min_ev, post_.max_ev);
     push.speed_up = std::max(post_.adaptation_speed_up, 0.01f);
@@ -8934,6 +9122,7 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
     push.inverse_resolution = core::Vec2{1.0f / static_cast<float>(std::max(source.width, 1u)),
                                          1.0f / static_cast<float>(std::max(source.height, 1u))};
     push.enabled = post_.fxaa ? 1.0f : 0.0f;
+    push.sharpen = std::clamp(post_.sharpen, 0.0f, 1.0f);
     cmd.pushConstants<GpuPostProcessPush>(*post_process_pass_.layout(),
                                           vk::ShaderStageFlagBits::eFragment, 0, push);
 
@@ -8969,16 +9158,22 @@ bool VulkanRenderer::applyPendingResize() {
             targets_dirty_ = true;
         }
         // El casco tiene que ir a su frecuencia (72-120 Hz): si no llega, el
-        // runtime repite frames y al mover la cabeza todo tiembla. En VR el
-        // presupuesto adaptativo va siempre, con los Hz del casco (se mide el
-        // frame entero: los dos ojos).
+        // runtime repite frames y al mover la cabeza todo tiembla. El
+        // presupuesto adaptativo (si el usuario lo tiene puesto: antes se
+        // forzaba aunque lo apagara) va con los Hz del casco (se mide el
+        // frame entero: los dos ojos). En el casco la resolucion es lo que mas
+        // se nota: como poco 0.87 por ojo (nivel 1; antes bajaba al 50 %, y
+        // una GPU de gama baja ya empezaba en 67 %); antes baja GI, reflejos,
+        // volumetrica, sombras y LODs.
         if (xr_.running()) {
-            budget_.setEnabled(true);
+            budget_.setLevelCap(Lever::RenderScale, 1);
+            budget_.setEnabled(user_graphics_.adaptive);
             budget_.setTargetFps(xr_.displayHz());
             xr_budget_applied_ = true;
             applyEffectiveGraphics();  // estereo: TAA por ojo en vez de FSR 3 / DLSS
         } else if (xr_budget_applied_) {
             xr_budget_applied_ = false;
+            budget_.setLevelCap(Lever::RenderScale, 255);
             budget_.setEnabled(user_graphics_.adaptive);
             budget_.setTargetFps(user_graphics_.target_fps);
             applyEffectiveGraphics();

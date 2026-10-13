@@ -29,9 +29,23 @@ using core::Vec3;
 
 ecs::Entity EditorApp::createTerrainGridEntity() {
     terrain::TerrainGrid grid;
+    // Carpeta libre de verdad: ni en disco ni usada por otra rejilla de esta
+    // escena. Y se crea ya: una rejilla sin esculpir no escribe nada, y antes
+    // la de otra escena volvia a recibir "Terrains/Mundo" (las dos escenas
+    // compartian teselas: lo de una aparecia en la otra).
+    const auto taken = [&](const std::string& candidate) {
+        std::error_code ec;
+        if (std::filesystem::exists(project_.assetsFolder() / dialogs::fromUtf8(candidate), ec)) return true;
+        for (const entt::entity h : world_.registry().view<terrain::TerrainGrid>()) {
+            if (world_.registry().get<terrain::TerrainGrid>(h).folder == candidate) return true;
+        }
+        return false;
+    };
     std::string folder = "Terrains/Mundo";
-    for (int i = 2; std::filesystem::exists(project_.assetsFolder() / dialogs::fromUtf8(folder)); ++i) {
-        folder = "Terrains/Mundo " + std::to_string(i);
+    for (int i = 2; taken(folder); ++i) folder = "Terrains/Mundo " + std::to_string(i);
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(project_.assetsFolder() / dialogs::fromUtf8(folder), ec);
     }
     grid.folder = folder;
     ecs::Entity entity = world_.create("Terreno grande");

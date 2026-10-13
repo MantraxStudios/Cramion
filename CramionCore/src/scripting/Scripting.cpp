@@ -418,6 +418,7 @@ std::vector<std::string> ScriptSystem::mountedDataPacks() const {
 void ScriptSystem::setInput(const dm::Input* input) { impl_->input = input; }
 void ScriptSystem::setPhysics(physics::PhysicsSystem* physics) { impl_->physics = physics; }
 void ScriptSystem::setAudio(audio::AudioSystem* audio) { impl_->audio = audio; }
+void ScriptSystem::setVideo(video::VideoSystem* video) { impl_->video = video; }
 void ScriptSystem::setNavigation(navigation::NavigationSystem* navigation) { impl_->navigation = navigation; }
 void ScriptSystem::setVoxels(voxel::VoxelSystem* voxels) { impl_->voxels = voxels; }
 void ScriptSystem::setGraphics(GraphicsHost* graphics) { impl_->graphics = graphics; }

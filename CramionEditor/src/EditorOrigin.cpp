@@ -7,6 +7,8 @@
 
 #include "EditorApp.h"
 
+#include <CramionCore/ecs/SceneReset.h>
+
 #include <ImGuizmo.h>
 #include <imgui.h>
 
@@ -37,13 +39,45 @@ void EditorApp::applyOriginShift(const Vec3& offset, bool move_world) {
 }
 
 void EditorApp::alignOriginAfterLoad(const ecs::DVec3& before) {
-    const ecs::DVec3& now = world_.origin();
+    const ecs::DVec3 now = world_.origin();
+    if (now != before) {
+        // Las entidades ya estan en el origen nuevo (las teselas que se quedan
+        // tambien: World::clearPersistent las recoloca): solo se alinea lo demas.
+        applyOriginShift(Vec3{static_cast<float>(now.x - before.x), static_cast<float>(now.y - before.y),
+                              static_cast<float>(now.z - before.z)},
+                         /*move_world=*/false);
+    }
+    // El origen absoluto del renderizador DESPUES del desplazamiento:
+    // VulkanRenderer::shiftOrigin tambien le suma el offset, y antes acababa
+    // en 2*now - before (las nubes desplazadas tras cada cambio de escena).
     renderer_.setWorldOrigin(now.x, now.y, now.z);
-    if (now == before) return;
-    // Las entidades ya estan en el origen nuevo: solo se alinea lo demas.
-    applyOriginShift(Vec3{static_cast<float>(now.x - before.x), static_cast<float>(now.y - before.y),
-                          static_cast<float>(now.z - before.z)},
-                     /*move_world=*/false);
+}
+
+void EditorApp::resetSceneSystems(bool keep_terrain_edits) {
+    // Video: la vista previa del Inspector es de la escena que se va. (Los
+    // caminos en Play ya pararon el video antes que el audio; aqui solo se
+    // asegura: VideoSystem::stop es idempotente.)
+    video_.stopPreview();
+    video_preview_entity_ = {};
+    ecs::SceneResetTargets targets;
+    targets.video = &video_;
+    targets.terrain_streamer = &terrain_streamer_;
+    targets.terrain_store = &terrain_store_;
+    targets.partition = &world_partition_;
+    targets.physics = &physics_;
+    targets.navigation = &nav_;
+    targets.render = sync_.get();
+    ecs::SceneResetOptions options;
+    // Nunca se guarda solo al cambiar de escena: el usuario ya eligio
+    // guardar (saveAll) o no. Antes las teselas de la escena que se dejaba se
+    // guardaban al soltarse aunque se descartaran los cambios.
+    options.save_terrain = false;
+    options.discard_terrain_data = !keep_terrain_edits;
+    options.clear_world = true;
+    ecs::resetSceneState(world_, targets, options);
+    // Lo que dependia de entidades de la escena anterior.
+    nav_.resetAgents();
+    renderer_.invalidateHistory();
 }
 
 void EditorApp::updateFloatingOrigin() {

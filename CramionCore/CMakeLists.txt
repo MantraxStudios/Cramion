@@ -219,6 +219,13 @@ target_link_libraries(CramionCore
 if(WIN32)
     # bcrypt: bytes aleatorios del sistema (net/Encoding: claves y mascaras de WebSocket).
     target_link_libraries(CramionCore PRIVATE ws2_32 winmm winhttp bcrypt)
+    # Video (src/video/decoders, entra por el GLOB de src/): D3D11 para la
+    # decodificacion por hardware de Media Foundation y COM (ole32). mfplat.dll
+    # y mfreadwrite.dll NO se enlazan: se cargan con LoadLibrary al abrir un
+    # video (en Windows N/KN sin Media Feature Pack el editor y el juego
+    # arrancan y el video da un error claro). Sus GUID se definen en
+    # MfCommon.h (initguid), asi que tampoco hace falta mfuuid.
+    target_link_libraries(CramionCore PRIVATE ole32 d3d11 dxgi)
 elseif(ANDROID)
     # miniaudio (AAudio/OpenSL por dlopen) y el log del sistema.
     target_link_libraries(CramionCore PRIVATE android log OpenSLES dl)
@@ -297,6 +304,16 @@ target_compile_options(CramionTerrainTests PRIVATE -Wall -Wextra)
 add_executable(CramionMaterialTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MaterialTests.cpp")
 target_link_libraries(CramionMaterialTests PRIVATE Cramion::Core)
 target_compile_options(CramionMaterialTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas del VideoPlayer (consola, sin GPU ni codecs) ---
+# Decodificador sintetico (cramion://test), AudioSystem Offline y un
+# VideoOutput falso. La prueba de Media Foundation se salta si no hay H.264.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/VideoTests.cpp")
+    add_executable(CramionVideoTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/VideoTests.cpp")
+    target_include_directories(CramionVideoTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(CramionVideoTests PRIVATE Cramion::Core)
+    target_compile_options(CramionVideoTests PRIVATE -Wall -Wextra)
+endif()
 
 # --- Pruebas del agua (consola) ---
 add_executable(CramionWaterTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/WaterTests.cpp")
@@ -396,6 +413,12 @@ target_compile_options(CramionPrefabTests PRIVATE -Wall -Wextra)
 add_executable(CramionWorldPartitionTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/WorldPartitionTests.cpp")
 target_link_libraries(CramionWorldPartitionTests PRIVATE Cramion::Core)
 target_compile_options(CramionWorldPartitionTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas del cambio de escena (consola): nada de la escena anterior se
+# queda (teselas, celdas, colliders, navegacion) y el origen flotante ---
+add_executable(CramionSceneChangeTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/SceneChangeTests.cpp")
+target_link_libraries(CramionSceneChangeTests PRIVATE Cramion::Core)
+target_compile_options(CramionSceneChangeTests PRIVATE -Wall -Wextra)
 
 # --- Pruebas de las mallas creadas por codigo (consola) ---
 add_executable(CramionMeshTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MeshTests.cpp")

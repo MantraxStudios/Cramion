@@ -785,6 +785,122 @@ Value vehicleState(Mas&&... mas) const {
 /// entity.velocity2D: Vec3 de su Rigidbody2D (z = 0) (Vec3)
 Value velocity2D() const { return get("velocity2D"); }
 void setVelocity2D(const Value& v) const { set("velocity2D", v); }
+/// entity.videoDroppedFrames: frames saltados desde que empezo (numero)
+Value videoDroppedFrames() const { return get("videoDroppedFrames"); }
+/// entity.videoFrame: frame que se ve (escribirlo busca) (numero)
+Value videoFrame() const { return get("videoFrame"); }
+void setVideoFrame(const Value& v) const { set("videoFrame", v); }
+/// entity.videoFrameCount: frames del video (numero)
+Value videoFrameCount() const { return get("videoFrameCount"); }
+/// entity.videoFrameRate: frames por segundo (numero)
+Value videoFrameRate() const { return get("videoFrameRate"); }
+/// entity.videoHeight: alto en pixeles (numero)
+Value videoHeight() const { return get("videoHeight"); }
+/// entity.videoIsLive: es un directo? (bool)
+Value videoIsLive() const { return get("videoIsLive"); }
+/// entity.videoIsPlaying: esta sonando? (bool)
+Value videoIsPlaying() const { return get("videoIsPlaying"); }
+/// entity.videoIsPrepared: tiene el primer frame listo? (bool)
+Value videoIsPrepared() const { return get("videoIsPrepared"); }
+/// entity.videoLength: duracion en segundos (-1 en directo o si aun no se sabe) (numero)
+Value videoLength() const { return get("videoLength"); }
+/// entity.videoLoop: bucle (bool)
+Value videoLoop() const { return get("videoLoop"); }
+void setVideoLoop(const Value& v) const { set("videoLoop", v); }
+/// entity().videoPause()
+/// pausa el video
+template <typename... Mas>
+Value videoPause(Mas&&... mas) const {
+    return call("videoPause", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity().videoPlay()
+/// reproduce el video (lo prepara si hace falta)
+template <typename... Mas>
+Value videoPlay(Mas&&... mas) const {
+    return call("videoPlay", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity.videoPlaybackSpeed: velocidad (0.1..4; fuera de 0.5..2 el audio se calla) (numero)
+Value videoPlaybackSpeed() const { return get("videoPlaybackSpeed"); }
+void setVideoPlaybackSpeed(const Value& v) const { set("videoPlaybackSpeed", v); }
+/// entity().videoPrepare()
+/// abre el video y deja el primer frame listo (OnVideoPrepared)
+template <typename... Mas>
+Value videoPrepare(Mas&&... mas) const {
+    return call("videoPrepare", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity().videoReadSamples(pista, frames)
+/// muestras entrelazadas de la pista (Salida de audio ApiOnly; bloques de 20-50 ms, no es tiempo real)
+/// Devuelve: lista de numeros
+template <typename T0 = Value, typename T1 = Value>
+Value videoReadSamples(const T0& pista = {}, const T1& frames = {}) const {
+    return call("videoReadSamples", Values{Value(pista), Value(frames)});
+}
+/// entity().videoSeek(segundos)
+/// salta a ese segundo del video (OnVideoSeekCompleted al llegar)
+template <typename T0 = Value>
+Value videoSeek(const T0& segundos = {}) const {
+    return call("videoSeek", Values{Value(segundos)});
+}
+/// entity().videoSeekFrame(frame)
+/// salta a ese frame (desde 0)
+template <typename T0 = Value>
+Value videoSeekFrame(const T0& frame = {}) const {
+    return call("videoSeekFrame", Values{Value(frame)});
+}
+/// entity().videoSetClip("Videos/intro.mp4")
+/// cambia el clip (ruta en Assets); si estaba sonando, sigue con el nuevo
+template <typename T0 = Value>
+Value videoSetClip(const T0& texto = {}) const {
+    return call("videoSetClip", Values{Value(texto)});
+}
+/// entity().videoSetTrackMute(pista, true)
+/// silencia (o no) una pista de audio (desde 1)
+template <typename T0 = Value, typename T1 = Value>
+Value videoSetTrackMute(const T0& pista = {}, const T1& activar = {}) const {
+    return call("videoSetTrackMute", Values{Value(pista), Value(activar)});
+}
+/// entity().videoSetTrackTargets(pista, {fuente1, fuente2})
+/// objetos con AudioSource por los que suena la pista (Salida de audio AudioSource)
+template <typename T0 = Value, typename T1 = Value>
+Value videoSetTrackTargets(const T0& pista = {}, const T1& tabla = {}) const {
+    return call("videoSetTrackTargets", Values{Value(pista), Value(tabla)});
+}
+/// entity().videoSetTrackVolume(pista, volumen)
+/// volumen de una pista de audio (desde 1)
+template <typename T0 = Value, typename T1 = Value>
+Value videoSetTrackVolume(const T0& pista = {}, const T1& volumen = {}) const {
+    return call("videoSetTrackVolume", Values{Value(pista), Value(volumen)});
+}
+/// entity().videoSetUrl("https://...")
+/// cambia la fuente a una URL (https, o http a este PC)
+template <typename T0 = Value>
+Value videoSetUrl(const T0& texto = {}) const {
+    return call("videoSetUrl", Values{Value(texto)});
+}
+/// entity.videoState: Idle, Preparing, Prepared, Playing, Paused, Buffering, Ended o Error (texto)
+Value videoState() const { return get("videoState"); }
+/// entity().videoStepForward(frames)
+/// pausa y avanza N frames (1 por defecto)
+template <typename T0 = Value>
+Value videoStepForward(const T0& frames = {}) const {
+    return call("videoStepForward", Values{Value(frames)});
+}
+/// entity().videoStop()
+/// para el video y suelta el decodificador (vuelve al principio)
+template <typename... Mas>
+Value videoStop(Mas&&... mas) const {
+    return call("videoStop", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity.videoTexture: id de la textura del video (para otras llamadas de la API; -1 si no hay) (numero)
+Value videoTexture() const { return get("videoTexture"); }
+/// entity.videoTime: segundo actual del video (escribirlo busca) (numero)
+Value videoTime() const { return get("videoTime"); }
+void setVideoTime(const Value& v) const { set("videoTime", v); }
+/// entity.videoVolume: volumen general del video (numero)
+Value videoVolume() const { return get("videoVolume"); }
+void setVideoVolume(const Value& v) const { set("videoVolume", v); }
+/// entity.videoWidth: ancho en pixeles (numero)
+Value videoWidth() const { return get("videoWidth"); }
 /// entity().worldToCell(posicion)
 /// Tilemap: celda (x, y) de un punto del mundo
 /// Devuelve: lista: x, y

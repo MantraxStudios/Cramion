@@ -132,8 +132,13 @@ public:
     void clear();
     // Como clear() pero las raices transitorias (EntityInfo::transient: las
     // teselas de un TerrainGrid) se quedan: deshacer o parar Play no las
-    // vuelve a crear ni a subir a la GPU.
-    void clearPersistent();
+    // vuelve a crear ni a subir a la GPU. El origen pasa a `new_origin` y las
+    // raices que se quedan se recolocan para no moverse en el mundo real
+    // (local += origen_viejo - origen_nuevo, en doble precision): antes se
+    // quedaban con la posicion local del origen viejo y el terreno saltaba
+    // (origen_viejo - origen_nuevo) al parar Play o deshacer tras un
+    // desplazamiento del origen flotante.
+    void clearPersistent(const DVec3& new_origin = DVec3{});
 
     Entity find(const Uuid& uuid) const;
     Entity findByName(std::string_view name) const;  // la primera
@@ -167,7 +172,12 @@ public:
     // shiftOrigin(offset). La escena guarda el origen y las posiciones
     // relativas a el, asi que no se pierde precision al guardar.
     const DVec3& origin() const { return origin_; }
+    // Solo cambia el numero (las raices no se mueven): para un mundo vacio o
+    // recien leido. Con raices que deben seguir en su sitio: rebaseOrigin.
     void setOrigin(const DVec3& origin) { origin_ = origin; }
+    // Cambia el origen sin mover nada en el mundo real: cada raiz se recoloca
+    // con (origen_viejo - origen_nuevo), calculado en doble precision.
+    void rebaseOrigin(const DVec3& origin);
     void shiftOrigin(const core::Vec3& offset);
     // Posicion absoluta (doble precision) de un punto local.
     DVec3 absolute(const core::Vec3& local) const {
@@ -188,6 +198,16 @@ public:
     // Sube con cada cambio de estructura (crear, destruir, emparentar): los
     // sistemas lo usan para saber cuando rehacer sus listas.
     std::uint64_t structureVersion() const { return structure_version_; }
+
+    // Generacion de escena: sube con cada cambio de escena de verdad (abrir
+    // otra, escena nueva, Scene.load, cambiar de pestana de mundo; ver
+    // SceneReset.h y loadScene). Los trabajos en otros hilos (teselas de
+    // terreno, colliders, celdas, navegacion, vegetacion) la apuntan al
+    // lanzarse y tiran su resultado si ya no coincide: nada de la escena
+    // anterior entra en la nueva. Deshacer y parar Play NO la suben (es la
+    // misma escena: las teselas se quedan).
+    std::uint64_t sceneGeneration() const { return scene_generation_; }
+    std::uint64_t beginNewSceneGeneration() { return ++scene_generation_; }
 
     entt::registry& registry() { return registry_; }
     const entt::registry& registry() const { return registry_; }
@@ -210,6 +230,7 @@ private:
     Uuid scene_uuid_ = Uuid::generate();
     std::string scene_name_ = "Escena";
     std::uint64_t structure_version_ = 0;
+    std::uint64_t scene_generation_ = 1;
     DVec3 origin_{};
 };
 

@@ -36,6 +36,8 @@
 #include <CramionCore/scripting/ModEntry.h>
 #include <CramionCore/CramionCore.h>
 #include <CramionCore/ecs/FloatingOrigin.h>
+#include <CramionCore/ecs/SceneReset.h>
+#include <CramionCore/video/VideoSystem.h>
 #include <CramionCore/project/DataPack.h>
 #include <CramionCore/project/Pack.h>
 #include <CramionCore/project/TouchInterface.h>
@@ -656,6 +658,7 @@ int runPlayer() {
         navigation::registerNavigationComponents();
         voxel::registerVoxelComponents();
         audio::registerAudioComponents();
+        video::registerVideoComponents();
         scripting::registerScriptComponents();
         ui::registerUiComponents();
         xr::registerXrComponents();
@@ -696,6 +699,27 @@ int runPlayer() {
         audio::AudioSystem audio;
         audio.setAssetsRoot(project->assetsFolder());
         audio.setOcclusionQuery(audio::physicsOcclusionQuery(physics));
+        // Video (VideoPlayer): imagen por RenderSync y sonido por el audio.
+        // Declarado despues de los dos: se destruye antes. Se para SIEMPRE
+        // antes que el audio (suelta sus voces de stream).
+        std::unique_ptr<video::VideoOutput> video_output = video::makeRenderVideoOutput(sync, renderer);
+        video::VideoSystem video;
+        {
+            video::VideoSystem::Host host;
+            host.audio = &audio;
+            host.output = video_output.get();
+            host.assets_root = project->assetsFolder();
+            video.setHost(host);
+        }
+        // Una .crrt (camara o video) en una UI Image: su id y tamano en el renderizador.
+        editor::setUiRenderTextureResolver([&sync, &renderer](const std::string& relative, ImVec2* size) -> std::int32_t {
+            const std::int32_t id = sync.renderTextureIdForAsset(relative);
+            if (id >= 0 && size != nullptr) {
+                const vk::Extent2D extent = renderer.renderTextureExtent(id);
+                *size = ImVec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
+            }
+            return id;
+        });
         scripting::ScriptSystem scripts;
         scripts.setAssetsRoot(project->assetsFolder());
         // DataPack.load: lo montado entra en la base de assets (sus modelos,
@@ -706,6 +730,7 @@ int runPlayer() {
         scripts.setDataPackJournal(project->libraryFolder() / "DataPacks.journal");
         scripts.setPhysics(&physics);
         scripts.setAudio(&audio);
+        scripts.setVideo(&video);
         // CVars del proyecto (sin trucos en el juego) y los scripts de C++:
         // la DLL compilada al exportar, en scripts/ junto al ejecutable.
         cvar::Registry::instance().setCheatsAllowed(false);
@@ -999,6 +1024,7 @@ int runPlayer() {
                 case Stage::Scene: {
                     scripts.stop();
                     cpp_scripts.stop();
+                    video.stop();  // antes que el audio: sin voces de stream ni eventos de la escena vieja
                     audio.stop();
                     game_ui.reset();
                     physics.stop();
@@ -1008,11 +1034,41 @@ int runPlayer() {
                     twod_system.stop();
                     if (replays.playing()) replays.stop(world);
                     if (replays.recording()) replays.stopRecording();
-                    nav.clear();
                     voxels.stop();
+                    // Cambio de escena: la secuencia comun (SceneReset.h). Antes
+                    // las teselas de terreno del nivel anterior seguian en el
+                    // mundo nuevo (desplazadas si el origen flotante se movio):
+                    // la pantalla de carga las subia a la GPU, la fisica les hacia
+                    // colliders y la navegacion las metia en la malla del nivel
+                    // nuevo, hasta el primer update del streamer. Lo esculpido en
+                    // el juego no se guarda (como siempre).
+                    const ecs::DVec3 origin_before = world.origin();
+                    {
+                        ecs::SceneResetTargets targets;
+                        targets.terrain_streamer = &terrain_streamer;
+                        targets.terrain_store = &terrains;
+                        targets.partition = &partition;
+                        targets.physics = &physics;
+                        targets.navigation = &nav;
+                        targets.render = &sync;
+                        targets.video = &video;
+                        ecs::SceneResetOptions options;
+                        options.save_terrain = false;
+                        options.discard_terrain_data = true;
+                        ecs::resetSceneState(world, targets, options);
+                    }
+                    nav.resetAgents();
                     std::string error;
                     if (load.file.empty() || !ecs::loadScene(world, load.file, &error)) {
                         std::cerr << "[Juego] No se pudo abrir la escena " << load.file.string() << " " << error << "\n";
+                    }
+                    // Lo que el renderizador guarda en coordenadas del mundo
+                    // (sondas, bloques, matrices del frame anterior), al origen
+                    // nuevo; el origen absoluto se fija despues (setWorldOrigin).
+                    if (const ecs::DVec3 now = world.origin(); now != origin_before) {
+                        renderer.shiftOrigin(core::Vec3{static_cast<float>(now.x - origin_before.x),
+                                                        static_cast<float>(now.y - origin_before.y),
+                                                        static_cast<float>(now.z - origin_before.z)});
                     }
                     // Sus celdas en disco (World Partition) se leen al acercarse.
                     partition.setSceneFile(load.file, false);
@@ -1117,6 +1173,7 @@ int runPlayer() {
                         voxels.waitUntilReady(position, 2, 20.0f);
                     }
                     audio.start(world);
+                    video.start(world);  // despues del audio (Play On Awake)
                     scripts.start(world);
                     if (!cpp_scripts.dll().empty()) cpp_scripts.start(world);
                     // La entrada de cada mod (Visual Script o prefab), tras los scripts del juego.
@@ -1432,6 +1489,8 @@ int runPlayer() {
                 core::Vec3 position, forward;
                 main_camera(position, forward);
                 audio.update(world, dt, position, forward);
+                // Video: reloj, frame a la GPU y audio a sus voces (antes de sync.sync).
+                video.update(world, dt, dt);
                 voxels.update(dt, position);
                 // Interfaz: toda la ventana.
                 const ui::UiInput ui_input = editor::uiInputFromImGui(ImVec2(0, 0), display, true, game_ui.typing());
@@ -1593,10 +1652,16 @@ int runPlayer() {
         });
         paso("red", [&] { scripts.shutdownNetwork(); });  // avisa a los demas jugadores
         paso("websocket", [&] { cramion::net::shutdownWebSockets(500); });  // cierre limpio (1001) sin colgarse
+        paso("video", [&] { video.stop(); });  // antes que el audio (voces de stream)
         paso("audio", [&] { audio.stop(); });
         paso("fisica", [&] { physics.stop(); });
         paso("voxeles", [&] { voxels.stop(); });  // guarda el mundo con nombre
         paso("GPU", [&] { renderer.waitIdle(); });
+        paso("salida de video", [&] {  // sus texturas, antes de cerrar el render
+            video.setHost(video::VideoSystem::Host{});
+            video_output.reset();
+            editor::setUiRenderTextureResolver({});  // apunta a sync y renderer
+        });
         paso("escena", [&] { sync.reset(scene); });
         paso("interfaz", [&] { imgui.shutdown(); });
         paso("render", [&] { renderer.shutdown(); });

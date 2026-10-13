@@ -530,7 +530,7 @@
       </video>
       <div class="wrap">
         <div class="hero-copy">
-          <a href="#novedades" class="pill"><b>Nuevo en la 2.4.9</b><span>Blueprints de actor, cliente WebSocket y hierba realista</span></a>
+          <a href="#novedades" class="pill"><b>Nuevo en la 2.4.10</b><span>Cambio de escena limpio, VR nítida, exposición de noche y horneado de luz</span></a>
           <h1 id="hero-title">Un motor de juegos 3D para Windows, <em>con su editor.</em></h1>
           <p class="lead">
             Montas la escena en el editor, escribes el juego en C++ y le das a Play. Render en Vulkan (1.3, o desde 1.0 en Android), física con Jolt,
@@ -543,7 +543,7 @@
             </a>
             <a href="manual/index.html" class="btn btn-glass btn-lg"><svg class="ic"><use href="#i-book"/></svg>Leer la documentación</a>
           </div>
-          <p class="meta">2.4.9 · Windows 10/11 x64 · Android (64 y 32 bits) · realidad virtual · Vulkan</p>
+          <p class="meta">2.4.10 · Windows 10/11 x64 · Android (64 y 32 bits) · realidad virtual · Vulkan</p>
         </div>
       </div>
       <div class="hud" aria-hidden="true">
@@ -744,6 +744,20 @@ CRAMION_SCRIPT(Jugador)</code></pre>
         </div>
 
         <div class="news">
+          <div class="card wide reveal">
+            <p class="tag">2.4.10 · Corrección</p>
+            <h3>Cambio de escena, «Ultra realista», VR, exposición automática y horneado de luz</h3>
+            <ul>
+              <li>Al cambiar de escena, con <code>Scene.load</code> o al pulsar Stop, el terreno ya no aparece desplazado.</li>
+              <li>No quedan restos de la escena anterior: teselas, colliders, navegación, celdas ni vegetación. También en el juego y el servidor.</li>
+              <li>Nuevo tonemapper <span class="fg">AgX Punchy</span>, aire más limpio y grano que no levanta los negros en «Ultra realista» y «Realista».</li>
+              <li>VR: TAA en cada ojo y el presupuesto ya no los baja de 0,87, nuevo ajuste <span class="fg">Resolución VR</span> y reflejos, efectos y GI correctos con el casco.</li>
+              <li>La exposición automática ya no se clava en el máximo de noche y oscurece poco a poco al mirar una luz.</li>
+              <li>El aviso «no hay mallas estáticas» ya no sale por modelos animados, Static en el padre o terreno sin collider, y hay un nuevo modo <span class="fg">Horneada</span> por luz, con luz directa y sombras suaves.</li>
+              <li>Si ya usabas uno de esos presets, vuelve a aplicarlo para ver el aspecto nuevo, y vuelve a hornear la luz.</li>
+            </ul>
+            <a href="manual/novedades-24.html#v2410" class="btn btn-outline btn-sm">Qué corrige la 2.4.10<svg class="ic ic-sm"><use href="#i-arrow"/></svg></a>
+          </div>
           <div class="card wide reveal">
             <p class="tag">Blueprints</p>
             <h3>Blueprints de actor y editor de nodos estilo Unreal</h3>
@@ -982,7 +996,7 @@ CRAMION_SCRIPT(Jugador)</code></pre>
       <div class="wrap download">
         <div class="card dl-main reveal">
           <p class="eyebrow">Descargar</p>
-          <h2>Cramion 2.4.9 para Windows</h2>
+          <h2>Cramion 2.4.10 para Windows</h2>
           <p>Descomprime y abre <code>CramionEditor.exe</code>. El motor avisa de las versiones nuevas y se actualiza solo.</p>
           <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary btn-lg">
             <svg class="ic"><use href="#i-download"/></svg>Cramion-win64.zip

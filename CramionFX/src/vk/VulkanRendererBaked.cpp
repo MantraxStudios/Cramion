@@ -229,4 +229,8 @@ bool VulkanRenderer::bakedGiActive() const {
     return lighting_mode_ == LightingMode::Baked && (baked_volume_count_ > 0 || baked_surface_capacity_ > 0);
 }
 
+bool VulkanRenderer::bakedSunActive(const core::Vec3& sun_direction) const {
+    return bakedGiActive() && bakedSunMatches(baked_, sun_direction);
+}
+
 }  // namespace cramion::gfx

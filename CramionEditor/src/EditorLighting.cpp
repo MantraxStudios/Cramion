@@ -12,10 +12,12 @@
 
 #include <CramionCore/lighting/ProbeBaker.h>
 #include <CramionCore/terrain/Terrain.h>
+#include <CramionCore/terrain/TerrainGrid.h>
 
 #include <imgui.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <iostream>
 #include <thread>
@@ -38,6 +40,10 @@ struct LightingEditorState {
     std::filesystem::path target;
     std::filesystem::path scene;  // la escena horneada (si se cambia de escena, no se aplica a la otra)
     bool auto_volume = false;
+    // Modo del sol si la escena no tiene Light direccional (LightBakeMode).
+    int sun_mode = static_cast<int>(ecs::LightBakeMode::Mixed);
+    // Lo que entro en el ultimo horneado y por que no lo demas.
+    std::string report_text;
 
     ~LightingEditorState() {
         if (progress) progress->cancel = true;
@@ -79,24 +85,31 @@ void EditorApp::startLightingBake() {
     }
     if (!asset_manager_) return;
     auto scene = std::make_shared<lighting::BakeScene>();
-    // El terreno, con las formas de la fisica (en el editor existen siempre).
-    lighting::gatherBakeScene(world_, *asset_manager_, *scene, [this](std::vector<lighting::BakeTriangle>& tris) {
-        for (const entt::entity h : world_.registry().view<terrain::Terrain>()) {
-            const ecs::Entity e = world_.wrap(h);
-            if (!e.activeInHierarchy()) continue;
-            std::vector<core::Vec3> points;
-            if (!physics_.bodyTriangles(e, points, 400000)) continue;
-            for (std::size_t i = 0; i + 2 < points.size(); i += 3) {
-                tris.push_back(lighting::BakeTriangle{points[i], points[i + 1], points[i + 2], core::Vec3{0.18f, 0.2f, 0.12f}, {}});
-            }
-        }
-    });
-    scene->lights = scene_.lights();
+    // Mallas (Static, propio o heredado del padre) y terreno desde su mapa de
+    // alturas (no depende de su collider).
+    lighting::BakeGatherReport report;
+    lighting::gatherBakeScene(
+        world_, *asset_manager_, *scene, {},
+        [this](ecs::Entity e) -> std::shared_ptr<const terrain::TerrainData> {
+            const terrain::Terrain* comp = e.tryGet<terrain::Terrain>();
+            if (comp == nullptr) return nullptr;
+            // Teselas de un TerrainGrid: solo las cargadas (las lee el
+            // streaming; get() crearia una plana si aun no esta en memoria).
+            return e.has<terrain::TerrainTile>() ? terrain_store_.find(*comp) : terrain_store_.get(*comp);
+        },
+        &report);
+    // Todas las luces del mundo con su modo (no solo las que el renderizador
+    // tiene cerca de la camara); el sol, el de la hora del dia.
+    lighting::gatherBakeLights(world_, scene_.lights(), *scene, static_cast<ecs::LightBakeMode>(st.sun_mode), &report);
     scene->settings = st.settings;
+    st.report_text = report.summary();
+    std::cout << "[Iluminacion] " << st.report_text << "\n";
     st.auto_volume = scene->volumes.empty();
     if (scene->volumes.empty()) scene->volumes.push_back(lighting::volumeAround(scene->triangles, st.auto_spacing));
     if (scene->triangles.empty()) {
-        pushToast("Nada que hornear", "La escena no tiene mallas estáticas", 2);
+        // El motivo, tambien para el MCP (lighting_state.last_error).
+        st.error = st.report_text;
+        pushToast("Nada que hornear", st.report_text.substr(0, st.report_text.find('\n')), 2);
         return;
     }
     st.progress = std::make_shared<lighting::BakeProgress>();
@@ -143,8 +156,9 @@ void EditorApp::drawLightingWindow() {
                     }
                 }
                 refreshDatabase();
-                char text[160];
-                std::snprintf(text, sizeof(text), "%zu sondas, %zu triángulos, %.1f s%s", st.stats.probes, st.stats.triangles,
+                char text[256];
+                std::snprintf(text, sizeof(text), "%zu sondas, %zu texeles, %zu triángulos, %zu luces horneadas, %.1f s%s",
+                              st.stats.probes, st.stats.surface_texels, st.stats.triangles, st.stats.baked_lights,
                               st.stats.seconds, st.auto_volume ? " (volumen automático)" : "");
                 pushToast("Iluminación horneada", text, 1);
             } else {
@@ -201,6 +215,18 @@ void EditorApp::drawLightingWindow() {
         if (renderer_.lightingMode() == gfx::LightingMode::Baked && !renderer_.bakedGiActive()) {
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "Los datos no son válidos: vuelve a hornear.");
         }
+        if (baked.sun_baked || !baked.baked_lights.empty()) {
+            ImGui::TextDisabled("Horneado entero (luz directa y sombras): %s%zu luces", baked.sun_baked ? "el sol y " : "",
+                                baked.baked_lights.size());
+            if (renderer_.lightingMode() != gfx::LightingMode::Baked) {
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "En tiempo real esas luces se dibujan como siempre.");
+            }
+        }
+        if (baked.sun_baked && !gfx::bakedSunMatches(baked, scene_.lights().sun.direction)) {
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f),
+                               "El sol se ha movido desde el horneado (hora del día): vuelve a hornear.\n"
+                               "Mientras, el sol va en tiempo real.");
+        }
     }
 
     ImGui::SeparatorText("Horneado");
@@ -225,9 +251,48 @@ void EditorApp::drawLightingWindow() {
             ImGui::DragInt("Rayos por texel", &st.settings.surface_rays, 2.0f, 16, 1024);
         }
     }
+    ImGui::SeparatorText("Luz directa y sombras horneadas");
+    {
+        // El modo del sol lo da el Light direccional (si hay) o este ajuste.
+        const ecs::Light* sun_light = nullptr;
+        std::string sun_name;
+        for (const entt::entity h : world_.registry().view<ecs::Light>()) {
+            const ecs::Entity e = world_.wrap(h);
+            const ecs::Light& l = e.get<ecs::Light>();
+            if (l.type == ecs::LightType::Directional && e.activeInHierarchy()) {
+                sun_light = &l;
+                sun_name = e.name();
+                break;
+            }
+        }
+        static const char* kSunModes[] = {"Mixto (directa en tiempo real)", "Horneado (directa y sombras)",
+                                          "Solo tiempo real (no se hornea)"};
+        if (sun_light != nullptr) {
+            const int m = std::clamp(static_cast<int>(sun_light->bake_mode), 0, 2);
+            ImGui::TextDisabled("Sol: %s (Modo del Light '%s')", kSunModes[m], sun_name.c_str());
+        } else {
+            ImGui::Combo("Sol", &st.sun_mode, kSunModes, 3);
+            ImGui::SetItemTooltip("Horneado: la luz del sol y sus sombras van al lightmap y a las sondas (casi gratis,\n"
+                                  "pero fijo: si la hora del día lo mueve, vuelve a tiempo real). Mixto: sombras en\n"
+                                  "tiempo real y solo el rebote horneado (recomendado al aire libre).");
+        }
+        ImGui::DragInt("Rayos de sombra por luz", &st.settings.direct_samples, 1.0f, 1, 128);
+        ImGui::SetItemTooltip("Luces horneadas: rayos por texel hacia la bombilla (su Radio de la fuente) o el disco\n"
+                              "del sol. Más = penumbras más suaves y menos ruido.");
+        ImGui::TextWrapped("Las luces con Modo \"Horneada\" (Inspector > Light) hornean su luz directa y sus sombras "
+                           "suaves y dejan de dibujarse en tiempo real (modo Horneada arriba). Con luces horneadas el "
+                           "lightmap de superficie se enciende solo (texel de 0.5 m) si está apagado.");
+    }
     ImGui::EndDisabled();
-    ImGui::TextWrapped("Aportan luz los objetos marcados Static (o, si no hay ninguno, las mallas que no caen con "
-                       "física) y el terreno. Las sondas se ponen con el componente Light Probe Volume.");
+    ImGui::TextWrapped("Aportan luz los objetos marcados Static (o hijos de uno Static: basta marcar la raíz de un "
+                       "modelo o prefab; si no hay ninguno, las mallas que no se mueven) y el terreno. Las sondas se "
+                       "ponen con el componente Light Probe Volume.");
+    if (!st.report_text.empty() && !st.running) {
+        if (ImGui::TreeNode("Último horneado: qué entró")) {
+            ImGui::TextWrapped("%s", st.report_text.c_str());
+            ImGui::TreePop();
+        }
+    }
     if (ImGui::Button("+ Light Probe Volume")) {
         ecs::Entity e = world_.create("Light Probe Volume");
         const scene::Camera& camera = scene_.camera();
@@ -261,11 +326,16 @@ void EditorApp::drawLightingWindow() {
 
 namespace cramion::editor {
 
-void EditorApp::configureLightingBake(int rays, int bounces, float spacing) {
+void EditorApp::configureLightingBake(int rays, int bounces, float spacing, int sun_mode, float surface_texel,
+                                      int direct_samples) {
     LightingEditorState& st = lightingEditor();
     if (rays > 0) st.settings.rays = rays;
     if (bounces >= 0) st.settings.bounces = bounces;
     if (spacing > 0.0f) st.auto_spacing = spacing;
+    if (sun_mode >= 0 && sun_mode <= 2) st.sun_mode = sun_mode;
+    if (surface_texel == 0.0f) st.settings.surface_texel = 0.0f;
+    if (surface_texel > 0.0f) st.settings.surface_texel = std::clamp(surface_texel, 0.1f, 4.0f);
+    if (direct_samples > 0) st.settings.direct_samples = std::min(direct_samples, 256);
 }
 
 std::string EditorApp::lightingStateJson() {
@@ -280,6 +350,10 @@ std::string EditorApp::lightingStateJson() {
                        {"active", renderer_.bakedGiActive()},
                        {"volumes", baked.volumes.size()},
                        {"probes", baked.probes.size() / gfx::kBakedProbeVec4},
+                       {"surface_texels", baked.surface.count},
+                       {"sun_baked", baked.sun_baked},
+                       {"baked_lights", baked.baked_lights.size()},
+                       {"gather_report", error_ready ? st.report_text : std::string()},
                        {"last_error", error_ready ? st.error : std::string()}};
     return out.dump();
 }

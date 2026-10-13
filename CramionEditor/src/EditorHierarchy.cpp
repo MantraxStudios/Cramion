@@ -608,6 +608,11 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
                 selectOnly(entity.uuid());
                 commit();
             }
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kVideoPayload)) {
+                assignVideoClip(entity, dialogs::fromUtf8(static_cast<const char*>(payload->Data)));
+                selectOnly(entity.uuid());
+                commit();
+            }
             ImGui::EndDragDropTarget();
         }
 

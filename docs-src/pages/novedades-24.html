@@ -4,6 +4,68 @@
   lightmap de superficie, accesibilidad, mods, informe de cierres, job system y Linux.
 </p>
 
+<h3 id="v2410">2.4.10: cambio de escena limpio, «Ultra realista» sin velo, VR, exposición automática y horneado de luz</h3>
+<p>
+  Corrección sobre la 2.4.9. Se llama 2.4.10 (y no 2.4.9.1) para que el actualizador la ofrezca a quien ya tiene la 2.4.9.
+</p>
+<ul>
+  <li><strong>Cambio de escena</strong>: al abrir otra escena, con <code>Scene.load</code>, al pulsar Stop o en el juego y el
+    servidor dedicado, el terreno ya no aparece desplazado (las teselas se quedaban con el origen flotante viejo) y no quedan
+    restos de la escena anterior: teselas, colliders, malla de navegación, celdas del World Partition ni vegetación. Todos los
+    caminos pasan por una única secuencia (<code>resetSceneState</code>) y los trabajos en otros hilos de la escena anterior se
+    descartan. Ver <a href="mundos-grandes.html">Mundos grandes</a>.</li>
+  <li><strong>«Ultra realista» sin aspecto lavado</strong>: nuevo tonemapper <em>AgX Punchy</em> (más contraste y color, con la
+    exposición igualada a ACES), polvo volumétrico y niebla del preset mucho más ligeros y grano que ya no levanta los negros (un cambio visible en todas las escenas que usan grano).
+    «Realista» también usa <em>AgX Punchy</em>. Las escenas guardadas con <em>AgX</em> se ven igual. Ver
+    <a href="render.html#presets">Presets de post-procesado</a>.</li>
+  <li><strong>Nitidez</strong> (<code>sharpen</code>): enfoque adaptativo al contraste tras el antialiasing, 0 por defecto.</li>
+  <li><strong>Realidad virtual nítida</strong>: el presupuesto adaptativo ya no se fuerza en VR y nunca baja un ojo de 0,87 (en
+    gama baja ya no empieza al 67 %). Nuevo ajuste <em>Resolución VR</em> (<code>vr_render_scale</code>, 1 por defecto) en lugar
+    de los presets de escritorio, TAA con enfoque RCAS en cada ojo y sesgo de mips al escalar. La sonda de reflexión se vuelve
+    a capturar con el casco, el destello de lente, la viñeta y los rayos de sol en pantalla se apagan en VR y la GI dinámica se
+    actualiza una vez por frame. Ver <a href="realidad-virtual.html#rendimiento">Realidad virtual</a>.</li>
+  <li><strong>Exposición automática de noche</strong>: ya no se queda clavada en <code>max_ev</code>, oscurece poco a poco según
+    crecen las luces en pantalla y una bombilla a la vista la baja. Zona muerta, tope de 4 EV por segundo (un cambio grande
+    tarda unos 1,5 s), protección contra NaN, salto directo en los cortes de cámara y los dos ojos medidos en VR. Nuevos valores
+    por defecto: <code>min_ev</code>/<code>max_ev</code> −4/+2 («Ultra realista»: −5). En el editor, la vista oculta ya no frena
+    la adaptación. Ver <a href="componentes-basicos.html#PostProcessing">PostProcessing</a>.</li>
+  <li><strong>Horneado de luz</strong>: «La escena no tiene mallas estáticas» ya no sale por modelos animados, Static en el
+    padre, un solo objeto Static que dejaba fuera todo lo demás o un terreno sin collider, y cada horneado deja un informe en
+    español (ventana de Iluminación y <code>lighting_state</code> del MCP). Cada luz tiene <em>Modo (horneado)</em>:
+    <em>Mixta</em> (por defecto), <em>Horneada</em> o <em>Solo tiempo real</em>, y el sol su propio modo. Las luces horneadas
+    guardan luz directa y sombras suaves en las sondas y en el lightmap de superficie (0,5 m automático); <code>.crbake</code>
+    versión 3. Sin lightmaps con UV2, y si el sol se mueve más de 2° hay que volver a hornear. Ver
+    <a href="iluminacion-horneada.html#luces">Iluminación horneada</a>.</li>
+</ul>
+<div class="note">
+  <strong>Vuelve a aplicar el preset.</strong> Una escena guarda los valores, no el preset: si ya usabas «Ultra realista» o
+  «Realista», aplícalo de nuevo para ver el aspecto nuevo. Y vuelve a hornear la luz: ahora entran más objetos.
+</div>
+
+<h3 id="video">Reproductor de vídeo (VideoPlayer)</h3>
+<p>
+  Vídeos en la escena como el <em>VideoPlayer</em> de Unity. Ver <a href="video.html">Vídeo</a>.
+</p>
+<ul>
+  <li><strong>Arrastrar y soltar</strong>: un vídeo del Proyecto en la Escena crea una <em>Pantalla de vídeo</em> (plano con su
+    proporción, el vídeo en la emisión y el sonido en 3D desde la pantalla); en la Jerarquía, en un campo del Inspector o en
+    el hueco de textura de un material (crea una Render Texture de vídeo). Pegar una URL <code>https://</code> en la Escena crea
+    una pantalla con esa URL.</li>
+  <li><strong>Salidas</strong>: Material Override (emisión, color o ambas), Render Texture, plano lejano o cercano de la vista
+    del juego y solo para scripts.</li>
+  <li><strong>Audio</strong>: Direct (3D desde el objeto), AudioSource (cada pista por una o varias Audio Source, con sus
+    efectos, oclusión y reverberación), para scripts o ninguno; varias pistas con volumen y silencio por pista. El reloj es el
+    del audio: labios a tiempo.</li>
+  <li><strong>Fuentes</strong>: clips de Assets y URLs https (HLS <code>.m3u8</code> en Windows), con <em>Probar URL</em>.
+    Media Foundation de Windows con decodificación por hardware.</li>
+  <li><strong>Editor</strong>: vista previa sin Play con transporte y barra de tiempo, miniaturas y datos en el navegador
+    (leídos al abrir el proyecto en <code>Library/Cache/Video</code>), estadísticas (hardware, frames perdidos, búfer).</li>
+  <li><strong>Scripts</strong>: <code>videoPlay</code>, <code>videoSeek</code>, <code>videoPlaybackSpeed</code>... y eventos
+    <code>OnVideoLoopPointReached</code>, <code>OnVideoError</code>... en C++ y en Visual Scripting.</li>
+  <li><strong>Exportar</strong>: los vídeos van en el <code>.crpack</code> a nivel 1 de zstd (nivel por archivo; los paquetes
+    anteriores se siguen leyendo). El servidor dedicado carga escenas con vídeo y lo ignora. En Android aún no se reproduce.</li>
+</ul>
+
 <h3 id="v249">2.4.9: Blueprints, WebSocket, hierba realista y streaming en otros hilos</h3>
 <div class="shots">
   <figure><img src="../img/CramionEditor_ucGQ9NhRfo.jpg" alt="Césped denso con la nueva iluminación, a la sombra de los árboles" loading="lazy"><figcaption>Césped denso con luz y sombra entre los árboles</figcaption></figure>

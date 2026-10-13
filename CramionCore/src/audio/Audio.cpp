@@ -1,6 +1,7 @@
 #include "CramionCore/cvar/CVar.h"
 #include "CramionCore/profiling/Profiler.h"
 #include "CramionCore/audio/Audio.h"
+#include "CramionCore/audio/AudioStream.h"
 
 #include "CramionCore/environment/Environment.h"
 #include "WeatherAudio.h"
@@ -410,6 +411,73 @@ void masterProcess(ma_node* node, const float** frames_in, ma_uint32* count_in, 
 ma_node_vtable kMasterVtable = {masterProcess, nullptr, 1, 1,
                                 MA_NODE_FLAG_CONTINUOUS_PROCESSING | MA_NODE_FLAG_ALLOW_NULL_INPUT};
 
+// Audio de un video como ma_data_source: un lector de un AudioStream. Declara
+// la frecuencia y los canales nativos de la pista (o 1 si es espacial: se
+// mezcla a mono antes del espacializador); ma_sound convierte y aplica el
+// pitch. Nunca termina: si falta audio, silencio. Hilo de audio: sin memoria
+// nueva ni mutex.
+struct StreamSource {
+    ma_data_source_base base;  // primero: miniaudio lo trata como un ma_data_source
+    AudioStream* stream = nullptr;
+    int reader = -1;
+    ma_uint32 channels = 2;  // los que declara
+    ma_uint32 rate = 48000;
+};
+
+ma_result streamRead(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
+    StreamSource& s = *reinterpret_cast<StreamSource*>(source);
+    float* out = static_cast<float*>(frames_out);
+    const ma_uint32 src_channels = s.stream != nullptr ? s.stream->channels() : s.channels;
+    if (s.stream == nullptr) {
+        std::fill(out, out + frame_count * s.channels, 0.0f);
+    } else if (src_channels == s.channels) {
+        s.stream->read(s.reader, out, static_cast<std::size_t>(frame_count));
+    } else {
+        // Mezcla a mono por bloques (buffer en la pila).
+        std::array<float, 2048> scratch;
+        const std::size_t chunk = std::max<std::size_t>(scratch.size() / src_channels, 1);
+        ma_uint64 done = 0;
+        while (done < frame_count) {
+            const std::size_t n = static_cast<std::size_t>(std::min<ma_uint64>(frame_count - done, chunk));
+            s.stream->read(s.reader, scratch.data(), n);
+            const float scale = 1.0f / static_cast<float>(src_channels);
+            for (std::size_t i = 0; i < n; ++i) {
+                float sum = 0.0f;
+                for (ma_uint32 c = 0; c < src_channels; ++c) sum += scratch[i * src_channels + c];
+                out[(done + i) * s.channels] = sum * scale;
+                for (ma_uint32 c = 1; c < s.channels; ++c) out[(done + i) * s.channels + c] = sum * scale;
+            }
+            done += n;
+        }
+    }
+    if (frames_read != nullptr) *frames_read = frame_count;
+    return MA_SUCCESS;
+}
+
+ma_result streamSeek(ma_data_source*, ma_uint64) { return MA_SUCCESS; }  // un stream no se busca (lo hace el video)
+
+ma_result streamFormat(ma_data_source* source, ma_format* format, ma_uint32* channels, ma_uint32* rate,
+                       ma_channel* channel_map, size_t channel_map_cap) {
+    const StreamSource& s = *reinterpret_cast<StreamSource*>(source);
+    if (format != nullptr) *format = ma_format_f32;
+    if (channels != nullptr) *channels = s.channels;
+    if (rate != nullptr) *rate = s.rate;
+    if (channel_map != nullptr) ma_channel_map_init_standard(ma_standard_channel_map_default, channel_map, channel_map_cap, s.channels);
+    return MA_SUCCESS;
+}
+
+ma_result streamCursor(ma_data_source*, ma_uint64* cursor) {
+    if (cursor != nullptr) *cursor = 0;
+    return MA_NOT_IMPLEMENTED;
+}
+
+ma_result streamLength(ma_data_source*, ma_uint64* length) {
+    if (length != nullptr) *length = 0;  // desconocida
+    return MA_NOT_IMPLEMENTED;
+}
+
+ma_data_source_vtable kStreamVtable = {streamRead, streamSeek, streamFormat, streamCursor, streamLength, nullptr, 0};
+
 }  // namespace
 
 struct AudioSystem::Impl {
@@ -455,6 +523,7 @@ struct AudioSystem::Impl {
         ma_uint64 virtual_cursor = 0;
         float audible = 0.0f;  // volumen que llega al oyente (este frame)
         bool held = false;     // parada por la pausa del Play (vuelve al quitarla)
+        bool stream = false;   // voz de streaming (video): no la calla su propio stream
         ~Voice() {
             if (loaded) ma_sound_uninit(&sound);
             if (fx_ok) ma_node_uninit(&fx.base, nullptr);
@@ -528,6 +597,125 @@ struct AudioSystem::Impl {
     float reverb_level = 0.0f;
     // Lluvia, viento y truenos del ambiente (sintetizados, al master).
     WeatherAudio weather_audio;
+
+    // --- Voces de streaming (audio de los videos) ---
+    // Aparte de `voices`: no se virtualizan (no se puede buscar en un stream),
+    // no cuentan para audio.MaxVoices y no las toca la recarga por clip.
+    struct StreamEntry {
+        std::shared_ptr<AudioStream> stream;
+        int reader = -1;
+        StreamVoice config;
+        StreamSource source{};
+        bool source_ok = false;
+        bool spatial = false;  // con el que se creo el sonido (cambiarlo lo vuelve a crear)
+        std::unique_ptr<Voice> voice;
+
+        void release() {
+            voice.reset();  // ma_sound_uninit: el hilo de audio ya no lee
+            if (source_ok) ma_data_source_uninit(&source.base);
+            source_ok = false;
+        }
+        ~StreamEntry() {
+            release();
+            if (stream && reader >= 0) stream->removeReader(reader);  // despues de ma_sound_uninit
+        }
+    };
+    std::unordered_map<int, std::unique_ptr<StreamEntry>> stream_voices;
+    int next_stream_handle = 1;  // nunca se reutiliza: un handle viejo no encuentra nada
+
+    // El clip propio de la fuente se calla mientras un video suena por ella.
+    // Mismo mundo y mismo handle (la vista previa del editor puede ir en otro mundo).
+    bool ownedByStream(const ecs::Entity& entity) const {
+        if (stream_voices.empty() || entity.handle() == entt::null) return false;
+        for (const auto& [id, entry] : stream_voices) {
+            const ecs::Entity& emitter = entry->config.emitter;
+            if (entry->config.use_source_settings && emitter.handle() == entity.handle() &&
+                emitter.world() == entity.world())
+                return true;
+        }
+        return false;
+    }
+
+    // Ajustes con los que suena: los del AudioSource del emisor (modo
+    // AudioSource) o unos de Direct. Siempre sin Doppler y sin bucle, y con el
+    // tono del video (el de la fuente desincronizaria el reloj).
+    static AudioSource streamSettings(const StreamVoice& config, ecs::Entity emitter) {
+        AudioSource s;
+        const AudioSource* own =
+            (config.use_source_settings && emitter.valid()) ? emitter.tryGet<AudioSource>() : nullptr;
+        if (own != nullptr) {
+            s = *own;
+            s.volume = std::max(own->volume, 0.0f) * std::max(config.volume, 0.0f);
+        } else {
+            s.volume = std::max(config.volume, 0.0f);
+            s.spatial = config.spatial;
+            s.min_distance = config.min_distance;
+            s.max_distance = config.max_distance;
+        }
+        s.clip.clear();
+        s.pitch = config.pitch;
+        s.loop = false;
+        s.play_on_awake = false;
+        s.doppler = 0.0f;
+        return s;
+    }
+
+    // (Re)crea el sonido del stream con el mismo lector (el cursor no se pierde).
+    bool buildStreamVoice(StreamEntry& entry, bool spatial) {
+        entry.release();
+        if (!ok || !entry.stream) return false;
+        const ma_uint32 stream_channels = std::max<ma_uint32>(entry.stream->channels(), 1);
+        entry.source.stream = entry.stream.get();
+        entry.source.reader = entry.reader;
+        entry.source.channels = spatial ? 1u : stream_channels;
+        entry.source.rate = std::max<ma_uint32>(entry.stream->rate(), 1);
+        ma_data_source_config config = ma_data_source_config_init();
+        config.vtable = &kStreamVtable;
+        if (ma_data_source_init(&config, &entry.source.base) != MA_SUCCESS) return false;
+        entry.source_ok = true;
+        auto voice = std::make_unique<Voice>();
+        voice->stream = true;
+        const ma_uint32 flags = spatial ? 0u : static_cast<ma_uint32>(MA_SOUND_FLAG_NO_SPATIALIZATION);
+        const ma_result result = ma_sound_init_from_data_source(&engine, &entry.source.base, flags, nullptr, &voice->sound);
+        if (result != MA_SUCCESS) {
+            std::cerr << "[Audio] No se pudo crear la voz del video (" << ma_result_description(result) << ")\n";
+            return false;
+        }
+        voice->loaded = true;
+        attachEffects(*voice);
+        entry.voice = std::move(voice);
+        entry.spatial = spatial;
+        return true;
+    }
+
+    // Empieza a sonar (o se queda retenida si el Play esta en pausa).
+    void startStreamVoice(StreamEntry& entry) {
+        if (!entry.voice || !entry.voice->loaded) return;
+        if (paused) {
+            if (entry.voice->fx_ok) entry.voice->fx.paused.store(true, std::memory_order_relaxed);
+            entry.voice->held = true;
+            return;
+        }
+        ma_sound_start(&entry.voice->sound);
+    }
+
+    // Posicion, ajustes, oclusion y efectos de una voz de stream. `emitter`
+    // invalido: se queda donde estaba.
+    void refreshStreamVoice(StreamEntry& entry, ecs::Entity emitter, float dt) {
+        if (!entry.voice) return;
+        const AudioSource settings = streamSettings(entry.config, emitter);
+        if (settings.spatial != entry.spatial) {
+            const Vec3 last = entry.voice->last_position;
+            const bool had = entry.voice->has_position;
+            if (!buildStreamVoice(entry, settings.spatial)) return;
+            entry.voice->last_position = last;
+            entry.voice->has_position = had;
+            startStreamVoice(entry);
+        }
+        const Vec3 position = emitter.valid() ? emitter.worldPosition()
+                                              : (entry.voice->has_position ? entry.voice->last_position : Vec3{});
+        apply(*entry.voice, settings, position, dt, emitter);
+    }
 
     ma_node_graph* graph() { return ma_engine_get_node_graph(&engine); }
 
@@ -610,7 +798,8 @@ struct AudioSystem::Impl {
 
     void apply(Voice& voice, const AudioSource& source, const Vec3& position, float dt, ecs::Entity entity) {
         ma_sound& s = voice.sound;
-        ma_sound_set_volume(&s, source.mute ? 0.0f : std::max(source.volume, 0.0f));
+        const bool muted = source.mute || (!voice.stream && ownedByStream(entity));
+        ma_sound_set_volume(&s, muted ? 0.0f : std::max(source.volume, 0.0f));
         ma_sound_set_pitch(&s, std::max(source.pitch, 0.01f));
         ma_sound_set_looping(&s, source.loop ? MA_TRUE : MA_FALSE);
         ma_sound_set_spatialization_enabled(&s, source.spatial ? MA_TRUE : MA_FALSE);
@@ -835,6 +1024,13 @@ void AudioSystem::update(ecs::World& world, float delta_seconds, const Vec3& cam
         }
     }
 
+    // --- Voces de los videos: tambien fuera de Play (vista previa del editor) ---
+    for (auto& [id, entry] : d.stream_voices) {
+        const entt::entity h = entry->config.emitter.handle();
+        const bool same_world = entry->config.emitter.world() == &world && world.registry().valid(h);
+        d.refreshStreamVoice(*entry, same_world ? world.wrap(h) : ecs::Entity{}, delta_seconds);
+    }
+
     if (!d.running) return;
 
     // --- Fuentes: las que siguen, las nuevas (sonar al empezar) y las quitadas ---
@@ -853,7 +1049,9 @@ void AudioSystem::update(ecs::World& world, float delta_seconds, const Vec3& cam
         }
         if (it->second->loaded) {
             d.apply(*it->second, *source, e.worldPosition(), delta_seconds, e);
-            it->second->audible = Impl::audibility(*source, e.worldPosition(), d.listener_position);
+            // Callada por un video: no ocupa una voz real (se virtualiza y vuelve donde toque).
+            it->second->audible =
+                d.ownedByStream(e) ? 0.0f : Impl::audibility(*source, e.worldPosition(), d.listener_position);
         }
         ++it;
     }
@@ -878,6 +1076,9 @@ void AudioSystem::shiftOrigin(const core::Vec3& offset) {
     d.listener_position = d.listener_position - offset;
     for (auto& [handle, voice] : d.voices) {
         if (voice) voice->last_position = voice->last_position - offset;
+    }
+    for (auto& [id, entry] : d.stream_voices) {
+        if (entry && entry->voice) entry->voice->last_position = entry->voice->last_position - offset;
     }
     // Los sonidos sueltos se colocaron una vez: se mueven con el mundo.
     for (auto& shot : d.one_shots) {
@@ -909,6 +1110,10 @@ void AudioSystem::setPaused(bool paused) {
     for (auto& shot : d.one_shots) {
         if (shot) hold(*shot);
     }
+    // Videos: el ma_sound parado no lee, asi que su lector no avanza.
+    for (auto& [id, entry] : d.stream_voices) {
+        if (entry && entry->voice) hold(*entry->voice);
+    }
     d.weather_audio.setPaused(paused);
     if (d.reverb_ok) d.reverb.paused.store(paused, std::memory_order_relaxed);
 }
@@ -918,7 +1123,9 @@ bool AudioSystem::paused() const { return impl_->paused; }
 void AudioSystem::stop() {
     Impl& d = *impl_;
     // Cada sonido se para y se libera (ma_sound_uninit: su memoria y su
-    // lectura del disco si iba en streaming).
+    // lectura del disco si iba en streaming). Las de los videos tambien: sus
+    // handles quedan obsoletos (detachStream/updateStream los ignoran).
+    d.stream_voices.clear();
     d.voices.clear();
     d.one_shots.clear();
     d.running = false;
@@ -1028,6 +1235,58 @@ void AudioSystem::stopPreview() { impl_->preview.reset(); }
 
 bool AudioSystem::previewing() const {
     return impl_->preview && impl_->preview->loaded && ma_sound_is_playing(&impl_->preview->sound);
+}
+
+int AudioSystem::attachStream(std::shared_ptr<AudioStream> stream, const StreamVoice& voice) {
+    Impl& d = *impl_;
+    if (!d.ok || !stream) return -1;
+    auto entry = std::make_unique<Impl::StreamEntry>();
+    entry->stream = std::move(stream);
+    entry->config = voice;
+    entry->reader = entry->stream->addReader(voice.master);
+    if (entry->reader < 0) return -1;  // ya hay 8 lectores
+    if (voice.master) entry->stream->setOutputLatency(outputLatencySeconds());
+    ecs::Entity emitter = voice.emitter.valid() ? voice.emitter : ecs::Entity{};
+    const AudioSource settings = Impl::streamSettings(voice, emitter);
+    if (!d.buildStreamVoice(*entry, settings.spatial)) return -1;  // el destructor suelta el lector
+    entry->voice->queried = false;
+    d.apply(*entry->voice, settings, emitter.valid() ? emitter.worldPosition() : Vec3{}, 0.0f, emitter);
+    d.startStreamVoice(*entry);
+    const int handle = d.next_stream_handle;
+    d.next_stream_handle = d.next_stream_handle >= 0x7FFFFFFF ? 1 : d.next_stream_handle + 1;
+    d.stream_voices[handle] = std::move(entry);
+    return handle;
+}
+
+void AudioSystem::updateStream(int handle, const StreamVoice& voice) {
+    Impl& d = *impl_;
+    const auto it = d.stream_voices.find(handle);
+    if (it == d.stream_voices.end() || !it->second) return;  // obsoleto (stop, escena nueva): nada
+    Impl::StreamEntry& entry = *it->second;
+    const bool master = entry.config.master;  // el lector se creo con este papel
+    entry.config = voice;
+    entry.config.master = master;
+    d.refreshStreamVoice(entry, voice.emitter.valid() ? voice.emitter : ecs::Entity{}, 0.0f);
+}
+
+void AudioSystem::detachStream(int handle) { impl_->stream_voices.erase(handle); }
+
+std::uint32_t AudioSystem::sampleRate() const {
+    return impl_->ok ? ma_engine_get_sample_rate(&impl_->engine) : static_cast<std::uint32_t>(impl_->rate);
+}
+
+std::uint32_t AudioSystem::channelCount() const {
+    return impl_->ok ? ma_engine_get_channels(&impl_->engine) : impl_->channels;
+}
+
+double AudioSystem::outputLatencySeconds() const {
+    if (!impl_->ok) return 0.0;
+    ma_device* device = ma_engine_get_device(&impl_->engine);
+    if (device == nullptr) return 0.0;  // sin dispositivo (pruebas): lo leido es lo que se oye
+    const double rate = static_cast<double>(device->playback.internalSampleRate);
+    const double frames = static_cast<double>(device->playback.internalPeriodSizeInFrames) *
+                          static_cast<double>(std::max<ma_uint32>(device->playback.internalPeriods, 1));
+    return rate > 0.0 ? frames / rate : 0.0;
 }
 
 void registerAudioComponents() {

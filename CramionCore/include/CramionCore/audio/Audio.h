@@ -94,6 +94,18 @@ struct AudioReverbZone {
 // Tamano, amortiguacion y nivel de un preset (Custom = los de la zona).
 void reverbPresetValues(const AudioReverbZone& zone, float& room_size, float& damping, float& level);
 
+// Voz de streaming (audio de un video, AudioStream.h).
+class AudioStream;
+struct StreamVoice {
+    ecs::Entity emitter;              // donde suena (su Transform)
+    bool use_source_settings = false; // modo AudioSource: volumen/3D/efectos/oclusion del AudioSource del emisor
+    bool spatial = true;              // espacial: se mezcla a mono antes del espacializador
+    float min_distance = 1.0f, max_distance = 30.0f;
+    float volume = 1.0f;              // se multiplica por el del AudioSource si use_source_settings
+    float pitch = 1.0f;               // velocidad de reproduccion
+    bool master = false;              // su lector marca el reloj del video (el escritor lo respeta)
+};
+
 class AudioSystem {
 public:
     // Cuantas paredes hay entre `from` (oyente) y `to` (sonido). La pone el
@@ -150,6 +162,19 @@ public:
     void preview(const std::filesystem::path& file);
     void stopPreview();
     bool previewing() const;
+
+    // Voz de streaming (video). No se virtualiza ni la toca la recarga por clip;
+    // stop() las suelta todas y setPaused() las pausa. Con use_source_settings,
+    // el clip propio de esa fuente se calla mientras este enganchada. El handle
+    // lleva generacion: updateStream/detachStream ignoran los obsoletos.
+    int attachStream(std::shared_ptr<AudioStream> stream, const StreamVoice& voice);  // -1 sin audio
+    void updateStream(int handle, const StreamVoice& voice);
+    void detachStream(int handle);
+    // Formato del engine (el stream usa el nativo de la pista; miniaudio convierte).
+    std::uint32_t sampleRate() const;
+    std::uint32_t channelCount() const;
+    // Latencia de salida del dispositivo (para el reloj del video); 0 sin dispositivo.
+    double outputLatencySeconds() const;
 
 private:
     struct Impl;

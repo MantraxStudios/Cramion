@@ -1,0 +1,70 @@
+#version 450
+
+// Video: un frame decodificado (NV12, RGBA o BGRA) a la imagen RGBA8 interna
+// del slot de video (VideoTextures). Despues se copia a la imagen de la
+// Render Texture (UNORM con vista sRGB).
+//
+//   - NV12: Y (R8) y UV (RG8, la mitad de resolucion) con la matriz BT.601 o
+//     BT.709 y rango limitado (16-235) o completo.
+//   - RGBA / BGRA: plane0 es la imagen (BGRA se intercambia aqui).
+//   - Escalado bilineal (el muestreador) con el modo de aspecto: el
+//     contenido ocupa `rect` (en pixeles del destino); fuera, negro.
+//   - Salida con la gamma del video (R'G'B', como sRGB): lo que espera la
+//     imagen UNORM de la Render Texture. linear_out (solo API Only) la quita.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D u_plane0;  // Y (R8) o RGBA/BGRA
+layout(set = 0, binding = 1) uniform sampler2D u_plane1;  // UV (RG8); en RGBA, el mismo plane0
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D u_out;
+
+layout(push_constant) uniform Push {
+    vec4 rect;     // xy = origen del contenido en el destino (px), zw = tamano (px)
+    ivec4 mode;    // x: 0 NV12, 1 RGBA, 2 BGRA; y: 601 | 709; z: rango completo; w: salida lineal
+    vec4 params;   // x: alfa
+} pc;
+
+vec3 srgbToLinear(vec3 c) {
+    vec3 lo = c / 12.92;
+    vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(hi, lo, vec3(lessThanEqual(c, vec3(0.04045))));
+}
+
+void main() {
+    ivec2 size = imageSize(u_out);
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= size.x || p.y >= size.y) return;
+
+    vec2 t = (vec2(p) + 0.5 - pc.rect.xy) / max(pc.rect.zw, vec2(1.0));
+    if (t.x < 0.0 || t.y < 0.0 || t.x > 1.0 || t.y > 1.0) {
+        imageStore(u_out, p, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    vec3 rgb;
+    if (pc.mode.x == 0) {
+        float y = textureLod(u_plane0, t, 0.0).r;
+        vec2 c = textureLod(u_plane1, t, 0.0).rg;
+        if (pc.mode.z != 0) {
+            c -= 128.0 / 255.0;  // el cero del croma es 128 (no 127.5)
+        } else {
+            y = (y - 16.0 / 255.0) * (255.0 / 219.0);
+            c = (c - 128.0 / 255.0) * (255.0 / 224.0);
+        }
+        if (pc.mode.y == 601) {
+            rgb = vec3(y + 1.402 * c.y,
+                       y - 0.344136 * c.x - 0.714136 * c.y,
+                       y + 1.772 * c.x);
+        } else {
+            rgb = vec3(y + 1.5748 * c.y,
+                       y - 0.187324 * c.x - 0.468124 * c.y,
+                       y + 1.8556 * c.x);
+        }
+    } else {
+        vec4 texel = textureLod(u_plane0, t, 0.0);
+        rgb = pc.mode.x == 2 ? texel.bgr : texel.rgb;
+    }
+    rgb = clamp(rgb, 0.0, 1.0);
+    if (pc.mode.w != 0) rgb = srgbToLinear(rgb);
+    imageStore(u_out, p, vec4(rgb, clamp(pc.params.x, 0.0, 1.0)));
+}

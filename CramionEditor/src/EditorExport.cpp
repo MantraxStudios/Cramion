@@ -536,6 +536,11 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
         }
         // Los assets al paquete (siempre se rehace: es rapido y asi nunca queda viejo).
         if (!j->cancel && j->error.empty()) {
+            // Videos a nivel 1: ya vienen comprimidos (H.264...); a 6 solo
+            // gastarian CPU sin ganar nada.
+            for (project::PackInput& input : j->pack) {
+                if (video::isVideoFile(input.source)) input.level = 1;
+            }
             const std::uint64_t base = j->done;
             std::string error;
             const bool ok = project::writePack(j->pack_file, j->pack, 6, [j, base](std::uint64_t done, const std::string& current) {

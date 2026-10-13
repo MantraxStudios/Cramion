@@ -53,6 +53,7 @@ std::optional<Icon> componentIcon(const std::string& name) {
     if (name == "AudioSource") return Icon::AudioSource;
     if (name == "AudioListener") return Icon::AudioListener;
     if (name == "AudioReverbZone") return Icon::AudioSource;
+    if (name == "VideoPlayer") return Icon::Camera;
     if (name == "NavAgent") return Icon::NavMeshAgent;
     if (name == "StateMachine") return Icon::NavMeshAgent;
     if (name == "NavModifier") return Icon::NavMeshObstacle;
@@ -72,6 +73,7 @@ ImU32 categoryColor(const std::string& category) {
     if (category == "Fisica") return IM_COL32(120, 190, 120, 255);
     if (category == "Entorno") return IM_COL32(110, 180, 190, 255);
     if (category == "Audio") return IM_COL32(255, 197, 61, 255);
+    if (category == "Video") return IM_COL32(230, 90, 70, 255);
     if (category == "Scripting") return IM_COL32(176, 144, 220, 255);
     if (category == "Navegacion") return IM_COL32(214, 190, 110, 255);
     if (category == "Efectos") return IM_COL32(240, 128, 88, 255);
@@ -610,6 +612,7 @@ void EditorApp::drawInspectorContents() {
             if (type.name == "StateMachine") drawStateMachineInspector(entity);
             if (type.name == "RectTransform") drawRectTransformInspector(entity);
             if (type.name == "AudioSource") drawAudioInspector(entity);
+            if (type.name == "VideoPlayer") drawVideoInspector(entity);  // EditorVideo.cpp
             if (type.name == "MeshRenderer") drawMeshMaterials(entity);
             if (type.name == "XrController") drawXrControllerInspector(entity);
             if (type.name == "Skeleton" || type.name == "BoneSocket" || type.name == "InverseKinematics" ||

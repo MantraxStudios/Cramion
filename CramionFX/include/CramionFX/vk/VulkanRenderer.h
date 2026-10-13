@@ -22,6 +22,7 @@
 #include "CramionFX/vk/FoliagePass.h"
 #include "CramionFX/vk/FluidPass.h"
 #include "CramionFX/vk/VfxPass.h"
+#include "CramionFX/vk/VideoTextures.h"
 #include "CramionFX/vk/BakedGi.h"
 #include "CramionFX/vk/WaterPass.h"
 #include "CramionFX/vk/GpuTypes.h"
@@ -851,6 +852,9 @@ public:
     void setLightingMode(LightingMode mode) { lighting_mode_ = mode; }
     LightingMode lightingMode() const { return lighting_mode_; }
     bool bakedGiActive() const;
+    // El sol del horneado (modo Horneado) sigue valiendo: en modo horneado y
+    // con la hora del dia sin moverlo. Entonces su luz directa ya esta en la GI.
+    bool bakedSunActive(const core::Vec3& sun_direction) const;
     const FluidPass& fluid() const { return fluid_pass_; }
 
     // --- Texturas de la interfaz (iconos, miniaturas del editor) ---
@@ -953,6 +957,28 @@ public:
     void renderToTexture(const scene::Scene& scene, const scene::Camera& camera, std::int32_t id);
     // Veces que se dibujo alguna el ultimo segundo (estadisticas).
     std::uint32_t renderTextureDraws() const { return render_texture_draws_; }
+
+    // --- Video (VideoPlayer de CramionCore; ver VideoTextures.h) ---
+    // Mismo espacio de ids que las Render Textures: renderTextureView,
+    // renderTextureExtent y los materiales (albedo/emissive_render_texture)
+    // valen igual. Su tamano no cambia mientras se reproduce: el compute escala.
+    std::int32_t createVideoTexture(std::uint32_t width, std::uint32_t height);
+    // Rara (al parar): la Render Texture fuera y lo interno retirado unos frames.
+    void destroyVideoTexture(std::int32_t id);
+    // A `id` (de video o una .crrt cualquiera). Copia los planos a un bufer de
+    // CPU pendiente (solo el ultimo); la GPU lo recibe al grabar el siguiente
+    // frame (drawFrame o renderToTexture, el primero), tras su fence.
+    bool submitVideoFrame(std::int32_t id, const VideoUpload& upload);
+    // Un video deja de escribir en `id` (una .crrt que sigue viva): suelta lo
+    // interno (pendiente, planos Y/UV, imagen RGBA y sets; a 4K unos 45 MB),
+    // retirado unos frames. La Render Texture conserva la ultima imagen.
+    void releaseVideoFrames(std::int32_t id);
+    // Plano de camara: 0 = lejano (sustituye el cielo), 1 = cercano (encima,
+    // con su opacidad). id -1 = quitar. `aspect` como VideoUpload::aspect.
+    void setVideoPlane(int plane, std::int32_t id, float alpha, int aspect);
+    // Los planos solo se pintan en la vista de juego (sin las ayudas del
+    // editor, ni Render Textures, ni VR en la Fase 1). Con false, en ninguna.
+    void setVideoPlanesEnabled(bool enabled) { video_planes_enabled_ = enabled; }
     std::uint32_t viewSlot() const { return view_slot_; }
     VkImageView viewImageView(std::uint32_t slot) const {
         return static_cast<VkImageView>(*view_images_[slot < kViewSlots ? slot : 0].view());
@@ -1605,6 +1631,12 @@ private:
     };
     std::vector<RetiredRenderTexture> retired_render_textures_;
     void retireRenderTextureImage(RenderTextureSlot& slot);
+    // Video: subidas y planos de camara (VideoTextures.h).
+    VideoTextures video_textures_;
+    bool video_planes_enabled_ = true;
+    VideoTarget videoTarget(std::int32_t id) const;
+    void recordVideoUploads(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    void recordVideoPlanes(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     std::int32_t render_texture_target_ = -1;  // drawFrame dibuja para esta textura
     // VR: drawFrame dibuja para el ojo xr_eye_target_ (0/1) y copia a esa imagen
     // de la swapchain de OpenXR (pasando por xr_staging_, del tamano del ojo).
@@ -1929,6 +1961,9 @@ private:
     // dia.
     float exposure_ = 1.0f;
     float displayed_exposure_ = 1.0f;
+    // Corte de camara / cambio de vista (invalidateHistory desde fuera): la
+    // proxima auto-exposicion salta al objetivo en vez de adaptarse.
+    bool exposure_reset_pending_ = false;
     float last_daylight_ = 1.0f;  // luz del dia del ultimo frame (vision nocturna con exposicion manual)
     float displayed_luminance_ = 0.0f;
 

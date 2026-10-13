@@ -486,6 +486,11 @@ void EditorApp::loadWorkspaceWorld(int id) {
     inspected_render_texture_ = {};
 
     const ecs::DVec3 origin_before = world_.origin();
+    // Otra escena en el mismo mundo: la secuencia comun de cambio de escena
+    // (las teselas, celdas, malla de navegacion y GPU de terrenos de la otra
+    // pestana fuera). Lo esculpido sin guardar se queda en memoria: es de la
+    // pestana que se guarda aparte y vuelve con ella.
+    resetSceneSystems(/*keep_terrain_edits=*/true);
     if (target->stashed) {
         ecs::deserializeWorld(world_, target->world);
         alignOriginAfterLoad(origin_before);
@@ -540,6 +545,7 @@ void EditorApp::loadWorkspaceWorld(int id) {
         workspace_focus_frames_ = 3;  // cuando ya tenga actores (su tamano real)
         std::cout << "[Prefab] Editando " << target->name << " (Ctrl+S guarda y actualiza sus instancias)\n";
     }
+    if (has_project_) physics_.start(world_);  // resetSceneSystems la paro: con el mundo nuevo
     renderer_.invalidateHistory();
     updateTitle();
 }

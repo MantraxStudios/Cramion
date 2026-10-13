@@ -1458,6 +1458,13 @@ struct Host final : VisualScriptDebugHost {
                 }
                 inst.slots[{n.id, 2}] = text;
                 inst.slots[{n.id, 3}] = ev["data"];
+            } else if (n.kind == "event.video") {
+                // Evento, Tiempo, Cantidad y Mensaje ({type, time, count, message} de VideoApi.cpp).
+                const api::Value& ev = args.empty() ? api::Value::nil() : args[0];
+                inst.slots[{n.id, 1}] = ev["type"];
+                inst.slots[{n.id, 2}] = ev["time"];
+                inst.slots[{n.id, 3}] = ev["count"];
+                inst.slots[{n.id, 4}] = ev["message"];
             } else if (n.outputs.size() > 1) {
                 inst.slots[{n.id, 1}] = args.empty() ? api::Value{} : args[0];
             }
@@ -1522,6 +1529,20 @@ struct Host final : VisualScriptDebugHost {
             }
         }
         for (const std::string& name : fired) customEvent(inst, name, {});
+    }
+
+    // On Video Event: los OnVideo* del VideoPlayer del objeto (Evento = el tipo, o Any).
+    void videoEvent(Instance& inst, const std::string& method, const api::Value& value) {
+        if (inst.failed || method.rfind("OnVideo", 0) != 0) return;
+        const std::shared_ptr<const Loaded> g = inst.graph;
+        const std::string type = lowerText(method.substr(7));
+        for (const Node* n : g->eventsOf("event.video")) {
+            if (inst.failed) return;
+            std::string want = !n->inputs.empty() ? lowerText(trimText(n->inputs[0].value)) : std::string();
+            if (want.rfind("onvideo", 0) == 0) want = want.substr(7);
+            if (!want.empty() && want != "any" && want != "cualquiera" && want != type) continue;
+            event(inst, *n, {value});
+        }
     }
 
     // Un Custom Event por su nombre (false si el grafo no lo tiene).
@@ -1813,6 +1834,10 @@ void registerVisualScriptRuntime(Runtime& rt) {
     rt.onEvent([h](ecs::Entity target, const std::string& method, const api::Value& value) {
         if (!target.valid()) return;
         if (Instance* inst = h->live(target.handle())) h->customEvent(*inst, method, value);
+        // Otra busqueda: el Custom Event pudo destruir el objeto (y su instancia).
+        if (method.rfind("OnVideo", 0) == 0) {
+            if (Instance* inst = h->live(target.handle())) h->videoEvent(*inst, method, value);
+        }
     });
     rt.onDestroying([h](entt::entity e) {
         const auto it = h->instances.find(e);

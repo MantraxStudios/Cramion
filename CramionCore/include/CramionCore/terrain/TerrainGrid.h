@@ -127,7 +127,12 @@ public:
     // de empezar la partida, para que el jugador no caiga al vacio.
     void loadNow(ecs::World& world, TerrainStore& store, const core::Vec3& p, float range = 0.0f);
     // Quita todas las teselas del mundo y suelta sus datos (cerrar la escena).
+    // Las cargas en marcha se cancelan y sus resultados no entran nunca. Con
+    // save = false lo que tenga cambios sin guardar se queda en el almacen
+    // (el que llama decide: TerrainStore::clear lo tira).
     void clear(ecs::World& world, TerrainStore& store, bool save);
+    // Generacion de escena (World::sceneGeneration) de lo que hay cargado.
+    std::uint64_t sceneGeneration() const { return scene_generation_; }
     const TerrainStreamStats& stats() const { return stats_; }
     // Teselas de una rejilla y si estan cargadas (para dibujar el mapa).
     std::vector<std::pair<std::pair<int, int>, bool>> tiles(const Uuid& grid) const;
@@ -165,12 +170,23 @@ private:
     const std::string& pathOf(const GridState& state, int x, int z, Tile& tile) const;
     bool tileAlive(ecs::World& world, const Tile& tile) const;
     int inFlight() const;
+    // Otra escena en el mundo (subio World::sceneGeneration): todo lo de la
+    // anterior fuera antes de mirar las rejillas (sin guardar: lo que tenga
+    // cambios se queda en el almacen).
+    void syncSceneGeneration(ecs::World& world, TerrainStore& store);
+    // Rejillas que ya no estan (borradas, otra escena): sus teselas fuera
+    // ANTES de cargar las vivas (si comparten carpeta, la viva no recibe los
+    // datos que la muerta va a soltar o guardar justo despues).
+    void pruneDeadGrids(ecs::World& world, TerrainStore& store, bool save, bool async);
 
     std::map<Uuid, GridState> grids_;
     std::set<std::string> paused_folders_;
     // Cargas canceladas que aun corren en otro hilo (cuentan como en marcha).
     std::vector<std::shared_ptr<LoadJob>> draining_;
     TerrainStreamStats stats_{};
+    // World::sceneGeneration con la que se cargo lo que hay (0 = nada aun).
+    // Cada LoadJob la apunta: un resultado de otra generacion no entra.
+    std::uint64_t scene_generation_ = 0;
 };
 
 }  // namespace cramion::terrain

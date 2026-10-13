@@ -4,6 +4,8 @@
 // fractura, horneado de sondas y repeticiones. Devuelve 0 si todo va.
 
 #include "CramionCore/ai/BehaviorTree.h"
+#include "CramionCore/asset/AssetDatabase.h"
+#include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/asset/ShaderGraph.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/World.h"
@@ -12,8 +14,10 @@
 #include "CramionCore/gameplay/SaveGame.h"
 #include "CramionCore/lighting/ProbeBaker.h"
 #include "CramionCore/physics/Fracture.h"
+#include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/replay/Replay.h"
 #include "CramionCore/scripting/VisualScript.h"
+#include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/twod/System2D.h"
 #include "CramionCore/vfx/VisualEffect.h"
 
@@ -289,6 +293,193 @@ void testBake() {
     std::filesystem::remove(file, ec);
 }
 
+// Que entra en el horneado: Static propio y heredado (hijo de una instancia
+// de prefab o de la raiz de un modelo), Rigidbody, desactivados y terreno.
+void testBakeGather() {
+    std::printf("Horneado: que entra\n");
+    assets::AssetDatabase database;
+    assets::AssetManager manager(database);
+    const auto cube = [](ecs::World& world, const char* name, ecs::Entity parent = {}) {
+        ecs::Entity e = world.create(name, parent);
+        e.add<ecs::MeshRenderer>().mesh = ecs::Mesh::cube();
+        return e;
+    };
+    {
+        ecs::World world;
+        ecs::Entity a = cube(world, "Estatico");
+        a.get<ecs::EntityInfo>().is_static = true;
+        cube(world, "Suelto");
+        lighting::BakeScene scene;
+        lighting::BakeGatherReport report;
+        lighting::gatherBakeScene(world, manager, scene, {}, {}, &report);
+        check(report.meshes_baked == 1 && scene.triangles.size() == 12, "un cubo Static: solo el (12 triangulos)");
+        check(report.skipped[static_cast<int>(lighting::BakeSkip::NotStatic)] == 1, "el otro se omite por no ser Static");
+    }
+    {
+        // La raiz de una instancia de prefab marcada Static (sin malla) y su
+        // hijo con malla (sin marcar): el hijo hereda el Static.
+        ecs::World world;
+        ecs::Entity root = world.create("Prefab");
+        root.get<ecs::EntityInfo>().is_static = true;
+        ecs::Entity child = cube(world, "Hijo", root);
+        child.setLocalPosition(Vec3{0.0f, 2.0f, 0.0f});
+        cube(world, "Otro");
+        lighting::BakeScene scene;
+        lighting::BakeGatherReport report;
+        lighting::gatherBakeScene(world, manager, scene, {}, {}, &report);
+        check(lighting::staticInHierarchy(child), "el hijo de un Static es Static");
+        check(report.meshes_baked == 1 && report.static_marked == 1 && scene.triangles.size() == 12,
+              "el hijo de la instancia Static se hornea");
+        check(!scene.triangles.empty() && scene.triangles.front().a.y > 1.0f, "en su sitio del mundo");
+    }
+    {
+        // Nada Static: todo lo que no se mueve. Un Rigidbody Dynamic se omite;
+        // Static con Rigidbody Dynamic entra (con aviso).
+        ecs::World world;
+        cube(world, "Quieto");
+        cube(world, "Cae").add<physics::Rigidbody>();
+        lighting::BakeScene scene;
+        lighting::BakeGatherReport report;
+        lighting::gatherBakeScene(world, manager, scene, {}, {}, &report);
+        check(report.used_all_non_moving && report.meshes_baked == 1 &&
+                  report.skipped[static_cast<int>(lighting::BakeSkip::DynamicBody)] == 1,
+              "sin Static: entra lo que no se mueve, no el Rigidbody Dynamic");
+        ecs::World world2;
+        ecs::Entity s = cube(world2, "Static con fisica");
+        s.get<ecs::EntityInfo>().is_static = true;
+        s.add<physics::Rigidbody>();
+        lighting::BakeScene scene2;
+        lighting::BakeGatherReport report2;
+        lighting::gatherBakeScene(world2, manager, scene2, {}, {}, &report2);
+        check(report2.meshes_baked == 1 && report2.static_with_dynamic_rb == 1, "Static manda sobre el Rigidbody Dynamic");
+    }
+    {
+        // Un Static desactivado no deja la escena vacia sin decir por que.
+        ecs::World world;
+        ecs::Entity a = cube(world, "Apagado");
+        a.get<ecs::EntityInfo>().is_static = true;
+        a.setActive(false);
+        lighting::BakeScene scene;
+        lighting::BakeGatherReport report;
+        lighting::gatherBakeScene(world, manager, scene, {}, {}, &report);
+        const std::string summary = report.summary();
+        std::printf("  (%s)\n", summary.c_str());
+        check(scene.triangles.empty() && summary.find("Nada que hornear") != std::string::npos &&
+                  summary.find("desactivadas") != std::string::npos,
+              "sin nada que hornear, el informe dice el motivo");
+    }
+    {
+        // Terreno Static desde su mapa de alturas (sin collider ni fisica).
+        ecs::World world;
+        ecs::Entity t = world.create("Terreno");
+        t.get<ecs::EntityInfo>().is_static = true;
+        terrain::Terrain& comp = t.add<terrain::Terrain>();
+        comp.size = 16.0f;
+        comp.height = 4.0f;
+        comp.collision = false;
+        auto data = std::make_shared<terrain::TerrainData>();
+        data->create(17, 16, 0.5f);
+        lighting::BakeScene scene;
+        lighting::BakeGatherReport report;
+        lighting::gatherBakeScene(world, manager, scene, {},
+                                  [&](ecs::Entity) -> std::shared_ptr<const terrain::TerrainData> { return data; }, &report);
+        check(report.terrains == 1 && report.terrain_triangles == 16u * 16u * 2u && scene.triangles.size() == 512,
+              "el terreno entra (16 x 16 celdas)");
+        check(!scene.triangles.empty() && std::fabs(scene.triangles.front().a.y - 2.0f) < 1e-3f, "a su altura (0.5 x 4 m)");
+    }
+    {
+        // Luces: la Horneada lleva su directa; la de solo tiempo real no entra.
+        ecs::World world;
+        ecs::Entity baked = world.create("Lampara");
+        ecs::Light& l = baked.add<ecs::Light>();
+        l.bake_mode = ecs::LightBakeMode::Baked;
+        ecs::Entity realtime = world.create("Linterna");
+        realtime.add<ecs::Light>().bake_mode = ecs::LightBakeMode::Realtime;
+        world.create("Mixta").add<ecs::Light>();
+        scene::LightSet sun;
+        lighting::BakeScene scene;
+        lighting::BakeGatherReport report;
+        lighting::gatherBakeLights(world, sun, scene, ecs::LightBakeMode::Mixed, &report);
+        int baked_count = 0;
+        for (const std::uint8_t b : scene.point_baked) baked_count += b;
+        check(scene.lights.points.size() == 2 && baked_count == 1 && scene.baked_light_ids.size() == 1 &&
+                  scene.baked_light_ids[0][0] == baked.uuid().high && scene.baked_light_ids[0][1] == baked.uuid().low,
+              "luces: 1 horneada y 1 mixta en el horneado, la de tiempo real fuera");
+        check(!scene.sun_baked && report.lights_realtime == 1, "el sol mixto no se hornea entero");
+    }
+}
+
+// Lee un texel del lightmap de superficie (la misma tabla que baked_gi.frag)
+// y su irradiancia hacia `n`. -1 si no esta.
+float surfaceIrradiance(const gfx::SurfaceLightmap& s, const Vec3& p, const Vec3& n) {
+    if (s.capacity == 0) return -1.0f;
+    const float inv = 1.0f / s.cell_size;
+    const std::uint64_t key = gfx::surfaceCellKey(static_cast<int>(std::floor(p.x * inv)), static_cast<int>(std::floor(p.y * inv)),
+                                                  static_cast<int>(std::floor(p.z * inv)));
+    const std::uint32_t lo = static_cast<std::uint32_t>(key & 0xFFFFFFFFull);
+    const std::uint32_t hi = static_cast<std::uint32_t>(key >> 32);
+    std::uint32_t slot = gfx::surfaceCellHash(lo, hi) & (s.capacity - 1);
+    for (std::uint32_t i = 0; i < s.capacity; ++i) {
+        const std::uint32_t klo = s.keys[static_cast<std::size_t>(slot) * 2];
+        const std::uint32_t khi = s.keys[static_cast<std::size_t>(slot) * 2 + 1];
+        if (klo == gfx::kSurfaceEmptyKey && khi == gfx::kSurfaceEmptyKey) return -1.0f;
+        if (klo == lo && khi == hi) {
+            const core::Vec4* t = &s.texels[static_cast<std::size_t>(slot) * gfx::kSurfaceTexelVec4];
+            // floats 0..11 = c0.rgb c1.rgb c2.rgb c3.rgb (rojo: 0, 3, 6, 9)
+            const float c0 = t[0].x, c1 = t[0].w, c2 = t[1].z, c3 = t[2].y;
+            return c0 * 0.282095f + c1 * 0.488603f * n.y + c2 * 0.488603f * n.z + c3 * 0.488603f * n.x;
+        }
+        slot = (slot + 1) & (s.capacity - 1);
+    }
+    return -1.0f;
+}
+
+// Un horneado diminuto con el sol Horneado: el lightmap lleva su luz directa
+// y la sombra de un tejado.
+void testBakedDirect() {
+    std::printf("Luz directa y sombras horneadas\n");
+    lighting::BakeScene scene;
+    const Vec3 albedo{0.5f, 0.5f, 0.5f};
+    // Suelo de 8 x 8 m (mira a +Y) y un tejado de 2 x 8 m a 1 m sobre x = -2.
+    scene.triangles.push_back({Vec3{-4, 0, -4}, Vec3{4, 0, 4}, Vec3{4, 0, -4}, albedo, {}});
+    scene.triangles.push_back({Vec3{-4, 0, -4}, Vec3{-4, 0, 4}, Vec3{4, 0, 4}, albedo, {}});
+    scene.triangles.push_back({Vec3{-3, 1, -4}, Vec3{-1, 1, 4}, Vec3{-1, 1, -4}, albedo, {}});
+    scene.triangles.push_back({Vec3{-3, 1, -4}, Vec3{-3, 1, 4}, Vec3{-1, 1, 4}, albedo, {}});
+    scene.lights.sun.direction = Vec3{0.0f, -1.0f, 0.0f};
+    scene.lights.sun.color = Vec3{1.0f, 1.0f, 1.0f};
+    scene.lights.sun.intensity = 3.0f;
+    scene.sun_baked = true;
+    scene.baked_light_ids.push_back({0x1234ull, 0x5678ull});
+    scene.settings.sky_intensity = 0.0f;
+    scene.settings.bounces = 0;
+    scene.settings.rays = 16;
+    scene.settings.surface_texel = 0.25f;
+    scene.settings.surface_rays = 16;
+    scene.settings.direct_samples = 4;
+    scene.settings.threads = 2;
+    gfx::BakedLighting out;
+    lighting::BakeStats stats;
+    std::string error;
+    check(lighting::bakeProbes(scene, out, nullptr, &stats, &error) && !out.surface.empty(), "horneado con lightmap de superficie");
+    const Vec3 up{0.0f, 1.0f, 0.0f};
+    const float lit = surfaceIrradiance(out.surface, Vec3{2.1f, 0.0f, 0.1f}, up);
+    const float shadow = surfaceIrradiance(out.surface, Vec3{-1.9f, 0.0f, 0.1f}, up);
+    std::printf("  (al sol %.3f, a la sombra %.3f, texeles %zu)\n", lit, shadow, stats.surface_texels);
+    check(lit > 2.4f && lit < 3.6f, "el suelo al sol tiene la luz directa del sol (3)");
+    check(shadow > -0.5f && shadow < lit * 0.2f, "bajo el tejado queda la sombra horneada");
+    check(out.sun_baked && out.baked_lights.size() == 1, "lo horneado entero queda apuntado");
+    const std::filesystem::path file = std::filesystem::temp_directory_path() / "cramion_bake_direct_test.crbake";
+    gfx::BakedLighting back;
+    gfx::LightingMode mode = gfx::LightingMode::Realtime;
+    check(lighting::saveBakedLighting(file, out, gfx::LightingMode::Baked) && lighting::loadBakedLighting(file, back, mode) &&
+              back.sun_baked && back.baked_lights.size() == 1 && back.baked_lights[0][0] == 0x1234ull &&
+              back.surface.count == out.surface.count && gfx::bakedSunMatches(back, Vec3{0.0f, -1.0f, 0.0f}) &&
+              !gfx::bakedSunMatches(back, Vec3{0.3f, -1.0f, 0.0f}),
+          "el .crbake (version 3) guarda las luces horneadas");
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
 void testReplay() {
     std::printf("Repeticiones\n");
     ecs::World world;
@@ -325,6 +516,8 @@ int main() {
     testGraphs();
     testFracture();
     testBake();
+    testBakeGather();
+    testBakedDirect();
     testReplay();
     std::printf("\n%d de %d comprobaciones bien\n", checks - failures, checks);
     return failures == 0 ? 0 : 1;

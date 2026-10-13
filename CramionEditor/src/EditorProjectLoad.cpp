@@ -33,6 +33,7 @@
 #include <iostream>
 #include <thread>
 #include <CramionFX/asset/TextureCompression.h>
+#include <CramionCore/video/VideoFiles.h>
 #include <unordered_set>
 
 namespace cramion::editor {
@@ -117,6 +118,120 @@ std::string EditorApp::textureImportStatus() {
         std::cout << "[Texturas] Importacion lista: " << import.compressed.load() << " comprimidas, "
                   << total - import.compressed.load() << " ya estaban, en "
                   << std::chrono::duration<float>(std::chrono::steady_clock::now() - import.started).count() << " s\n";
+    }
+    return {};
+}
+
+// --- Importacion de videos (como la de texturas) -----------------------------
+// Al abrir el proyecto (nunca al abrir una escena): los videos de Assets sin
+// cache al dia (tamano y fecha) se abren en 1-2 hilos para leer sus datos y
+// una miniatura (video::probeVideo -> Library/Cache/Video/<hash>.json|.png).
+// Cada hilo inicia COM/Media Foundation dentro del decodificador (MTA); el
+// hilo principal del editor (STA) nunca toca Media Foundation.
+struct EditorApp::VideoImport {
+    std::vector<std::filesystem::path> items;
+    std::filesystem::path cache;
+    std::vector<std::thread> threads;
+    std::atomic<bool> stop{false};
+    std::atomic<std::size_t> next{0};
+    std::atomic<std::size_t> done{0};
+    std::atomic<std::size_t> failed{0};
+    std::chrono::steady_clock::time_point started;
+    bool reported = false;
+    ~VideoImport() {
+        stop = true;
+        for (std::thread& thread : threads) {
+            if (thread.joinable()) thread.join();  // archivos locales: cada uno tarda poco
+        }
+    }
+};
+
+void EditorApp::VideoImportDeleter::operator()(VideoImport* import) const { delete import; }
+
+std::filesystem::path EditorApp::videoCacheFolder() const {
+    return project_.libraryFolder() / "Cache" / "Video";
+}
+
+void EditorApp::stopVideoImport() {
+    video_import_.reset();
+    video_probe_queue_.clear();
+}
+
+void EditorApp::startVideoImport(std::vector<std::filesystem::path> files) {
+    if (!has_project_) return;
+    const bool whole_project = files.empty();
+    if (video_import_ && video_import_->done.load() < video_import_->items.size()) {
+        // Ya hay una en marcha: estos van a la cola y salen al terminar.
+        for (std::filesystem::path& file : files) video_probe_queue_.push_back(std::move(file));
+        return;
+    }
+    if (video_import_) video_info_.clear();  // lo de la anterior se vuelve a leer de la cache
+    video_import_.reset();
+    const std::filesystem::path cache = videoCacheFolder();
+    std::vector<std::filesystem::path> pending;
+    const auto add_if_stale = [&](const std::filesystem::path& file) {
+        video::VideoInfo cached;
+        if (!video::readCachedVideoInfo(cache, file, cached) &&
+            std::find(pending.begin(), pending.end(), file) == pending.end()) {
+            pending.push_back(file);
+        }
+    };
+    if (whole_project) {
+        std::error_code ec;
+        for (auto it = std::filesystem::recursive_directory_iterator(
+                 project_.assetsFolder(), std::filesystem::directory_options::skip_permission_denied, ec);
+             !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+            if (it->is_regular_file(ec) && video::isVideoFile(it->path())) add_if_stale(it->path());
+        }
+    } else {
+        // Los pedidos (sin cache, o "Volver a leer", que ya borro la suya).
+        for (const std::filesystem::path& file : files) add_if_stale(file);
+    }
+    files = std::move(pending);
+    const bool forced = !whole_project;
+    if (files.empty()) return;
+    std::unique_ptr<VideoImport, VideoImportDeleter> import(new VideoImport());
+    import->items = std::move(files);
+    import->cache = cache;
+    import->started = std::chrono::steady_clock::now();
+    if (!forced) std::cout << "[Video] Leyendo " << import->items.size() << " videos (miniaturas en Library/Cache/Video)\n";
+    VideoImport* state = import.get();
+    // Uno o dos hilos: la decodificacion ya es por hardware o usa varios nucleos.
+    const int threads = import->items.size() > 1 ? 2 : 1;
+    for (int t = 0; t < threads; ++t) {
+        import->threads.emplace_back([state] {
+            for (std::size_t i = state->next++; i < state->items.size() && !state->stop; i = state->next++) {
+                try {
+                    video::VideoInfo info;
+                    if (!video::probeVideo(state->items[i], state->cache, info)) {
+                        ++state->failed;
+                        std::cerr << "[Video] " << dialogs::utf8(state->items[i].filename()) << ": " << info.error << "\n";
+                    }
+                } catch (const std::exception& e) {
+                    ++state->failed;
+                    std::cerr << "[Video] " << dialogs::utf8(state->items[i].filename()) << ": " << e.what() << "\n";
+                }
+                ++state->done;
+            }
+        });
+    }
+    video_import_ = std::move(import);
+}
+
+std::string EditorApp::videoImportStatus() {
+    if (!video_import_) return {};
+    VideoImport& import = *video_import_;
+    const std::size_t total = import.items.size();
+    const std::size_t done = import.done.load();
+    if (done < total) return "Leyendo vídeos " + std::to_string(done) + "/" + std::to_string(total);
+    if (!import.reported) {
+        import.reported = true;
+        if (total > 1) {
+            std::cout << "[Video] Lectura lista: " << total - import.failed.load() << " videos, " << import.failed.load()
+                      << " con error, en " << std::chrono::duration<float>(std::chrono::steady_clock::now() - import.started).count()
+                      << " s\n";
+        }
+        video_info_.clear();  // la cache nueva se lee otra vez (miniaturas)
     }
     return {};
 }

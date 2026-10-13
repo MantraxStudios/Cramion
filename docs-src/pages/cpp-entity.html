@@ -225,6 +225,40 @@
     <tr><td><code>Value vehicleState(...) const</code></td><td>entity().vehicleState() {speed, forwardSpeed, rpm, rpmFraction, gear, gearCount, automatic} o nil Devuelve: objeto</td></tr>
     <tr><td><code>Value velocity2D() const</code></td><td>entity.velocity2D: Vec3 de su Rigidbody2D (z = 0) (Vec3)</td></tr>
     <tr><td><code>void setVelocity2D(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value videoDroppedFrames() const</code></td><td>entity.videoDroppedFrames: frames saltados desde que empezo (numero)</td></tr>
+    <tr><td><code>Value videoFrame() const</code></td><td>entity.videoFrame: frame que se ve (escribirlo busca) (numero)</td></tr>
+    <tr><td><code>void setVideoFrame(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value videoFrameCount() const</code></td><td>entity.videoFrameCount: frames del video (numero)</td></tr>
+    <tr><td><code>Value videoFrameRate() const</code></td><td>entity.videoFrameRate: frames por segundo (numero)</td></tr>
+    <tr><td><code>Value videoHeight() const</code></td><td>entity.videoHeight: alto en pixeles (numero)</td></tr>
+    <tr><td><code>Value videoIsLive() const</code></td><td>entity.videoIsLive: es un directo? (bool)</td></tr>
+    <tr><td><code>Value videoIsPlaying() const</code></td><td>entity.videoIsPlaying: esta sonando? (bool)</td></tr>
+    <tr><td><code>Value videoIsPrepared() const</code></td><td>entity.videoIsPrepared: tiene el primer frame listo? (bool)</td></tr>
+    <tr><td><code>Value videoLength() const</code></td><td>entity.videoLength: duracion en segundos (-1 en directo o si aun no se sabe) (numero)</td></tr>
+    <tr><td><code>Value videoLoop() const</code></td><td>entity.videoLoop: bucle (bool)</td></tr>
+    <tr><td><code>void setVideoLoop(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value videoPause(...) const</code></td><td>entity().videoPause() pausa el video</td></tr>
+    <tr><td><code>Value videoPlay(...) const</code></td><td>entity().videoPlay() reproduce el video (lo prepara si hace falta)</td></tr>
+    <tr><td><code>Value videoPlaybackSpeed() const</code></td><td>entity.videoPlaybackSpeed: velocidad (0.1..4; fuera de 0.5..2 el audio se calla) (numero)</td></tr>
+    <tr><td><code>void setVideoPlaybackSpeed(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value videoPrepare(...) const</code></td><td>entity().videoPrepare() abre el video y deja el primer frame listo (OnVideoPrepared)</td></tr>
+    <tr><td><code>Value videoReadSamples(pista, frames) const</code></td><td>entity().videoReadSamples(pista, frames) muestras entrelazadas de la pista (Salida de audio ApiOnly; bloques de 20-50 ms, no es tiempo real) Devuelve: lista de numeros</td></tr>
+    <tr><td><code>Value videoSeek(segundos) const</code></td><td>entity().videoSeek(segundos) salta a ese segundo del video (OnVideoSeekCompleted al llegar)</td></tr>
+    <tr><td><code>Value videoSeekFrame(frame) const</code></td><td>entity().videoSeekFrame(frame) salta a ese frame (desde 0)</td></tr>
+    <tr><td><code>Value videoSetClip(texto) const</code></td><td>entity().videoSetClip(&quot;Videos/intro.mp4&quot;) cambia el clip (ruta en Assets); si estaba sonando, sigue con el nuevo</td></tr>
+    <tr><td><code>Value videoSetTrackMute(pista, activar) const</code></td><td>entity().videoSetTrackMute(pista, true) silencia (o no) una pista de audio (desde 1)</td></tr>
+    <tr><td><code>Value videoSetTrackTargets(pista, tabla) const</code></td><td>entity().videoSetTrackTargets(pista, {fuente1, fuente2}) objetos con AudioSource por los que suena la pista (Salida de audio AudioSource)</td></tr>
+    <tr><td><code>Value videoSetTrackVolume(pista, volumen) const</code></td><td>entity().videoSetTrackVolume(pista, volumen) volumen de una pista de audio (desde 1)</td></tr>
+    <tr><td><code>Value videoSetUrl(texto) const</code></td><td>entity().videoSetUrl(&quot;https://...&quot;) cambia la fuente a una URL (https, o http a este PC)</td></tr>
+    <tr><td><code>Value videoState() const</code></td><td>entity.videoState: Idle, Preparing, Prepared, Playing, Paused, Buffering, Ended o Error (texto)</td></tr>
+    <tr><td><code>Value videoStepForward(frames) const</code></td><td>entity().videoStepForward(frames) pausa y avanza N frames (1 por defecto)</td></tr>
+    <tr><td><code>Value videoStop(...) const</code></td><td>entity().videoStop() para el video y suelta el decodificador (vuelve al principio)</td></tr>
+    <tr><td><code>Value videoTexture() const</code></td><td>entity.videoTexture: id de la textura del video (para otras llamadas de la API; -1 si no hay) (numero)</td></tr>
+    <tr><td><code>Value videoTime() const</code></td><td>entity.videoTime: segundo actual del video (escribirlo busca) (numero)</td></tr>
+    <tr><td><code>void setVideoTime(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value videoVolume() const</code></td><td>entity.videoVolume: volumen general del video (numero)</td></tr>
+    <tr><td><code>void setVideoVolume(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value videoWidth() const</code></td><td>entity.videoWidth: ancho en pixeles (numero)</td></tr>
     <tr><td><code>Value worldToCell(posicion) const</code></td><td>entity().worldToCell(posicion) Tilemap: celda (x, y) de un punto del mundo Devuelve: lista: x, y</td></tr>
   </tbody>
 </table>

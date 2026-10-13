@@ -220,13 +220,18 @@ bool deserializeWorld(World& world, const std::string& text, std::string* error)
                   << kSceneFormatVersion << "): se lee lo que se entienda\n";
     }
     migrateScene(root, version);
-    world.clearPersistent();  // las teselas de terreno se quedan
+    // El origen de la escena, antes de vaciar: las teselas de terreno que se
+    // quedan (deshacer, parar Play) se recolocan con el (World::clearPersistent)
+    // y no saltan (origen_viejo - origen_nuevo) en el mundo real.
+    DVec3 origin{};
+    if (const auto it = root.find("origin"); it != root.end() && it->is_array() && it->size() == 3 &&
+                                             (*it)[0].is_number() && (*it)[1].is_number() && (*it)[2].is_number()) {
+        origin = DVec3{(*it)[0].get<double>(), (*it)[1].get<double>(), (*it)[2].get<double>()};
+    }
+    world.clearPersistent(origin);  // las teselas de terreno se quedan (en su sitio)
     const Uuid uuid = Uuid::parse(root.value("uuid", std::string{}));
     world.setSceneUuid(uuid.valid() ? uuid : Uuid::generate());
     world.setSceneName(root.value("name", std::string{"Escena"}));
-    if (const auto it = root.find("origin"); it != root.end() && it->is_array() && it->size() == 3) {
-        world.setOrigin(DVec3{(*it)[0].get<double>(), (*it)[1].get<double>(), (*it)[2].get<double>()});
-    }
     if (const auto it = root.find("entities"); it != root.end() && it->is_array()) {
         buildEntities(world, *it, /*remap=*/false, Entity{});
     }
@@ -269,6 +274,13 @@ bool loadScene(World& world, const std::filesystem::path& path, std::string* err
     }
     std::stringstream text;
     text << file.rdbuf();
+    // Otra escena: nada de la anterior se queda (ni sus teselas transitorias,
+    // que clearPersistent conservaria) y los trabajos en otros hilos de la
+    // anterior se invalidan (generacion nueva). Quien cambia de escena llama
+    // antes a resetSceneState (SceneReset.h) para vaciar tambien los
+    // sistemas; esto es la red de seguridad si alguno no lo hizo.
+    world.clear();
+    world.beginNewSceneGeneration();
     return deserializeWorld(world, text.str(), error);
 }
 

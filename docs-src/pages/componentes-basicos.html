@@ -69,14 +69,14 @@
     <tr><td>Automatica<br><code>auto_exposure</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
     <tr><td>Compensacion<br><code>exposure_compensation</code></td><td>numero</td><td>0</td><td>-6 a 6</td><td></td></tr>
     <tr><td>Exposicion manual<br><code>manual_exposure</code></td><td>numero</td><td>1</td><td>0 a 64</td><td></td></tr>
-    <tr><td>EV minimo<br><code>min_ev</code></td><td>numero</td><td>-2</td><td>-16 a 16</td><td></td></tr>
-    <tr><td>EV maximo<br><code>max_ev</code></td><td>numero</td><td>1,4</td><td>-16 a 16</td><td></td></tr>
+    <tr><td>EV minimo<br><code>min_ev</code></td><td>numero</td><td>-4</td><td>-16 a 16</td><td></td></tr>
+    <tr><td>EV maximo<br><code>max_ev</code></td><td>numero</td><td>2</td><td>-16 a 16</td><td></td></tr>
     <tr><td>Adaptacion a mas luz<br><code>adaptation_speed_up</code></td><td>numero</td><td>3</td><td>0,01 a 20</td><td></td></tr>
     <tr><td>Adaptacion a menos luz<br><code>adaptation_speed_down</code></td><td>numero</td><td>1,2</td><td>0,01 a 20</td><td></td></tr>
     <tr><td>Vision nocturna<br><code>night_vision</code></td><td>numero</td><td>1</td><td>0 a 1</td><td>Como ve el ojo con poca luz (efecto Purkinje): la noche pierde el color y se vuelve gris azulada; lo iluminado por farolas y antorchas lo conserva. 0 = apagada</td></tr>
     <tr><td colspan="5"><strong class="text-white">Tonemapping</strong></td></tr>
     <tr><td>Sobrescribir<br><code>override_tonemapping</code></td><td>si/no</td><td>no</td><td></td><td>Este volumen cambia esta seccion; si no, sale de los globales</td></tr>
-    <tr><td>Modo<br><code>tonemapper</code></td><td>opcion</td><td>PBR Neutral</td><td>PBR Neutral, ACES, Ninguno, AgX</td><td></td></tr>
+    <tr><td>Modo<br><code>tonemapper</code></td><td>opcion</td><td>PBR Neutral</td><td>PBR Neutral, ACES, Ninguno, AgX, AgX Punchy</td><td>AgX es neutro y plano (para gradar encima); AgX Punchy le suma contraste y color y se expone como ACES: el fotografico</td></tr>
     <tr><td colspan="5"><strong class="text-white">Bloom</strong></td></tr>
     <tr><td>Sobrescribir<br><code>override_bloom</code></td><td>si/no</td><td>no</td><td></td><td>Este volumen cambia esta seccion; si no, sale de los globales</td></tr>
     <tr><td>Activado<br><code>bloom</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
@@ -127,6 +127,7 @@
     <tr><td colspan="5"><strong class="text-white">Antialiasing</strong></td></tr>
     <tr><td>Sobrescribir<br><code>override_antialiasing</code></td><td>si/no</td><td>no</td><td></td><td>Este volumen cambia esta seccion; si no, sale de los globales</td></tr>
     <tr><td>FXAA<br><code>fxaa</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Nitidez<br><code>sharpen</code></td><td>numero</td><td>0</td><td>0 a 1</td><td>Enfoque adaptativo al contraste (tipo AMD CAS) tras el antialiasing; 0 = nada</td></tr>
     <tr><td colspan="5"><strong class="text-white">Efectos</strong></td></tr>
     <tr><td>Sobrescribir<br><code>override_effects</code></td><td>si/no</td><td>no</td><td></td><td>Este volumen cambia esta seccion; si no, sale de los globales</td></tr>
     <tr><td>Oclusion ambiental (SSAO)<br><code>ambient_occlusion</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
@@ -135,7 +136,7 @@
     <tr><td>Sombras de contacto<br><code>contact_shadows</code></td><td>si/no</td><td>si</td><td></td><td>Sombras pequenas del sol (pies en el suelo, piedras, huecos) que las cascadas no ven</td></tr>
     <tr><td>Largo maximo (m)<br><code>contact_shadow_length</code></td><td>numero</td><td>0,5</td><td>0,05 a 3</td><td>Tope del rayo. El largo real es el que las cascadas no resuelven (unos centimetros cerca, mas lejos): el resto de la sombra ya lo dan las cascadas</td></tr>
     <tr><td>Luz volumetrica<br><code>volumetric_light</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
-    <tr><td>Densidad del polvo<br><code>volumetric_density</code></td><td>numero</td><td>0,004</td><td>0 a 0,2</td><td>Cuanto polvo hay en el aire (hasta 60 m de la camara). Lo ilumina el sol, las luces y tambien el cielo, asi que se ve en todas direcciones. 0.004 = dia claro (rayos de sol entre los arboles); 0.015 = bruma; 0.04 = niebla densa</td></tr>
+    <tr><td>Densidad del polvo<br><code>volumetric_density</code></td><td>numero</td><td>0,004</td><td>0 a 0,2</td><td>Cuanto polvo hay en el aire (hasta 60 m de la camara). Lo ilumina el sol, las luces y tambien el cielo, asi que se ve en todas direcciones. 0.0005 a 0.001 = aire limpio (aun se ven los rayos de sol entre los arboles); 0.004 = bruma ligera (~1 km de visibilidad); 0.015 = bruma; 0.04 = niebla densa</td></tr>
     <tr><td>Anisotropia<br><code>volumetric_anisotropy</code></td><td>numero</td><td>0,6</td><td>-0,9 a 0,95</td><td>0 = igual en todas direcciones, cerca de 1 = hacia delante</td></tr>
     <tr><td>Niebla<br><code>fog_density</code></td><td>numero</td><td>0,0018</td><td>0 a 0,05</td><td>Densidad de la niebla por altura a nivel 0 (1/m). 0.0018 = bruma de un escenario pequeno; 0.0002 = mundo abierto (se ve a kilometros); 0 = sin niebla</td></tr>
     <tr><td>Niebla: caida con la altura<br><code>fog_height_falloff</code></td><td>numero</td><td>0,08</td><td>0,0001 a 1</td><td>Lo rapido que se aclara al subir (1/m): mas = solo a ras de suelo</td></tr>

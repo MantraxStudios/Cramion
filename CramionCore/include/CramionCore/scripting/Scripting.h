@@ -45,6 +45,9 @@ class AudioSystem;
 namespace cramion::navigation {
 class NavigationSystem;
 }
+namespace cramion::video {
+class VideoSystem;
+}
 namespace cramion::voxel {
 class VoxelSystem;
 }
@@ -138,6 +141,8 @@ public:
     const input::InputMapper& inputMapper() const;
     void setPhysics(physics::PhysicsSystem* physics);
     void setAudio(audio::AudioSystem* audio);
+    // Entity:videoPlay..., Video.isSupported/info y los eventos OnVideo* (video/VideoSystem.h).
+    void setVideo(video::VideoSystem* video);
     // entity().moveTo, isMoving... y la tabla Navigation (NavAgent y la malla).
     void setNavigation(navigation::NavigationSystem* navigation);
     // La tabla Voxel (el mundo de bloques de la escena).

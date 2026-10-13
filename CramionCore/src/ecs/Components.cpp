@@ -91,6 +91,13 @@ void Light::reflect(PropertyVisitor& v) {
                  "(una lampara, una ventana)"},
                 source_radius, FloatRange{0.0f, 2.0f, 0.01f, "%.2f m"});
     }
+    static constexpr std::array<const char*, 3> kBakeModes = {"Mixta", "Horneada", "Solo tiempo real"};
+    enumField(v,
+              {"bake_mode", "Modo (horneado)",
+               "Mixta: luz y sombras en tiempo real, rebote horneado. Horneada: luz directa, sombras y rebote "
+               "horneados (Ventana > Iluminacion > Generar); no cuesta nada en el juego. Solo tiempo real: el "
+               "horneado la ignora"},
+              bake_mode, kBakeModes);
 }
 
 void Camera::reflect(PropertyVisitor& v) {
@@ -294,7 +301,10 @@ void blendPostProcess(gfx::PostProcessSettings& o, const gfx::PostProcessSetting
         o.light_shaft_intensity = lerpf(from, to, t);
         o.light_shafts = o.light_shaft_intensity > 0.0f;
     }
-    if (mask & kPostAntialiasing) b(o.fxaa, v.fxaa);
+    if (mask & kPostAntialiasing) {
+        b(o.fxaa, v.fxaa);
+        f(o.sharpen, v.sharpen);
+    }
     if (mask & kPostEffects) {
         b(o.ambient_occlusion, v.ambient_occlusion);
         b(o.global_illumination, v.global_illumination);
@@ -593,8 +603,9 @@ void PostProcessing::reflect(PropertyVisitor& v) {
 
     if (v.beginGroup("Tonemapping")) {
         override_field(kPostTonemapping, "override_tonemapping");
-        // (AgX al final: los indices de las escenas guardadas no cambian.)
-        static constexpr std::array<const char*, 4> kTonemappers = {"PBR Neutral", "ACES", "Ninguno", "AgX"};
+        // (AgX y AgX Punchy al final: los indices de las escenas guardadas no cambian.)
+        static constexpr std::array<const char*, 5> kTonemappers = {"PBR Neutral", "ACES", "Ninguno", "AgX",
+                                                                    "AgX Punchy"};
         enumField(v, {"tonemapper", "Modo"}, s.tonemapper, kTonemappers);
         v.endGroup();
     }
@@ -708,6 +719,8 @@ void PostProcessing::reflect(PropertyVisitor& v) {
     if (v.beginGroup("Antialiasing")) {
         override_field(kPostAntialiasing, "override_antialiasing");
         v.field({"fxaa", "FXAA"}, s.fxaa);
+        v.field({"sharpen", "Nitidez", "Enfoque adaptativo al contraste (tipo AMD CAS) tras el antialiasing; 0 = nada"},
+                s.sharpen, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
         v.endGroup();
     }
 

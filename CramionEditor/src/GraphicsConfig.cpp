@@ -159,6 +159,7 @@ void loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& ren
         if (key == "texture_max_size") g.texture_max_size = std::clamp(static_cast<int>(value), 0, 16384);
         if (key == "texture_filtering") g.texture_filtering = std::clamp(static_cast<int>(value), 0, 16);
         if (key == "texture_lod_bias" && std::isfinite(value)) g.texture_lod_bias = std::clamp(value, -1.0f, 2.0f);
+        if (key == "vr_render_scale" && std::isfinite(value)) g.vr_render_scale = std::clamp(value, 0.5f, 1.0f);
         if (key == "shadows") renderer.setShadowsEnabled(value != 0.0f);
         if (key == "ray_tracing" && renderer.rayTracingSupported()) renderer.setRayTracingEnabled(value != 0.0f);
         if (key == "reflection_probe") renderer.setReflectionProbeEnabled(value != 0.0f);
@@ -185,6 +186,7 @@ bool saveGraphicsIni(const std::filesystem::path& file, const gfx::VulkanRendere
     out << "texture_max_size=" << g.texture_max_size << "\n";
     out << "texture_filtering=" << g.texture_filtering << "\n";
     out << "texture_lod_bias=" << g.texture_lod_bias << "\n";
+    out << "vr_render_scale=" << g.vr_render_scale << "\n";
     out << "shadows=" << (renderer.shadowsEnabled() ? 1 : 0) << "\n";
     out << "ray_tracing=" << (renderer.rayTracingEnabled() ? 1 : 0) << "\n";
     out << "reflection_probe=" << (renderer.reflectionProbeEnabled() ? 1 : 0) << "\n";
@@ -322,6 +324,9 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
     add("resolution_scale", number(gfx::renderScale(g)),
         "Escala de la resolucion interna (0.25..1). Cambiarla pasa a resolution = custom (y a taa si no habia escalado)");
     add("sharpness", number(g.sharpness), "Nitidez AMD RCAS tras el escalado (0..1)");
+    add("vr_render_scale", number(g.vr_render_scale),
+        "VR: resolucion de cada ojo respecto a la recomendada por el casco (0.5..1). En VR sustituye a "
+        "resolution/resolution_scale y el antialiasing es el TAA por ojo (fsr1 solo si se elige)");
     // Presentacion y rendimiento
     add("vsync", g.vsync, "Sincronizar con la pantalla");
     add("adaptive", g.adaptive, "Presupuesto adaptativo: baja la calidad sola para llegar a target_fps");
@@ -449,6 +454,10 @@ bool RendererGraphicsHost::set(const std::string& key, const GraphicsValue& valu
     } else if (key == "sharpness") {
         if (!need_number(0.0, 1.0)) return false;
         g.sharpness = static_cast<float>(n);
+        settings_changed = true;
+    } else if (key == "vr_render_scale") {
+        if (!need_number(0.5, 1.0)) return false;
+        g.vr_render_scale = static_cast<float>(n);
         settings_changed = true;
     } else if (key == "vsync") {
         if (!need_bool()) return false;

@@ -194,7 +194,7 @@ bool EditorApp::materialTextureSlot(const char* label, std::string& path) {
     }
     draw->AddRect(pos, max, ImGui::IsItemHovered() ? IM_COL32(255, 160, 40, 255) : IM_COL32(0, 0, 0, 140), 3.0f);
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s\n%s\nArrastra una imagen o una Render Texture aquí (clic: elegir archivo)", label,
+        ImGui::SetTooltip("%s\n%s\nArrastra una imagen, una Render Texture o un vídeo aquí (clic: elegir archivo)", label,
                           path.empty() ? "(sin textura)" : path.c_str());
     }
     if (ImGui::IsItemClicked()) {
@@ -212,6 +212,12 @@ bool EditorApp::materialTextureSlot(const char* label, std::string& path) {
                 changed = true;
             }
         }
+        // Un video: pregunta si crear una Render Texture de video (.crrt y un
+        // VideoPlayer en modo Render Texture que la rellena).
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kVideoPayload)) {
+            material_video_drop_ = dialogs::fromUtf8(static_cast<const char*>(payload->Data));
+            ImGui::OpenPopup("video_rt");
+        }
         // Una Render Texture del Proyecto (.crrt): lo que ve su camara.
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
             AssetPayload asset{};
@@ -224,6 +230,10 @@ bool EditorApp::materialTextureSlot(const char* label, std::string& path) {
             }
         }
         ImGui::EndDragDropTarget();
+    }
+    if (const std::string crrt = materialVideoDropPopup("video_rt"); !crrt.empty()) {
+        path = crrt;
+        changed = true;
     }
     ImGui::SameLine();
     ImGui::BeginGroup();

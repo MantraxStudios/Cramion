@@ -37,6 +37,7 @@
 #include <CramionCore/project/Pack.h>
 #include <CramionCore/input/InputActions.h>
 #include <CramionCore/asset/RenderTextureAsset.h>
+#include <CramionCore/video/VideoSystem.h>
 #include "ImGuiLayer.h"
 #include "Terminal.h"
 #include "CodeCompletion.h"
@@ -143,6 +144,7 @@ inline constexpr const char* kImagePayload = "CRAMION_IMAGE";
 inline constexpr const char* kFolderPayload = "CRAMION_FOLDER";
 inline constexpr const char* kScriptPayload = "CRAMION_SCRIPT";  // ruta (utf8) de un .cpp o .h
 inline constexpr const char* kAudioPayload = "CRAMION_AUDIO";    // ruta (utf8) de un audio
+inline constexpr const char* kVideoPayload = "CRAMION_VIDEO";    // ruta (utf8) de un video (.mp4, .mov...)
 
 // Archivos de la 2.1 que se ven como los shaders en el Proyecto (extension en minusculas).
 inline bool isGraphFileExtension(const std::string& ext) {
@@ -798,6 +800,7 @@ private:
     std::vector<std::filesystem::path> current_scripts_;  // .cpp y .h de la carpeta
     std::vector<std::filesystem::path> current_shaders_;  // .crshader de la carpeta
     std::vector<std::filesystem::path> current_audio_;    // audios de la carpeta
+    std::vector<std::filesystem::path> current_videos_;   // videos de la carpeta
 
     // --- Exportar el juego (EditorExport.cpp): copia en otro hilo con progreso ---
     struct ExportJob {
@@ -971,6 +974,14 @@ private:
     // Tras cargar/deshacer/salir de Play: si el origen cambio, se alinea lo
     // demas (las entidades ya vienen en el origen nuevo).
     void alignOriginAfterLoad(const ecs::DVec3& before);
+    // Cambio de escena (EditorOrigin.cpp): la secuencia comun de
+    // ecs::resetSceneState (SceneReset.h) con los sistemas del editor: sube
+    // la generacion de escena, vacia World Partition, fisica (parada: el que
+    // llama la arranca con la escena nueva), navegacion, teselas y GPU de
+    // terrenos y vegetacion, y el mundo. `keep_terrain_edits`: lo esculpido
+    // sin guardar se queda en memoria (Play: al parar vuelve la escena del
+    // editor); si no, se tira (el usuario ya eligio guardar o no).
+    void resetSceneSystems(bool keep_terrain_edits);
     ecs::FloatingOriginSettings floating_origin_{};
     void startVoxels();
     void stopVoxels();
@@ -1266,6 +1277,74 @@ private:
     void stopTextureImport() { texture_import_.reset(); }
     // Texto de la barra de estado mientras se importa ("" si no).
     std::string textureImportStatus();
+    // --- Video (EditorVideo.cpp) ---
+    // Salida al renderizador (Render Texture, Material Override, planos) y
+    // los reproductores. Declarados despues de sync_ y de audio_: se destruyen
+    // antes que ellos (el VideoSystem suelta sus texturas y voces de stream).
+    // Orden de parada: video_.stop() SIEMPRE antes de audio_.stop().
+    std::unique_ptr<video::VideoOutput> video_output_;
+    video::VideoSystem video_;
+    // Importacion de videos (como las texturas): al abrir el proyecto, nunca
+    // al abrir una escena. En 1-2 hilos se leen los datos (resolucion, fps,
+    // duracion, pistas) y una miniatura PNG de los videos de Assets sin cache
+    // o cambiados desde entonces: Library/Cache/Video/<hash>.json|.png.
+    struct VideoImport;
+    struct VideoImportDeleter {
+        void operator()(VideoImport* import) const;
+    };
+    std::unique_ptr<VideoImport, VideoImportDeleter> video_import_;
+    // Lo que se ha leido de la cache (por ruta absoluta); se vacia al refrescar.
+    struct VideoProbeInfo {
+        bool ready = false;      // hay cache al dia
+        bool failed = false;     // se intento y no se pudo leer (error)
+        std::uint32_t width = 0, height = 0;
+        double fps = 0.0, duration = -1.0;
+        std::string codec, backend, error;
+        bool hardware = false;
+        int audio_tracks = 0;
+        std::vector<std::string> track_names;
+        std::filesystem::path thumbnail;  // PNG (vacia si no hay)
+    };
+    std::unordered_map<std::wstring, VideoProbeInfo> video_info_;
+    std::uint64_t video_info_version_ = ~0ull;
+    std::vector<std::filesystem::path> video_probe_queue_;  // sin cache: se leen en cuanto termine la importacion
+    void startVideoImport(std::vector<std::filesystem::path> files = {});  // vacio = todos los de Assets sin cache
+    void stopVideoImport();
+    std::string videoImportStatus();
+    // Datos del video (nullptr si aun no se han leido: se encola la lectura).
+    const VideoProbeInfo* videoInfo(const std::filesystem::path& file);
+    std::filesystem::path videoCacheFolder() const;
+    // Cada frame: vista previa sin Play, pausa y la cola de lecturas.
+    void updateVideoEditor(float delta_seconds);
+    void drawVideoInspector(ecs::Entity entity);
+    void drawVideoPreviewWindow();
+    void previewVideoFile(const std::filesystem::path& file);
+    bool show_video_preview_ = false;
+    std::filesystem::path video_preview_file_;
+    Uuid video_preview_entity_{};  // la del Inspector (vista previa sin Play)
+    entt::entity video_preview_handle_ = entt::null;  // su handle (deshacer lo cambia: se para)
+    // "Pantalla de video": plano con la proporcion del video, VideoPlayer en
+    // Material Override sobre la emision y audio Direct. Un solo deshacer.
+    ecs::Entity createVideoScreen(const std::string& clip_or_url, bool is_url, const std::optional<core::Vec3>& point);
+    // Pone el video en el VideoPlayer del objeto (lo anade si no tiene).
+    void assignVideoClip(ecs::Entity entity, const std::filesystem::path& file);
+    // Hueco de textura de un material: "Crear Render Texture de video?".
+    // Devuelve la .crrt nueva (relativa a Assets) o "" (sin elegir aun).
+    std::string materialVideoDropPopup(const char* popup_id);
+    std::filesystem::path material_video_drop_;
+    // Al mover videos en el navegador: los VideoPlayer de la escena abierta
+    // que los usan pasan a la ruta nueva.
+    void retargetVideoClips(const std::string& from_relative, const std::string& to_relative);
+    // Pegar en la Escena: texto http(s) => pantalla con fuente URL. El texto
+    // que habia en el portapapeles al copiar objetos no cuenta (es de antes).
+    bool pasteVideoUrl();
+    std::string clipboard_text_at_copy_;
+    // "Probar URL" del Inspector: se abre en otro hilo (red).
+    struct VideoUrlTest;
+    struct VideoUrlTestDeleter {
+        void operator()(VideoUrlTest* test) const;
+    };
+    std::unique_ptr<VideoUrlTest, VideoUrlTestDeleter> video_url_test_;
     ecs::World world_;
     std::filesystem::path scene_path_;  // vacia = escena sin guardar
     bool dirty_ = false;
@@ -1792,7 +1871,7 @@ private:
     // historial, favoritos y seleccion multiple.
 public:
     struct BrowserItem {
-        enum class Kind { Folder, Asset, Image, Script, Audio, Shader } kind = Kind::Asset;
+        enum class Kind { Folder, Asset, Image, Script, Audio, Shader, Video } kind = Kind::Asset;
         std::filesystem::path path;
         std::string name;
         std::string type;
@@ -2096,9 +2175,15 @@ private:
     // La de otra escena (Scene.load en Play); ruta vacia = sin horneado.
     void loadSceneLighting(const std::filesystem::path& scene);
     bool play_lighting_changed_ = false;  // Scene.load en Play cargo otra: exitPlay vuelve a la de la escena
+    // Scene.load en Play cambio de escena: al parar, otro cambio de escena
+    // completo (resetSceneSystems) antes de volver a la del editor.
+    bool play_scene_changed_ = false;
     void startLightingBake();
     void drawLightingWindow();
-    void configureLightingBake(int rays, int bounces, float spacing);  // < 0 = no cambiar
+    // < 0 = no cambiar. sun_mode: 0 mixto, 1 horneado, 2 solo tiempo real (si
+    // no hay Light direccional); surface_texel: 0 = sin lightmap de superficie.
+    void configureLightingBake(int rays, int bounces, float spacing, int sun_mode = -1, float surface_texel = -1.0f,
+                               int direct_samples = -1);
     std::string lightingStateJson();
     // MCP de la 2.1 (EditorMcp21.cpp): pruebas, horneado, VFX, grafos y arboles.
     std::string mcpTools21(const std::string& name, const std::string& args_json, std::string& error);

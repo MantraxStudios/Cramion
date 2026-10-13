@@ -363,6 +363,16 @@ struct Ragdoll {
 
 enum class LightType : int { Directional = 0, Point = 1, Spot = 2 };
 
+// Que hace el horneado de iluminacion (Ventana > Iluminacion) con la luz,
+// como el Mode de las luces de Unity:
+//   Mixed     su luz directa y sus sombras son en tiempo real; su rebote se
+//             hornea (lo de siempre, el valor por defecto).
+//   Baked     todo horneado: luz directa, sombras suaves y rebote van a las
+//             sondas y al lightmap de superficie; en modo horneado no se
+//             dibuja en tiempo real (no cuesta nada en el juego).
+//   Realtime  solo tiempo real: el horneado la ignora.
+enum class LightBakeMode : int { Mixed = 0, Baked = 1, Realtime = 2 };
+
 // Luz. La direccional fija el sol (su eje forward es la direccion de los
 // rayos); las puntuales y los focos, sus posiciones y conos.
 struct Light {
@@ -379,6 +389,8 @@ struct Light {
     // Tamano de la bombilla (m, puntual y foco): con sombras por rayos, cuanto
     // mayor, mas suave el borde de la sombra (penumbra real).
     float source_radius = 0.05f;
+    // Modo en el horneado (Mixta / Horneada / Solo tiempo real).
+    LightBakeMode bake_mode = LightBakeMode::Mixed;
 
     void reflect(PropertyVisitor& v);
 };

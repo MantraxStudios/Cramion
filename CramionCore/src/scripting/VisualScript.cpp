@@ -169,6 +169,13 @@ std::vector<NodeInfo> buildCatalog() {
     event("event.websocket", "On WebSocket", "Evento de una conexion WebSocket por su nombre: message, open, close, error, reconnecting o any",
           "websocket ws servidor mensaje red online mmo", {X(""), P("Evento", kAny), P("Texto", kString), P("Datos", kAny)},
           {P("Conexion", kString, "main"), P("Tipo", kString, "message")});
+    event("event.video", "On Video Event",
+          "Evento del VideoPlayer del objeto: Prepared, Started, LoopPointReached, FrameReady, SeekCompleted, Error, "
+          "FrameDropped, Buffering, Resumed o Any",
+          "video reproductor player pelicula loop fin terminado preparado videoplayer",
+          {X(""), P("Evento", kString), P("Tiempo", kFloat), P("Cantidad", kInt), P("Mensaje", kString)},
+          {O(P("Evento", kString, "LoopPointReached"), {"Prepared", "Started", "LoopPointReached", "FrameReady", "SeekCompleted",
+                                                         "Error", "FrameDropped", "Buffering", "Resumed", "Any"})});
 
     // --- Flujo ---
     node("Flujo", "flow.branch", "Branch", "Si la condicion es verdadera sigue por Verdadero; si no, por Falso", "if si condicion",
@@ -724,6 +731,9 @@ std::string nodeTitle(const Node& node) {
     }
     if (node.kind == "event.key" && !node.inputs.empty() && !node.inputs[0].value.empty()) {
         return "Tecla " + node.inputs[0].value;
+    }
+    if (node.kind == "event.video" && !node.inputs.empty() && !node.inputs[0].value.empty()) {
+        return "On Video " + node.inputs[0].value;
     }
     if (node.kind == "comment") return node.comment.empty() ? std::string("Comentario") : node.comment;
     if (node.kind == "entity.child") {

@@ -55,6 +55,15 @@ struct SoftBodyMesh;
 
 namespace cramion::ecs {
 
+// Video sobre los materiales de un objeto (RenderSync::setVideoOverride).
+// texture -1 = ninguno. La intensidad no entra en la clave de la variante.
+struct VideoMaterialOverride {
+    int slot = -1;
+    int property = 0;  // 0 Emision, 1 Color, 2 Ambas
+    std::int32_t texture = -1;
+    float intensity = 1.0f;
+};
+
 class RenderSync {
 public:
     struct Options {
@@ -74,6 +83,19 @@ public:
     std::int32_t renderTextureId(const Uuid& uuid) { return renderTextureFor(uuid); }
     // Por su ruta dentro de Assets (el hueco de un material).
     std::int32_t renderTextureIdForAsset(const std::string& relative);
+
+    // --- Video (VideoPlayer en modo Material Override) ---
+    // La textura de video `texture` (id de Render Texture del renderizador)
+    // en la emision, el color o los dos (`property`: 0 Emision, 1 Color, 2
+    // Ambas, como video::MaterialProperty) del hueco `slot` (-1 = todos) del
+    // MeshRenderer de `renderer`. Fuerza una variante del modelo aunque no
+    // tenga .crmat propio. La clave de la variante lleva la textura, el hueco
+    // y la propiedad, no la intensidad: la intensidad (emision blanca por
+    // ella) se aplica en el sitio sin rehacer la variante. clearVideoOverride
+    // devuelve el material de antes en el siguiente sync.
+    void setVideoOverride(entt::entity renderer, int slot, int property, std::int32_t texture, float intensity);
+    void clearVideoOverride(entt::entity renderer);
+    bool hasVideoOverride(entt::entity renderer) const { return video_overrides_.contains(renderer); }
     ~RenderSync();
     RenderSync(const RenderSync&) = delete;
     RenderSync& operator=(const RenderSync&) = delete;
@@ -99,8 +121,15 @@ public:
     }
 
     // Vacia la escena de CramionFX y olvida los modelos subidos (y los
-    // descarga del AssetManager para poder volver a leerlos).
+    // descarga del AssetManager para poder volver a leerlos). Incluye
+    // clearSceneStreaming.
     void reset(scene::Scene& scene);
+    // Cambio de escena (ver SceneReset.h): fuera de la GPU los terrenos y la
+    // vegetacion de la escena anterior, y lo que se preparaba en otros hilos
+    // para ella (la siembra de vegetacion en marcha no se sube nunca). Los
+    // modelos se quedan (los reutiliza la escena nueva si los usa). sync()
+    // lo hace solo si ve otra World::sceneGeneration.
+    void clearSceneStreaming();
 
     // --- Correspondencia entidad <-> actor (outline y seleccion por clic) ---
     // Indice en scene.actors() del MeshRenderer de la entidad, o -1.
@@ -283,11 +312,19 @@ private:
 
     std::optional<std::uint32_t> resolveModel(const assets::AssetRef& ref, int part,
                                               scene::Scene& scene, bool& added);
+    using VideoOverride = VideoMaterialOverride;
+    std::unordered_map<entt::entity, VideoOverride> video_overrides_;
     // El modelo `base` con los materiales de `overrides` (una variante por
-    // combinacion, compartida por todos los objetos que la usan).
+    // combinacion, compartida por todos los objetos que la usan) y, si hay,
+    // el video de `video`.
     std::uint32_t resolveVariant(std::uint32_t base, const std::vector<assets::AssetRef>& overrides,
-                                 scene::Scene& scene, bool& added);
-    asset::ModelData buildVariant(const asset::ModelData& base, const std::vector<Uuid>& overrides);
+                                 scene::Scene& scene, bool& added, const VideoOverride* video = nullptr);
+    asset::ModelData buildVariant(const asset::ModelData& base, const std::vector<Uuid>& overrides,
+                                  const VideoOverride& video = VideoOverride{});
+    // La intensidad del video en los huecos de la variante `variant` (en el
+    // sitio, sin rehacerla).
+    void applyVideoIntensity(std::uint32_t variant_model, const VideoOverride& video, scene::Scene& scene,
+                             gfx::VulkanRenderer& renderer);
     // Mallas creadas por codigo (MeshRenderer::mesh): su modelo en la escena,
     // rehecho (y subido solo el) cuando cambia su version.
     std::optional<std::uint32_t> resolveRuntimeMesh(const std::shared_ptr<Mesh>& mesh, scene::Scene& scene,
@@ -451,6 +488,9 @@ private:
     std::uint64_t foliage_job_signature_ = 0;  // lo que se esta sembrando
     bool foliage_uploaded_ = false;
     std::uint64_t foliage_count_ = 0;
+    std::uint64_t foliage_job_generation_ = 0;  // World::sceneGeneration de la siembra en marcha
+    // World::sceneGeneration de lo que hay en la GPU (0 = aun nada).
+    std::uint64_t scene_generation_ = 0;
 
 public:
     // Arboles de la vegetacion en la GPU (0 si no hay o aun se siembran).
@@ -528,6 +568,7 @@ private:
         std::uint32_t base = 0;
         std::uint32_t index = 0;  // en scene.models()
         std::vector<Uuid> overrides;
+        VideoOverride video{};  // texture -1 = sin video; intensity = la que tienen sus materiales
     };
     std::vector<Variant> variants_;
     // Variantes nuevas: unos milisegundos por frame (las demas esperan turno).

@@ -2,6 +2,7 @@
 #include "Theme.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
@@ -11,6 +12,15 @@
 namespace cramion::editor {
 
 namespace {
+
+UiRenderTextureResolver g_render_texture_resolver;
+
+bool isRenderTexturePath(const std::string& path) {
+    if (path.size() < 5) return false;
+    std::string ext = path.substr(path.size() - 5);
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return ext == ".crrt";
+}
 
 ImU32 toColor(const core::Vec4& c) {
     return ImGui::ColorConvertFloat4ToU32(ImVec4(std::clamp(c.x, 0.0f, 1.0f), std::clamp(c.y, 0.0f, 1.0f),
@@ -169,6 +179,8 @@ void drawText(ImDrawList* draw, const ui::UiDrawCommand& c, ImVec2 min, ImFont* 
 
 }  // namespace
 
+void setUiRenderTextureResolver(UiRenderTextureResolver resolver) { g_render_texture_resolver = std::move(resolver); }
+
 void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCommand>& list, ImGuiLayer& imgui,
                 const std::filesystem::path& assets_root) {
     ImFont* font = ImGui::GetFont();
@@ -202,8 +214,17 @@ void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCom
                 break;
             case ui::UiDrawCommand::Type::Image: {
                 ImVec2 image_size{};
-                const ImTextureID texture =
-                    imgui.image(assets_root / std::filesystem::path(std::u8string(c.texture.begin(), c.texture.end())), &image_size);
+                ImTextureID texture = 0;
+                if (isRenderTexturePath(c.texture)) {
+                    // Render Texture (camara o video): la imagen del
+                    // renderizador, que cambia cada frame (no se lee de disco).
+                    const std::int32_t id =
+                        g_render_texture_resolver ? g_render_texture_resolver(c.texture, &image_size) : -1;
+                    texture = id >= 0 ? imgui.renderTexture(id) : 0;
+                } else {
+                    texture = imgui.image(assets_root / std::filesystem::path(std::u8string(c.texture.begin(), c.texture.end())),
+                                          &image_size);
+                }
                 if (texture == 0) {
                     draw->AddRectFilled(min, max, (color & 0x00FFFFFFu) | 0x40000000u, c.radius);
                     break;

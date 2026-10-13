@@ -19,6 +19,7 @@
 #include <CramionCore/cvar/CVar.h>
 #include <CramionCore/ecs/Components.h>
 #include <CramionCore/ecs/Prefab.h>
+#include <CramionCore/ecs/SceneReset.h>
 #include <CramionCore/ecs/SceneSerializer.h>
 #include <CramionCore/ecs/Tags.h>
 #include <CramionCore/ecs/World.h>
@@ -37,6 +38,7 @@
 #include <CramionCore/project/Pack.h>
 #include <CramionCore/project/Project.h>
 #include <CramionCore/scripting/CppScripts.h>
+#include <CramionCore/video/VideoPlayer.h>
 #include <CramionCore/scripting/NativeApi.h>
 #include <CramionCore/scripting/Scripting.h>
 #include <CramionCore/spline/Spline.h>
@@ -198,6 +200,9 @@ int main(int argc, char** argv) {
     navigation::registerNavigationComponents();
     voxel::registerVoxelComponents();
     audio::registerAudioComponents();
+    // Video: solo el componente (las escenas con VideoPlayer cargan); el
+    // servidor no decodifica ni crea VideoSystem.
+    video::registerVideoComponents();
     scripting::registerScriptComponents();
     ui::registerUiComponents();
     xr::registerXrComponents();
@@ -391,8 +396,24 @@ int main(int argc, char** argv) {
     const auto load = [&](const std::filesystem::path& file) -> bool {
         if (scripts.running()) scripts.stop();
         cpp_scripts.stop();
-        physics.stop();
-        partition.end(world, false);
+        // Cambio de escena: la secuencia comun (SceneReset.h): fisica parada,
+        // celdas olvidadas, malla de navegacion vacia (antes se quedaba la del
+        // nivel anterior) y las teselas de terreno del nivel anterior fuera
+        // ANTES de cargar (antes se quedaban: sus colliders entraban en el
+        // primer paso de fisica y su relieve en la malla del nivel nuevo).
+        {
+            ecs::SceneResetTargets targets;
+            targets.terrain_streamer = &terrain_streamer;
+            targets.terrain_store = &terrains;
+            targets.partition = &partition;
+            targets.physics = &physics;
+            targets.navigation = &nav;
+            ecs::SceneResetOptions options;
+            options.save_terrain = false;
+            options.discard_terrain_data = true;
+            ecs::resetSceneState(world, targets, options);
+        }
+        nav.resetAgents();
         std::string error;
         if (!ecs::loadScene(world, file, &error)) {
             std::cerr << "[Servidor] No se pudo abrir " << file.string() << ": " << error << "\n";

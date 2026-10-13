@@ -23,6 +23,10 @@ namespace cramion::project {
 struct PackInput {
     std::filesystem::path source;  // archivo en disco
     std::string path;              // ruta dentro del paquete ("Assets/Models/coche.fbx")
+    // Nivel de zstd de esta entrada (0 = el de writePack). Los videos van a 1:
+    // ya vienen comprimidos y zstd guarda en bruto los bloques que no ganan.
+    // No cambia el formato: los .crpack antiguos se siguen leyendo igual.
+    int level = 0;
 };
 
 struct PackEntry {
@@ -35,7 +39,8 @@ struct PackEntry {
 // Progreso: bytes originales procesados y archivo actual. Devolver false cancela.
 using PackProgress = std::function<bool(std::uint64_t done, const std::string& current)>;
 
-// level: 1 (rapido) .. 19 (pequeno). Escribe a un temporal y lo renombra.
+// level: 1 (rapido) .. 19 (pequeno), para las entradas con PackInput::level
+// = 0. Escribe a un temporal y lo renombra.
 bool writePack(const std::filesystem::path& file, const std::vector<PackInput>& inputs, int level,
                const PackProgress& progress, std::string* error);
 

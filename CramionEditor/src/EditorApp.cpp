@@ -6,6 +6,7 @@
 #include <CramionCore/physics/Cloth.h>
 #include <CramionCore/physics/SoftBody.h>
 #include "GraphicsConfig.h"
+#include "UiRenderer.h"
 
 #include "Dialogs.h"
 #include "EditorLog.h"
@@ -77,6 +78,7 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     navigation::registerNavigationComponents();
     voxel::registerVoxelComponents();
     audio::registerAudioComponents();
+    video::registerVideoComponents();  // VideoPlayer (EditorVideo.cpp)
     scripting::registerScriptComponents();
     ui::registerUiComponents();
     xr::registerXrComponents();
@@ -104,6 +106,13 @@ EditorApp::~EditorApp() {
     // Cerrar en Play: los scripts terminan (OnDestroy) mientras todo lo que usan
     // sigue vivo (el mundo de bloques se destruye antes que ellos).
     scripts_.stop();
+    // Video antes que el audio (suelta sus voces de stream) y que la GPU.
+    video_.stopPreview();
+    video_.stop();
+    stopVideoImport();
+    video_url_test_.reset();
+    scripts_.setVideo(nullptr);  // scripts_ se destruye despues que video_
+    setUiRenderTextureResolver({});  // la funcion global captura this
     // WebSocket: cierre limpio (1001) de lo que quede, como mucho 500 ms.
     net::shutdownWebSockets(500);
     // Los scripts de C++ se desenganchan de la fisica mientras sigue viva (se
@@ -192,6 +201,27 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     }
     scripts_.setGraphics(graphics_host_.get());
     sync_ = std::make_unique<ecs::RenderSync>(*asset_manager_);
+    // Video: sale al renderizador por RenderSync (Render Texture, Material
+    // Override, planos de camara) y suena por el AudioSystem.
+    video_output_ = video::makeRenderVideoOutput(*sync_, renderer_);
+    {
+        video::VideoSystem::Host host;
+        host.audio = &audio_;
+        host.output = video_output_.get();
+        host.assets_root = project_.assetsFolder();
+        video_.setHost(host);
+    }
+    scripts_.setVideo(&video_);
+    // Una .crrt (camara o video) en una UI Image: su id y tamano en el renderizador.
+    setUiRenderTextureResolver([this](const std::string& relative, ImVec2* size) -> std::int32_t {
+        if (!sync_) return -1;
+        const std::int32_t id = sync_->renderTextureIdForAsset(relative);
+        if (id >= 0 && size != nullptr) {
+            const vk::Extent2D extent = renderer_.renderTextureExtent(id);
+            *size = ImVec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
+        }
+        return id;
+    });
     // Scripts: huesos, IK y ragdoll leen la pose de cada frame del RenderSync.
     scripts_.setSkeletonHost(scripting::ScriptSystem::SkeletonHost{
         [this](ecs::Entity e, const std::string& bone, core::Mat4& m) {
@@ -261,6 +291,7 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
               << dialogs::utf8(project_.folder) << ")\n";
 
     startTextureImport();  // (en segundo plano; la escena no lo espera)
+    startVideoImport();    // datos y miniaturas de los videos (Library/Cache/Video), igual
     if (open_scene) openStartupScene();
     return true;
 }
@@ -284,6 +315,14 @@ void EditorApp::closeProject() {
     }
     if (sceneLoading()) project_load_.reset();  // la barra de otra escena, fuera
     if (playing()) exitPlay();
+    // Video: vista previa fuera y lecturas paradas (antes de soltar la GPU).
+    video_.stopPreview();
+    video_.stop();
+    video_preview_entity_ = {};
+    show_video_preview_ = false;
+    stopVideoImport();
+    video_url_test_.reset();
+    video_info_.clear();
     physics_.stop();
     physics_.setMeshProvider({});
     physics_.setAssetManager(nullptr);
@@ -312,6 +351,13 @@ void EditorApp::closeProject() {
     renderer_.waitIdle();
     renderer_.setOutlinedActors({});
     world_.clear();
+    // La salida de video usa RenderSync: fuera antes que el.
+    {
+        video::VideoSystem::Host host;
+        host.audio = &audio_;
+        video_.setHost(host);
+    }
+    video_output_.reset();
     if (sync_) {
         sync_->reset(scene_);
     }
@@ -343,10 +389,12 @@ void EditorApp::closeProject() {
 void EditorApp::newScene() {
     if (sceneLoading()) project_load_.reset();  // ya no se abre la otra escena
     if (world_workspace_ != 0) returnToSceneWorkspace();
-    nav_.clear();
+    if (playing()) exitPlay();
     stopVoxels();
     const ecs::DVec3 origin_before = world_.origin();
-    world_.clear();
+    // Cambio de escena: la secuencia comun (teselas, celdas, fisica,
+    // navegacion, GPU de terrenos y vegetacion, trabajos en otros hilos).
+    resetSceneSystems(/*keep_terrain_edits=*/false);
     alignOriginAfterLoad(origin_before);
     world_.setSceneUuid(Uuid::generate());
     world_.setSceneName("Nueva escena");
@@ -357,18 +405,47 @@ void EditorApp::newScene() {
     resetUndo();
     dirty_ = false;
     scene_.placeCamera(Vec3{6.0f, 3.0f, 8.0f}, Vec3{0.0f, 1.0f, 0.0f});
+    if (has_project_) physics_.start(world_);  // la del modo edicion, con la escena nueva
     updateTitle();
 }
 
 bool EditorApp::openScene(const std::filesystem::path& path) {
     if (world_workspace_ != 0) returnToSceneWorkspace();
     std::string error;
-    nav_.clear();
+    {
+        // Antes de vaciar nada: si no se puede leer, la escena abierta sigue.
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(path, ec)) {
+            std::cerr << "[Editor] No se pudo abrir la escena " << dialogs::utf8(path) << ": no existe\n";
+            return false;
+        }
+    }
+    if (playing()) exitPlay();
     stopVoxels();
     const ecs::DVec3 origin_before = world_.origin();
+    // Cambio de escena: la secuencia comun. Antes loadScene dejaba las
+    // teselas de terreno de la escena anterior en el mundo (desplazadas si el
+    // origen cambiaba) y lo que se cargaba en otros hilos para ella podia
+    // entrar en la nueva.
+    resetSceneSystems(/*keep_terrain_edits=*/false);
     if (!ecs::loadScene(world_, path, &error)) {
         std::cerr << "[Editor] No se pudo abrir la escena " << dialogs::utf8(path) << ": " << error
                   << "\n";
+        alignOriginAfterLoad(origin_before);
+        // El mundo ya se vacio: queda una escena nueva SIN la ruta de la
+        // anterior (si no, Guardar pisaria la escena anterior con un mundo
+        // vacio). No se llama a newScene: puede venir de la carga del
+        // proyecto (project_load_), que newScene destruiria en marcha.
+        world_.setSceneUuid(Uuid::generate());
+        world_.setSceneName("Nueva escena");
+        ecs::populateDefaultScene(world_);
+        scene_path_.clear();
+        loadSceneLighting();
+        clearSelection();
+        resetUndo();
+        dirty_ = false;
+        if (has_project_) physics_.start(world_);
+        updateTitle();
         return false;
     }
     // World Partition con celdas en disco: el editor las carga todas (la
@@ -390,6 +467,7 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
     syncPrefabInstances();  // prefabs que cambiaron con la escena cerrada
     resetUndo();
     dirty_ = false;
+    if (has_project_) physics_.start(world_);  // la del modo edicion, con la escena nueva
     std::cout << "[Editor] Escena abierta: " << dialogs::utf8(path.filename()) << "\n";
     updateTitle();
     return true;
@@ -922,6 +1000,8 @@ void EditorApp::duplicateSelection() {
 
 void EditorApp::copySelection() {
     clipboard_.clear();
+    // Una URL que ya estaba en el portapapeles no se pega como video despues.
+    if (const char* text = ImGui::GetClipboardText(); text != nullptr) clipboard_text_at_copy_ = text;
     for (ecs::Entity e : topLevelSelection()) {
         clipboard_.push_back(ecs::serializeEntity(world_, e));
     }
@@ -1134,6 +1214,8 @@ void EditorApp::drawUi(float delta_seconds) {
         const CpuClock::time_point physics_start = CpuClock::now();
         // Play en pausa (boton, punto de ruptura...): el audio tambien.
         audio_.setPaused(play_state_ == PlayState::Paused);
+        video_.setPaused(play_state_ == PlayState::Paused);  // imagen y sonido congelados
+        updateVideoEditor(delta_seconds);  // vista previa sin Play y lecturas pendientes
         updatePhysics(delta_seconds);
         updateNavigation(delta_seconds);
         updateVoxels(delta_seconds);
@@ -1245,6 +1327,7 @@ void EditorApp::drawUi(float delta_seconds) {
         drawTerrainGeneratorWindow();
         drawHouseGeneratorWindow();
         drawEnvironmentWindow();
+        drawVideoPreviewWindow();  // doble clic en un video del Proyecto
         if (show_cinematic_) drawCinematicWindow();
         drawModals();
         addCpuSample(kCpuPanels, millisecondsSince(t));
@@ -1797,6 +1880,7 @@ void EditorApp::drawStatusBar() {
             left = "Nada seleccionado";
         }
         if (const std::string import = textureImportStatus(); !import.empty()) left += "   |   " + import;
+        if (const std::string import = videoImportStatus(); !import.empty()) left += "   |   " + import;
         ImGui::TextDisabled("%s", left.c_str());
         if (sceneLoading()) {
             ImGui::SameLine(0.0f, 24.0f);
@@ -2339,6 +2423,24 @@ void EditorApp::drawGraphicsSettings() {
     bool frame_generation = g.frame_generation;
     ImGui::Checkbox("Generación de frames (DLSS 3 / FSR 3, fase 3)", &frame_generation);
     ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Realidad virtual");
+    {
+        // Se aplica al soltar (cada cambio rehace los destinos de los ojos).
+        static float vr_scale_edit = 1.0f;
+        static bool vr_scale_active = false;
+        if (!vr_scale_active) vr_scale_edit = g.vr_render_scale * 100.0f;
+        ImGui::SetNextItemWidth(-90.0f);
+        ImGui::SliderFloat("Resolución VR", &vr_scale_edit, 50.0f, 100.0f, "%.0f %%");
+        vr_scale_active = ImGui::IsItemActive();
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            g.vr_render_scale = std::clamp(vr_scale_edit / 100.0f, 0.5f, 1.0f);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("Resolución de cada ojo respecto a la que recomienda el casco (100 %% = nativa).\n"
+                              "En VR no se usan los presets de calidad de escritorio y el antialiasing es el TAA\n"
+                              "por ojo (FSR 1 solo si lo eliges). Con menos de 12 GB de VRAM puede haber un tope.");
+    }
 
     ImGui::SeparatorText("Presupuesto adaptativo");
     {

@@ -14,10 +14,12 @@
 //   5. Gradacion en HDR, antes del tono (como Unity): balance de blancos en
 //                 espacio LMS, contraste en escala logaritmica alrededor del
 //                 gris medio, filtro de color y lift / gamma / gain.
-//   6. Tono:      Khronos PBR Neutral (por defecto), ACES o ninguno.
+//   6. Tono:      Khronos PBR Neutral (por defecto), ACES, AgX / AgX Punchy
+//                 o ninguno.
 //   7. Saturacion y viveza (satura mas lo apagado).
-//   8. Vineta (intensidad, suavidad y color) y grano de pelicula.
-//   9. Gamma y ruido de +-1/255 contra el bandeado de los 8 bits.
+//   8. Vineta (intensidad, suavidad y color).
+//   9. Curva sRGB, grano de pelicula (sobre la imagen codificada) y ruido de
+//                 +-1/255 contra el bandeado de los 8 bits.
 //
 // Antes de todo, la distorsion de la lente (barril o cojin) desplaza donde se
 // lee la imagen; y antes de la exposicion se suman los destellos del sol
@@ -138,12 +140,23 @@ vec3 agxContrast(vec3 x) {
     return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
 }
 
-vec3 agx(vec3 color) {
+// look: 0 = AgX base (neutro, plano), 1 = "Punchy" suave (CDL de Blender:
+// potencia y saturacion en el espacio de AgX, antes del outset).
+vec3 agx(vec3 color, float look) {
     const float kMinEv = -12.47393;  // log2(2^-10 * 0.18)
     const float kMaxEv = 4.026069;   // log2(2^6.5 * 0.18)
     color = kAgxInset * (kLinearSrgbToRec2020 * color);
     color = clamp((log2(max(color, vec3(1e-10))) - kMinEv) / (kMaxEv - kMinEv), 0.0, 1.0);
-    color = kAgxOutset * agxContrast(color);
+    color = agxContrast(color);
+    if (look > 0.0) {
+        // Mas suave que el Punchy de Blender (1.35 / 1.4): ese recorta los verdes.
+        const float kPower = 1.25;
+        const float kSaturation = 1.2;
+        color = pow(max(color, vec3(0.0)), vec3(mix(1.0, kPower, look)));
+        float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        color = l + mix(1.0, kSaturation, look) * (color - l);
+    }
+    color = kAgxOutset * color;
     color = pow(max(color, vec3(0.0)), vec3(2.2));
     return clamp(kLinearRec2020ToSrgb * color, 0.0, 1.0);
 }
@@ -311,10 +324,13 @@ void main() {
     color = max(color, vec3(0.0));
 
     int tonemapper = int(settings.tone.y + 0.5);
-    // El neutro deja los medios mas claros que ACES: se compensa para que la
-    // auto-exposicion de el mismo brillo con los dos.
+    // Igualar el brillo a ACES con la misma auto-exposicion (objetivo 0.36 en
+    // exposure_average.comp): el neutro y AgX Punchy dejan los medios mas claros.
+    // (AgX base, indice 3, se deja igual: escenas guardadas.)
     if (tonemapper == 0) {
         color *= 0.85;
+    } else if (tonemapper == 4) {
+        color *= 0.9;
     }
     color = applyContrast(color, settings.tone.w);
     color *= settings.color_filter.rgb;
@@ -327,7 +343,9 @@ void main() {
     if (tonemapper == 1) {
         color = acesFitted(color);
     } else if (tonemapper == 3) {
-        color = agx(color);
+        color = agx(color, 0.0);
+    } else if (tonemapper == 4) {
+        color = agx(color, 1.0);
     } else if (tonemapper == 0) {
         color = clamp(pbrNeutral(color), 0.0, 1.0);
     } else {
@@ -377,18 +395,21 @@ void main() {
     float vignette = clamp(1.0 - settings.look.y * 0.5 * pow(falloff, exponent), 0.0, 1.0);
     color = mix(settings.vignette_color.rgb, color, vignette);
 
-    // --- Grano de pelicula (se nota mas en los medios que en las luces) ---
-    if (settings.film.x > 0.0) {
-        vec2 pixel = gl_FragCoord.xy + vec2(settings.film.y * 37.0, settings.film.y * 17.0);
-        float grain = hash12(pixel) - 0.5;
-        float response = 1.0 - smoothstep(0.2, 1.0, luminance(color));
-        color = clamp(color + grain * settings.film.x * 0.2 * (0.35 + 0.65 * response), 0.0, 1.0);
-    }
-
     // --- Salida en sRGB (la swapchain es UNORM: la curva va a mano) ---
     // La curva sRGB exacta (tramo lineal cerca del negro), la que espera el
     // monitor. Con una gamma 2.2 pura las sombras salian levantadas y lavadas.
     color = mix(color * 12.92, 1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
+
+    // --- Grano de pelicula (en la imagen ya codificada, como en una foto) ---
+    // Simetrico y con amplitud 0 en el negro: sumado en lineal y recortado en
+    // 0, solo sobrevivia la mitad positiva y levantaba los negros (~+10/255).
+    if (settings.film.x > 0.0) {
+        vec2 pixel = gl_FragCoord.xy + vec2(settings.film.y * 37.0, settings.film.y * 17.0);
+        float grain = hash12(pixel) - 0.5;
+        float l = luminance(color);
+        float response = smoothstep(0.0, 0.1, l) * (1.0 - 0.65 * smoothstep(0.6, 1.0, l));
+        color = clamp(color + grain * settings.film.x * 0.25 * response, 0.0, 1.0);
+    }
     color += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
 
     out_color = vec4(color, 1.0);

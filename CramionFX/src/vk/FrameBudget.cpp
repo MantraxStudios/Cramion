@@ -86,6 +86,23 @@ std::uint32_t anisotropyFor(HardwareTier tier) {
 
 FrameBudget::FrameBudget() {
     for (auto& row : learned_) row.fill(-1.0f);
+    caps_ = kMaxLevel;
+}
+
+void FrameBudget::clampToCaps() {
+    for (std::size_t i = 0; i < kLeverCount; ++i) levels_[i] = std::min(levels_[i], caps_[i]);
+}
+
+void FrameBudget::setLevelCap(Lever lever, std::uint8_t cap) {
+    const auto i = static_cast<std::size_t>(lever);
+    const std::uint8_t clamped = std::min(cap, kMaxLevel[i]);
+    if (caps_[i] == clamped) return;
+    caps_[i] = clamped;
+    if (pending_.active && pending_.lever == lever && pending_.to > clamped) pending_.active = false;
+    // Al quitar el tope se vuelve a medir desde el punto de partida (lo que
+    // se bajo con el tope puesto no vale sin el).
+    if (enabled_ && levels_[i] > clamped) levels_[i] = clamped;
+    else if (enabled_ && clamped == kMaxLevel[i]) levels_[i] = std::min(start_levels_[i], clamped);
 }
 
 void FrameBudget::setEnabled(bool enabled) {
@@ -93,6 +110,7 @@ void FrameBudget::setEnabled(bool enabled) {
     enabled_ = enabled;
     // Apagado: todo a la calidad del usuario. Encendido: desde el perfil.
     levels_ = enabled ? start_levels_ : std::array<std::uint8_t, kLeverCount>{};
+    clampToCaps();
     pending_.active = false;
     over_seconds_ = under_seconds_ = 0.0f;
 }
@@ -118,16 +136,18 @@ void FrameBudget::setStartLevels(HardwareTier tier) {
         start_levels_[static_cast<std::size_t>(Lever::ShadowDetail)] = 1;
     }
     if (enabled_) levels_ = start_levels_;
+    clampToCaps();
 }
 
 void FrameBudget::setStartLevel(Lever lever, std::uint8_t level) {
     const auto i = static_cast<std::size_t>(lever);
     start_levels_[i] = std::min(level, kMaxLevel[i]);
-    if (enabled_) levels_[i] = start_levels_[i];
+    if (enabled_) levels_[i] = std::min(start_levels_[i], caps_[i]);
 }
 
 void FrameBudget::reset() {
     levels_ = enabled_ ? start_levels_ : std::array<std::uint8_t, kLeverCount>{};
+    clampToCaps();
     pending_.active = false;
     over_seconds_ = under_seconds_ = 0.0f;
     has_sample_ = false;
@@ -139,7 +159,7 @@ void FrameBudget::reset() {
 }
 
 std::uint8_t FrameBudget::maxLevel(Lever lever) const {
-    return kMaxLevel[static_cast<std::size_t>(lever)];
+    return caps_[static_cast<std::size_t>(lever)];
 }
 
 const char* FrameBudget::leverName(Lever lever) {
@@ -235,7 +255,7 @@ bool FrameBudget::lowerOne() {
     for (std::size_t i = 0; i < kLeverCount; ++i) {
         const auto lever = static_cast<Lever>(i);
         const std::uint8_t level = levels_[i];
-        if (level >= kMaxLevel[i]) continue;
+        if (level >= caps_[i]) continue;
         const float learned = learned_[i][level];
         const float saving = learned >= 0.0f ? learned : estimateSaving(lever, level);
         if (saving < 0.05f) continue;  // no ahorra nada (p. ej. el usuario ya lo apago)

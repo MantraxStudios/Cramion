@@ -264,6 +264,10 @@ private:
     int rescans_ = 0;
     bool proxies_dirty_ = true;  // una celda cambio: los HLOD se actualizan
     bool active_ = false;
+    // World::sceneGeneration con la que se hizo begin(). Si el mundo cambia de
+    // escena sin end(), update() lo olvida todo (sus celdas y sus handles son
+    // de la escena anterior: nada de ella vuelve a entrar en la nueva).
+    std::uint64_t scene_generation_ = 0;
     PartitionStats stats_{};
 };
 

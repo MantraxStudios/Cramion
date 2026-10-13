@@ -12,6 +12,8 @@
 
 #include "Dialogs.h"
 
+#include <CramionCore/video/VideoFiles.h>
+
 #include <shellapi.h>
 
 #include <imgui.h>
@@ -159,6 +161,7 @@ void EditorApp::rebuildBrowserCache() {
     current_scripts_.clear();
     current_shaders_.clear();
     current_audio_.clear();
+    current_videos_.clear();
     if (current_folder_.empty()) {
         for (const assets::AssetInfo& info : database_->all()) {
             if (info.path.empty()) current_assets_.push_back(info);
@@ -179,11 +182,13 @@ void EditorApp::rebuildBrowserCache() {
             }
             if (ext == assets::kSurfaceShaderExtension || isGraphFileExtension(ext)) current_shaders_.push_back(entry.path());
             if (audio::isAudioFile(entry.path())) current_audio_.push_back(entry.path());
+            if (video::isVideoFile(entry.path())) current_videos_.push_back(entry.path());
         }
         std::sort(current_images_.begin(), current_images_.end());
         std::sort(current_scripts_.begin(), current_scripts_.end());
         std::sort(current_shaders_.begin(), current_shaders_.end());
         std::sort(current_audio_.begin(), current_audio_.end());
+        std::sort(current_videos_.begin(), current_videos_.end());
     }
 }
 
@@ -224,6 +229,7 @@ enum BrowserFilter : std::uint32_t {
     kFilterAudio = 1u << 7,
     kFilterSkies = 1u << 8,
     kFilterAnimation = 1u << 9,
+    kFilterVideo = 1u << 10,
 };
 struct FilterInfo {
     std::uint32_t bit;
@@ -236,6 +242,7 @@ constexpr FilterInfo kFilters[] = {
     {kFilterPrefabs, "Prefabs", IM_COL32(95, 170, 255, 255)},    {kFilterScripts, "Scripts", IM_COL32(90, 170, 250, 255)},
     {kFilterShaders, "Shaders", IM_COL32(190, 120, 255, 255)},   {kFilterAudio, "Audio", IM_COL32(240, 170, 60, 255)},
     {kFilterSkies, "Cielos", IM_COL32(225, 140, 50, 255)},       {kFilterAnimation, "Animación", IM_COL32(40, 150, 160, 255)},
+    {kFilterVideo, "Vídeo", IM_COL32(230, 90, 70, 255)},
 };
 
 using Item = EditorApp::BrowserItem;
@@ -248,6 +255,7 @@ std::uint32_t categoryOf(const Item& item) {
         case Kind::Script: return kFilterScripts;
         case Kind::Audio: return kFilterAudio;
         case Kind::Shader: return kFilterShaders;
+        case Kind::Video: return kFilterVideo;
         case Kind::Asset: break;
     }
     switch (item.info.type) {
@@ -280,6 +288,7 @@ Icon itemIcon(const Item& item) {
         case Kind::Script: return Icon::AssetBrowser;
         case Kind::Audio: return Icon::AudioSource;
         case Kind::Shader: return Icon::MeshRenderer;
+        case Kind::Video: return Icon::Camera;
         case Kind::Asset: break;
     }
     if (item.info.type == assets::AssetType::Prefab) return Icon::ColliderBox;
@@ -439,6 +448,7 @@ void EditorApp::buildBrowserItems() {
                     browser_all_loose_.push_back(file_item(p, Kind::Shader, graphFileLabel(ext)));
                 }
                 else if (audio::isAudioFile(p)) browser_all_loose_.push_back(file_item(p, Kind::Audio, "Audio"));
+                else if (video::isVideoFile(p)) browser_all_loose_.push_back(file_item(p, Kind::Video, "Vídeo"));
             }
         }
         for (const assets::AssetInfo& info : database_->all()) {
@@ -482,6 +492,7 @@ void EditorApp::buildBrowserItems() {
             browser_items_.push_back(file_item(p, Kind::Shader, graphFileLabel(lower(dialogs::utf8(p.extension())))));
         }
         for (const std::filesystem::path& p : current_audio_) browser_items_.push_back(file_item(p, Kind::Audio, "Audio"));
+        for (const std::filesystem::path& p : current_videos_) browser_items_.push_back(file_item(p, Kind::Video, "Vídeo"));
     }
     // Carpetas primero; luego por tipo y por nombre (como Unreal).
     std::stable_sort(browser_items_.begin(), browser_items_.end(), [](const Item& a, const Item& b) {
@@ -539,6 +550,7 @@ void EditorApp::openBrowserItem(const BrowserItem& item) {
             if (audio_.previewing()) audio_.stopPreview();
             else audio_.preview(item.path);
             return;
+        case Kind::Video: previewVideoFile(item.path); return;  // ventana de vista previa (EditorVideo.cpp)
         case Kind::Image:
             stamp_brush_.texture = decalImageInAssets(item.path);
             stamp_brush_.type = 0;
@@ -612,6 +624,11 @@ void EditorApp::browserDragSource(const BrowserItem& item) {
             ImGui::SetDragDropPayload(item.kind == Kind::Script ? kScriptPayload : kAudioPayload, path.c_str(), path.size() + 1);
             break;
         }
+        case Kind::Video: {
+            const std::string path = dialogs::utf8(item.path);
+            ImGui::SetDragDropPayload(kVideoPayload, path.c_str(), path.size() + 1);
+            break;
+        }
         default: break;
     }
     const ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -634,7 +651,7 @@ bool EditorApp::acceptBrowserMove(const std::filesystem::path& folder) {
         moveBrowserItems(folder, asset.uuid.toString());
         return true;
     }
-    for (const char* type : {kImagePayload, kScriptPayload, kAudioPayload, kFolderPayload}) {
+    for (const char* type : {kImagePayload, kScriptPayload, kAudioPayload, kVideoPayload, kFolderPayload}) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(type)) {
             moveBrowserItems(folder, dialogs::utf8(dialogs::fromUtf8(static_cast<const char*>(payload->Data))));
             return true;
@@ -692,6 +709,9 @@ void EditorApp::moveBrowserItems(const std::filesystem::path& folder, const std:
             std::filesystem::rename(meta, meta_to, error);
         }
         if (item.kind == Kind::Folder && current_folder_ == from) current_folder_ = to;
+        // Los VideoPlayer guardan la ruta (como AudioSource): los de la escena
+        // abierta pasan a la nueva (las otras escenas no se tocan).
+        if (item.kind == Kind::Video) retargetVideoClips(assetRelative(from), assetRelative(to));
         ++moved;
     }
     if (moved == 0 && skipped == 0) return;
@@ -776,6 +796,29 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
                     }
                 }
                 commit();
+            }
+            break;
+        }
+        case Kind::Video: {
+            if (ImGui::MenuItem("Vista previa")) previewVideoFile(item.path);
+            if (ImGui::MenuItem("Crear pantalla en la escena", nullptr, false, !playing())) {
+                createVideoScreen(assetRelative(item.path), false, std::nullopt);
+            }
+            ImGui::SetItemTooltip("Un plano con la proporción del vídeo, un VideoPlayer sobre su emisión\n"
+                                  "y el sonido saliendo de la pantalla (3D).");
+            if (ImGui::MenuItem("Asignar a la selección", nullptr, false, !selection_.empty())) {
+                for (ecs::Entity e : selectedEntities()) assignVideoClip(e, item.path);
+                commit();
+            }
+            if (ImGui::MenuItem("Volver a leer (miniatura y datos)")) {
+                // Su cache fuera: se vuelve a abrir el video (miniatura y datos).
+                const video::VideoCachePaths paths = video::videoCachePaths(videoCacheFolder(), item.path);
+                std::error_code ec;
+                std::filesystem::remove(paths.json, ec);
+                std::filesystem::remove(paths.png, ec);
+                video_info_.erase(item.path.wstring());
+                video_.invalidateFile(assetRelative(item.path));
+                startVideoImport({item.path});
             }
             break;
         }
@@ -1218,6 +1261,9 @@ void EditorApp::drawProject() {
         ImVec2 thumb_size{};
         ImTextureID texture = 0;
         if (item.kind == Kind::Image) texture = imgui_.thumbnail(item.path, &thumb_size);
+        // Video: la miniatura de la importacion (Library/Cache/Video).
+        const VideoProbeInfo* video_info = item.kind == Kind::Video ? videoInfo(item.path) : nullptr;
+        if (video_info != nullptr && !video_info->thumbnail.empty()) texture = imgui_.thumbnail(video_info->thumbnail, &thumb_size);
         if (item.kind == Kind::Asset && item.info.type == assets::AssetType::Environment && !item.info.source.empty()) {
             std::error_code error;
             if (std::filesystem::exists(item.info.source, error)) texture = imgui_.thumbnail(item.info.source, &thumb_size);
@@ -1241,6 +1287,27 @@ void EditorApp::drawProject() {
             if (tag != nullptr) {
                 const ImVec2 t = ImGui::CalcTextSize(tag);
                 draw->AddText(ImVec2(pos.x + (size - t.x) * 0.5f, pos.y + size * 0.78f), color, tag);
+            }
+        }
+        // Video: triangulo de reproducir y la duracion abajo a la derecha.
+        if (item.kind == Kind::Video) {
+            const float r = std::max(6.0f, size * 0.12f);
+            const ImVec2 c(pos.x + size * 0.5f, pos.y + size * 0.5f);
+            draw->AddCircleFilled(c, r * 1.25f, IM_COL32(0, 0, 0, 130), 24);
+            draw->AddTriangleFilled(ImVec2(c.x - r * 0.45f, c.y - r * 0.7f), ImVec2(c.x - r * 0.45f, c.y + r * 0.7f),
+                                    ImVec2(c.x + r * 0.75f, c.y), IM_COL32(245, 245, 250, 230));
+            if (video_info != nullptr && video_info->duration > 0.0) {
+                const int total = static_cast<int>(video_info->duration + 0.5);
+                char text[24];
+                if (total >= 3600) std::snprintf(text, sizeof(text), "%d:%02d:%02d", total / 3600, (total / 60) % 60, total % 60);
+                else std::snprintf(text, sizeof(text), "%d:%02d", total / 60, total % 60);
+                const ImVec2 t = ImGui::CalcTextSize(text);
+                const ImVec2 tmax(pos.x + size - 3.0f, pos.y + size - 3.0f);
+                const ImVec2 tmin(tmax.x - t.x - 6.0f, tmax.y - t.y - 2.0f);
+                draw->AddRectFilled(tmin, tmax, IM_COL32(0, 0, 0, 190), 3.0f);
+                draw->AddText(ImVec2(tmin.x + 3.0f, tmin.y + 1.0f), IM_COL32(240, 240, 245, 255), text);
+            } else if (video_info != nullptr && video_info->failed) {
+                draw->AddCircleFilled(ImVec2(pos.x + size - 8.0f, pos.y + 8.0f), 5.0f, IM_COL32(255, 80, 80, 255));
             }
         }
         // Blueprint de actor: insignia "BP" arriba a la izquierda (como Unreal).
@@ -1291,7 +1358,26 @@ void EditorApp::drawProject() {
             browserItemMenu(item);
             ImGui::EndPopup();
         }
-        if (hovered && item.kind != Kind::Folder) {
+        if (hovered && item.kind == Kind::Video) {
+            // Datos de la importacion: resolucion, fps, duracion, codec, pistas.
+            std::string details;
+            if (const VideoProbeInfo* v = videoInfo(item.path); v == nullptr) {
+                details = "Leyendo datos del vídeo...";
+            } else if (v->failed) {
+                details = "No se pudo leer: " + v->error;
+            } else {
+                char text[160];
+                const int total = v->duration > 0.0 ? static_cast<int>(v->duration + 0.5) : -1;
+                char length[32] = "directo";
+                if (total >= 0) std::snprintf(length, sizeof(length), "%d:%02d", total / 60, total % 60);
+                std::snprintf(text, sizeof(text), "%ux%u  ·  %.3g fps  ·  %s", v->width, v->height, v->fps, length);
+                details = text;
+                if (!v->codec.empty()) details += "\n" + v->codec + (v->backend.empty() ? "" : " (" + v->backend + ")");
+                details += "\n" + std::to_string(v->audio_tracks) + (v->audio_tracks == 1 ? " pista de audio" : " pistas de audio");
+            }
+            ImGui::SetItemTooltip("%s\nVídeo  ·  %s\n%s\n%s\nDoble clic: vista previa  ·  Arrástralo a la escena: pantalla",
+                                  item.name.c_str(), sizeText(item.size).c_str(), details.c_str(), assetRelative(item.path).c_str());
+        } else if (hovered && item.kind != Kind::Folder) {
             ImGui::SetItemTooltip("%s\n%s%s%s", item.name.c_str(), item.type.c_str(),
                                   item.size > 0 ? ("  ·  " + sizeText(item.size)).c_str() : "",
                                   item.kind == Kind::Asset && !item.info.path.empty()

@@ -39,6 +39,9 @@ bool saveScene(const World& world, const std::filesystem::path& path, std::strin
 std::string serializeWorld(const World& world, const std::function<bool(const Entity&)>& skip_root);
 bool saveScene(const World& world, const std::filesystem::path& path, std::string* error,
                const std::function<bool(const Entity&)>& skip_root);
+// Abre otra escena: vacia el mundo entero (tambien las raices transitorias)
+// y sube su generacion (World::sceneGeneration). Para deshacer o parar Play
+// (misma escena, las teselas se quedan) usar deserializeWorld.
 bool loadScene(World& world, const std::filesystem::path& path, std::string* error = nullptr);
 
 // Una entidad y sus hijos (copiar/pegar, prefabs). pasteEntities crea copias

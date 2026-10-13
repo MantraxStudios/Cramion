@@ -187,6 +187,7 @@ void EditorApp::enterPlay() {
     collider_handle_drag_ = 0;
     play_snapshot_ = ecs::serializeWorld(world_);
     play_dirty_before_ = dirty_;
+    play_scene_changed_ = false;
     // Lo que cambien los scripts con Graphics se deshace al parar.
     play_graphics_ = PlayGraphics{renderer_.graphicsSettings(), renderer_.shadowsEnabled(),
                                   renderer_.rayTracingEnabled(), renderer_.reflectionProbeEnabled(),
@@ -209,8 +210,14 @@ void EditorApp::enterPlay() {
     nav_.resetAgents();
     crowds_.begin(world_);  // multitudes (CrowdSpawner) antes de los scripts
     startVoxels();  // antes de los scripts (Voxel.* en Awake)
+    // La vista previa del Inspector se para (no se decodifica dos veces) ANTES
+    // que audio_.start (que llama a stop y soltaria sus voces de stream).
+    video_.stopPreview();
+    video_preview_entity_ = {};
     // Audio y scripts (despues de la fisica: los scripts la usan en Awake).
     audio_.start(world_);
+    // Video despues del audio (sus voces de stream van por el).
+    video_.start(world_);
     scripts_.clearErrors();
     // Interfaz tactil del proyecto (Input::setTouchControls... desde un script).
     touch_layout_file_.clear();
@@ -269,6 +276,7 @@ void EditorApp::exitPlay() {
     stopCppScripts();
     scripts_.unmountDataPacks();  // lo montado en Play (DataPack.load) sale del proyecto
     scripts_.shutdownNetwork();  // salir de Play cierra la partida en red
+    video_.stop();  // ANTES que el audio: suelta sus voces de stream
     audio_.stop();
     ui_.reset();
     physics_.stop();
@@ -285,6 +293,15 @@ void EditorApp::exitPlay() {
     world_partition_.end(world_, false);  // el mundo entero vuelve con el snapshot
     // El mundo vuelve a como estaba al darle a Play (la seleccion va por UUID).
     const ecs::DVec3 origin_before = world_.origin();
+    if (play_scene_changed_) {
+        // Scene.load cambio de nivel: volver a la escena del editor es otro
+        // cambio de escena (las teselas y lo cargado para el nivel de Play
+        // fuera). Lo esculpido sin guardar de la escena del editor se queda.
+        play_scene_changed_ = false;
+        resetSceneSystems(/*keep_terrain_edits=*/true);
+    }
+    // Si no, las teselas se quedan (misma escena, sin volver a subirlas) y
+    // deserializeWorld las recoloca si el origen flotante se movio en Play.
     ecs::deserializeWorld(world_, play_snapshot_);
     alignOriginAfterLoad(origin_before);
     play_snapshot_.clear();
@@ -357,6 +374,7 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
     if (const std::filesystem::path next = scripts_.takeSceneRequest(); !next.empty()) {
         scripts_.stop();
         cpp_scripts_.stop();
+        video_.stop();  // ANTES que el audio (voces de stream); sin eventos de la escena vieja
         audio_.stop();
         ui_.reset();
         physics_.stop();
@@ -364,14 +382,16 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         renderer_.setParticles({});
         fluids_.clear();  // otro nivel: sin el liquido del anterior
         std::string error;
-        nav_.clear();  // otro nivel: otra malla
         stopVoxels();
-        // World Partition y multitudes del nivel anterior fuera (si no, sus
-        // celdas descargadas volverian dentro del nivel nuevo). Sin restaurar:
-        // al parar vuelve el mundo entero con el snapshot.
         crowds_.end(world_);
-        world_partition_.end(world_, false);
         const ecs::DVec3 origin_before = world_.origin();
+        // Cambio de escena: la secuencia comun (World Partition sin restaurar
+        // -al parar vuelve el mundo entero con el snapshot-, navegacion,
+        // teselas del nivel anterior, GPU de terrenos y vegetacion, trabajos
+        // en otros hilos). Lo esculpido sin guardar de la escena del editor
+        // se queda en memoria (vuelve al parar).
+        resetSceneSystems(/*keep_terrain_edits=*/true);
+        play_scene_changed_ = true;
         if (!ecs::loadScene(world_, next, &error)) {
             std::cerr << "[Scene.load] " << next.string() << ": " << error << "\n";
         }
@@ -395,6 +415,7 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         crowds_.begin(world_);  // multitudes del nivel nuevo antes de los scripts
         startVoxels();
         audio_.start(world_);
+        video_.start(world_);
         scripts_.start(world_);
         cpp_scripts_.start(world_);
         std::cout << "[Scene.load] " << dialogs::utf8(next.filename()) << std::endl;
@@ -409,6 +430,8 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         }
     });
     audio_.update(world_, delta_seconds, position, forward);
+    // Video: reloj, frame a la GPU y audio a sus voces (antes de RenderSync::sync).
+    video_.update(world_, delta_seconds, delta_seconds);
 }
 
 void EditorApp::togglePause() {

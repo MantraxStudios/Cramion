@@ -1441,6 +1441,12 @@ void main() {
         vec3 sun_radiance = toLinear(lights.sun_color_ambient.rgb) *
                             lights.sun_direction_intensity.w;
         vec3 sun_direction = normalize(-lights.sun_direction_intensity.xyz);
+        // Sol horneado entero (Ventana > Iluminacion, modo Horneado): su luz
+        // directa y sus sombras ya vienen en la GI horneada (gi.rgb).
+        bool sun_baked = lights.sky_map_depth.w > 0.5;
+        if (sun_baked) {
+            sun_radiance = vec3(0.0);
+        }
 
         // --- Ambiente: IBL del entorno (cielo + suelo) ---
         // Modelo de Disney de este pixel (y el tinte especular en F0).
@@ -1595,9 +1601,10 @@ void main() {
         // tambien hace falta la sombra, o el pelo de espaldas al sol brilla
         // aunque el personaje este a la sombra de un edificio. La hierba
         // (grassBrdf) envuelve hasta N.L = -0.35.
-        bool sun_lit = sun_n_dot_l > 0.0 ||
-                       (surface_model.model == kShadingHair && dot(normal, sun_direction) > -0.34) ||
-                       (surface_model.model == kShadingGrass && dot(normal, sun_direction) > -0.35);
+        bool sun_lit = !sun_baked &&
+                       (sun_n_dot_l > 0.0 ||
+                        (surface_model.model == kShadingHair && dot(normal, sun_direction) > -0.34) ||
+                        (surface_model.model == kShadingGrass && dot(normal, sun_direction) > -0.35));
         if (sun_lit) {
             float geometric_n_dot_l = max(dot(geometric_normal, sun_direction), 0.0);
             // Con rayos: la mas oscura de las dos. Los rayos ven el escenario y
@@ -1653,7 +1660,7 @@ void main() {
         // la tiene iluminada; un muro, no, y no deja pasar nada.
         // La hierba envuelve mas (grassBrdf): su translucidez entra antes.
         float translucent_gate = surface_model.model == kShadingGrass ? 0.35 : 0.2;
-        if (translucent && dot(normal, sun_direction) < translucent_gate) {
+        if (!sun_baked && translucent && dot(normal, sun_direction) < translucent_gate) {
             int back_cascade = 0;
             vec3 back_position = world_position - geometric_normal * translucent_thickness;
             float back_shadow = shadowFactor(back_position, -geometric_normal,

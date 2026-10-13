@@ -88,6 +88,7 @@ struct ScriptSystem::Impl {
     const dm::Input* input = nullptr;
     physics::PhysicsSystem* physics = nullptr;
     audio::AudioSystem* audio = nullptr;
+    video::VideoSystem* video = nullptr;  // Entity:video*, Video.* (VideoApi.cpp)
     navigation::NavigationSystem* navigation = nullptr;
     voxel::VoxelSystem* voxels = nullptr;
     GraphicsHost* graphics = nullptr;

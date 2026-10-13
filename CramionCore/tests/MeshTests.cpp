@@ -26,6 +26,7 @@
 #include <CramionFX/asset/ImageFile.h>
 #include <CramionFX/asset/Model.h>
 #include <CramionFX/vk/FrameBudget.h>
+#include <CramionFX/vk/GraphicsSettings.h>
 
 #include <cmath>
 #include <cstdio>
@@ -946,8 +947,55 @@ void testFrameBudget() {
           "perfiles de hardware y resolucion de sombras");
 }
 
+// VR: la resolucion de cada ojo no se hunde (presupuesto con tope, tope de
+// VRAM segun la memoria, sesgo de mips al escalar).
+void testVrResolution() {
+    std::printf("\nResolucion en VR\n");
+    using gfx::Lever;
+    const float dt = 1.0f / 90.0f;
+    // GPU de gama baja muy por encima de los 90 Hz del casco: sin tope bajaba
+    // la resolucion al 50 %; con el tope de VR se queda en 0.87 y baja lo demas.
+    gfx::FrameBudget vr;
+    vr.setStartLevels(gfx::HardwareTier::Low);  // empezaba en 67 %
+    vr.setLevelCap(Lever::RenderScale, 1);
+    vr.setTargetFps(90.0f);
+    check(vr.renderScale() >= 0.869f, "VR: la gama baja ya no empieza al 67 % por ojo");
+    const std::vector<gfx::GpuTiming> heavy = {{"GI", 10.0f}, {"SSAO", 3.0f}, {"Reflejos", 3.0f},
+                                               {"Sombras (cascadas)", 8.0f}, {"Geometria + culling", 6.0f}};
+    for (int frame = 0; frame < 90 * 20; ++frame) vr.update(dt, 40.0f, heavy);
+    std::printf("    escala %.2f, GI %u, SSAO %u, reflejos %u\n", vr.renderScale(), vr.level(Lever::Gi),
+                vr.level(Lever::Ssao), vr.level(Lever::Reflections));
+    check(vr.renderScale() >= 0.869f && vr.maxLevel(Lever::RenderScale) == 1,
+          "VR: el presupuesto no baja la resolucion por debajo de 0.87");
+    check(vr.level(Lever::Gi) > 0 && vr.level(Lever::Ssao) > 0, "VR: baja antes los efectos");
+    vr.reset();
+    check(vr.renderScale() >= 0.869f, "VR: reset respeta el tope");
+    vr.setLevelCap(Lever::RenderScale, 255);
+    check(vr.maxLevel(Lever::RenderScale) == 5 && vr.level(Lever::RenderScale) == 3,
+          "al salir de VR vuelve al tope normal y al punto de partida");
+
+    // Tope por VRAM (ojo de Quest 3, 2528x2704).
+    const float cap8 = gfx::vrVramScaleCap(8192, 2528, 2704);
+    const float cap4 = gfx::vrVramScaleCap(4096, 2528, 2704);
+    std::printf("    tope VRAM: 4 GB %.3f, 8 GB %.3f\n", cap4, cap8);
+    check(cap8 > 0.85f && cap8 < 0.9f, "VR: con 8 GB el ojo de Quest 3 va a ~0.87 (antes 0.67)");
+    check(cap4 >= 0.67f && cap4 < 0.7f, "VR: con poca VRAM nunca menos que antes (1.5x 1080p)");
+    check(gfx::vrVramScaleCap(12288, 2528, 2704) == 1.0f && gfx::vrVramScaleCap(0, 2528, 2704) == 1.0f &&
+              gfx::vrVramScaleCap(8192, 1832, 1920) == 1.0f,
+          "VR: sin tope con 12 GB, VRAM desconocida o un ojo que ya cabe");
+
+    // Sesgo de mips al escalar.
+    check(gfx::upscaleMipBias(1.0f, gfx::Upscaler::Taa) == 0.0f && gfx::upscaleMipBias(0.5f, gfx::Upscaler::Off) == 0.0f,
+          "sin escalar no hay sesgo");
+    check(std::fabs(gfx::upscaleMipBias(0.5f, gfx::Upscaler::Taa) + 1.0f) < 1e-4f &&
+              std::fabs(gfx::upscaleMipBias(0.5f, gfx::Upscaler::Fsr1) + 0.5f) < 1e-4f &&
+              gfx::upscaleMipBias(0.25f, gfx::Upscaler::Dlss) == -1.0f,
+          "sesgo log2(interna/salida), la mitad con FSR 1, como mucho -1");
+}
+
 int main() {
     testFrameBudget();
+    testVrResolution();
     testLods();
     testPrimitives();
     testEditing();

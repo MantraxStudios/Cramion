@@ -119,6 +119,7 @@ std::string utf8Of(const std::filesystem::path& path) {
 PathField pathFieldOf(const ecs::Meta& meta) {
     static const std::vector<std::string> kImages = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr"};
     static const std::vector<std::string> kAudio = {".wav", ".ogg", ".mp3", ".flac"};
+    static const std::vector<std::string> kVideo = {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".wmv"};
     const std::string key = meta.key != nullptr ? meta.key : "";
     const std::string tip = lowerAscii(meta.tooltip != nullptr ? meta.tooltip : "");
     const std::string label = lowerAscii(meta.label != nullptr ? meta.label : "");
@@ -129,6 +130,10 @@ PathField pathFieldOf(const ecs::Meta& meta) {
     } else if (key == "sprite" || key == "texture" || key == "albedo" || key == "normal" || key == "normal_map" ||
                key == "emission_map" || key == "image") {
         f = {true, kImages, "Imagen (PNG, JPG, TGA)"};
+    } else if (key == "clip" && (tip.find("video") != std::string::npos || tip.find("vídeo") != std::string::npos ||
+                                  label.find("video") != std::string::npos || label.find("vídeo") != std::string::npos)) {
+        // VideoPlayer::clip (antes que el audio: su ayuda tambien puede hablar de audio).
+        f = {true, kVideo, "Vídeo (MP4, MOV, WEBM, MKV...)"};
     } else if ((key == "clip" && tip.find("audio") != std::string::npos) || key == "audio") {
         f = {true, kAudio, "Audio (WAV, OGG, MP3, FLAC)"};
     } else if (key == "file" || key == "script") {
@@ -159,7 +164,7 @@ std::string acceptDroppedFile(const assets::AssetDatabase* database, const PathF
     std::string result;
     if (!ImGui::BeginDragDropTarget()) return result;
     std::filesystem::path dropped;
-    for (const char* type : {"CRAMION_IMAGE", "CRAMION_SCRIPT", "CRAMION_AUDIO"}) {
+    for (const char* type : {"CRAMION_IMAGE", "CRAMION_SCRIPT", "CRAMION_AUDIO", "CRAMION_VIDEO"}) {
         if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(type)) {
             const char* text = static_cast<const char*>(p->Data);
             dropped = std::filesystem::path(std::u8string(text, text + std::strlen(text)).c_str());

@@ -398,18 +398,33 @@ void World::clear() {
     ++structure_version_;
 }
 
-void World::clearPersistent() {
+void World::clearPersistent(const DVec3& new_origin) {
     std::vector<entt::entity> doomed;
     for (const entt::entity root : roots_) {
         if (!registry_.get<EntityInfo>(root).transient) doomed.push_back(root);
     }
     if (doomed.size() == roots_.size()) {
         clear();
+        origin_ = new_origin;
         return;
     }
     for (const entt::entity root : doomed) destroy(wrap(root));
-    origin_ = DVec3{};
+    // Las que se quedan (teselas) siguen en el mismo sitio del mundo real.
+    rebaseOrigin(new_origin);
     ++structure_version_;
+}
+
+void World::rebaseOrigin(const DVec3& origin) {
+    // Diferencia en doble precision (los origenes pueden estar a 100 km):
+    // solo el resultado, pequeno, pasa a float.
+    const core::Vec3 delta{static_cast<float>(origin_.x - origin.x), static_cast<float>(origin_.y - origin.y),
+                           static_cast<float>(origin_.z - origin.z)};
+    origin_ = origin;
+    if (delta.x == 0.0f && delta.y == 0.0f && delta.z == 0.0f) return;
+    for (const entt::entity root : roots_) {
+        Entity e = wrap(root);
+        e.setLocalPosition(e.localPosition() + delta);
+    }
 }
 
 void World::shiftOrigin(const core::Vec3& offset) {

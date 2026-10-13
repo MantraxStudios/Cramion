@@ -1,11 +1,14 @@
 #include "CramionCore/lighting/ProbeBaker.h"
 
+#include "CramionCore/asset/AssetDatabase.h"
 #include "CramionCore/asset/AssetManager.h"
+#include "CramionCore/asset/MaterialAsset.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/ecs/RuntimeMesh.h"
 #include "CramionCore/jobs/JobSystem.h"
 #include "CramionCore/physics/PhysicsComponents.h"
+#include "CramionCore/terrain/Terrain.h"
 
 #include <CramionFX/asset/Model.h>
 
@@ -15,6 +18,7 @@
 #include <cstring>
 #include <fstream>
 #include <random>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 
@@ -259,6 +263,87 @@ struct Tracer {
         return result;
     }
 
+    // Luz DIRECTA de las luces horneadas (modo Horneada) que llega a `x`:
+    // llama a f(direccion hacia la luz, irradiancia sobre un plano que la
+    // mira de frente, ya con su sombra). La sombra es suave: `samples` rayos
+    // repartidos por la bombilla (source_radius) o por el disco del sol; la
+    // fraccion que llega es la visibilidad. Con `n`, las luces que quedan
+    // detras de la superficie no cuentan. `x` ya va separado de la superficie.
+    template <typename F>
+    void bakedDirect(const Vec3& x, const Vec3* n, int samples, std::mt19937& rng, F&& f) const {
+        samples = std::clamp(samples, 1, 256);
+        std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+        // Punto al azar en una esfera de radio r (para la bombilla).
+        const auto in_sphere = [&](float r) {
+            for (int i = 0; i < 8; ++i) {
+                const Vec3 p{u01(rng) * 2.0f - 1.0f, u01(rng) * 2.0f - 1.0f, u01(rng) * 2.0f - 1.0f};
+                if (core::dot(p, p) <= 1.0f) return p * r;
+            }
+            return Vec3{};
+        };
+        // Visibilidad de una luz local desde x (rayos a puntos de la bombilla).
+        const auto local_visibility = [&](const Vec3& center, float radius) {
+            int lit = 0;
+            for (int s = 0; s < samples; ++s) {
+                const Vec3 target = center + (samples > 1 && radius > 0.0f ? in_sphere(radius) : Vec3{});
+                Vec3 v = target - x;
+                const float dist = core::length(v);
+                if (dist < 1e-4f) {
+                    ++lit;
+                    continue;
+                }
+                v = v * (1.0f / dist);
+                if (!bvh.occluded(x, v, dist - kEpsilon * 2.0f)) ++lit;
+            }
+            return static_cast<float>(lit) / static_cast<float>(samples);
+        };
+        if (scene.sun_baked && (sun_color.x + sun_color.y + sun_color.z) > 0.0f &&
+            (n == nullptr || core::dot(*n, sun_dir) > 0.0f)) {
+            const Vec3 helper = std::fabs(sun_dir.y) < 0.99f ? Vec3{0.0f, 1.0f, 0.0f} : Vec3{1.0f, 0.0f, 0.0f};
+            const Vec3 t = core::normalize(core::cross(helper, sun_dir));
+            const Vec3 b = core::cross(sun_dir, t);
+            constexpr float kSunRadius = 0.00465f;  // radio angular del sol (tangente)
+            int lit = 0;
+            for (int s = 0; s < samples; ++s) {
+                const float r = samples > 1 ? std::sqrt(u01(rng)) * kSunRadius : 0.0f;
+                const float phi = 2.0f * kPi * u01(rng);
+                const Vec3 d = core::normalize(sun_dir + t * (r * std::cos(phi)) + b * (r * std::sin(phi)));
+                if (!bvh.occluded(x, d, 1e6f)) ++lit;
+            }
+            if (lit > 0) f(sun_dir, sun_color * (static_cast<float>(lit) / static_cast<float>(samples)));
+        }
+        for (std::size_t i = 0; i < scene.lights.points.size(); ++i) {
+            if (i >= scene.point_baked.size() || scene.point_baked[i] == 0) continue;
+            const scene::PointLight& p = scene.lights.points[i];
+            Vec3 v = p.position - x;
+            const float dist = core::length(v);
+            if (dist < 1e-4f || dist > p.range) continue;
+            v = v * (1.0f / dist);
+            if (n != nullptr && core::dot(*n, v) <= 0.0f) continue;
+            const float vis = local_visibility(p.position, std::min(p.source_radius, dist * 0.5f));
+            if (vis <= 0.0f) continue;
+            f(v, srgbToLinear(p.color) * (p.intensity * attenuation(dist, p.range) * vis));
+        }
+        for (std::size_t i = 0; i < scene.lights.spots.size(); ++i) {
+            if (i >= scene.spot_baked.size() || scene.spot_baked[i] == 0) continue;
+            const scene::SpotLight& s = scene.lights.spots[i];
+            Vec3 v = s.position - x;
+            const float dist = core::length(v);
+            if (dist < 1e-4f || dist > s.range) continue;
+            v = v * (1.0f / dist);
+            if (n != nullptr && core::dot(*n, v) <= 0.0f) continue;
+            const float cos_angle = core::dot(v * -1.0f, core::normalize(s.direction));
+            const float cos_outer = std::cos(s.outer_angle);
+            const float cos_inner = std::cos(s.inner_angle);
+            if (cos_angle <= cos_outer) continue;
+            const float x01 = std::clamp((cos_angle - cos_outer) / std::max(cos_inner - cos_outer, 1e-4f), 0.0f, 1.0f);
+            const float cone = x01 * x01 * (3.0f - 2.0f * x01);
+            const float vis = local_visibility(s.position, std::min(s.source_radius, dist * 0.5f));
+            if (vis <= 0.0f) continue;
+            f(v, srgbToLinear(s.color) * (s.intensity * attenuation(dist, s.range) * cone * vis));
+        }
+    }
+
     static Vec3 cosineSample(const Vec3& n, std::mt19937& rng) {
         std::uniform_real_distribution<float> u01(0.0f, 1.0f);
         const float r1 = u01(rng);
@@ -359,9 +444,9 @@ void registerLightingComponents() {
 // Las celdas que tocan las superficies (dentro de los volumenes, si los hay) y
 // en cada una un mini-horneado L1 desde un punto de su superficie, un poco
 // hacia fuera. Todo en los nucleos (job system).
-static bool bakeSurfaceTexels(const BakeScene& scene, const Tracer& tracer, gfx::SurfaceLightmap& out, BakeProgress* progress,
-                       std::string* error) {
-    const float cell = std::clamp(scene.settings.surface_texel, 0.1f, 8.0f);
+static bool bakeSurfaceTexels(const BakeScene& scene, const Tracer& tracer, float texel, gfx::SurfaceLightmap& out,
+                              BakeProgress* progress, std::string* error) {
+    const float cell = std::clamp(texel, 0.1f, 8.0f);
     const float inv = 1.0f / cell;
     struct CellInfo {
         Vec3 normal{};
@@ -449,6 +534,29 @@ static bool bakeSurfaceTexels(const BakeScene& scene, const Tracer& tracer, gfx:
             }
             if (static_cast<float>(backfaces) < static_cast<float>(rays) * 0.4f) {
                 const float band[4] = {1.0f, 2.0f / 3.0f, 2.0f / 3.0f, 2.0f / 3.0f};
+                // Luces horneadas: su luz directa con sombra suave. Cada luz es
+                // una direccion (pi * E * Y(l), el mismo convenio que la luz
+                // de los rayos); L1 reparte de mas una luz puntual, asi que se
+                // escala para que en la normal del texel de la irradiancia
+                // exacta (E * coseno): la luz y la sombra quedan como en
+                // tiempo real.
+                Vec3 direct_sh[4] = {};
+                Vec3 exact{};
+                bool any_direct = false;
+                tracer.bakedDirect(origin, &n, scene.settings.direct_samples, rng, [&](const Vec3& l, const Vec3& e) {
+                    const float yl[4] = {0.282095f, 0.488603f * l.y, 0.488603f * l.z, 0.488603f * l.x};
+                    for (int k = 0; k < 4; ++k) direct_sh[k] += e * (kPi * yl[k]);
+                    exact += e * std::max(core::dot(n, l), 0.0f);
+                    any_direct = true;
+                });
+                if (any_direct) {
+                    const float yn[4] = {0.282095f, 0.488603f * n.y, 0.488603f * n.z, 0.488603f * n.x};
+                    Vec3 eval{};
+                    for (int k = 0; k < 4; ++k) eval += direct_sh[k] * (band[k] * yn[k]);
+                    const Vec3 scale{eval.x > 1e-6f ? exact.x / eval.x : 0.0f, eval.y > 1e-6f ? exact.y / eval.y : 0.0f,
+                                     eval.z > 1e-6f ? exact.z / eval.z : 0.0f};
+                    for (int k = 0; k < 4; ++k) rgb[k] += mulv(direct_sh[k], scale);
+                }
                 Vec4* t = &texels[i * gfx::kSurfaceTexelVec4];
                 float f[16];
                 for (int k = 0; k < 4; ++k) {
@@ -501,7 +609,16 @@ static bool bakeSurfaceTexels(const BakeScene& scene, const Tracer& tracer, gfx:
 bool bakeProbes(const BakeScene& scene, gfx::BakedLighting& out, BakeProgress* progress, BakeStats* stats, std::string* error) {
     const auto start = std::chrono::steady_clock::now();
     out = gfx::BakedLighting{};
-    if (scene.volumes.empty() && scene.settings.surface_texel <= 0.0f) {
+    // Luces horneadas sin lightmap de superficie: se enciende (las sombras de
+    // las sondas solas serian manchas de metros).
+    bool any_baked = scene.sun_baked && scene.lights.sun.intensity > 0.0f;
+    for (const std::uint8_t b : scene.point_baked) any_baked = any_baked || b != 0;
+    for (const std::uint8_t b : scene.spot_baked) any_baked = any_baked || b != 0;
+    float surface_texel = scene.settings.surface_texel;
+    if (any_baked && surface_texel <= 0.0f && scene.settings.auto_surface_texel > 0.0f) {
+        surface_texel = scene.settings.auto_surface_texel;
+    }
+    if (scene.volumes.empty() && surface_texel <= 0.0f) {
         if (error) *error = "no hay volumenes de sondas";
         return false;
     }
@@ -605,6 +722,14 @@ bool bakeProbes(const BakeScene& scene, gfx::BakedLighting& out, BakeProgress* p
             Vec4* probe = &out.probes[job.index * gfx::kBakedProbeVec4];
             const bool valid = static_cast<float>(backfaces) < static_cast<float>(rays) * 0.25f;
             if (valid) {
+                // Luces horneadas: su luz directa (con sombra desde la sonda),
+                // para lo que no tiene lightmap (lo que se mueve, el follaje).
+                tracer.bakedDirect(job.position, nullptr, std::max(4, scene.settings.direct_samples / 2), rng,
+                                   [&](const Vec3& l, const Vec3& e) {
+                                       float yl[9];
+                                       shBasis(l, yl);
+                                       for (int k = 0; k < 9; ++k) rgb[k] += e * (kPi * yl[k]);
+                                   });
                 for (int k = 0; k < 9; ++k) {
                     setProbeFloat(probe, k * 3, rgb[k].x * kBand[k]);
                     setProbeFloat(probe, k * 3 + 1, rgb[k].y * kBand[k]);
@@ -627,45 +752,303 @@ bool bakeProbes(const BakeScene& scene, gfx::BakedLighting& out, BakeProgress* p
         out = gfx::BakedLighting{};
         return false;
     }
-    if (scene.settings.surface_texel > 0.0f) {
-        if (!bakeSurfaceTexels(scene, tracer, out.surface, progress, error)) {
+    if (surface_texel > 0.0f) {
+        if (!bakeSurfaceTexels(scene, tracer, surface_texel, out.surface, progress, error)) {
             out = gfx::BakedLighting{};
             return false;
         }
     }
+    // Lo que ya va horneado entero: el renderizador no lo dibuja otra vez.
+    out.sun_baked = scene.sun_baked && scene.lights.sun.intensity > 0.0f;
+    out.sun_direction = scene.lights.sun.direction;
+    out.baked_lights = scene.baked_light_ids;
     if (stats != nullptr) {
         stats->triangles = scene.triangles.size();
         stats->probes = jobs.size();
         stats->invalid_probes = invalid.load();
+        stats->surface_texels = out.surface.count;
+        stats->baked_lights = out.baked_lights.size() + (out.sun_baked ? 1u : 0u);
         stats->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     }
     if (progress) progress->fraction.store(1.0f);
     return true;
 }
 
-// --- Escena ------------------------------------------------------------------------------
+// --- Informe ------------------------------------------------------------------------------
 
-void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene& scene, const ExtraGeometry& extra) {
-    auto& registry = world.registry();
-    // Solo los "Static" si hay alguno marcado (como Unity con Contribute GI).
-    bool any_static = false;
-    for (const entt::entity h : registry.view<ecs::MeshRenderer>()) {
-        const ecs::EntityInfo* info = registry.try_get<ecs::EntityInfo>(h);
-        if (info != nullptr && info->is_static) {
-            any_static = true;
-            break;
+const char* bakeSkipLabel(BakeSkip reason) {
+    switch (reason) {
+        case BakeSkip::Inactive: return "desactivadas";
+        case BakeSkip::Hidden: return "ocultas (MeshRenderer invisible)";
+        case BakeSkip::DynamicBody: return "con Rigidbody Dynamic (se mueven)";
+        case BakeSkip::AnimatorDriven: return "movidas por un Animator";
+        case BakeSkip::NoModel: return "con un modelo que no se pudo cargar";
+        case BakeSkip::BadPart: return "con una pieza que no existe en el modelo";
+        case BakeSkip::NotStatic: return "sin marcar Static";
+        default: return "?";
+    }
+}
+
+void BakeGatherReport::skip(BakeSkip reason, const std::string& name) {
+    const int i = static_cast<int>(reason);
+    if (i < 0 || i >= static_cast<int>(BakeSkip::Count)) return;
+    ++skipped[i];
+    if (examples[i].size() < 3) examples[i].push_back(name);
+}
+
+std::string BakeGatherReport::summary() const {
+    std::string out;
+    const auto line = [&](const std::string& text) {
+        if (!out.empty()) out += "\n";
+        out += text;
+    };
+    const auto examples_of = [&](int i) {
+        std::string text;
+        for (std::size_t k = 0; k < examples[i].size(); ++k) text += (k ? ", " : " (") + examples[i][k];
+        if (!text.empty()) text += skipped[i] > examples[i].size() ? "...)" : ")";
+        return text;
+    };
+    if (triangles == 0) {
+        std::string reasons;
+        for (int i = 0; i < static_cast<int>(BakeSkip::Count); ++i) {
+            if (skipped[i] == 0) continue;
+            if (!reasons.empty()) reasons += ", ";
+            reasons += std::to_string(skipped[i]) + " " + bakeSkipLabel(static_cast<BakeSkip>(i)) + examples_of(i);
+        }
+        line("Nada que hornear: 0 de " + std::to_string(meshes_seen) + " mallas entran" +
+             (reasons.empty() ? std::string(" (la escena no tiene mallas ni terreno)") : ". Motivos: " + reasons) +
+             ". Marca los objetos (o sus padres) como Static o revisa los filtros.");
+    } else {
+        line(std::to_string(meshes_baked) + " mallas" +
+             (terrains > 0 ? " y " + std::to_string(terrains) + " terreno(s)" : std::string()) + ": " +
+             std::to_string(triangles) + " triángulos");
+        if (used_all_non_moving) {
+            line("Ningún objeto marcado Static: se hornean las " + std::to_string(meshes_baked) + " mallas que no se mueven");
+        }
+        for (int i = 0; i < static_cast<int>(BakeSkip::Count); ++i) {
+            if (skipped[i] == 0 || static_cast<BakeSkip>(i) == BakeSkip::Inactive || static_cast<BakeSkip>(i) == BakeSkip::Hidden) {
+                continue;
+            }
+            line(std::to_string(skipped[i]) + " omitidas: " + bakeSkipLabel(static_cast<BakeSkip>(i)) + examples_of(i));
         }
     }
+    if (terrain_triangles > 0) line("Terreno: " + std::to_string(terrain_triangles) + " triángulos desde el mapa de alturas");
+    if (static_with_dynamic_rb > 0) {
+        line(std::to_string(static_with_dynamic_rb) +
+             " Static con Rigidbody Dynamic: se hornean igual (pon el Rigidbody en Kinematic o quita Static)");
+    }
+    if (static_with_animator > 0) {
+        line(std::to_string(static_with_animator) +
+             " Static con un Animator que reproduce: se hornean en su pose de reposo (para el Animator o quita Static)");
+    }
+    if (skinned_rest_pose > 0) line(std::to_string(skinned_rest_pose) + " mallas con huesos: se hornean en su pose de reposo");
+    if (lights_mixed + lights_baked + lights_realtime > 0 || sun_baked || sun_realtime_only) {
+        line("Luces: " + std::to_string(lights_baked) + " horneadas, " + std::to_string(lights_mixed) + " mixtas, " +
+             std::to_string(lights_realtime) + " solo tiempo real; sol " +
+             (sun_baked ? "horneado" : (sun_realtime_only ? "solo tiempo real" : "mixto")));
+    }
+    return out;
+}
+
+// --- Escena ------------------------------------------------------------------------------
+
+bool staticInHierarchy(ecs::Entity entity) {
+    for (ecs::Entity e = entity; e.valid(); e = e.parent()) {
+        const ecs::EntityInfo* info = e.tryGet<ecs::EntityInfo>();
+        if (info != nullptr && info->is_static) return true;
+    }
+    return false;
+}
+
+namespace {
+
+// Posiciones de los vertices en la pose de reposo (como los dibuja el editor
+// sin Animator). Sin huesos, las del modelo tal cual.
+std::vector<Vec3> restPosePositions(const asset::ModelData& data) {
+    std::vector<Vec3> positions(data.vertices.size());
+    if (data.bones.empty() || data.nodes.empty()) {
+        for (std::size_t i = 0; i < data.vertices.size(); ++i) positions[i] = data.vertices[i].position;
+        return positions;
+    }
+    std::vector<core::Mat4> global(data.nodes.size(), core::Mat4::identity());
+    for (std::size_t i = 0; i < data.nodes.size(); ++i) {
+        const asset::Node& node = data.nodes[i];
+        global[i] = node.parent >= 0 && static_cast<std::size_t>(node.parent) < i ? global[static_cast<std::size_t>(node.parent)] * node.local
+                                                                                 : node.local;
+    }
+    std::vector<core::Mat4> skin(data.bones.size(), core::Mat4::identity());
+    for (std::size_t b = 0; b < data.bones.size(); ++b) {
+        const asset::Bone& bone = data.bones[b];
+        skin[b] = bone.node >= 0 && static_cast<std::size_t>(bone.node) < global.size()
+                      ? global[static_cast<std::size_t>(bone.node)] * bone.offset
+                      : bone.offset;
+    }
+    for (std::size_t i = 0; i < data.vertices.size(); ++i) {
+        const asset::SkinnedVertex& v = data.vertices[i];
+        const Vec4 p{v.position, 1.0f};
+        Vec3 sum{};
+        float weight = 0.0f;
+        for (std::uint32_t k = 0; k < asset::kMaxBoneInfluences; ++k) {
+            if (v.weights[k] <= 0.0f || v.joints[k] >= skin.size()) continue;
+            const Vec4 q = skin[v.joints[k]] * p;
+            sum += Vec3{q.x, q.y, q.z} * v.weights[k];
+            weight += v.weights[k];
+        }
+        positions[i] = weight > 1e-4f ? sum * (1.0f / weight) : v.position;
+    }
+    return positions;
+}
+
+// El terreno desde su mapa de alturas (como el collider: esquina en el
+// origen del objeto, `size` x `size` m, alturas 0..1 por `height`). Como
+// mucho ~400k triangulos (se salta vertices si hace falta).
+std::size_t appendTerrain(ecs::Entity e, const terrain::Terrain& t, const terrain::TerrainData& data,
+                          std::vector<BakeTriangle>& out) {
+    const std::uint32_t res = data.resolution();
+    if (res < 2 || data.heights().size() < static_cast<std::size_t>(res) * res) return 0;
+    const double cells = static_cast<double>(res - 1) * static_cast<double>(res - 1);
+    const std::uint32_t step = std::max<std::uint32_t>(1u, static_cast<std::uint32_t>(std::ceil(std::sqrt(cells * 2.0 / 400000.0))));
+    std::vector<std::uint32_t> samples;
+    for (std::uint32_t i = 0; i < res - 1; i += step) samples.push_back(i);
+    samples.push_back(res - 1);
+    const std::size_t n = samples.size();
+    if (n < 2) return 0;
+    const core::Mat4& m = e.worldMatrix();
+    const float inv = 1.0f / static_cast<float>(res - 1);
+    std::vector<Vec3> grid(n * n);
+    for (std::size_t z = 0; z < n; ++z) {
+        for (std::size_t x = 0; x < n; ++x) {
+            const float u = static_cast<float>(samples[x]) * inv;
+            const float v = static_cast<float>(samples[z]) * inv;
+            grid[z * n + x] = ecs::transformPoint(m, Vec3{u * t.size, data.sample(u, v) * t.height, v * t.size});
+        }
+    }
+    Vec3 albedo{0.18f, 0.2f, 0.12f};
+    if (!t.layers.empty() && t.layers.front().albedo.empty()) albedo = srgbToLinear(t.layers.front().tint) * 0.8f;
+    const std::size_t before = out.size();
+    out.reserve(out.size() + (n - 1) * (n - 1) * 2);
+    for (std::size_t z = 0; z + 1 < n; ++z) {
+        for (std::size_t x = 0; x + 1 < n; ++x) {
+            const Vec3& p00 = grid[z * n + x];
+            const Vec3& p10 = grid[z * n + x + 1];
+            const Vec3& p01 = grid[(z + 1) * n + x];
+            const Vec3& p11 = grid[(z + 1) * n + x + 1];
+            // Cara de arriba hacia +Y.
+            out.push_back(BakeTriangle{p00, p01, p10, albedo, {}});
+            out.push_back(BakeTriangle{p10, p01, p11, albedo, {}});
+        }
+    }
+    return out.size() - before;
+}
+
+}  // namespace
+
+void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene& scene, const ExtraGeometry& extra,
+                     const TerrainProvider& terrains, BakeGatherReport* report) {
+    auto& registry = world.registry();
+    BakeGatherReport local_report;
+    BakeGatherReport& rep = report != nullptr ? *report : local_report;
+    // Materiales (.crmat) que sustituyen a los del modelo: se leen una vez.
+    struct MaterialColor {
+        Vec3 albedo;
+        Vec3 emission;
+    };
+    std::unordered_map<std::uint64_t, std::optional<MaterialColor>> material_cache;
+    const auto override_material = [&](const assets::AssetRef& ref) -> std::optional<MaterialColor> {
+        if (!ref.valid()) return std::nullopt;
+        const std::uint64_t key = ref.uuid.high ^ (ref.uuid.low * 0x9E3779B97F4A7C15ull);
+        if (const auto it = material_cache.find(key); it != material_cache.end()) return it->second;
+        std::optional<MaterialColor> result;
+        const std::optional<assets::AssetInfo> info = assets.database().find(ref.uuid);
+        assets::MaterialAsset material;
+        if (info && info->type == assets::AssetType::Material && !info->path.empty() &&
+            assets::loadMaterial(info->path, material, nullptr)) {
+            result = MaterialColor{Vec3{material.base_color.x, material.base_color.y, material.base_color.z} *
+                                       (material.albedo.empty() ? 1.0f : 0.6f),
+                                   material.emissive * material.emissive_intensity};
+        }
+        material_cache[key] = result;
+        return result;
+    };
+
+    // 1) Las mallas que pueden entrar (activas, visibles, que no se mueven).
+    struct Candidate {
+        entt::entity handle;
+        bool is_static;
+        std::shared_ptr<const assets::ModelAsset> model;  // nulo = malla de codigo
+    };
+    std::vector<Candidate> candidates;
     for (const entt::entity h : registry.view<ecs::MeshRenderer>()) {
         const ecs::Entity e = world.wrap(h);
-        if (!e.activeInHierarchy()) continue;
+        ++rep.meshes_seen;
+        if (!e.activeInHierarchy()) {
+            rep.skip(BakeSkip::Inactive, e.name());
+            continue;
+        }
         const ecs::MeshRenderer& r = e.get<ecs::MeshRenderer>();
-        if (!r.visible) continue;
-        const ecs::EntityInfo* info = e.tryGet<ecs::EntityInfo>();
-        if (any_static && (info == nullptr || !info->is_static)) continue;
-        if (const physics::Rigidbody* rb = e.tryGet<physics::Rigidbody>(); rb != nullptr && rb->type == physics::BodyType::Dynamic) continue;
+        if (!r.visible) {
+            rep.skip(BakeSkip::Hidden, e.name());
+            continue;
+        }
+        const bool is_static = staticInHierarchy(e);
+        if (const physics::Rigidbody* rb = e.tryGet<physics::Rigidbody>(); rb != nullptr && rb->type == physics::BodyType::Dynamic) {
+            // Static manda (como en Unity): se hornea, con un aviso.
+            if (!is_static) {
+                rep.skip(BakeSkip::DynamicBody, e.name());
+                continue;
+            }
+            ++rep.static_with_dynamic_rb;
+        }
+        std::shared_ptr<const assets::ModelAsset> model;
+        if (!r.mesh) {
+            if (!r.model.valid()) {
+                rep.skip(BakeSkip::NoModel, e.name());
+                continue;
+            }
+            model = assets.loadModel(r.model.uuid);
+            if (!model) {
+                rep.skip(BakeSkip::NoModel, e.name());
+                continue;
+            }
+            if (r.part < 0 || r.part >= static_cast<int>(model->parts.size()) || !model->parts[static_cast<std::size_t>(r.part)]) {
+                rep.skip(BakeSkip::BadPart, e.name());
+                continue;
+            }
+            // Un Animator que reproduce la mueve: no es geometria fija. Sin
+            // Animator (o parado) se dibuja en reposo y asi se hornea. Al
+            // instanciar un modelo con animaciones (casi todo .glb/.fbx de
+            // Blender) se le pone un Animator que reproduce: si esta marcada
+            // Static manda Static (como con el Rigidbody) y va en reposo.
+            if (model->animated) {
+                const ecs::Animator* animator = e.tryGet<ecs::Animator>();
+                if (animator != nullptr && animator->playing) {
+                    if (!is_static) {
+                        rep.skip(BakeSkip::AnimatorDriven, e.name());
+                        continue;
+                    }
+                    ++rep.static_with_animator;
+                }
+            }
+        }
+        candidates.push_back(Candidate{h, is_static, std::move(model)});
+    }
+    // 2) Solo las Static si hay alguna (como Contribute GI de Unity); si no,
+    // todas las que no se mueven.
+    bool any_static = false;
+    for (const Candidate& c : candidates) any_static = any_static || c.is_static;
+    rep.used_all_non_moving = !any_static && !candidates.empty();
+
+    for (const Candidate& c : candidates) {
+        const ecs::Entity e = world.wrap(c.handle);
+        if (any_static && !c.is_static) {
+            rep.skip(BakeSkip::NotStatic, e.name());
+            continue;
+        }
+        if (c.is_static) ++rep.static_marked;
+        const ecs::MeshRenderer& r = e.get<ecs::MeshRenderer>();
         const core::Mat4& m = e.worldMatrix();
         const auto tp = [&](const Vec3& p) { return ecs::transformPoint(m, p); };
+        const std::size_t before = scene.triangles.size();
         if (r.mesh) {
             const ecs::Mesh& mesh = *r.mesh;
             for (int s = 0; s < mesh.subMeshCount(); ++s) {
@@ -683,30 +1066,49 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
                                                            tp(mesh.vertices[idx[t + 2]]), albedo, emission});
                 }
             }
-            continue;
-        }
-        if (!r.model.valid()) continue;
-        const std::shared_ptr<const assets::ModelAsset> model = assets.loadModel(r.model.uuid);
-        if (!model || model->animated) continue;
-        if (r.part < 0 || r.part >= static_cast<int>(model->parts.size()) || !model->parts[static_cast<std::size_t>(r.part)]) continue;
-        const asset::ModelData& data = *model->parts[static_cast<std::size_t>(r.part)];
-        for (const asset::SubMesh& sm : data.submeshes) {
-            Vec3 albedo{0.5f, 0.5f, 0.5f};
-            Vec3 emission{};
-            if (sm.material < data.materials.size()) {
-                const asset::MaterialData& md = data.materials[sm.material];
-                albedo = Vec3{md.base_color.x, md.base_color.y, md.base_color.z} * (md.albedo_texture >= 0 ? 0.6f : 1.0f);
-                emission = md.emissive;
+        } else {
+            const asset::ModelData& data = *c.model->parts[static_cast<std::size_t>(r.part)];
+            if (data.bones.size() > 1) ++rep.skinned_rest_pose;
+            const std::vector<Vec3> positions = restPosePositions(data);
+            for (const asset::SubMesh& sm : data.submeshes) {
+                Vec3 albedo{0.5f, 0.5f, 0.5f};
+                Vec3 emission{};
+                if (sm.material < data.materials.size()) {
+                    const asset::MaterialData& md = data.materials[sm.material];
+                    albedo = Vec3{md.base_color.x, md.base_color.y, md.base_color.z} * (md.albedo_texture >= 0 ? 0.6f : 1.0f);
+                    emission = md.emissive;
+                }
+                if (sm.material < r.materials.size()) {
+                    if (const std::optional<MaterialColor> over = override_material(r.materials[sm.material])) {
+                        albedo = over->albedo;
+                        emission = over->emission;
+                    }
+                }
+                for (std::uint32_t t = sm.first_index; t + 2 < sm.first_index + sm.index_count && t + 2 < data.indices.size(); t += 3) {
+                    const std::uint32_t i0 = data.indices[t], i1 = data.indices[t + 1], i2 = data.indices[t + 2];
+                    if (i0 >= positions.size() || i1 >= positions.size() || i2 >= positions.size()) continue;
+                    scene.triangles.push_back(BakeTriangle{tp(positions[i0]), tp(positions[i1]), tp(positions[i2]), albedo, emission});
+                }
             }
-            for (std::uint32_t t = sm.first_index; t + 2 < sm.first_index + sm.index_count && t + 2 < data.indices.size(); t += 3) {
-                const std::uint32_t i0 = data.indices[t], i1 = data.indices[t + 1], i2 = data.indices[t + 2];
-                if (i0 >= data.vertices.size() || i1 >= data.vertices.size() || i2 >= data.vertices.size()) continue;
-                scene.triangles.push_back(BakeTriangle{tp(data.vertices[i0].position), tp(data.vertices[i1].position),
-                                                       tp(data.vertices[i2].position), albedo, emission});
+        }
+        if (scene.triangles.size() > before) ++rep.meshes_baked;
+    }
+    // 3) El terreno (tambien las teselas de un TerrainGrid), desde sus alturas.
+    if (terrains) {
+        for (const entt::entity h : registry.view<terrain::Terrain>()) {
+            const ecs::Entity e = world.wrap(h);
+            if (!e.activeInHierarchy()) continue;
+            const std::shared_ptr<const terrain::TerrainData> data = terrains(e);
+            if (!data) continue;
+            const std::size_t added = appendTerrain(e, e.get<terrain::Terrain>(), *data, scene.triangles);
+            if (added > 0) {
+                ++rep.terrains;
+                rep.terrain_triangles += added;
             }
         }
     }
     if (extra) extra(scene.triangles);
+    rep.triangles = scene.triangles.size();
     for (const entt::entity h : registry.view<LightProbeVolume>()) {
         const ecs::Entity e = world.wrap(h);
         if (!e.activeInHierarchy()) continue;
@@ -721,6 +1123,76 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
         b.nz = std::max(2u, static_cast<std::uint32_t>(std::lround(size.z / spacing)) + 1u);
         b.intensity = v.intensity;
         scene.volumes.push_back(b);
+    }
+}
+
+void gatherBakeLights(ecs::World& world, const scene::LightSet& sun, BakeScene& scene, ecs::LightBakeMode sun_mode,
+                      BakeGatherReport* report) {
+    constexpr float kDegToRad = kPi / 180.0f;
+    scene.lights.sun = sun.sun;
+    scene.lights.sky = sun.sky;
+    scene.lights.ambient = sun.ambient;
+    scene.lights.points.clear();
+    scene.lights.spots.clear();
+    scene.point_baked.clear();
+    scene.spot_baked.clear();
+    scene.baked_light_ids.clear();
+    bool directional = false;
+    for (const entt::entity h : world.registry().view<ecs::Light>()) {
+        const ecs::Entity e = world.wrap(h);
+        if (!e.activeInHierarchy()) continue;
+        const ecs::Light& light = e.get<ecs::Light>();
+        if (light.type == ecs::LightType::Directional) {
+            // El primero manda (como el renderizador).
+            if (!directional) {
+                directional = true;
+                sun_mode = light.bake_mode;
+            }
+            continue;
+        }
+        if (light.intensity <= 0.0f) continue;
+        if (report != nullptr) {
+            if (light.bake_mode == ecs::LightBakeMode::Baked) ++report->lights_baked;
+            else if (light.bake_mode == ecs::LightBakeMode::Realtime) ++report->lights_realtime;
+            else ++report->lights_mixed;
+        }
+        if (light.bake_mode == ecs::LightBakeMode::Realtime) continue;
+        const std::uint8_t baked = light.bake_mode == ecs::LightBakeMode::Baked ? 1 : 0;
+        if (light.type == ecs::LightType::Point) {
+            scene::PointLight p{};
+            p.position = e.worldPosition();
+            p.color = light.color;
+            p.intensity = light.intensity;
+            p.range = light.range;
+            p.cast_shadows = light.cast_shadows;
+            p.shadow_strength = std::clamp(light.shadow_strength, 0.0f, 1.0f);
+            p.source_radius = std::clamp(light.source_radius, 0.0f, 2.0f);
+            scene.lights.points.push_back(p);
+            scene.point_baked.push_back(baked);
+        } else {
+            scene::SpotLight s{};
+            s.position = e.worldPosition();
+            s.direction = e.forward();
+            s.color = light.color;
+            s.intensity = light.intensity;
+            s.range = light.range;
+            const float inner = std::min(light.inner_angle, light.outer_angle - 0.5f);
+            s.inner_angle = std::max(inner, 0.5f) * kDegToRad;
+            s.outer_angle = light.outer_angle * kDegToRad;
+            s.enabled = true;
+            s.cast_shadows = light.cast_shadows;
+            s.shadow_strength = std::clamp(light.shadow_strength, 0.0f, 1.0f);
+            s.source_radius = std::clamp(light.source_radius, 0.0f, 2.0f);
+            scene.lights.spots.push_back(s);
+            scene.spot_baked.push_back(baked);
+        }
+        if (baked != 0) scene.baked_light_ids.push_back({e.uuid().high, e.uuid().low});
+    }
+    if (sun_mode == ecs::LightBakeMode::Realtime) scene.lights.sun.intensity = 0.0f;
+    scene.sun_baked = sun_mode == ecs::LightBakeMode::Baked && scene.lights.sun.intensity > 0.0f;
+    if (report != nullptr) {
+        report->sun_baked = scene.sun_baked;
+        report->sun_realtime_only = sun_mode == ecs::LightBakeMode::Realtime;
     }
 }
 
@@ -754,7 +1226,7 @@ BakeVolume volumeAround(const std::vector<BakeTriangle>& triangles, float spacin
 
 namespace {
 constexpr char kMagic[4] = {'C', 'R', 'B', 'K'};
-constexpr std::uint32_t kVersion = 2;  // 2: + lightmap de superficie
+constexpr std::uint32_t kVersion = 3;  // 2: + lightmap de superficie; 3: + luces horneadas (directa)
 }  // namespace
 
 std::filesystem::path bakedLightingFile(const std::filesystem::path& scene_file) {
@@ -792,6 +1264,12 @@ bool saveBakedLighting(const std::filesystem::path& file, const gfx::BakedLighti
             out.write(reinterpret_cast<const char*>(sl.keys.data()), static_cast<std::streamsize>(sl.keys.size() * sizeof(std::uint32_t)));
             out.write(reinterpret_cast<const char*>(sl.texels.data()), static_cast<std::streamsize>(sl.texels.size() * sizeof(Vec4)));
         }
+        // Luces horneadas (version 3): el sol y los UUID de las locales.
+        const std::uint32_t light_header[2] = {data.sun_baked ? 1u : 0u, static_cast<std::uint32_t>(data.baked_lights.size())};
+        const float sun_direction[3] = {data.sun_direction.x, data.sun_direction.y, data.sun_direction.z};
+        out.write(reinterpret_cast<const char*>(light_header), sizeof(light_header));
+        out.write(reinterpret_cast<const char*>(sun_direction), sizeof(sun_direction));
+        for (const auto& id : data.baked_lights) out.write(reinterpret_cast<const char*>(id.data()), sizeof(std::uint64_t) * 2);
         if (!out) {
             if (error) *error = "error escribiendo " + file.string();
             return false;
@@ -869,6 +1347,24 @@ bool loadBakedLighting(const std::filesystem::path& file, gfx::BakedLighting& da
                 if (error) *error = "archivo de iluminacion incompleto: " + file.string();
                 return false;
             }
+        }
+    }
+    if (header[0] >= 3) {
+        std::uint32_t light_header[2] = {};
+        float sun_direction[3] = {};
+        in.read(reinterpret_cast<char*>(light_header), sizeof(light_header));
+        in.read(reinterpret_cast<char*>(sun_direction), sizeof(sun_direction));
+        if (!in || light_header[1] > (1u << 20)) {
+            if (error) *error = "archivo de iluminacion danado: " + file.string();
+            return false;
+        }
+        result.sun_baked = light_header[0] != 0;
+        result.sun_direction = Vec3{sun_direction[0], sun_direction[1], sun_direction[2]};
+        result.baked_lights.resize(light_header[1]);
+        for (auto& id : result.baked_lights) in.read(reinterpret_cast<char*>(id.data()), sizeof(std::uint64_t) * 2);
+        if (!in) {
+            if (error) *error = "archivo de iluminacion incompleto: " + file.string();
+            return false;
         }
     }
     data = std::move(result);

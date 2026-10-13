@@ -92,6 +92,7 @@ struct GpuLights {
     // xy = esquina del mapa (x, z), z = lado (m), w = 1 si vale este frame.
     core::Vec4 sky_map{};
     // x = altura del plano desde el que se mira (m), y = profundidad que cubre (m).
+    // w = 1 si el sol esta horneado entero (su directa va en la GI horneada).
     core::Vec4 sky_map_depth{};
 };
 
@@ -191,11 +192,12 @@ static_assert(sizeof(GpuSkinnedPush) == 128, "GpuSkinnedPush debe coincidir con 
 static_assert(sizeof(GpuSkinnedShadowPush) == 112,
               "GpuSkinnedShadowPush debe coincidir con skinned_shadow.vert");
 
-// Constante de push del post-proceso: tamano de pixel e interruptor de FXAA.
+// Constante de push del post-proceso (fxaa.frag): tamano de pixel,
+// interruptor de FXAA y nitidez adaptativa (0..1).
 struct GpuPostProcessPush {
     core::Vec2 inverse_resolution{};
     float enabled = 1.0f;
-    float unused = 0.0f;
+    float sharpen = 0.0f;
 };
 
 // Constante de push de las pasadas de bloom (bloom_down.frag / bloom_up.frag).
@@ -212,7 +214,7 @@ struct GpuCompositeSettings {
     // x = exposicion manual, y = intensidad del bloom, z = 1 auto-exposicion,
     // w = compensacion (EV)
     core::Vec4 exposure{1.0f, 0.06f, 1.0f, 0.0f};
-    // x = rayos de luz, y = tonemapper (0 Neutral, 1 ACES, 2 ninguno),
+    // x = rayos de luz, y = tonemapper (0 Neutral, 1 ACES, 2 ninguno, 3 AgX, 4 AgX Punchy),
     // z = saturacion, w = contraste
     core::Vec4 tone{0.6f, 0.0f, 1.12f, 1.08f};
     // x = viveza, y = vineta (intensidad), z = vineta (suavidad),
@@ -354,9 +356,12 @@ struct GpuLightShaftPush {
 // Constante de push del promedio de la auto-exposicion.
 struct GpuExposurePush {
     float delta_seconds = 0.0f;
-    float low_percent = 0.5f;
-    float high_percent = 0.92f;
-    float unused = 0.0f;
+    // Ventana de la medicion (AutoExposureMath.h: kLowPercent/kHighPercent).
+    // 0.35..0.96 en vez de 0.5..0.92: de noche una zona iluminada por una
+    // farola entra en la media de forma gradual, no de golpe.
+    float low_percent = 0.35f;
+    float high_percent = 0.96f;
+    float reset = 0.0f;  // 1 = corte de camara: sin transicion
     // Limites del ajuste de la exposicion (log2) y velocidades de adaptacion
     // (PostProcessSettings: min_ev, max_ev, adaptation_speed_up/down).
     float min_log_exposure = -2.0f;
