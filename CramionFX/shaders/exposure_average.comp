@@ -56,6 +56,9 @@ layout(push_constant) uniform PushConstants {
     float max_log_exposure;  // p. ej. 1.4 (bajo: la noche debe seguir pareciendo noche)
     float speed_up;          // hacia una escena mas brillante
     float speed_down;        // hacia una escena mas oscura
+    // 0 de dia .. 1 de noche (1 - luz del dia): cuanto actuan la rodilla y la
+    // luz fuerte. De dia un interior oscuro se compensa entero.
+    float night;
 } push;
 
 // Deben coincidir con exposure_histogram.comp.
@@ -129,13 +132,16 @@ void main() {
     float average_log = weight_total > 0.0 ? weighted_sum / weight_total : log2(kTargetLuminance);
     float highlight_log = hl_total > 0.0 ? hl_sum / hl_total : average_log;
 
-    // Objetivo: entero hasta kKnee EV, parcial por encima (noche).
+    // Objetivo: entero hasta kKnee EV, parcial por encima, pero solo de noche.
+    // De dia la rodilla tambien oscurecia los interiores (1-2 EV) y casi no
+    // compensaba un bajon de luz al entrar en una habitacion.
+    float night = clamp(push.night, 0.0, 1.0);
     float full = log2(kTargetLuminance) - average_log;
-    float soft = full > kKnee ? kKnee + (full - kKnee) * kSlope : full;
+    float soft = full > kKnee ? kKnee + (full - kKnee) * mix(1.0, kSlope, night) : full;
     // Una luz fuerte en la vista quita parte de la apertura nocturna, nunca
     // por debajo de lo que pediria el dia (min(full, kKnee)).
     float limit = log2(kHighlightLuminance) - highlight_log;
-    float pulled = limit < soft ? mix(soft, limit, kHighlightWeight) : soft;
+    float pulled = limit < soft ? mix(soft, limit, kHighlightWeight * night) : soft;
     float target = clamp(max(pulled, min(full, kKnee)), push.min_log_exposure,
                          push.max_log_exposure);
     if (isnan(target) || isinf(target)) {

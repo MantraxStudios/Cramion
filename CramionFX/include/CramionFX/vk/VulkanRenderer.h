@@ -34,6 +34,7 @@
 #include "CramionFX/vk/RayTracing.h"
 #include "CramionFX/vk/ReflectionProbe.h"
 #include "CramionFX/vk/ShadowMap.h"
+#include "CramionFX/vk/SsrPyramids.h"
 #include "CramionFX/vk/SkinnedModel.h"
 #include "CramionFX/vk/SkinnedPass.h"
 #include "CramionFX/vk/TextureFiltering.h"
@@ -525,6 +526,33 @@ public:
         if (rayTargetsKey() != rt_targets_key_) targets_dirty_ = true;
     }
     bool rayTracingEnabled() const { return rt_enabled_; }
+    // Al terminar una carga (todo subido): la escena de rayos pendiente, ya,
+    // sin esperar el segundo de calma. Si no, los primeros instantes de juego
+    // iban sin rayos y se encendian de golpe (con su tiron) ya jugando.
+    void flushPendingRayTracingScene() {
+        if (rt_model_edit_pending_) rt_scene_dirty_ = true;
+    }
+    // Otra escena: la cache de radiancia de los rayos (luz rebotada guardada
+    // en el mundo) era de la anterior. Rehacer la escena de rayos ya no la
+    // vacia (en el mismo nivel sigue valiendo).
+    void resetRayTracingCache() { ray_tracing_.resetCache(); }
+    // Otra escena: los dos cubos de la sonda (y lo que ven, y con que luz) eran
+    // de la anterior, y probeCaptureDue podia volver a uno de ellos. Como al
+    // arrancar: solo cielo hasta la primera captura, que entra sin fundido.
+    void resetReflectionProbe() {
+        probe_ready_ = false;
+        probe_face_ = -1;
+        probe_fade_ = 1.0f;
+        probe_slow_seconds_ = 0.0f;
+        probe_still_seconds_ = 0.0f;
+        probe_lost_swap_valid_ = false;
+        probe_capture_mixed_ = false;
+        probe_capture_restarted_ = false;
+        probe_last_capture_mixed_ = false;
+        probe_trust_ = {1.0f, 1.0f};
+        for (std::vector<float>& distances : probe_distances_) distances.clear();
+        for (std::vector<float>& signature : probe_cube_signature_) signature.clear();
+    }
     bool rayTracingSupported() const { return device_.rayTracingSupported(); }
     // Se esta trazando de verdad este frame (soportado, activado y listo).
     bool rayTracingActive() const {
@@ -1196,10 +1224,16 @@ private:
     std::array<VulkanImage, 2> gi_filter_variance_{};
     VulkanImage gi_image_{};            // resultado: lo lee la iluminacion
     // Reflejos de pantalla (rgb) y su confianza (a), a resolucion completa:
-    // los de este frame sin filtrar (ssr.frag), los filtrados en el tiempo
-    // (ssr_resolve.frag, los que lee la iluminacion) y la copia de estos que
-    // sirve de historia al frame siguiente.
+    // los trazados (ssr.frag) y los filtrados en el espacio (ssr_resolve.frag,
+    // los que lee la iluminacion: ssr_image_).
     VulkanImage ssr_raw_{};
+    // Piramides del SSR: profundidad minima de este frame y la imagen HDR del
+    // frame anterior con mips (la historia que leen el SSR, la GI y los rayos).
+    SsrPyramids ssr_pyramids_{};
+    // Vista-proyeccion, con su jitter, de la vista que escribio la historia
+    // (recordFilterHistoryCopies), y la de este frame (updateUniforms).
+    core::Mat4 scene_history_view_projection_ = core::Mat4::identity();
+    core::Mat4 current_jittered_view_projection_ = core::Mat4::identity();
     // Sombras por rayos de las luces locales (rt_shadows.comp): por pixel, las
     // 4 luces que mas aportan, cada canal = (luz + 1) * 32 + visibilidad (0..31).
     VulkanImage rt_shadow_mask_{};
@@ -1241,7 +1275,6 @@ private:
     vk::raii::DescriptorPool rt_filter_pool_{nullptr};
     void recordRtReflectionFilter(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     VulkanImage ssr_image_{};
-    VulkanImage ssr_history_{};
     std::array<VulkanImage, kBloomLevels> bloom_levels_{};
     // Radiancia del cielo en cada direccion (no depende de la ventana).
     VulkanImage sky_lut_{};
@@ -1685,12 +1718,11 @@ private:
     // dos ojos (no de cada ojo).
     const scene::Camera* shadow_camera_override_ = nullptr;
     // Estado temporal del ojo derecho (el FSceneViewState de cada ojo en
-    // Unreal): sus historias del TAA, del SSR y de la GI y su vista-proyeccion
+    // Unreal): sus historias del TAA y de la GI y su vista-proyeccion
     // anterior. Mientras se dibuja el ojo derecho esta cambiado con el de los
     // miembros (swapEyeState) y se usan los descriptor sets del ojo 1.
     struct XrEyeState {
         VulkanImage taa_history;
-        VulkanImage ssr_history;
         VulkanImage gi_history;
         VulkanImage gi_moments_history;
         // Filtros de las sombras y los reflejos por rayos.
@@ -1698,7 +1730,6 @@ private:
         VulkanImage rt_reflection_history;
         VulkanImage rt_reflection_moments_history;
         bool taa_valid = false;
-        bool ssr_valid = false;
         bool gi_valid = false;
         bool rt_shadow_valid = false;
         bool rt_reflection_valid = false;
@@ -1790,11 +1821,16 @@ private:
     core::Mat4 camera_projection_ = core::Mat4::identity();  // sin jitter (profundidad lineal)
     // La del frame anterior, para reproyectar su imagen en el SSGI.
     core::Mat4 previous_view_projection_ = core::Mat4::identity();
-    // La imagen HDR contiene un frame anterior valido (no justo tras crearla).
+    // La historia HDR (ssr_pyramids_) contiene un frame anterior valido (no
+    // justo tras crearla)...
     bool scene_history_valid_ = false;
+    // ...salvo que el ultimo frame no la guardara (nada la leia: reflejos y GI
+    // de pantalla apagados, sin rayos). Entonces es vieja y no se lee.
+    bool scene_history_stale_ = false;
+    // El ultimo frame tambien rehizo sus mips (solo con el SSR): si no, el SSR
+    // solo puede leer su nivel 0.
+    bool scene_history_mips_ = false;
     bool ssr_history_ready_ = false;
-    // ssr_history_ tiene los reflejos filtrados del frame anterior.
-    bool ssr_filter_history_valid_ = false;
     // gi_history_ tiene la luz rebotada filtrada del frame anterior.
     bool gi_filter_history_valid_ = false;
 
@@ -1822,11 +1858,41 @@ private:
     std::vector<float> probe_signature_;
     // Primer frame en el que se puede capturar otra cara (reparto del coste).
     std::uint64_t probe_next_face_frame_ = 0;
-    // Posicion de la camara el frame anterior, para saber si va despacio.
+    // Posicion de la camara la vez anterior, para saber si va despacio, y
+    // cuando fue (su propio reloj: la otra vista del editor pone a 0 el del
+    // frame y la camara parecia parada).
     core::Vec3 probe_last_camera_{};
+    std::chrono::steady_clock::time_point probe_last_time_{};
     // CVars render.probe.* y segundos desde que empezo la ultima captura.
     ReflectionProbeLimits probe_limits_{};
     float probe_since_capture_ = 0.0f;
+    // Lo que ve cada cubo (distancias a baja resolucion, en la CPU): si la
+    // camara se va a donde su sonda no ve (otra habitacion), se recaptura
+    // enseguida aunque no se pare...
+    std::array<std::vector<float>, ReflectionProbe::kCubeCount> probe_distances_{};
+    // ...y si no se puede (ni volver al otro cubo), ese cubo pierde la
+    // confianza (0..1, en kProbeTrustSeconds): su luz y sus reflejos eran los
+    // de otro sitio. Los pesos de los cubos (iluminacion y GI) van
+    // multiplicados por ella; lo que falta lo pone el cielo, como sin sonda.
+    std::array<float, ReflectionProbe::kCubeCount> probe_trust_{1.0f, 1.0f};
+    // Con que sol y que luz se capturo cada cubo: el anterior se recupera sin
+    // capturar si la camara vuelve a su lado y la luz es la misma.
+    std::array<core::Vec3, ReflectionProbe::kCubeCount> probe_cube_sun_{};
+    std::array<std::vector<float>, ReflectionProbe::kCubeCount> probe_cube_signature_{};
+    // Segundos seguidos con la camara despacio (pararse, no darse la vuelta)
+    // y quieta de verdad (recaptura entre dos cubos).
+    float probe_slow_seconds_ = 0.0f;
+    float probe_still_seconds_ = 0.0f;
+    // Donde se volvio al otro cubo porque el actual perdio la camara: cerca
+    // de alli no se vuelve atras solo por estar mas cerca (iba y venia).
+    core::Vec3 probe_lost_swap_position_{};
+    bool probe_lost_swap_valid_ = false;
+    // La luz cambio durante la captura en curso (sus caras mezclan dos luces),
+    // esta ya se empezo otra vez por eso, y la ultima terminada salio mezclada
+    // (una luz que parpadea: no se repite).
+    bool probe_capture_mixed_ = false;
+    bool probe_capture_restarted_ = false;
+    bool probe_last_capture_mixed_ = false;
 
     // Llama a `draw(submesh_index)` con las submallas opacas del actor que
     // tocan el volumen. Devuelve cuantas.

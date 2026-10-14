@@ -26,7 +26,7 @@
   <header class="site-header">
     <div class="header-inner">
       <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.4.10</span></a>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.4.11</span></a>
       <nav class="main-nav" aria-label="Secciones">
         <a href="index.html" data-nav="index">Documentación</a>
         <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
@@ -149,7 +149,7 @@ for (const Value&amp; z : Profiler::zones(5).items()) {
     <tr><td><code>fx.particles.CullDistance</code></td><td>120 m</td><td>Más lejos los emisores no emiten.</td></tr>
     <tr><td><code>fx.particles.CollisionDistance</code></td><td>40 m</td><td>Más lejos (o detrás de la cámara) las partículas no chocan con la física.</td></tr>
     <tr><td><code>render.probe.FaceInterval</code></td><td>0 (auto)</td><td>Sonda de reflexión (sin trazado de rayos): frames entre una cara y la siguiente de la captura. En automático, 4 en GPU de nivel Bajo, 3 en Medio y 2 en Alto/Ultra.</td></tr>
-    <tr><td><code>render.probe.MinSeconds</code></td><td>0 (auto)</td><td>Segundos mínimos entre dos capturas completas de la sonda (al correr o con el ciclo de día se recapturaba sin parar). En automático, 2 s en Bajo, 1 s en Medio y 0,5 s en Alto/Ultra.</td></tr>
+    <tr><td><code>render.probe.MinSeconds</code></td><td>0 (auto)</td><td>Segundos mínimos entre dos capturas completas de la sonda (al correr o con el ciclo de día se recapturaba sin parar). En automático, 2 s en Bajo, 1 s en Medio y 0,5 s en Alto/Ultra, y la recaptura cuando la cámara se va a otra habitación no espera. Con un valor puesto a mano también espera, y mientras tanto esa zona se ilumina solo con el cielo.</td></tr>
     <tr><td><code>render.probe.DrawDistance</code></td><td>0 (auto)</td><td>Distancia de dibujo de la captura de la sonda: más lejos se refleja el cielo. En automático, 150 m en Bajo, 300 m en Medio, 600 m en Alto y 1000 m en Ultra (nunca más que el plano lejano de la cámara). Con un <code>TerrainGrid</code> grande es lo que más ahorra.</td></tr>
     <tr><td><code>render.probe.Terrain</code></td><td>sí</td><td>Dibujar el terreno en la captura de la sonda. Apagado es más barato con terrenos grandes, pero el suelo de fuera de pantalla no se refleja ni rebota luz.</td></tr>
     <tr><td><code>audio.MaxVoices</code></td><td>32</td><td>Sonidos que se mezclan de verdad. Los que menos se oyen pasan a <em>virtuales</em>: siguen "sonando" para el juego (<code>isPlaying</code>) y vuelven por donde tocarían.</td></tr>
@@ -184,7 +184,7 @@ for (const Value&amp; z : Profiler::zones(5).items()) {
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.4.10. Gratis para hacer y vender tus juegos.</span>
+      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.4.11. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="licencia.html">Licencia</a>

@@ -530,7 +530,7 @@
       </video>
       <div class="wrap">
         <div class="hero-copy">
-          <a href="#novedades" class="pill"><b>Nuevo en la 2.4.10</b><span>Cambio de escena limpio, VR nítida, exposición de noche y horneado de luz</span></a>
+          <a href="#novedades" class="pill"><b>Nuevo en la 2.4.11</b><span>Habitaciones que ya no se oscurecen al volver, SSR reescrito y rayos en el juego exportado</span></a>
           <h1 id="hero-title">Un motor de juegos 3D para Windows, <em>con su editor.</em></h1>
           <p class="lead">
             Montas la escena en el editor, escribes el juego en C++ y le das a Play. Render en Vulkan (1.3, o desde 1.0 en Android), física con Jolt,
@@ -543,7 +543,7 @@
             </a>
             <a href="manual/index.html" class="btn btn-glass btn-lg"><svg class="ic"><use href="#i-book"/></svg>Leer la documentación</a>
           </div>
-          <p class="meta">2.4.10 · Windows 10/11 x64 · Android (64 y 32 bits) · realidad virtual · Vulkan</p>
+          <p class="meta">2.4.11 · Windows 10/11 x64 · Android (64 y 32 bits) · realidad virtual · Vulkan</p>
         </div>
       </div>
       <div class="hud" aria-hidden="true">
@@ -744,6 +744,18 @@ CRAMION_SCRIPT(Jugador)</code></pre>
         </div>
 
         <div class="news">
+          <div class="card wide reveal">
+            <p class="tag">2.4.11 · Corrección</p>
+            <h3>Habitaciones al volver a entrar, reflejos de pantalla, exposición de día y trazado de rayos</h3>
+            <ul>
+              <li>Al salir de una habitación y volver a entrar ya no se ve más oscura hasta que la luz vuelve de golpe: la sonda de reflexión recaptura al cambiar de habitación y recupera sola la de la habitación, con fundidos suaves.</li>
+              <li>Reflejos de pantalla (SSR) reescritos: trazado sobre una pirámide de profundidad, sin rayas, huecos ni estelas, y lo rugoso se ve borroso de verdad.</li>
+              <li>Los interiores de día ya no salen oscuros con el ajuste de noche de la exposición automática.</li>
+              <li>El trazado de rayos se enciende de verdad en el juego exportado, y sus reflejos ya no se arrastran al mover la cámara.</li>
+              <li>Más arreglos: luz volumétrica en interiores, reflejos del agua y el sol con Escena y Juego visibles a la vez.</li>
+            </ul>
+            <a href="manual/novedades-24.html#v2411" class="btn btn-outline btn-sm">Qué corrige la 2.4.11<svg class="ic ic-sm"><use href="#i-arrow"/></svg></a>
+          </div>
           <div class="card wide reveal">
             <p class="tag">2.4.10 · Corrección</p>
             <h3>Cambio de escena, «Ultra realista», VR, exposición automática y horneado de luz</h3>
@@ -996,7 +1008,7 @@ CRAMION_SCRIPT(Jugador)</code></pre>
       <div class="wrap download">
         <div class="card dl-main reveal">
           <p class="eyebrow">Descargar</p>
-          <h2>Cramion 2.4.10 para Windows</h2>
+          <h2>Cramion 2.4.11 para Windows</h2>
           <p>Descomprime y abre <code>CramionEditor.exe</code>. El motor avisa de las versiones nuevas y se actualiza solo.</p>
           <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary btn-lg">
             <svg class="ic"><use href="#i-download"/></svg>Cramion-win64.zip

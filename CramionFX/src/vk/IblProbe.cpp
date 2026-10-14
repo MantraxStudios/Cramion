@@ -225,6 +225,19 @@ void IblProbe::create(const VulkanDevice& device, const VulkanImage& sky_lut) {
     brdf_storage.imageLayout = vk::ImageLayout::eGeneral;
     write_image(brdf_sets_[0], 0, Type::eStorageImage, brdf_storage);
 
+    // Quien lee el cubo y los armonicos: la iluminacion, el vidrio y la luz
+    // volumetrica (fragment) y los rayos (rt_gi, rt_reflections, rt_probes y
+    // path_trace en compute; path_trace.rgen con el pipeline de rayos). Sin
+    // rayos ningun compute los lee. La etapa de rayos solo puede ir en una
+    // barrera si ese pipeline esta activado.
+    reader_stages_ = vk::PipelineStageFlagBits2::eFragmentShader;
+    if (device.rayTracingSupported()) {
+        reader_stages_ |= vk::PipelineStageFlagBits2::eComputeShader;
+    }
+    if (device.rayTracingPipelineSupported()) {
+        reader_stages_ |= vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+    }
+
     brdf_ready_ = false;
     std::cout << "[Vulkan] IBL listo: cubo de " << kEnvironmentSize << " px con "
               << kEnvironmentMips << " niveles de rugosidad\n";
@@ -297,14 +310,15 @@ void IblProbe::record(const vk::raii::CommandBuffer& cmd, const core::Vec3& ligh
     }
 
     // --- El cubo se reescribe entero (el frame anterior lo leyo) ---
+    // (Tambien los rayos: todos los lectores, no solo los fragment shaders.)
     imageBarrier(cmd, *environment_.image, kEnvironmentMips, 6, vk::ImageLayout::eUndefined,
-                 vk::ImageLayout::eGeneral, Stage::eFragmentShader, Access::eShaderSampledRead,
+                 vk::ImageLayout::eGeneral, reader_stages_, Access::eShaderSampledRead,
                  Stage::eComputeShader, Access::eShaderStorageWrite);
 
     // Los armonicos los leyo tambien el frame anterior.
     {
         vk::MemoryBarrier2 barrier{};
-        barrier.srcStageMask = Stage::eFragmentShader;
+        barrier.srcStageMask = reader_stages_;
         barrier.srcAccessMask = Access::eShaderStorageRead;
         barrier.dstStageMask = Stage::eComputeShader;
         barrier.dstAccessMask = Access::eShaderStorageWrite;
@@ -340,16 +354,15 @@ void IblProbe::record(const vk::raii::CommandBuffer& cmd, const core::Vec3& ligh
     cmd.pushConstants<IblPush>(*sh_pass_.layout(), vk::ShaderStageFlagBits::eCompute, 0, push);
     cmd.dispatch(1, 1, 1);
 
-    // --- Todo pasa a leerse en la pasada de iluminacion ---
+    // --- Todo pasa a leerse en la pasada de iluminacion y en los rayos ---
     imageBarrier(cmd, *environment_.image, kEnvironmentMips, 6, vk::ImageLayout::eGeneral,
                  vk::ImageLayout::eShaderReadOnlyOptimal, Stage::eComputeShader,
-                 Access::eShaderStorageWrite, Stage::eFragmentShader,
-                 Access::eShaderSampledRead);
+                 Access::eShaderStorageWrite, reader_stages_, Access::eShaderSampledRead);
 
     vk::MemoryBarrier2 barrier{};
     barrier.srcStageMask = Stage::eComputeShader;
     barrier.srcAccessMask = Access::eShaderStorageWrite;
-    barrier.dstStageMask = Stage::eFragmentShader;
+    barrier.dstStageMask = reader_stages_;
     barrier.dstAccessMask = Access::eShaderStorageRead;
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(barrier);

@@ -26,7 +26,7 @@
   <header class="site-header">
     <div class="header-inner">
       <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.4.10</span></a>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.4.11</span></a>
       <nav class="main-nav" aria-label="Secciones">
         <a href="index.html" data-nav="index">Documentación</a>
         <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
@@ -92,6 +92,37 @@
   multijugador serio (netcode, servidor dedicado, chat de voz), multitudes, niebla local, pelo, GI por sondas dinámicas,
   lightmap de superficie, accesibilidad, mods, informe de cierres, job system y Linux.
 </p>
+
+<h3 id="v2411">2.4.11: habitaciones al volver a entrar, reflejos de pantalla, exposición de día y trazado de rayos</h3>
+<p>
+  Corrección sobre la 2.4.10.
+</p>
+<ul>
+  <li><strong>Habitación más oscura al volver a entrar</strong>: la sonda de reflexión (de ella salen los reflejos de respaldo y
+    la luz rebotada de lo que no está en pantalla) se quedaba con la captura de fuera hasta que el jugador se paraba lejos, y
+    entonces la luz cambiaba de golpe. Ahora sabe qué ve cada cubo y recaptura en cuanto la cámara se va a otra habitación.
+    Al volver, recupera el cubo de la habitación sin capturar, también por la misma puerta. La recaptura al pararse pide
+    0,3 s quieto y todos los cambios son fundidos de 0,5 s, también en la GI de pantalla. Los cubos se vacían al cambiar de
+    escena. Ver <a href="insights.html">CVars <code>render.probe.*</code></a>.</li>
+  <li><strong>Exposición automática de día</strong>: el ajuste de noche de la 2.4.10 también oscurecía los interiores de día.
+    Ahora depende de la luz del día: de día se compensa del todo, de noche como en la 2.4.10. Ver
+    <a href="componentes-basicos.html#PostProcessing">PostProcessing</a>.</li>
+  <li><strong>Reflejos de pantalla (SSR) reescritos</strong>: trazado sobre una pirámide de profundidad (como FidelityFX
+    SSSR), sin rayas, huecos ni estelas. Cada reflejo lee el mip de la imagen anterior que cubre el cono de su rugosidad, y lo
+    muy rugoso o muy lejano pasa a la sonda de forma suave. Ya no usa historial temporal, y la oclusión especular solo oscurece
+    el respaldo.</li>
+  <li><strong>Trazado de rayos en el juego exportado</strong>: la escena de rayos se construía vacía en la pantalla de carga y
+    el juego nunca usaba rayos. Ahora se construye al terminar la carga. La caché de luz rebotada se conserva al rehacer la
+    escena de rayos, los reflejos por rayos ya no se arrastran al mover la cámara y los objetos sin sombra ya no la proyectan.
+    Ver <a href="render.html#escena-rayos">La escena de rayos</a>.</li>
+  <li><strong>Otros</strong>: el sol ya no se cuela unos frames en la luz volumétrica de los interiores al girar la cámara;
+    los reflejos del agua ya no salen estirados detrás de árboles y postes; y con Escena y Juego visibles a la vez el sol ya
+    no se escala dos veces.</li>
+</ul>
+<div class="note">
+  <strong>Trazado de rayos.</strong> Con <code>ray_tracing</code> activado, el juego exportado usa ahora reflejos y GI por rayos
+  en las GPU que los admiten: revisa el rendimiento. Para ver el SSR, apaga el trazado de rayos.
+</div>
 
 <h3 id="v2410">2.4.10: cambio de escena limpio, «Ultra realista» sin velo, VR, exposición automática y horneado de luz</h3>
 <p>
@@ -331,7 +362,7 @@ Camera::shake(0.6f, 0.4f);</code></pre>
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.4.10. Gratis para hacer y vender tus juegos.</span>
+      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.4.11. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="licencia.html">Licencia</a>

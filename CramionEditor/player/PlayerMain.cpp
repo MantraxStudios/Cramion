@@ -1182,6 +1182,9 @@ int runPlayer() {
                         if (!m.entry_asset.empty() && !project::startModEntry(world, project->assetsFolder(), m, &error))
                             std::cerr << "[Mods] " << m.id << ": " << error << "\n";
                     }
+                    // Todo esta en la GPU: la escena de rayos, en el primer frame
+                    // de juego (no un segundo despues, ya jugando).
+                    renderer.flushPendingRayTracingScene();
                     load.stage = Stage::Done;
                     std::cout << "[Juego] Escena lista\n";
                     break;

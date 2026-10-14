@@ -80,6 +80,7 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     vec4 rt_shadows;               // x = 1 luces locales + 2 sol si rt_shadow_mask vale, y = vision nocturna (0..0.9)
     vec4 sky_map;                  // oclusion del cielo desde arriba: xy esquina (x, z), z lado (m), w = 1 si vale
     vec4 sky_map_depth;            // x = altura desde la que se mira (m), y = profundidad que cubre (m)
+    vec4 probe_trust;              // x/y = confianza en el cubo 0/1 de la sonda (0..1)
 } lights;
 
 // Mapa de sombras en cascada. El muestreador compara por hardware: devuelve
@@ -1532,29 +1533,45 @@ void main() {
         // del IBL, que en un interior solo se ve por donde se ve el cielo
         // (visibilidad de la GI). Con el reflejo entero (ssr.a = 1: los rayos
         // en lo poco rugoso) el respaldo no se calcula: no aporta nada.
+        //
+        // Oclusion especular (Lagarde): el especular se ocluye mas que el
+        // difuso en angulos rasantes. Solo para el respaldo: lo que encontro
+        // el SSR ya ve sus oclusores (antes el reflejo salia oscurecido dos
+        // veces junto a las paredes y bajo los muebles).
+        float specular_ao = clamp(pow(n_dot_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao,
+                                  0.0, 1.0);
         vec4 ssr = texelFetch(ssr_map, ivec2(gl_FragCoord.xy), 0);
         vec3 reflected_light = ssr.rgb;
         if (ssr.a < 1.0) {
             vec3 fallback = textureLod(environment_map, reflected, roughness * kEnvironmentMaxLod).rgb * sky_visibility;
-            float probe_weight = lights.probes[0].w + lights.probes[1].w;
+            // Cada cubo con su peso: el del fundido por la confianza en el (la
+            // CPU la baja si la camara se ha ido a donde ese cubo no ve: una
+            // sonda capturada en otra habitacion no vale aqui).
+            float weight_0 = lights.probes[0].w * lights.probe_trust.x;
+            float weight_1 = 0.0;
+#ifndef CRAMION_COMPAT
+            weight_1 = lights.probes[1].w * lights.probe_trust.y;
+#endif
+            float probe_weight = weight_0 + weight_1;
             if (probe_weight > 0.001) {
                 float lod = roughness * kEnvironmentMaxLod;
                 vec3 probe_light = vec3(0.0);
-                if (lights.probes[0].w > 0.001) {
+                if (weight_0 > 0.001) {
                     vec3 d = probeDirection(reflection_probe_0, lights.probes[0].xyz,
                                             world_position, reflected);
-                    probe_light += textureLod(reflection_probe_0, d, lod).rgb * lights.probes[0].w;
+                    probe_light += textureLod(reflection_probe_0, d, lod).rgb * weight_0;
                 }
 #ifndef CRAMION_COMPAT
-                if (lights.probes[1].w > 0.001) {
+                if (weight_1 > 0.001) {
                     vec3 d = probeDirection(reflection_probe_1, lights.probes[1].xyz,
                                             world_position, reflected);
-                    probe_light += textureLod(reflection_probe_1, d, lod).rgb * lights.probes[1].w;
+                    probe_light += textureLod(reflection_probe_1, d, lod).rgb * weight_1;
                 }
 #endif
-                fallback = probe_light / probe_weight;
+                // La parte sin sonda de confianza se queda con el cielo.
+                fallback = mix(fallback, probe_light / probe_weight, min(probe_weight, 1.0));
             }
-            reflected_light = mix(fallback, ssr.rgb, ssr.a);
+            reflected_light = mix(fallback * specular_ao, ssr.rgb, ssr.a);
         }
         vec3 specular_ibl = reflected_light * (f0 * brdf.x + brdf.y) * energy;
         // Oclusion del horizonte: con normal maps, el reflejo puede apuntar por
@@ -1562,12 +1579,7 @@ void main() {
         float horizon = min(1.0 + dot(reflected, geometric_normal), 1.0);
         specular_ibl *= horizon * horizon;
 
-        // Oclusion especular (Lagarde): el especular se ocluye mas que el
-        // difuso en angulos rasantes.
-        float specular_ao = clamp(pow(n_dot_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao,
-                                  0.0, 1.0);
-
-        color = diffuse_ibl * multiBounceAo(ao, albedo) + specular_ibl * specular_ao;
+        color = diffuse_ibl * multiBounceAo(ao, albedo) + specular_ibl;
         // Tela: el sheen tambien con la luz del cielo (sobre todo de canto).
         if (surface_model.model == kShadingCloth) {
             vec3 sheen_color = mix(vec3(1.0), disneyTint(albedo), surface_model.params.y);

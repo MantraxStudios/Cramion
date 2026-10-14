@@ -335,6 +335,20 @@ void testAutoExposureMetering() {
     check(with < without - 0.3f, "bombilla en la vista: mas oscuro");
     check(with >= ae::kKnee - 1e-4f, "bombilla: nunca por debajo de la exposicion de dia");
 
+    // Interior de dia (habitacion en penumbra, con la ventana al sol en la
+    // vista): sin rodilla ni tiron de la luz fuerte, se compensa entera como
+    // antes; de noche, el mismo histograma si se queda en la rodilla.
+    const Bins room = histogram({{-4.0f, 600u}, {-3.0f, 330u}, {2.5f, 70u}});
+    float room_mean = 0.0f;
+    check(ae::windowMeanLog(room.data(), ae::kLowPercent, ae::kHighPercent, room_mean), "interior: hay medicion");
+    const float room_day = ae::meterHistogram(room.data(), min_ev, max_ev, 0.0f);
+    const float room_full = std::clamp(std::log2(ae::kTargetLuminance) - room_mean, min_ev, max_ev);
+    check(approx(room_day, room_full), "interior de dia: se compensa entero");
+    const float room_night = ae::meterHistogram(room.data(), min_ev, max_ev, 1.0f);
+    check(room_night < room_day - 0.3f, "el mismo interior de noche: rodilla");
+    const float room_dusk = ae::meterHistogram(room.data(), min_ev, max_ev, 0.5f);
+    check(room_dusk <= room_day + 1e-4f && room_dusk >= room_night - 1e-4f, "atardecer: entre el dia y la noche");
+
     // Sin pixeles: exposicion neutra.
     const Bins empty{};
     check(approx(ae::meterHistogram(empty.data(), min_ev, max_ev), 0.0f), "histograma vacio: neutra");

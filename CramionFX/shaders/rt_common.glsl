@@ -271,6 +271,7 @@ void fillHit(uint model, uint geometry, uint primitive, vec2 barycentrics, float
 const uint kMaskScenery = 0x01u;
 const uint kMaskTerrain = 0x02u;
 const uint kMaskFoliage = 0x04u;
+const uint kMaskNoShadow = 0x08u;  // rigidos sin sombra: los rayos de sombra no los ven
 const uint kMaskAll = 0xFFu;
 
 // Lanza un rayo y devuelve el primer impacto (con recorte por alfa). `mask`:
@@ -346,8 +347,9 @@ bool unoccludedMask(vec3 origin, vec3 direction, float max_distance, uint mask) 
     return rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
+// Rayo de sombra: no ve lo que no proyecta sombra (como los mapas de sombras).
 bool unoccluded(vec3 origin, vec3 direction, float max_distance) {
-    return unoccludedMask(origin, direction, max_distance, kMaskAll);
+    return unoccludedMask(origin, direction, max_distance, kMaskAll & ~kMaskNoShadow);
 }
 
 // Luz que sale de un punto de impacto hacia el rayo: emision + sol (con su

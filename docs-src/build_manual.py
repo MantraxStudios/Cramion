@@ -511,7 +511,7 @@ hub_main = f"""
     <main class="doc">
       <div class="doc-inner" style="max-width: 1040px">
         <section class="hero">
-          <a class="badge" href="novedades-24.html#v2410"><b>Nuevo en la {VERSION}</b> Cambio de escena sin restos ni terrenos desplazados y «Ultra realista» sin velo {icon("arrow")}</a>
+          <a class="badge" href="novedades-24.html#v2411"><b>Nuevo en la {VERSION}</b> Habitaciones que ya no se oscurecen al volver y reflejos de pantalla reescritos {icon("arrow")}</a>
           <h1>Documentación de Cramion</h1>
           <div class="intro">{intro_html}</div>
           <div class="actions">

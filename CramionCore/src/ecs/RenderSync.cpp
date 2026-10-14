@@ -2126,6 +2126,10 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
     // cambio de escena no llamo a clearSceneStreaming).
     if (world.sceneGeneration() != scene_generation_) {
         if (scene_generation_ != 0) clearSceneStreaming();
+        // Los cubos de la sonda de reflexion eran de la escena anterior. Aqui y
+        // no en clearSceneStreaming: reset() tambien la llama al reimportar un
+        // modelo (misma escena), y la sonda se recapturaba con la escena vacia.
+        renderer.resetReflectionProbe();
         scene_generation_ = world.sceneGeneration();
     }
     // Video en materiales de entidades que ya no existen (entt::entity lleva
@@ -2332,8 +2336,12 @@ void RenderSync::clearSceneStreaming() {
     foliage_signature_ = 0;
     foliage_count_ = 0;
     // Lo que hay en la GPU (o subiendose) tambien fuera: antes los arboles de
-    // la escena anterior seguian hasta que la nueva terminaba de sembrar.
-    if (renderer_ != nullptr) renderer_->clearFoliage();
+    // la escena anterior seguian hasta que la nueva terminaba de sembrar. Y la
+    // luz rebotada que guardan los rayos en el mundo era de la escena anterior.
+    if (renderer_ != nullptr) {
+        renderer_->clearFoliage();
+        renderer_->resetRayTracingCache();
+    }
     foliage_uploaded_ = false;
 }
 
@@ -3382,6 +3390,12 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
     scene::LightSet& lights = scene.lights();
     lights.points.clear();
     lights.spots.clear();
+    // El sol y el ambiente fisicos de updateSun(): abajo (y en
+    // applyEnvironment) se tiñen y se escalan en el sitio. Con Escena y Juego
+    // visibles se sincroniza dos veces por frame sin scene.update() entre
+    // medias y se multiplicaban otra vez (sol x55x55 con intensidad 55).
+    lights.sun = scene.physicalSun();
+    lights.ambient = scene.physicalAmbient();
 
     Entity directional;
     Entity sky_entity;

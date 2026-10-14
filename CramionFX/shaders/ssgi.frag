@@ -50,6 +50,7 @@ layout(push_constant) uniform PushConstants {
     mat4 previous_view_projection;
     vec4 params;  // x = hay frame anterior valido, y = intensidad
     vec4 extra;   // x = numero de frame, y/z = peso de cada cubo de la sonda (0 = sin sonda)
+    vec4 probe_center[2];  // xyz = donde se capturo cada cubo (mundo)
 } push;
 
 layout(location = 0) in vec2 v_uv;
@@ -112,6 +113,7 @@ vec3 capLuminance(vec3 light) {
     return light * min(1.0, kMaxLuminance / max(luminance(light), 0.0001));
 }
 
+
 void main() {
     ivec2 full_size = textureSize(g_depth, 0);
     // Pixel de resolucion completa que representa a este de media.
@@ -138,8 +140,13 @@ void main() {
     float frame = mod(push.extra.x, 64.0);
     float noise = interleavedGradientNoise(vec2(half_pixel), frame);
     float rotation = interleavedGradientNoise(vec2(half_pixel) + vec2(17.0, 59.0), frame) * kTwoPi;
-    float probe_weight = push.extra.y + push.extra.z;
     bool has_history = push.params.x > 0.5;
+
+    // Peso de cada cubo: el de su fundido por la confianza en el, que la CPU
+    // baja si la camara se ha ido a donde ese cubo no ve (otra habitacion).
+    float probe_weight_0 = has_history ? push.extra.y : 0.0;
+    float probe_weight_1 = has_history ? push.extra.z : 0.0;
+    float probe_weight = probe_weight_0 + probe_weight_1;
 
     // Punto de partida algo separado de la superficie: sin esto el primer
     // paso choca con el propio pixel por falta de precision.
@@ -198,35 +205,56 @@ void main() {
                         all(lessThanEqual(previous_uv, vec2(1.0)))) {
                         vec3 light = textureLod(previous_color, previous_uv, 0.0).rgb;
                         radiance += capLuminance(light) * facing;
+                    } else if (probe_weight > 0.001) {
+                        // Lo golpeado no estaba en el frame anterior (borde de
+                        // la pantalla, tras girar): antes no aportaba nada y el
+                        // borde se oscurecia unos frames. Su luz, de la sonda
+                        // mirando desde su centro hacia el punto golpeado. Es
+                        // una superficie: nunca cuenta como cielo.
+                        vec3 probe_light = vec3(0.0);
+                        if (probe_weight_0 > 0.001) {
+                            probe_light += textureLod(reflection_probe_0, hit_world - push.probe_center[0].xyz, 1.0).rgb *
+                                           probe_weight_0;
+                        }
+                        if (probe_weight_1 > 0.001) {
+                            probe_light += textureLod(reflection_probe_1, hit_world - push.probe_center[1].xyz, 1.0).rgb *
+                                           probe_weight_1;
+                        }
+                        // (Con la confianza baja, solo su parte: la que falta
+                        // no aporta.)
+                        radiance += capLuminance(probe_light / max(probe_weight, 1.0)) * facing;
                     }
                 }
                 break;
             }
         }
         if (!hit) {
-            // Nada en pantalla: lo que ve la sonda en esa direccion.
-            if (probe_weight > 0.001 && has_history) {
-                vec3 world_direction = inverse_view * direction;
-                vec4 seen = vec4(0.0);
-                if (push.extra.y > 0.001) {
-                    seen += vec4(textureLod(reflection_probe_0, world_direction, kProbeLod).rgb,
-                                 textureLod(reflection_probe_0, world_direction, 0.0).a) *
-                            push.extra.y;
-                }
-                if (push.extra.z > 0.001) {
-                    seen += vec4(textureLod(reflection_probe_1, world_direction, kProbeLod).rgb,
-                                 textureLod(reflection_probe_1, world_direction, 0.0).a) *
-                            push.extra.z;
-                }
-                seen /= probe_weight;
-                if (seen.a < kProbeSkyDistance) {
-                    radiance += capLuminance(seen.rgb);
+            // Nada en pantalla: lo que ve la sonda en esa direccion. Cada cubo
+            // decide por su cuenta si ahi hay una superficie (rebote) o cielo,
+            // y luego se mezclan con su peso: el fundido entre capturas es
+            // gradual (antes se mezclaban las distancias y el "cielo o no"
+            // cambiaba de golpe a mitad del fundido). La parte sin sonda de
+            // confianza (capturada en otra habitacion) cuenta como cielo, como
+            // sin sonda.
+            vec3 world_direction = inverse_view * direction;
+            float sky = 1.0 - probe_weight;
+            if (probe_weight_0 > 0.001) {
+                if (textureLod(reflection_probe_0, world_direction, 0.0).a < kProbeSkyDistance) {
+                    radiance += capLuminance(textureLod(reflection_probe_0, world_direction, kProbeLod).rgb) *
+                                probe_weight_0;
                 } else {
-                    escaped += 1.0;
+                    sky += probe_weight_0;
                 }
-            } else {
-                escaped += 1.0;
             }
+            if (probe_weight_1 > 0.001) {
+                if (textureLod(reflection_probe_1, world_direction, 0.0).a < kProbeSkyDistance) {
+                    radiance += capLuminance(textureLod(reflection_probe_1, world_direction, kProbeLod).rgb) *
+                                probe_weight_1;
+                } else {
+                    sky += probe_weight_1;
+                }
+            }
+            escaped += clamp(sky, 0.0, 1.0);
         }
     }
 

@@ -2,6 +2,7 @@
 #define CRAMION_VK_REFLECTION_PROBE_H
 
 #include "CramionFX/vk/ComputePass.h"
+#include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
 #include <array>
@@ -53,6 +54,25 @@ public:
     // cubo `cube`. Al terminar queda listo para leerse en los fragment shaders.
     void recordPrefilter(const vk::raii::CommandBuffer& cmd, std::uint32_t cube) const;
 
+    // Lo que ve la sonda, en la CPU: la distancia (alfa) de un nivel pequeno
+    // del cubo. Con ella el renderizador sabe si la camara se ha ido a donde la
+    // sonda no ve (otra habitacion) y la recaptura sin esperar a que se pare.
+    static constexpr std::uint32_t kDistanceMip = 2;  // 32 x 32 por cara
+    static constexpr std::uint32_t kDistanceSize = kSize >> kDistanceMip;
+    // Copia las distancias del cubo `cube` (ya prefiltrado, tras
+    // recordPrefilter) al buffer de lectura.
+    void recordDistanceReadback(const vk::raii::CommandBuffer& cmd, std::uint32_t cube) const;
+    // Las de la ultima recordDistanceReadback, cuando su command buffer ya
+    // termino: 6 caras x kDistanceSize^2 (orden de las caras de Vulkan), en
+    // metros. Vacio si no hay buffer.
+    void readDistances(std::vector<float>& out) const;
+    // Distancia en la direccion (x, y, z) (no hace falta normalizarla) de una
+    // tabla de readDistances: la mayor de una ventana pequena alrededor (lo
+    // estrecho, como una persona delante, no tapa), de (2 * half_window + 1)^2
+    // direcciones separadas un texel. < 0 si la tabla no vale.
+    static float distanceToward(const std::vector<float>& distances, float x, float y, float z,
+                                int half_window = 2);
+
     const vk::raii::ImageView& view(std::uint32_t cube) const { return cubes_[cube].view; }
     const vk::raii::Sampler& sampler() const { return sampler_; }
 
@@ -81,6 +101,8 @@ private:
 
     vk::raii::Sampler sampler_{nullptr};
     ComputePass prefilter_pass_;
+    // Distancias de la ultima captura para la CPU (visible y coherente).
+    VulkanBuffer distance_readback_;
 };
 
 }  // namespace cramion::gfx

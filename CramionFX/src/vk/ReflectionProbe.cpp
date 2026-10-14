@@ -5,7 +5,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <limits>
+#include <vector>
 
 namespace cramion::gfx {
 namespace {
@@ -93,8 +97,9 @@ void ReflectionProbe::create(const VulkanDevice& device) {
     vk::ImageCreateInfo probe_info = capture_info;
     probe_info.extent = vk::Extent3D{kSize, kSize, 1};
     probe_info.mipLevels = kMips;
+    // (Origen de copia: sus distancias a la CPU, recordDistanceReadback.)
     probe_info.usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
-                       vk::ImageUsageFlagBits::eTransferDst;
+                       vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc;
     for (Cube& cube : cubes_) {
         cube.image = createImage(device, probe_info);
 
@@ -198,11 +203,17 @@ void ReflectionProbe::create(const VulkanDevice& device) {
         }
     });
 
+    // Distancias de una captura para la CPU: un texel RGBA16F por direccion.
+    distance_readback_.create(device, 6ull * kDistanceSize * kDistanceSize * 4 * sizeof(std::uint16_t),
+                              vk::BufferUsageFlagBits::eTransferDst,
+                              vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
     std::cout << "[Vulkan] Sonda de reflexion lista: captura de " << kCaptureSize << " px, "
               << kCubeCount << " cubos de " << kSize << " px con " << kMips << " niveles\n";
 }
 
 void ReflectionProbe::destroy() {
+    distance_readback_.destroy();
     for (Cube& cube : cubes_) {
         cube.prefilter_sets.clear();
         cube.mip_views.clear();
@@ -314,6 +325,151 @@ void ReflectionProbe::recordPrefilter(const vk::raii::CommandBuffer& cmd,
                                  vk::ImageLayout::eShaderReadOnlyOptimal, Stage::eComputeShader,
                                  Access::eShaderStorageWrite, Stage::eFragmentShader,
                                  Access::eShaderSampledRead));
+}
+
+void ReflectionProbe::recordDistanceReadback(const vk::raii::CommandBuffer& cmd, std::uint32_t cube) const {
+    if (!distance_readback_.isValid()) return;
+    using Stage = vk::PipelineStageFlagBits2;
+    using Access = vk::AccessFlagBits2;
+    const vk::Image probe = *cubes_[cube].image.image;
+
+    // El nivel pequeno, de textura (lo dejo asi recordPrefilter) a origen de
+    // la copia, y de vuelta.
+    pipelineBarrier(cmd, barrier(probe, kDistanceMip, 1, 0, 6, vk::ImageLayout::eShaderReadOnlyOptimal,
+                                 vk::ImageLayout::eTransferSrcOptimal,
+                                 Stage::eComputeShader | Stage::eFragmentShader,
+                                 Access::eShaderStorageWrite | Access::eShaderSampledRead, Stage::eTransfer,
+                                 Access::eTransferRead));
+    vk::BufferImageCopy region{};
+    region.imageSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, kDistanceMip, 0, 6};
+    region.imageExtent = vk::Extent3D{kDistanceSize, kDistanceSize, 1};
+    cmd.copyImageToBuffer(probe, vk::ImageLayout::eTransferSrcOptimal, *distance_readback_.handle(), region);
+    pipelineBarrier(cmd, barrier(probe, kDistanceMip, 1, 0, 6, vk::ImageLayout::eTransferSrcOptimal,
+                                 vk::ImageLayout::eShaderReadOnlyOptimal, Stage::eTransfer, Access::eTransferRead,
+                                 Stage::eFragmentShader, Access::eShaderSampledRead));
+
+    // La copia, visible para la CPU cuando termine (la espera la fence de la
+    // captura).
+    vk::MemoryBarrier2 to_host{};
+    to_host.srcStageMask = Stage::eTransfer;
+    to_host.srcAccessMask = Access::eTransferWrite;
+    to_host.dstStageMask = Stage::eHost;
+    to_host.dstAccessMask = Access::eHostRead;
+    vk::DependencyInfo dependency{};
+    dependency.setMemoryBarriers(to_host);
+    compat::pipelineBarrier(cmd, dependency);
+}
+
+namespace {
+
+float halfToFloat(std::uint16_t value) {
+    const std::uint32_t exponent = (value >> 10) & 0x1Fu;
+    const std::uint32_t mantissa = value & 0x3FFu;
+    float result = 0.0f;
+    if (exponent == 0) {
+        result = std::ldexp(static_cast<float>(mantissa), -24);
+    } else if (exponent == 31) {
+        result = mantissa == 0 ? std::numeric_limits<float>::infinity() : std::numeric_limits<float>::quiet_NaN();
+    } else {
+        result = std::ldexp(static_cast<float>(mantissa | 0x400u), static_cast<int>(exponent) - 25);
+    }
+    return (value & 0x8000u) != 0 ? -result : result;
+}
+
+}  // namespace
+
+void ReflectionProbe::readDistances(std::vector<float>& out) const {
+    out.clear();
+    if (!distance_readback_.isValid() || distance_readback_.mapped() == nullptr) return;
+    constexpr std::size_t kTexels = 6u * kDistanceSize * kDistanceSize;
+    out.resize(kTexels);
+    // RGBA16F por texel, caras una tras otra y filas de arriba a abajo: el
+    // alfa (la distancia) es el cuarto.
+    const auto* texels = static_cast<const std::uint16_t*>(distance_readback_.mapped());
+    for (std::size_t i = 0; i < kTexels; ++i) {
+        const float distance = halfToFloat(texels[i * 4 + 3]);
+        out[i] = std::isfinite(distance) ? distance : 0.0f;
+    }
+}
+
+namespace {
+
+// Distancia de la tabla en una direccion (no hace falta normalizarla): cara y
+// texel como en la especificacion de Vulkan (tabla de seleccion de caras de
+// los cubos); igual que cubeDirection de probe_prefilter.comp.
+float texelDistance(const std::vector<float>& distances, std::uint32_t size, float x, float y, float z) {
+    const float ax = std::abs(x);
+    const float ay = std::abs(y);
+    const float az = std::abs(z);
+    std::uint32_t face = 0;
+    float sc = 0.0f;
+    float tc = 0.0f;
+    float ma = 0.0f;
+    if (ax >= ay && ax >= az) {
+        face = x >= 0.0f ? 0u : 1u;
+        sc = x >= 0.0f ? -z : z;
+        tc = -y;
+        ma = ax;
+    } else if (ay >= az) {
+        face = y >= 0.0f ? 2u : 3u;
+        sc = x;
+        tc = y >= 0.0f ? z : -z;
+        ma = ay;
+    } else {
+        face = z >= 0.0f ? 4u : 5u;
+        sc = z >= 0.0f ? x : -x;
+        tc = -y;
+        ma = az;
+    }
+    if (ma <= 0.0f) return -1.0f;
+    const auto texel = [size](float t) {
+        return std::min(static_cast<std::uint32_t>(std::max(t, 0.0f) * static_cast<float>(size)), size - 1);
+    };
+    const std::uint32_t u = texel(0.5f * (sc / ma + 1.0f));
+    const std::uint32_t v = texel(0.5f * (tc / ma + 1.0f));
+    return distances[(face * size + v) * size + u];
+}
+
+}  // namespace
+
+float ReflectionProbe::distanceToward(const std::vector<float>& distances, float x, float y, float z,
+                                      int half_window) {
+    if (distances.size() != 6u * kDistanceSize * kDistanceSize) return -1.0f;
+    const float length = std::sqrt(x * x + y * y + z * z);
+    if (!(length > 0.0f)) return -1.0f;
+    x /= length;
+    y /= length;
+    z /= length;
+    // Lo mas lejos que ve alrededor: con half_window 2, 5 x 5 direcciones
+    // separadas un texel del centro de una cara (~3.6 grados; ~14 en total),
+    // tambien al otro lado de un borde del cubo. Una persona, un poste u hojas
+    // delante de la sonda no son "otra habitacion" (si no, se recapturaba sin
+    // parar al andar detras de alguien).
+    // Base alrededor de la direccion: t = normalize(cross(eje, d)), b = cross(d, t).
+    const bool vertical = std::abs(y) > 0.9f;
+    const float ex = vertical ? 1.0f : 0.0f;
+    const float ey = vertical ? 0.0f : 1.0f;
+    float tx = ey * z;
+    float ty = -ex * z;
+    float tz = ex * y - ey * x;
+    const float t_length = std::sqrt(tx * tx + ty * ty + tz * tz);
+    tx /= t_length;
+    ty /= t_length;
+    tz /= t_length;
+    const float bx = y * tz - z * ty;
+    const float by = z * tx - x * tz;
+    const float bz = x * ty - y * tx;
+    const float step = 2.0f / static_cast<float>(kDistanceSize);
+    float seen = -1.0f;
+    for (int i = -half_window; i <= half_window; ++i) {
+        for (int j = -half_window; j <= half_window; ++j) {
+            const float a = static_cast<float>(i) * step;
+            const float c = static_cast<float>(j) * step;
+            seen = std::max(seen, texelDistance(distances, kDistanceSize, x + a * tx + c * bx, y + a * ty + c * by,
+                                                z + a * tz + c * bz));
+        }
+    }
+    return seen;
 }
 
 }  // namespace cramion::gfx

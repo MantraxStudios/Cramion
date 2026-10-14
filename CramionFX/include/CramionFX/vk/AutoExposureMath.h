@@ -26,10 +26,13 @@ constexpr float kHighPercent = 0.96f;
 constexpr float kHighlightLow = 0.95f;
 constexpr float kHighlightHigh = 0.995f;
 
-// Adaptacion parcial a la oscuridad: hasta kKnee EV se compensa entera (el
-// dia no cambia); por encima solo una fraccion kSlope. Asi la noche sigue
+// Adaptacion parcial a la oscuridad, solo de noche: hasta kKnee EV se
+// compensa entera; por encima solo una fraccion kSlope. Asi la noche sigue
 // siendo noche (~x3) pero el controlador sigue respondiendo dentro del rango
-// (antes se clavaba en max_ev y una farola no cambiaba nada).
+// (antes se clavaba en max_ev y una farola no cambiaba nada). De dia
+// (`night` = 0) no hay rodilla: un interior oscuro se compensa entero, como
+// antes. Con la rodilla tambien de dia, una habitacion quedaba 1-2 EV mas
+// oscura y solo se compensaba un 25% de cualquier bajon de luz.
 constexpr float kKnee = 0.75f;
 constexpr float kSlope = 0.25f;
 // Una luz fuerte en la vista tira de la exposicion hacia abajo (como el ojo),
@@ -78,24 +81,28 @@ inline bool windowMeanLog(const std::uint32_t* bins, float low_percent, float hi
 }
 
 // Exposicion objetivo (log2) a partir de la media de la ventana y la de las
-// luces fuertes.
-inline float targetLogExposure(float average_log, float highlight_log, float min_ev, float max_ev) {
+// luces fuertes. `night` (0 de dia .. 1 de noche, 1 - luz del dia) decide
+// cuanto actuan la rodilla y la luz fuerte.
+inline float targetLogExposure(float average_log, float highlight_log, float min_ev, float max_ev,
+                               float night = 1.0f) {
+    night = std::clamp(night, 0.0f, 1.0f);
     const float full = std::log2(kTargetLuminance) - average_log;
-    const float soft = full > kKnee ? kKnee + (full - kKnee) * kSlope : full;
+    const float slope = 1.0f + (kSlope - 1.0f) * night;
+    const float soft = full > kKnee ? kKnee + (full - kKnee) * slope : full;
     const float limit = std::log2(kHighlightLuminance) - highlight_log;
-    const float pulled = limit < soft ? soft + (limit - soft) * kHighlightWeight : soft;
+    const float pulled = limit < soft ? soft + (limit - soft) * kHighlightWeight * night : soft;
     const float target = std::max(pulled, std::min(full, kKnee));
     if (!std::isfinite(target)) return 0.0f;
     return std::clamp(target, std::min(min_ev, max_ev), std::max(min_ev, max_ev));
 }
 
 // Objetivo de un histograma de 256 cubos (sin adaptacion temporal).
-inline float meterHistogram(const std::uint32_t* bins, float min_ev, float max_ev) {
+inline float meterHistogram(const std::uint32_t* bins, float min_ev, float max_ev, float night = 1.0f) {
     float average_log = std::log2(kTargetLuminance);
     windowMeanLog(bins, kLowPercent, kHighPercent, average_log);
     float highlight_log = average_log;
     windowMeanLog(bins, kHighlightLow, kHighlightHigh, highlight_log);
-    return targetLogExposure(average_log, highlight_log, min_ev, max_ev);
+    return targetLogExposure(average_log, highlight_log, min_ev, max_ev, night);
 }
 
 // Un paso de adaptacion temporal (log2). `reset` = corte de camara.

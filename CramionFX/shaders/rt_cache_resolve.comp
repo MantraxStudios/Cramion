@@ -5,18 +5,22 @@
 // despues de la GI: cada entrada pasa lo sumado este frame a su media
 // temporal y deja la suma a cero. Media exacta los primeros frames y despues
 // una media exponencial de ~kMaxFrames: se adapta si cambia la luz (sol,
-// puertas, luces) sin ruido. Las entradas que llevan kMaxAge frames sin
-// muestras se liberan (la camara se fue, o cambio el tamano de su celda).
+// puertas, luces) sin ruido. Las entradas que llevan kMaxAgeMs sin muestras
+// se liberan (la camara se fue, o cambio el tamano de su celda). Se cuenta en
+// tiempo, no en resoluciones: con 240 resoluciones, a 144 FPS (o en VR, que
+// resuelve una vez por ojo) salir de una habitacion menos de 2 s ya vaciaba
+// sus celdas, y al volver la luz rebotada tardaba en llenarse otra vez.
 //
-// push.params.z > 0.5: vaciar la cache entera (origen flotante desplazado,
-// escena nueva).
+// push.params.y: segundos desde la resolucion anterior (0 en el segundo ojo
+// de VR). push.params.z > 0.5: vaciar la cache entera (origen flotante
+// desplazado, escena nueva).
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 #include "rt_common.glsl"
 
 const float kMaxFrames = 24.0;
-const uint kMaxAge = 240u;  // ~4 s a 60 FPS
+const uint kMaxAgeMs = 6000u;  // 6 s sin muestras
 const uint kWidth = 1024u;  // la entrada = y * kWidth + x (dispatch de 1024 x 512)
 
 void main() {
@@ -45,8 +49,9 @@ void main() {
         cache_accum[index] = CacheEntry(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
         return;
     }
-    uint age = entry.age + 1u;
-    if (age > kMaxAge) {
+    // Milisegundos sin muestras (como mucho 1 s de golpe: un tiron no la vacia).
+    uint age = entry.age + uint(clamp(push.params.y, 0.0, 1.0) * 1000.0 + 0.5);
+    if (age > kMaxAgeMs) {
         cache_keys[index] = 0u;
         cache_resolved[index] = vec4(0.0);
         age = 0u;

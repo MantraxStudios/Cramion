@@ -94,6 +94,12 @@ struct GpuLights {
     // x = altura del plano desde el que se mira (m), y = profundidad que cubre (m).
     // w = 1 si el sol esta horneado entero (su directa va en la GI horneada).
     core::Vec4 sky_map_depth{};
+    // Confianza (0..1) en cada cubo de la sonda (x = cubo 0, y = cubo 1): baja
+    // si la camara se ha ido a donde ese cubo no ve (lo capturado es de otra
+    // habitacion). lighting.frag la multiplica por el peso de probes[]; lo
+    // que falta lo pone el cielo. (El vidrio, el agua y los liquidos usan solo
+    // el fundido: su entorno no sabe del techo y daba destellos de cielo.)
+    core::Vec4 probe_trust{1.0f, 1.0f, 0.0f, 0.0f};
 };
 
 // Constante de push de los modelos con esqueleto (pasada de geometria). Son
@@ -255,14 +261,21 @@ struct GpuCameraFxPush {
     core::Vec4 projection_w{-1.0f, 0.0f, 0.0f, 0.0f};
 };
 
-// Constante de push de la iluminacion global de pantalla (ssgi.frag).
+// Constante de push de la iluminacion global de pantalla (ssgi.frag). La
+// comparten la GI horneada y los reflejos (ssr.frag, ssr_resolve.frag), que
+// solo declaran el principio del bloque.
 struct GpuSsgiPush {
     core::Mat4 previous_view_projection = core::Mat4::identity();
-    // x = hay frame anterior valido, y = intensidad.
+    // x = hay frame anterior valido, y = intensidad. (ssr.frag: z/w = niveles
+    // de sus piramides.)
     core::Vec4 params{0.0f, 1.0f, 0.0f, 0.0f};
     // Solo ssgi.frag: x = numero de frame, y/z = peso de cada cubo de la sonda.
     core::Vec4 extra{};
+    // Solo ssgi.frag: donde se capturo cada cubo (xyz). Desde ahi se mira la
+    // sonda hacia un punto golpeado que no estaba en el frame anterior.
+    core::Vec4 probe_center[2]{};
 };
+static_assert(sizeof(GpuSsgiPush) == 128, "GpuSsgiPush: 128 bytes como mucho (minimo garantizado de push constants)");
 
 // Decal (estampa, charco o mancha de humedad) proyectado sobre el G-buffer
 // en la pasada de geometria. Caja unidad [-0.5, 0.5]^3 en su espacio; se
@@ -368,6 +381,9 @@ struct GpuExposurePush {
     float max_log_exposure = 1.4f;
     float speed_up = 3.0f;
     float speed_down = 1.2f;
+    // 0 de dia .. 1 de noche (1 - luz del dia): la rodilla y la luz fuerte de
+    // AutoExposureMath.h solo actuan de noche.
+    float night = 0.0f;
 };
 
 // Estado de la auto-exposicion en la GPU (exposure_average.comp). Persiste
@@ -381,7 +397,7 @@ struct GpuExposureState {
 
 static_assert(sizeof(GpuCompositeSettings) == 13 * 16,
               "GpuCompositeSettings debe coincidir con composite.frag (std140)");
-static_assert(sizeof(GpuExposurePush) == 32, "GpuExposurePush debe coincidir con exposure_average.comp");
+static_assert(sizeof(GpuExposurePush) == 36, "GpuExposurePush debe coincidir con exposure_average.comp");
 static_assert(sizeof(GpuCameraFxPush) == 128, "GpuCameraFxPush debe coincidir con camera_fx.frag");
 
 // Datos de las cascadas para el shader de iluminacion.

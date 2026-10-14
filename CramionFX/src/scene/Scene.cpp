@@ -278,6 +278,9 @@ void Scene::updateSun(float delta_seconds) {
     // zonas en sombra solo reciben esto, y por debajo de ~1/8 del sol quedan
     // negras en vez de azuladas.
     lights_.ambient.intensity = 0.08f + 0.72f * daylight;
+
+    physical_sun_ = lights_.sun;
+    physical_ambient_ = lights_.ambient;
 }
 
 }  // namespace cramion::scene

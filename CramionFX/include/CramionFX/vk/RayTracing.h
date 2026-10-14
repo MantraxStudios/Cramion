@@ -46,6 +46,9 @@ public:
     static constexpr std::uint8_t kMaskScenery = 0x01;  // modelos rigidos
     static constexpr std::uint8_t kMaskTerrain = 0x02;
     static constexpr std::uint8_t kMaskFoliage = 0x04;  // arboles (en el raster se mecen)
+    // Rigidos que no proyectan sombra (mandos de VR, el laser): los rayos de
+    // sombra no los ven, como los mapas de sombras; la GI y los reflejos si.
+    static constexpr std::uint8_t kMaskNoShadow = 0x08;
 
     struct Instance {
         std::uint32_t model = 0;

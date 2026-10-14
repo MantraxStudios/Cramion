@@ -1,17 +1,22 @@
 #version 450
 
-// Filtro temporal de los reflejos de pantalla (ssr.frag). Sin el, cada frame
-// el rayo acierta o falla por su cuenta: al moverse la camara, o cuando lo
-// reflejado sale de la pantalla, el reflejo aparece y desaparece de un frame
-// a otro (parpadeo).
+// Filtro espacial de los reflejos de pantalla (ssr.frag).
 //
-// Se mezcla el resultado de este frame con el acumulado de los anteriores,
-// reproyectado a donde estaba este punto de la superficie. Para no dejar
-// estelas, lo acumulado se recorta al rango de colores que hay ahora en la
-// vecindad 3x3 del pixel (el "neighborhood clamp" del TAA de Unreal).
+// El trazado ya no tiene ruido (un rayo exacto por la piramide de
+// profundidad, sin saltos al azar) y las superficies satinadas ya traen el
+// reflejo borroso (el mip del cono de su rugosidad). Lo que quedaba duro era
+// el borde entre "hay reflejo" y "no hay" (ahi se ve la sonda): una silueta
+// de un pixel, recortada a tijera, sobre un reflejo borroso. Aqui se promedia
+// una vecindad pequena, mas ancha cuanto mas rugosa es la superficie, solo
+// entre pixeles de la misma superficie (profundidad y normal parecidas). Los
+// espejos pasan tal cual.
 //
-// Se trabaja con el color premultiplicado por la confianza: donde un frame no
-// encontro nada (confianza 0) su color no significa nada y no debe mezclarse.
+// (Antes era un filtro temporal: mezclaba con lo de los frames anteriores
+// reproyectado con el movimiento de la superficie, que no es el del reflejo,
+// y al andar los reflejos se arrastraban y dejaban estelas.)
+//
+// Se mezcla el color premultiplicado por la confianza: donde un pixel no
+// encontro nada (confianza 0) su color no significa nada.
 
 layout(set = 0, binding = 0) uniform CameraBuffer {
     mat4 view;
@@ -23,104 +28,88 @@ layout(set = 0, binding = 0) uniform CameraBuffer {
 
 layout(set = 0, binding = 1) uniform sampler2D g_depth;
 layout(set = 0, binding = 2) uniform sampler2D current_reflection;  // ssr.frag de este frame
-layout(set = 0, binding = 3) uniform sampler2D history;             // resultado del frame anterior
+layout(set = 0, binding = 3) uniform sampler2D g_normal;            // rg = normal, b = rugosidad
 
 layout(push_constant) uniform PushConstants {
-    mat4 previous_view_projection;
-    vec4 params;  // x = hay historia valida, y = peso de la historia
+    mat4 unused;
+    vec4 params;  // x = hay reflejos
 } push;
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_reflection;
 
-const float kMinConfidence = 0.02;
-const float kMaxRadiance = 30.0;  // igual que en ssr.frag
+const float kMaxRadiance = 1000.0;  // igual que en ssr.frag
+// Radio (en pixeles) para las superficies mas rugosas que traza el SSR.
+const float kMaxRadius = 3.0;
 
-float luminance(vec3 c) {
-    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+float linearDepth(float depth) {
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
 }
 
-// El filtro trabaja con el color comprimido (c / (1 + luminancia), reversible)
-// y premultiplicado por la confianza: asi un pixel HDR extremo no domina la
-// vecindad ni la mezcla con la historia.
-vec4 premultiply(vec4 reflection) {
-    vec3 rgb = min(max(reflection.rgb, vec3(0.0)), vec3(kMaxRadiance));
-    return vec4(rgb / (1.0 + luminance(rgb)) * reflection.a, reflection.a);
-}
-
-// La historia en ese punto, bilineal a mano premultiplicando cada texel: la
-// historia guarda el color sin premultiplicar (0 donde no hay reflejo) y
-// premultiplicar el bilineal ya mezclado contaba la confianza dos veces
-// (borde oscuro en los reflejos al moverse).
-vec4 historyPremultiplied(vec2 uv) {
-    ivec2 size = textureSize(history, 0);
-    vec2 texel = uv * vec2(size) - 0.5;
-    ivec2 base = ivec2(floor(texel));
-    vec2 f = texel - vec2(base);
-    vec4 a = premultiply(texelFetch(history, clamp(base, ivec2(0), size - 1), 0));
-    vec4 b = premultiply(texelFetch(history, clamp(base + ivec2(1, 0), ivec2(0), size - 1), 0));
-    vec4 c = premultiply(texelFetch(history, clamp(base + ivec2(0, 1), ivec2(0), size - 1), 0));
-    vec4 d = premultiply(texelFetch(history, clamp(base + ivec2(1, 1), ivec2(0), size - 1), 0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+vec3 decodeNormal(vec2 e) {
+    vec3 n = vec3(e.x, 1.0 - abs(e.x) - abs(e.y), e.y);
+    float t = max(-n.y, 0.0);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.z += n.z >= 0.0 ? -t : t;
+    return normalize(n);
 }
 
 void main() {
     ivec2 size = textureSize(current_reflection, 0);
     ivec2 pixel = ivec2(gl_FragCoord.xy);
-
-    float depth = texelFetch(g_depth, pixel, 0).r;
-    vec4 current = premultiply(texelFetch(current_reflection, pixel, 0));
-    if (depth >= 1.0 || push.params.x < 0.5) {
-        vec4 raw = texelFetch(current_reflection, pixel, 0);
-        out_reflection = vec4(min(raw.rgb, vec3(kMaxRadiance)), raw.a);
-        return;
-    }
-
-    // --- Vecindad 3x3 de este frame ---
-    vec4 low = current;
-    vec4 high = current;
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            ivec2 p = clamp(pixel + ivec2(x, y), ivec2(0), size - 1);
-            vec4 neighbor = premultiply(texelFetch(current_reflection, p, 0));
-            low = min(low, neighbor);
-            high = max(high, neighbor);
-        }
-    }
-
-    // --- Donde estaba este punto de la superficie el frame anterior ---
-    vec4 world = camera.inverse_view_projection * vec4(v_uv * 2.0 - 1.0, depth, 1.0);
-    world /= world.w;
-    vec4 previous_clip = push.previous_view_projection * world;
-    vec2 previous_uv = previous_clip.xy / previous_clip.w * 0.5 + 0.5;
-
-    vec4 result = current;
-    if (previous_clip.w > 0.0 && all(greaterThanEqual(previous_uv, vec2(0.0))) &&
-        all(lessThanEqual(previous_uv, vec2(1.0)))) {
-        vec4 previous = historyPremultiplied(previous_uv);
-        // Un poco de margen sobre el rango: el recorte estricto devuelve el
-        // parpadeo que se quiere quitar.
-        vec4 margin = (high - low) * 0.25 + vec4(0.002);
-        previous = clamp(previous, low - margin, high + margin);
-        result = mix(current, previous, push.params.y);
-    }
-
-    // Volver a color sin premultiplicar. Con muy poca confianza el cociente
-    // se dispara (el color y la confianza se recortan por separado): esos
-    // pixeles salian como puntos sueltos muy brillantes. Por debajo de un
-    // minimo no hay reflejo, y el brillo se limita como en ssr.frag.
-    if (result.a < kMinConfidence || any(isnan(result)) || any(isinf(result))) {
+    if (push.params.x < 0.5) {
         out_reflection = vec4(0.0);
         return;
     }
-    // Lo acotado por la compresion es la luminancia, no cada canal: un rojo
-    // intenso comprimido pasa de 1 en R. Recortar por canal le quitaba
-    // energia y le cambiaba el tono a los reflejos saturados.
-    vec3 compressed = max(result.rgb / result.a, vec3(0.0));
-    float compressed_luminance = luminance(compressed);
-    if (compressed_luminance > 0.999) {
-        compressed *= 0.999 / compressed_luminance;
+
+    vec4 center = texelFetch(current_reflection, pixel, 0);
+    float depth = texelFetch(g_depth, pixel, 0).r;
+    vec4 normal_sample = texelFetch(g_normal, pixel, 0);
+    float radius = kMaxRadius * smoothstep(0.12, 0.5, normal_sample.b);
+    if (depth >= 1.0 || radius < 0.5) {
+        out_reflection = vec4(min(center.rgb, vec3(kMaxRadiance)), center.a);
+        return;
     }
-    vec3 rgb = compressed / (1.0 - luminance(compressed));
-    out_reflection = vec4(min(rgb, vec3(kMaxRadiance)), min(result.a, 1.0));
+
+    float center_distance = linearDepth(depth);
+    vec3 normal = decodeNormal(normal_sample.rg);
+    // Diferencia de profundidad que aun es la misma superficie (algo mas lejos
+    // cuanto mas lejos esta: la pendiente en pantalla crece).
+    float depth_tolerance = 0.02 + 0.02 * center_distance;
+    int step = max(int(radius + 0.5), 1);
+
+    vec4 sum = vec4(center.rgb * center.a, center.a);
+    float weight_sum = 1.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            if (x == 0 && y == 0) {
+                continue;
+            }
+            ivec2 p = clamp(pixel + ivec2(x, y) * step, ivec2(0), size - 1);
+            float neighbor_depth = texelFetch(g_depth, p, 0).r;
+            if (neighbor_depth >= 1.0) {
+                continue;
+            }
+            vec4 neighbor_normal = texelFetch(g_normal, p, 0);
+            float depth_weight =
+                1.0 - smoothstep(0.0, depth_tolerance, abs(linearDepth(neighbor_depth) - center_distance));
+            float normal_weight = pow(max(dot(decodeNormal(neighbor_normal.rg), normal), 0.0), 16.0);
+            // Las diagonales algo menos (vecindad redondeada).
+            float weight = depth_weight * normal_weight * ((x != 0 && y != 0) ? 0.5 : 0.75);
+            if (weight <= 0.0) {
+                continue;
+            }
+            vec4 neighbor = texelFetch(current_reflection, p, 0);
+            sum += vec4(neighbor.rgb * neighbor.a, neighbor.a) * weight;
+            weight_sum += weight;
+        }
+    }
+
+    float confidence = sum.a / weight_sum;
+    vec3 color = sum.a > 1e-4 ? sum.rgb / sum.a : vec3(0.0);
+    if (any(isnan(color)) || any(isinf(color)) || isnan(confidence)) {
+        out_reflection = vec4(0.0);
+        return;
+    }
+    out_reflection = vec4(min(color, vec3(kMaxRadiance)), clamp(confidence, 0.0, 1.0));
 }

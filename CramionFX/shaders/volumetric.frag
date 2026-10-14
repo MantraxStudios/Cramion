@@ -218,8 +218,8 @@ float dust(vec3 p, float time) {
 
 // --- Sol ---
 
-// 1 si al punto le llega el sol, 0 si esta en sombra. Fuera de las cascadas,
-// iluminado (como en lighting.frag).
+// 1 si al punto le llega el sol, 0 si esta en sombra. Fuera de la cascada
+// elegida, la siguiente; fuera de todas, iluminado (como en lighting.frag).
 //
 // A lo largo del rayo la profundidad de vista y el clip de cada cascada son
 // lineales en t: se calculan una vez antes de la marcha (sunRayStart) y en
@@ -247,15 +247,22 @@ float sunVisibility(float t) {
             break;
         }
     }
-    vec4 light_clip = ray_light_clip0[cascade] + ray_light_clip_step[cascade] * t;
-    vec3 projected = light_clip.xyz / light_clip.w;
-    vec2 uv = projected.xy * 0.5 + 0.5;
-    if (projected.z > 1.0 || projected.z < 0.0 || any(lessThan(uv, vec2(0.0))) ||
-        any(greaterThan(uv, vec2(1.0)))) {
-        return 1.0;
+    // Fuera de la elegida (se dibujo con el encuadre de hace unos frames: se
+    // actualizan por turnos y la camara giro), la siguiente, que cubre mas
+    // (como shadowFactor en lighting.frag). Antes contaba como iluminado y el
+    // sol se colaba unos frames en los interiores.
+    for (; cascade < kShadowCascadeCount; ++cascade) {
+        vec4 light_clip = ray_light_clip0[cascade] + ray_light_clip_step[cascade] * t;
+        vec3 projected = light_clip.xyz / light_clip.w;
+        vec2 uv = projected.xy * 0.5 + 0.5;
+        if (projected.z > 1.0 || projected.z < 0.0 || any(lessThan(uv, vec2(0.0))) ||
+            any(greaterThan(uv, vec2(1.0)))) {
+            continue;
+        }
+        float lit = texture(shadow_map, vec4(uv, float(cascade), projected.z));
+        return mix(1.0, lit, shadows.params.y);
     }
-    float lit = texture(shadow_map, vec4(uv, float(cascade), projected.z));
-    return mix(1.0, lit, shadows.params.y);
+    return 1.0;  // ninguna lo cubre: iluminado
 }
 
 // --- Luces locales ---

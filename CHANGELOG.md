@@ -1,5 +1,49 @@
 # Cambios
 
+## 2.4.11
+
+**Corrección sobre la 2.4.10: al salir de una habitación y volver a entrar ya no se ve más oscura hasta que, en un momento cualquiera, la luz vuelve de golpe; los reflejos de pantalla (SSR) están reescritos; y el trazado de rayos se enciende de verdad en el juego exportado.** La sonda de reflexión que sigue a la cámara (de ella salen los reflejos de respaldo y la luz rebotada de lo que no está en pantalla) se quedaba con la captura de fuera hasta que el jugador se paraba lejos. Ahora sabe qué ve cada cubo, recaptura en cuanto la cámara se va a otra habitación, vuelve al cubo de la habitación sin capturar al regresar, y todos los cambios son fundidos de 0,5 s. La exposición automática ya no oscurece los interiores de día con el ajuste de noche de la 2.4.10. El SSR traza sobre una pirámide de profundidad (como FidelityFX SSSR), lee el mip que corresponde a la rugosidad y ya no usa historial temporal.
+
+### Habitación más oscura al volver a entrar
+- **Por qué pasaba**: la sonda de reflexión (un cubo que sigue a la cámara, más el anterior para fundir) solo se recapturaba al pararse a más de 4 m o tras 15 m. Al salir y volver andando, la habitación se iluminaba con la captura de fuera (los reflejos de respaldo y los rayos de la GI de pantalla que salen de ella), y al pararse el jugador cambiaba todo de golpe.
+- **Qué ve cada cubo**: al terminar una captura se leen en la CPU sus distancias (32×32 por cara, `ReflectionProbe::distanceToward`). Si la cámara se va a donde el cubo no ve, se recaptura enseguida, sin esperar a que se pare. Se mira una ventana de 5×5 direcciones, así que una persona o un poste delante no cuentan.
+- **Vuelta al cubo anterior sin capturar**: el otro cubo se conserva junto con la luz con que se capturó. Si la cámara vuelve a su lado (lo ve y está más de 1 m más cerca, o el actual ya no la ve) y la luz no ha cambiado, se vuelve a él con un fundido, también al entrar por la misma puerta. Para volver a un cubo hace falta que vea la cámara sin margen y con una ventana más estrecha, y no se vuelve atrás junto al sitio donde se cambió: así no va y viene en el canto de una puerta.
+- **Pararse de verdad**: la recaptura al pararse pide 0,3 s despacio (al darse la vuelta ya no captura fuera). Hay una recaptura nueva si la cámara se queda quieta entre dos capturas, por ejemplo justo dentro de la puerta.
+- **Fundidos**: 0,5 s (antes 0,35 s). La GI de pantalla funde los dos cubos igual que la iluminación (antes cambiaba de golpe), y no hay un rato de solo cielo entre el cubo viejo y el nuevo.
+- **Otros**: los cubos se vacían al cambiar de escena (la nueva ya no se ilumina con los de la anterior). Una captura durante la que cambia la luz se repite una vez y no se vuelve a ella. Con `render.probe.MinSeconds` puesta a mano, también esta recaptura respeta ese tiempo.
+
+### Exposición automática en interiores de día
+- El ajuste de noche de la 2.4.10 (por encima de +0,75 EV solo se recorre un 25 % de lo que falta) también se aplicaba de día, así que los interiores quedaban más oscuros. Ahora depende de la luz del día: de día se compensa del todo, como en la 2.4.9; de noche, como en la 2.4.10; al atardecer, a medias.
+
+### Reflejos de pantalla (SSR) reescritos
+- **Trazado sobre una pirámide de profundidad mínima** (Hi-Z, `ssr_hiz.comp`), como FidelityFX SSSR, de hasta 96 pasos: sin rayas ni huecos en ángulos rasantes.
+- **Grosor**: 3 cm + 0,5 % de la distancia, con una prueba de plano que solo puede alejar la superficie. Los objetos finos ya no se ensanchan y no salen aciertos falsos debajo de las mesas.
+- **Rugosidad**: la imagen del frame anterior tiene mips, y cada reflejo lee el mip que cubre su cono (GGX). Lo muy rugoso o muy lejano pasa a la sonda de forma suave, igual a cualquier resolución.
+- **Sin historial temporal**: un filtro espacial de 3×3 según la profundidad y la normal, solo en lo rugoso (los espejos pasan tal cual). Ya no deja estelas al mover la cámara.
+- **Origen del rayo**: sale de la normal geométrica (reconstruida de la profundidad) y se dobla en ángulos rasantes. Los reflejos que miran hacia la cámara se apagan de forma suave.
+- **Oclusión especular**: ya no oscurece el SSR, solo el respaldo (sonda o cielo).
+- **Imagen anterior**: es solo de la vista principal (con su vista-proyección con jitter). Las capturas de la sonda y la otra vista del editor ya no la pisan.
+
+### Trazado de rayos en el juego exportado
+- **No se encendía nunca**: la escena de rayos se construía vacía en la pantalla de carga y no se volvía a hacer. Ahora se programa al instalar cada modelo, y el Player la construye al terminar la carga.
+- **Caché de radiancia**: ya no se vacía al rehacer la escena de rayos (sí al cambiar de escena) y envejece por tiempo (6 s), no por frames.
+- **Reflejos por rayos**: el filtro temporal reproyecta con la distancia del impacto (el punto reflejado, no la superficie), así que los reflejos ya no se arrastran al mover la cámara.
+- **Objetos sin sombra** (`cast_shadows` apagado) ya no proyectan sombra por rayos.
+
+### Otros arreglos
+- **Luz volumétrica**: un punto fuera de la cascada de sombras elegida contaba como iluminado, y el sol se colaba unos frames en los interiores al girar la cámara. Ahora usa la cascada siguiente, como la iluminación.
+- **Reflejos del agua**: detrás de un árbol o un poste salían estirados y a bandas. Ahora el choque se afina con una búsqueda binaria y solo cuenta si el rayo queda pegado a la superficie.
+- **Editor con Escena y Juego a la vez**: el sol y el ambiente se teñían y escalaban dos veces por frame (con intensidad 55, el sol ×55×55). Cada sincronización parte ahora del sol físico (`Scene::physicalSun`).
+- **Cielo (IBL)**: las barreras del cubo del cielo incluyen los shaders de cómputo y de rayos que lo leen (antes solo los de la iluminación).
+
+### Cambios a tener en cuenta
+- **Trazado de rayos**: con `ray_tracing=1` en una GPU con rayos, el juego exportado usa ahora reflejos y GI por rayos (antes se quedaba sin querer en SSR y GI de pantalla). Para ver el SSR, apaga el trazado de rayos.
+- **Exposición**: los interiores de día se ven más claros que en la 2.4.10, como en la 2.4.9.
+- **Coste**: el SSR añade la pirámide de profundidad y una copia con mips de la imagen anterior (solo con SSR y sin rayos). La sonda recaptura más al pasar de una habitación a otra; cada captura sigue repartida en una cara cada pocos frames.
+
+### Pruebas
+- `CoreTests`: exposición en un interior de día (de día se compensa del todo, de noche se aplica el ajuste de la 2.4.10 y al atardecer queda a medias).
+
 ## 2.4.10
 
 **Corrección sobre la 2.4.9: el cambio de escena ya no deja terrenos desplazados ni restos de la escena anterior, el preset «Ultra realista» deja de verse lavado, la VR se ve nítida y con la luz correcta, la exposición automática funciona de noche y el horneado de luz vuelve a funcionar, ahora con luz directa y sombras.** Todos los cambios de escena (abrir, nueva, `Scene.load` en Play, Stop, pestañas de mundo, el juego y el servidor dedicado) pasan por una única secuencia que vacía el terreno, la física, la navegación, el World Partition y la GPU y descarta los trabajos en otros hilos de la escena anterior. «Ultra realista» y «Realista» usan el nuevo tonemapper *AgX Punchy* con aire limpio. En VR cada ojo se dibuja por defecto a la resolución que pide el casco (salvo el tope de VRAM por debajo de 12 GB), con TAA por ojo. De noche la exposición ya no se queda clavada en el máximo y oscurece poco a poco al mirar una luz. El aviso «La escena no tiene mallas estáticas» ya no sale con modelos animados, Static en el padre o terreno sin collider, y cada luz puede hornear su luz directa y sus sombras suaves. (Se llama 2.4.10 y no 2.4.9.1 para que el actualizador, que compara tres números, la ofrezca a quien tiene la 2.4.9.)

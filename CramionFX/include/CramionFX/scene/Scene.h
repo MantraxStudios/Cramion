@@ -61,6 +61,12 @@ public:
     // Editable (editor): las luces puntuales y los focos se usan tal cual;
     // el sol lo recalcula update() a partir de la hora (setTimeOfDayHours).
     LightSet& lights() { return lights_; }
+    // El sol y el ambiente tal como los dejo el ultimo updateSun() (update()
+    // o setCelestial), sin el color ni la intensidad que les pone el editor
+    // en lights(): cada sincronizacion parte de aqui (con dos vistas se
+    // sincroniza dos veces por frame sin un update() entre medias).
+    const DirectionalLight& physicalSun() const { return physical_sun_; }
+    const AmbientLight& physicalAmbient() const { return physical_ambient_; }
 
     // Carga un modelo con assimp y devuelve su indice. Lanza si falla.
     // `force_static`: escenario, ver asset::loadModel.
@@ -174,6 +180,9 @@ private:
 
     Camera camera_;
     LightSet lights_;
+    // Copia del sol y del ambiente de lights_ al terminar updateSun().
+    DirectionalLight physical_sun_;
+    AmbientLight physical_ambient_;
 
     // unique_ptr: los Animator guardan un puntero a su modelo, que no debe
     // moverse al crecer el vector.

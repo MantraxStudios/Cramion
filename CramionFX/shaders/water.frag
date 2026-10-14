@@ -253,8 +253,16 @@ vec4 screenSky(vec3 direction) {
 }
 
 // Reflejo en pantalla (como el vidrio): rgb = color, a = confianza.
+// Cuando el rayo cruza una superficie (pasa de delante a detras del depth
+// buffer) se afina el punto con una busqueda binaria entre el paso anterior y
+// este, y solo es un choque si el rayo acaba pegado a ella. Antes valia la
+// primera muestra hasta 1.5 pasos por detras de algo (lejos, varios metros) y
+// el color se leia en esa muestra sin afinar: los rayos que pasaban por detras
+// de un arbol o un poste se quedaban con su color y los reflejos salian
+// estirados y a bandas (los escalones de los pasos).
 vec4 traceScreen(vec3 origin, vec3 ray) {
     const int kSteps = 32;
+    const int kRefineSteps = 6;
     const float kMaxDistance = 120.0;
     const float kFirstStep = 0.08;
     ivec2 size = textureSize(g_depth, 0);
@@ -263,6 +271,7 @@ vec4 traceScreen(vec3 origin, vec3 ray) {
     vec2 noise_pixel = gl_FragCoord.xy + 5.588238 * mod(floor(water.time_count.x * 60.0), 64.0);
     float jitter = fract(52.9829189 * fract(dot(noise_pixel, vec2(0.06711056, 0.00583715))));
     float previous_distance = 0.0;
+    float previous_difference = -1.0;  // el origen (la superficie del agua) esta delante de la escena
     float distance_along = kFirstStep * mix(1.0, growth, jitter);
     for (int i = 0; i < kSteps; ++i) {
         vec3 sample_position = origin + ray * distance_along;
@@ -270,15 +279,52 @@ vec4 traceScreen(vec3 origin, vec3 ray) {
         if (!project(sample_position, uv) || !insideScreen(uv)) break;
         ivec2 texel = min(ivec2(uv * vec2(size)), size - 1);
         float scene_depth = texelFetch(g_depth, texel, 0).r;
-        float difference = -sample_position.z - linearDepth(scene_depth);
-        float thickness = (distance_along - previous_distance) * 1.5 + 0.1;
-        if (scene_depth < 1.0 && difference > 0.0 && difference < thickness) {
-            vec3 color = min(textureLod(scene_color, uv, 0.0).rgb, vec3(kMaxRadiance));
-            vec2 edge = min(uv, 1.0 - uv);
-            float edge_fade = smoothstep(0.0, 0.1, min(edge.x, edge.y));
-            float distance_fade = 1.0 - smoothstep(0.6, 1.0, distance_along / kMaxDistance);
-            return vec4(color, edge_fade * distance_fade);
+        float surface_z = linearDepth(scene_depth);
+        float difference = -sample_position.z - surface_z;
+        // Grosor supuesto de lo que hay en pantalla (lo que cuenta como
+        // choque): crece con su distancia, no con el paso (que lejos mide
+        // metros).
+        float thickness = 0.05 + 0.02 * surface_z;
+        // Se busca el cruce entre el paso anterior y este si el anterior
+        // estaba delante, o si esta muestra queda a menos de paso y medio por
+        // detras (al salir de detras de otra cosa, el paso anterior se media
+        // contra lo que la tapaba).
+        bool crossing = previous_difference <= 0.0 || difference < (distance_along - previous_distance) * 1.5 + thickness;
+        if (scene_depth < 1.0 && difference > 0.0 && crossing) {
+            // Busqueda binaria entre el paso anterior y este.
+            float low = previous_distance;
+            float high = distance_along;
+            vec2 hit_uv = uv;
+            float hit_z = surface_z;
+            float gap = difference;
+            for (int r = 0; r < kRefineSteps; ++r) {
+                float middle = 0.5 * (low + high);
+                vec3 p = origin + ray * middle;
+                vec2 puv;
+                project(p, puv);
+                ivec2 ptexel = clamp(ivec2(puv * vec2(size)), ivec2(0), size - 1);
+                float z = linearDepth(texelFetch(g_depth, ptexel, 0).r);
+                if (-p.z - z > 0.0) {
+                    high = middle;
+                    hit_uv = puv;
+                    hit_z = z;
+                    gap = -p.z - z;
+                } else {
+                    low = middle;
+                }
+            }
+            // Si tras afinar el rayo sigue lejos de la superficie, paso por
+            // detras de algo (un tronco, un poste) y lo que hay ahi es otra
+            // cosa: se sigue avanzando.
+            if (insideScreen(hit_uv) && gap < 0.05 + 0.02 * hit_z) {
+                vec3 color = min(textureLod(scene_color, hit_uv, 0.0).rgb, vec3(kMaxRadiance));
+                vec2 edge = min(hit_uv, 1.0 - hit_uv);
+                float edge_fade = smoothstep(0.0, 0.1, min(edge.x, edge.y));
+                float distance_fade = 1.0 - smoothstep(0.6, 1.0, high / kMaxDistance);
+                return vec4(color, edge_fade * distance_fade);
+            }
         }
+        previous_difference = difference;
         previous_distance = distance_along;
         distance_along *= growth;
     }

@@ -100,7 +100,12 @@ void main() {
     }
     RtHit hit;
     vec3 color;
+    // Distancia al impacto (sin impacto: el cielo, lejos). El filtro temporal
+    // la usa para saber cuanto resbala el reflejo sobre la superficie al
+    // moverse la camara.
+    float hit_distance = kMaxDistance;
     if (traceRay(origin, direction, kMaxDistance, hit)) {
+        hit_distance = hit.distance;
         // Texturas mas borrosas lejos y en superficies rugosas.
         float lod = clamp(log2(1.0 + hit.distance * (0.05 + roughness)), 0.0, 6.0);
         color = hitRadiance(hit, lod, true);
@@ -113,7 +118,7 @@ void main() {
         color = textureLod(environment_map, direction, roughness * kEnvironmentMaxLod * 0.35).rgb;
     }
 
-    // Entre kMaxRoughness * 0.75 y kMaxRoughness pasa suavemente al IBL.
-    float confidence = 1.0 - smoothstep(kMaxRoughness * 0.75, kMaxRoughness, roughness);
-    imageStore(output_image, pixel, vec4(min(color, vec3(kMaxRadiance)), confidence));
+    // a = distancia al impacto (> 0; 0 = sin trazar). La confianza (el paso
+    // suave al IBL en lo rugoso) la pone la ultima pasada del a trous.
+    imageStore(output_image, pixel, vec4(min(color, vec3(kMaxRadiance)), max(hit_distance, 1e-3)));
 }

@@ -38,7 +38,8 @@ public:
 
     // Graba la regeneracion del entorno (y la LUT de la BRDF la primera vez).
     // La LUT del cielo debe estar ya escrita y legible desde compute. Al
-    // terminar, todo queda listo para leerse en los fragment shaders.
+    // terminar, todo queda listo para leerse en los fragment shaders (y el
+    // cubo y los armonicos tambien en los shaders de rayos).
     // `light_radiance` y `to_light` son los de la luz direccional activa (sol
     // o luna), para iluminar el suelo del entorno.
     // `hdr`: el entorno es el mapa HDR de setEnvironment(), no el cielo.
@@ -82,6 +83,8 @@ private:
     std::vector<vk::raii::DescriptorSet> brdf_sets_;
 
     bool brdf_ready_ = false;
+    // Etapas que leen el cubo y los armonicos (las rellena create()).
+    vk::PipelineStageFlags2 reader_stages_ = vk::PipelineStageFlagBits2::eFragmentShader;
 };
 
 }  // namespace cramion::gfx

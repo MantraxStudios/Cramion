@@ -642,8 +642,10 @@ struct RayTracing::Resources {
         cache_reset = true;
     }
 
-    // Todo lo de la escena (la GPU ya esta parada).
-    void releaseScene() {
+    // Todo lo de la escena (la GPU ya esta parada). La cache de radiancia esta
+    // en coordenadas del mundo: al rehacer la escena del mismo nivel sigue
+    // valiendo (keep_cache) y no se vacia.
+    void releaseScene(bool keep_cache = false) {
         tlas = AccelerationStructure{};
         tlas_scratch = DeviceBuffer{};
         for (DeviceBuffer& buffer : instance_buffers) buffer = DeviceBuffer{};
@@ -666,9 +668,11 @@ struct RayTracing::Resources {
         triangle_materials = DeviceBuffer{};
         materials = DeviceBuffer{};
         models = DeviceBuffer{};
-        cache_keys = DeviceBuffer{};
-        cache_accum = DeviceBuffer{};
-        cache_resolved = DeviceBuffer{};
+        if (!keep_cache) {
+            cache_keys = DeviceBuffer{};
+            cache_accum = DeviceBuffer{};
+            cache_resolved = DeviceBuffer{};
+        }
         pending_vertices.clear();
         pending_textures.clear();
         for (auto& list : staging) list.clear();
@@ -909,7 +913,11 @@ void RayTracing::build(const VulkanDevice& device,
                        const std::vector<SkinnedModel>& gpu_models,
                        const VulkanBuffer& irradiance, const ExtraScene& extra) {
     Resources& r = *resources_;
-    r.releaseScene();
+    // La cache de radiancia se queda (se rehace la escena del mismo nivel: un
+    // modelo nuevo o cambiado). Vaciarla dejaba la GI y los reflejos sin luz
+    // rebotada unos frames en un momento cualquiera. Solo se crea (vacia) si
+    // no existia.
+    r.releaseScene(/*keep_cache=*/true);
     r.ensureCache(device);
 
     // --- Datos de la escena: todos los modelos en los mismos buffers ---
@@ -1147,8 +1155,9 @@ void RayTracing::build(const VulkanDevice& device,
         writes[7 + i].setBufferInfo(cache_buffers[i]);
     }
     device.handle().updateDescriptorSets(writes, nullptr);
-    // Escena nueva: lo guardado era de otros modelos.
-    r.cache_reset = true;
+    // (La cache no se vacia: esta en el mundo y se adapta sola a lo que
+    // cambio. Al cambiar de escena la vacia RenderSync::clearSceneStreaming
+    // con VulkanRenderer::resetRayTracingCache.)
 
     // --- Pipelines: la primera vez (despues se reutilizan) ---
     r.ensurePipelines(device);

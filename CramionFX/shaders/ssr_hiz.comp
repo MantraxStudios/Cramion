@@ -1,0 +1,56 @@
+#version 450
+
+// Piramide de profundidad MINIMA (lo mas cercano) para los reflejos de
+// pantalla (ssr.frag, SsrPyramids). Al reves que la del culling (hiz.comp, lo
+// mas lejano): aqui interesa si en un bloque de pantalla hay algo por delante
+// del rayo. Si lo mas cercano del bloque queda detras del rayo, el rayo cruza
+// el bloque entero de un salto.
+//
+// El nivel 0 es el depth buffer tal cual (mismo tamano). Cada nivel mide la
+// mitad del anterior (redondeando hacia abajo) y cada texel se queda con el
+// minimo de su bloque 2x2. En un lado impar el ultimo texel se queda tambien
+// con la fila o columna que sobra: asi el texel i del nivel k cubre siempre
+// los pixeles [i * 2^k, (i + 1) * 2^k) mas el sobrante del borde, que es lo
+// que supone ssr.frag al recorrerla.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depth_buffer;
+layout(set = 0, binding = 1, r32f) uniform readonly image2D source_level;
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D target_level;
+
+layout(push_constant) uniform PushConstants {
+    uint level;
+} push;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 target_size = imageSize(target_level);
+    if (any(greaterThanEqual(p, target_size))) {
+        return;
+    }
+
+    if (push.level == 0u) {
+        imageStore(target_level, p, vec4(texelFetch(depth_buffer, p, 0).r));
+        return;
+    }
+
+    ivec2 source_size = imageSize(source_level);
+    ivec2 first = p * 2;
+    ivec2 last = first + ivec2(1);
+    if ((source_size.x & 1) != 0 && p.x == target_size.x - 1) {
+        last.x += 1;
+    }
+    if ((source_size.y & 1) != 0 && p.y == target_size.y - 1) {
+        last.y += 1;
+    }
+    last = min(last, source_size - 1);
+
+    float nearest = 1.0;
+    for (int y = first.y; y <= last.y; ++y) {
+        for (int x = first.x; x <= last.x; ++x) {
+            nearest = min(nearest, imageLoad(source_level, ivec2(x, y)).r);
+        }
+    }
+    imageStore(target_level, p, vec4(nearest));
+}

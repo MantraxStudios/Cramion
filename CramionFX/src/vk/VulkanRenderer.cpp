@@ -210,7 +210,10 @@ Vec4 toVec4(const Vec3& v, float w) {
 //     ya no cuadran; con el ciclo de dia, cada ~0.7 s),
 //   - cuando la camara se ha alejado mas de kProbeMoveDistance y va despacio
 //     (al pararse), o mas de kProbeFarDistance aunque siga corriendo: la
-//     correccion de paralaje aguanta bastantes metros.
+//     correccion de paralaje aguanta bastantes metros,
+//   - cuando la camara se va a donde la sonda no ve (otra habitacion) o se
+//     queda quieta entre dos capturas; si vuelve al lado del cubo anterior,
+//     se vuelve a el sin capturar (probeCaptureDue).
 // Y solo una cara cada kProbeFaceInterval frames, para repartir el coste.
 // Las CVars render.probe.* cambian el reparto, el tiempo minimo entre
 // capturas y la distancia de dibujo (por defecto, segun el nivel de la GPU).
@@ -235,10 +238,26 @@ bool signatureChanged(const std::vector<float>& a, const std::vector<float>& b,
     }
     return false;
 }
-// Fundido de la sonda anterior a la nueva.
-constexpr float kProbeFadeSeconds = 0.35f;
-// Peso de lo acumulado en el filtro temporal de los reflejos de pantalla.
-constexpr float kSsrHistoryWeight = 0.88f;
+// Fundido de la sonda anterior a la nueva. (Con 0.35 s, al recapturar en una
+// habitacion la luz cambiaba casi de golpe.)
+constexpr float kProbeFadeSeconds = 0.5f;
+// La camara se ha ido a donde la sonda no ve (otra habitacion): recaptura sin
+// esperar a que se pare, si esta a mas de kProbeLostMinDistance del centro y
+// mas alla de lo que la sonda ve en esa direccion (con margen).
+constexpr float kProbeLostMinDistance = 1.0f;
+constexpr float kProbeLostMargin = 0.35f;
+// Lo que tarda un cubo en perder (o recuperar) la confianza cuando la camara
+// se va a donde no ve (o vuelve).
+constexpr float kProbeTrustSeconds = 0.25f;
+// Despacio durante esto es pararse (no darse la vuelta): entonces se recaptura.
+constexpr float kProbeStopSeconds = 0.3f;
+// Parado a mas de esto del cubo actual y casi igual de cerca del otro, que
+// tambien ve la camara (entre las dos capturas): se recaptura alli...
+constexpr float kProbeBetweenDistance = 1.5f;
+// ...si esta quieto de verdad (por debajo de kProbeSlowSpeed tambien se anda:
+// andando despacio hacia la puerta se recapturaba fuera, encima del cubo de
+// la habitacion).
+constexpr float kProbeStillSpeed = 0.5f;  // m/s
 // Pasadas del filtro espacial de la luz rebotada (separacion 1, 2, 4, 8, 16).
 constexpr std::uint32_t kGiAtrousIterations = 5;
 // Filtro temporal de las sombras por rayos: peso minimo del rayo nuevo (la
@@ -623,14 +642,22 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         ssgi_pass_.create(device_, gi);
         createBakedGi();  // GI horneada (VulkanRendererBaked.cpp)
 
-        // Mismos recursos que la GI (camara, profundidad, normales e imagen
-        // anterior), pero a resolucion completa.
+        // Casi los mismos recursos que la GI (camara, profundidad, normales e
+        // imagen anterior, esta con mips), a resolucion completa, y la piramide
+        // de profundidad minima que recorre el rayo.
+        const std::array<Type, 5> ssr_bindings = {
+            Type::eUniformBuffer,        Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+            Type::eCombinedImageSampler, Type::eCombinedImageSampler};
         FullscreenPassDesc ssr = ssgi;
         ssr.fragment_shader = "ssr.frag.spv";
+        ssr.bindings = ssr_bindings;
         ssr_pass_.create(device_, ssr);
+        ssr_pyramids_.create(device_);
+        // (createRenderTargets ya corrio sin ellas: sus imagenes, ahora.)
+        ssr_pyramids_.resize(device_, gbuffer_.depth());
 
-        // Filtro temporal del SSR: camara + profundidad + reflejos de este
-        // frame + historia.
+        // Filtro espacial del SSR: camara + profundidad + reflejos de este
+        // frame + normales (y rugosidad).
         FullscreenPassDesc ssr_resolve = ssgi;
         ssr_resolve.fragment_shader = "ssr_resolve.frag.spv";
         ssr_resolve_pass_.create(device_, ssr_resolve);
@@ -988,6 +1015,7 @@ void VulkanRenderer::shutdown() {
     gi_temporal_pass_.destroy();
     ssr_resolve_pass_.destroy();
     ssr_pass_.destroy();
+    ssr_pyramids_.destroy();
     ssgi_pass_.destroy();
     destroyBakedGi();
     sky_lut_pass_.destroy();
@@ -1043,7 +1071,6 @@ void VulkanRenderer::shutdown() {
     rt_reflection_history_.destroy();
     rt_reflection_moments_history_.destroy();
     rt_reflection_filter_.destroy();
-    ssr_history_.destroy();
     probe_capture_.destroy();
     for (VulkanBuffer& buffer : weather_buffers_) {
         buffer.destroy();
@@ -1090,7 +1117,6 @@ void VulkanRenderer::shutdown() {
     upscaled_color_.destroy();
     taa_history_.destroy();
     xr_eye1_.taa_history.destroy();
-    xr_eye1_.ssr_history.destroy();
     xr_eye1_.gi_history.destroy();
     xr_eye1_.gi_moments_history.destroy();
     xr_eye1_.rt_shadow_history.destroy();
@@ -1396,8 +1422,9 @@ void VulkanRenderer::createDescriptors() {
     // Texturas: SSAO (2 por frame), bloom (1 por set), composicion (3), rayos
     // de luz (2) e histograma (1). Storage: histograma (1), promedio (2) y
     // composicion (1).
-    // Y la GI, el SSR y su filtro temporal: camara + 3 texturas por frame
-    // cada uno (el filtro del SSR y el TAA, otra vez para el ojo derecho de VR).
+    // Y la GI, el SSR y su filtro espacial: camara + 3 texturas por frame
+    // cada uno (el filtro del SSR y el TAA, otra vez para el ojo derecho de VR),
+    // + 1 textura por frame del SSR (su piramide de profundidad).
     const std::array<vk::DescriptorPoolSize, 3> post_sizes = {
     // Y las nubes: camara + 2 texturas por frame. Y el filtro de la GI:
     // camara + 3 texturas por frame.
@@ -1405,7 +1432,7 @@ void VulkanRenderer::createDescriptors() {
         // (+ la composicion por frame: 3 texturas, su exposicion y sus ajustes.)
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 13},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kMaxFramesInFlight * 28 + kBloomSets + 2 + 1 + 1 + 6 + 3 + 4},
+                               kMaxFramesInFlight * 29 + kBloomSets + 2 + 1 + 1 + 6 + 3 + 4},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 + kMaxFramesInFlight * 2}};
 
     vk::DescriptorPoolCreateInfo post_pool_info{};
@@ -1858,8 +1885,11 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
             // Los modelos subidos despues de construirla aun no tienen BLAS
             // (sus indices serian los de las mallas extra).
             if (draw.per_submesh && draw.model < ray_traced_models_) {
+                // Sin sombra (Proyectar sombras = No): los rayos de sombra no lo
+                // ven, como los mapas de sombras (los mandos de VR dejaban sombra).
                 instances.push_back(RayTracing::Instance{
-                    draw.model, draw.transform * bone_staging_[draw.bone_offset], RayTracing::kMaskScenery});
+                    draw.model, draw.transform * bone_staging_[draw.bone_offset],
+                    draw.cast_shadows ? RayTracing::kMaskScenery : RayTracing::kMaskNoShadow});
             }
         }
         prepareRayTracingScene(scene, instances);
@@ -2681,6 +2711,22 @@ void VulkanRenderer::updatePostDescriptors() {
         write.setImageInfo(info);
         device_.handle().updateDescriptorSets(write, nullptr);
     };
+    // Igual con una vista suelta (las piramides del SSR).
+    const auto write_view = [&](const vk::raii::DescriptorSet& set, std::uint32_t binding,
+                                const vk::raii::Sampler& sampler, const vk::raii::ImageView& view,
+                                vk::ImageLayout layout) {
+        vk::DescriptorImageInfo info{};
+        info.sampler = *sampler;
+        info.imageView = *view;
+        info.imageLayout = layout;
+
+        vk::WriteDescriptorSet write{};
+        write.dstSet = *set;
+        write.dstBinding = binding;
+        write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        write.setImageInfo(info);
+        device_.handle().updateDescriptorSets(write, nullptr);
+    };
 
     constexpr vk::ImageLayout kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
 
@@ -2755,14 +2801,15 @@ void VulkanRenderer::updatePostDescriptors() {
             device_.handle().updateDescriptorSets(fog_write, nullptr);
         }
 
-        // SSGI: camara + profundidad + normales + imagen del frame anterior.
+        // SSGI: camara + profundidad + normales + imagen del frame anterior
+        // (la historia de la vista principal, su nivel 0).
         vk::WriteDescriptorSet ssgi_camera = write;
         ssgi_camera.dstSet = *ssgi_sets_[i];
         device_.handle().updateDescriptorSets(ssgi_camera, nullptr);
         write_texture(ssgi_sets_[i], 1, ssgi_pass_.sampler(), gbuffer_.depth(),
                       compat::depthReadOnlyLayout());
         write_texture(ssgi_sets_[i], 2, ssgi_pass_.sampler(), gbuffer_.normal(), kRead);
-        write_texture(ssgi_sets_[i], 3, ssgi_pass_.sampler(), scene_color_, kRead);
+        write_view(ssgi_sets_[i], 3, ssgi_pass_.sampler(), ssr_pyramids_.colorView(), kRead);
         for (std::uint32_t cube = 0; cube < ReflectionProbe::kCubeCount; ++cube) {
             vk::DescriptorImageInfo probe_info{};
             probe_info.sampler = *reflection_probe_.sampler();
@@ -2776,16 +2823,21 @@ void VulkanRenderer::updatePostDescriptors() {
             device_.handle().updateDescriptorSets(probe_write, nullptr);
         }
 
-        // SSR: los mismos recursos.
+        // SSR: camara, profundidad, normales, la historia con sus mips
+        // (trilineal: el mip del cono de la rugosidad) y la piramide de
+        // profundidad minima (vive en General).
         vk::WriteDescriptorSet ssr_camera = write;
         ssr_camera.dstSet = *ssr_sets_[i];
         device_.handle().updateDescriptorSets(ssr_camera, nullptr);
         write_texture(ssr_sets_[i], 1, ssr_pass_.sampler(), gbuffer_.depth(),
                       compat::depthReadOnlyLayout());
         write_texture(ssr_sets_[i], 2, ssr_pass_.sampler(), gbuffer_.normal(), kRead);
-        write_texture(ssr_sets_[i], 3, ssr_pass_.sampler(), scene_color_, kRead);
+        write_view(ssr_sets_[i], 3, ssr_pyramids_.colorSampler(), ssr_pyramids_.colorView(), kRead);
+        write_view(ssr_sets_[i], 4, ssr_pyramids_.depthSampler(), ssr_pyramids_.depthView(),
+                   vk::ImageLayout::eGeneral);
 
-        // Filtro temporal del SSR (cada ojo de VR con su historia).
+        // Filtro espacial del SSR (los sets de los dos ojos de VR son iguales:
+        // ya no tiene historia).
         for (std::uint32_t eye = 0; eye < 2; ++eye) {
             const vk::raii::DescriptorSet& resolve_set = ssr_resolve_sets_[i + eye * kMaxFramesInFlight];
             vk::WriteDescriptorSet resolve_camera = write;
@@ -2794,8 +2846,7 @@ void VulkanRenderer::updatePostDescriptors() {
             write_texture(resolve_set, 1, ssr_resolve_pass_.sampler(), gbuffer_.depth(),
                           compat::depthReadOnlyLayout());
             write_texture(resolve_set, 2, ssr_resolve_pass_.sampler(), ssr_raw_, kRead);
-            write_texture(resolve_set, 3, ssr_resolve_pass_.sampler(),
-                          eye_image(eye, ssr_history_, xr_eye1_.ssr_history), kRead);
+            write_texture(resolve_set, 3, ssr_resolve_pass_.sampler(), gbuffer_.normal(), kRead);
         }
 
         // Trazado de rayos: camara, luces, G-buffer, imagen anterior, salidas
@@ -2806,7 +2857,8 @@ void VulkanRenderer::updatePostDescriptors() {
             inputs.lights = &light_buffers_[i];
             inputs.depth = *gbuffer_.depth().view();
             inputs.normal = *gbuffer_.normal().view();
-            inputs.previous_color = *scene_color_.view();
+            // La historia de la vista principal (su nivel 0), como el SSGI.
+            inputs.previous_color = *ssr_pyramids_.colorView();
             inputs.gi_output = *gi_raw_.view();
             inputs.reflection_output = *ssr_raw_.view();
             inputs.environment = *ibl_probe_.environmentView();
@@ -3360,11 +3412,12 @@ void VulkanRenderer::createRenderTargets() {
     ssr_image_.create(device_, extent, kHdrFormat,
                       target_usage | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eStorage,
                       vk::ImageAspectFlagBits::eColor);
-    ssr_history_.create(device_, extent, kHdrFormat,
-                        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
-                        vk::ImageAspectFlagBits::eColor);
-    ssr_filter_history_valid_ = false;
     ssr_zeroed_ = false;
+    // Las piramides del SSR (y la historia HDR que tambien leen la GI y los
+    // rayos), del tamano del G-buffer nuevo. La primera vez aun no existen
+    // sus pipelines: las crea la inicializacion despues.
+    ssr_pyramids_.resize(device_, gbuffer_.depth());
+    scene_history_mips_ = false;
 
     // Sombras por rayos (sol y luces locales): resolucion completa (bordes
     // nitidos). Sin trazado no se usan: 1 x 1 (antes ~30 MB a 1440p siempre).
@@ -3698,10 +3751,21 @@ void VulkanRenderer::installModel(const scene::Scene& scene, std::uint32_t index
     // Los rayos lo veran cuando se rehaga su escena (al rato, por si se sigue
     // editando). Volver a la GPU tras el streaming no es un cambio: la escena de
     // rayos conserva su copia, salvo que se construyera mientras estaba fuera.
+    // Tampoco la tiene un modelo que llega despues de construirla (o sin ninguna
+    // construida): el juego la construye en la pantalla de carga, antes que los
+    // modelos, se quedaba vacia ("la escena no tiene geometria") y nada volvia a
+    // pedirla, asi que el trazado de rayos no se encendia en toda la partida.
+    // (ray_traced_models_ es 0 sin escena y cuenta los que vio la ultima, aunque
+    // saliera vacia: los cambios de detalle de esos no la piden otra vez.)
     const bool rt_missing = index < rt_scene_evicted_.size() && rt_scene_evicted_[index];
-    if (ray_tracing_.sceneBuilt() && (!restore || rt_missing)) {
+    const bool rt_unknown = rayTracingWanted() && (index >= ray_traced_models_ || rt_missing);
+    if ((ray_tracing_.sceneBuilt() && (!restore || rt_missing)) || rt_unknown) {
+        // Lo nuevo o cambiado reinicia la espera (rafagas de una carga: una sola
+        // construccion); volver a la GPU o cambiar el detalle de las texturas
+        // no la alarga (si no, con el streaming la primera escena no llegaba
+        // hasta que dejaba de subir texturas, ya jugando).
+        if (!restore || !rt_model_edit_pending_) rt_model_edit_time_ = std::chrono::steady_clock::now();
         rt_model_edit_pending_ = true;
-        rt_model_edit_time_ = std::chrono::steady_clock::now();
     }
     if (model_evicted_.size() < skinned_models_.size()) model_evicted_.resize(skinned_models_.size(), false);
     if (model_last_seen_.size() < skinned_models_.size() + 1) {
@@ -3896,6 +3960,9 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     camera_data.projection = temporal ? core::translate(Vec3{jitter_ndc.x, jitter_ndc.y, 0.0f}) * camera.projection()
                                       : camera.projection();
     camera_data.view_projection = camera_data.projection * camera_data.view;
+    // Con la que se dibuja la imagen HDR de este frame: si llega a la historia
+    // del SSR (recordFilterHistoryCopies), con esta se reproyecta en ella.
+    current_jittered_view_projection_ = camera_data.view_projection;
     // Vectores de movimiento: sin jitter, este frame y el anterior (las caras
     // de la sonda no cuentan).
     camera_data.unjittered_view_projection = unjittered;
@@ -4137,6 +4204,9 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
                 light_data.probes[previous] =
                     toVec4(probe_centers_[previous], 1.0f - probe_fade_);
             }
+            // La confianza en cada cubo (probeCaptureDue): la iluminacion la
+            // aplica a su peso.
+            light_data.probe_trust = Vec4{probe_trust_[0], probe_trust_[1], 0.0f, 0.0f};
         }
     }
 
@@ -4190,8 +4260,11 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         const bool cloud_shadows = clouds_enabled_ && !environmentActive() && cloud_settings_.shadows &&
                                    cloud_settings_.coverage > 0.0f && cloud_settings_.shadow_strength > 0.0f;
         light_data.cloud_shadow = cloud_shadows ? cloud_shadow_push_.shadow : Vec4{};
-        // Sin trazado de rayos: lo que tapa el cielo desde arriba.
-        light_data.sky_map = sky_map_drawn_ && skyMapWanted() ? sky_map_params_ : Vec4{};
+        // Sin trazado de rayos: lo que tapa el cielo desde arriba. Uno que toca
+        // redibujar (planSkyMap) se dibuja en este mismo frame, antes de la
+        // iluminacion: tambien vale. (Antes, tras crearlo o mover el origen,
+        // ese frame iba sin el y los interiores daban un destello de cielo.)
+        light_data.sky_map = (sky_map_drawn_ || sky_map_redraw_) && skyMapWanted() ? sky_map_params_ : Vec4{};
         light_data.sky_map_depth = sky_map_depth_;
     }
     // w: el sol esta horneado entero (su luz directa y sus sombras van en la
@@ -4629,7 +4702,11 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     // dia de noche).
     // Con el casco activo, solo la cabeza: otra vista del editor movia
     // probe_last_camera_ y la posicion de captura entre cabeza y editor.
-    const bool probe_view = xr_view_frame_ ? !xrSecondEye() : (xr_eye_target_ < 0 && !xrViewsMode());
+    // Sin casco, solo la vista que se presenta: la otra vista del editor
+    // (Escena y Juego a la vez) capturaba la sonda desde SU camara y el cubo
+    // iba y venia entre las dos.
+    const bool probe_view = xr_view_frame_ ? !xrSecondEye()
+                                           : (present && !xr_views_active_ && xr_eye_target_ < 0 && !xrViewsMode());
     if (render_texture_target_ < 0 && probe_view && !mirror_only_ && probeCaptureDue(scene)) {
         stage = TimingClock::now();
         // Las caras ajustan sus cascadas a su propia camara (no a la de la
@@ -4831,16 +4908,17 @@ float VulkanRenderer::probeDrawDistance() const {
 }
 
 bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
-    // VR: frame_delta_seconds_ aun es el de la vista anterior (segundo ojo o
-    // espejo: 0), asi que nunca pasaba el tiempo minimo. Se mide desde el
-    // primer ojo anterior (last_xr_view_time_ se actualiza despues).
-    float dt = frame_delta_seconds_;
-    if (xr_view_frame_) {
-        dt = last_xr_view_time_.time_since_epoch().count() == 0
-                 ? 0.0f
-                 : std::min(std::chrono::duration<float>(std::chrono::steady_clock::now() - last_xr_view_time_).count(),
-                            0.25f);
-    }
+    // Su propio reloj, desde la vez anterior (solo pasa por aqui la vista que
+    // captura): frame_delta_seconds_ aun es el de la vista anterior (segundo
+    // ojo o espejo de VR, la otra vista del editor: 0), asi que el tiempo
+    // minimo no pasaba nunca y la camara parecia siempre parada.
+    // (Con el paso fijo del modo cine, ese: las grabaciones salen iguales.)
+    const auto now = std::chrono::steady_clock::now();
+    float dt = probe_last_time_.time_since_epoch().count() == 0
+                   ? 0.0f
+                   : std::min(std::chrono::duration<float>(now - probe_last_time_).count(), 0.25f);
+    if (frame_delta_override_ >= 0.0f) dt = frame_delta_override_;
+    probe_last_time_ = now;
     probe_since_capture_ += dt;
     // Hacen falta los mapas de sombra locales y la imagen HDR de un frame ya
     // dibujado (se leen tal cual en la captura).
@@ -4857,46 +4935,158 @@ bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
     const Vec3 position = view.position();
     const float speed = dt > 0.0f ? core::length(position - probe_last_camera_) / dt : 0.0f;
     probe_last_camera_ = position;
+    // Cuanto lleva despacio. Al darse la vuelta la velocidad pasa por cero unos
+    // frames, y eso no es pararse: se capturaba en el punto de la vuelta (fuera)
+    // y al volver a entrar la habitacion seguia con esa sonda.
+    probe_slow_seconds_ = speed < kProbeSlowSpeed ? probe_slow_seconds_ + dt : 0.0f;
+    probe_still_seconds_ = speed < kProbeStillSpeed ? probe_still_seconds_ + dt : 0.0f;
+
+    // La camara se ha ido a donde la sonda no ve (el otro lado de una puerta,
+    // otra habitacion): se recaptura ya, aunque no se pare, y mientras tanto
+    // el cubo pierde la confianza (su luz y sus reflejos son de otro sitio).
+    // Antes, al salir de una habitacion y volver andando, la habitacion se
+    // iluminaba con la sonda capturada fuera (mas oscura) hasta que el jugador
+    // se paraba, y entonces volvia todo de golpe en un momento cualquiera.
+    // (Mientras se captura o se funde la que la sustituye no baja: aun no se
+    // puede capturar otra, y de la vieja se pasa a la nueva con el fundido,
+    // sin un rato de solo cielo entre las dos.)
+    // El cubo actual se pierde con margen; para pasar al otro (o recapturar
+    // entre los dos), el otro tiene que verla sin margen y con una ventana mas
+    // estrecha (un texel menos alrededor): en el limite de lo que ve un cubo
+    // (el canto de una puerta), la camara iba y venia de uno a otro.
+    const auto sees = [&](std::uint32_t cube, float& away, bool strict) {
+        const Vec3 offset = position - probe_centers_[cube];
+        away = core::length(offset);
+        if (away <= kProbeLostMinDistance) return true;
+        const float seen = ReflectionProbe::distanceToward(probe_distances_[cube], offset.x, offset.y, offset.z,
+                                                           strict ? 1 : 2);
+        if (seen <= 0.0f) return true;
+        return strict ? away <= seen : away <= seen * 1.05f + kProbeLostMargin;
+    };
+    bool lost = false;
+    float away = 0.0f;
+    float trust_before = 1.0f;
+    if (probe_ready_) {
+        lost = !sees(probe_cube_, away, false);
+        float& trust = probe_trust_[probe_cube_];
+        trust_before = trust;
+        const float step = dt / kProbeTrustSeconds;
+        const bool replacing = probe_face_ >= 0 || probe_fade_ < 1.0f;
+        trust = lost ? std::max(trust - (replacing ? 0.0f : step), 0.0f) : std::min(trust + step, 1.0f);
+    }
+
+    const Vec3 to_light = -core::normalize(scene.lights().sun.direction);
+    std::vector<float> signature = lightingSignature(scene);
+
+    // Volver a la captura anterior (el otro cubo, que se conserva) si la camara
+    // ha vuelto a su lado y la luz no ha cambiado: el otro la ve y esta mas
+    // cerca de su centro, o el actual ya no la ve (si no, se capturaba en la
+    // puerta encima del otro). Sin capturar nada: al salir de una habitacion y
+    // volver a entrar (aunque sea por la misma puerta) la habitacion recupera
+    // su propia sonda con un fundido. No uno de muy atras: se perderia enseguida.
+    // Tras volver porque el actual la perdio, no se vuelve a el solo por estar
+    // mas cerca hasta alejarse de alli: moviendose de lado junto al canto de
+    // la puerta, la habitacion pasaba de un cubo al otro una y otra vez.
+    if (probe_ready_ && probe_face_ < 0) {
+        const std::uint32_t other = 1 - probe_cube_;
+        float away_other = 0.0f;
+        const bool usable = !probe_distances_[other].empty() && sees(other, away_other, true) &&
+                            core::dot(to_light, probe_cube_sun_[other]) >= kProbeLightCos &&
+                            !signatureChanged(signature, probe_cube_signature_[other], kProbeLightChange);
+        const bool closer = away_other + kProbeLostMinDistance < away &&
+                            (!probe_lost_swap_valid_ ||
+                             core::length(position - probe_lost_swap_position_) > kProbeLostMinDistance);
+        const bool better = closer ||
+                            (lost && away_other < kProbeFarDistance && away_other < away + kProbeMoveDistance);
+        if (usable && better) {
+            if (lost) {
+                probe_lost_swap_position_ = position;
+                probe_lost_swap_valid_ = true;
+                // Lo que bajo la confianza este frame no cuenta: ya se sustituye.
+                probe_trust_[probe_cube_] = trust_before;
+            } else {
+                // Por estar mas cerca: lo recordado era del cambio anterior (si
+                // no, al volver a entrar por la misma puerta se esperaba a perder
+                // la camara).
+                probe_lost_swap_valid_ = false;
+            }
+            // A mitad de un fundido se invierte: el peso de cada cubo no cambia.
+            const bool fading = probe_fade_ < 1.0f;
+            probe_cube_ = other;
+            probe_fade_ = fading ? 1.0f - probe_fade_ : 0.0f;
+            probe_position_ = probe_centers_[other];
+            probe_sun_ = probe_cube_sun_[other];
+            probe_signature_ = probe_cube_signature_[other];
+            if (!fading) probe_trust_[other] = 1.0f;  // (su peso empieza en 0)
+            return false;
+        }
+    }
 
     // Una cara cada pocos frames, y ninguna captura nueva hasta que la
     // anterior termine de fundirse (se escribira en el cubo que sale).
     if (frame_count_ < probe_next_face_frame_ || (probe_face_ < 0 && probe_fade_ < 1.0f)) {
         return false;
     }
+    // Captura a medias. Si la luz cambia mientras, queda marcada: sus caras
+    // mezclan dos luces (captureProbeFace).
     if (probe_face_ >= 0) {
-        return true;  // Captura a medias.
-    }
-    // Tiempo minimo entre capturas completas (render.probe.MinSeconds): al
-    // correr o con el ciclo de dia se recapturaba sin parar (cada cara, un
-    // frame entero de mas). La primera captura no espera.
-    if (probe_ready_ && probe_since_capture_ < probeMinSeconds()) {
-        return false;
-    }
-
-    const Vec3 to_light = -core::normalize(scene.lights().sun.direction);
-    std::vector<float> signature = lightingSignature(scene);
-
-    if (probe_face_ >= 0) {
-        // La luz cambio a mitad de captura: se empieza de nuevo, o las caras
-        // mezclarian dos iluminaciones.
-        if (signatureChanged(signature, probe_capture_signature_, kProbeLightChange)) {
+        if (core::dot(to_light, probe_capture_sun_) < kProbeLightCos ||
+            signatureChanged(signature, probe_capture_signature_, kProbeLightChange)) {
+            probe_capture_mixed_ = true;
+        }
+        // Mezclada y a punto de dibujar la ultima cara (la 5): se empieza otra
+        // vez, una sola, con la luz de ahora. Las caras van a un cubo aparte y
+        // el de destino solo se escribe al final, asi que el otro cubo sigue
+        // intacto; terminarla obligaba a recapturar despues, y esa captura caia
+        // en el cubo de la habitacion de la que se acababa de salir. Si vuelve
+        // a mezclarse, o la anterior ya salio mezclada (una luz que parpadea),
+        // se termina igual: si no, no acabaria nunca.
+        if (probe_capture_mixed_ && probe_face_ == 5 && !probe_capture_restarted_ && !probe_last_capture_mixed_) {
+            probe_capture_restarted_ = true;
+            probe_capture_mixed_ = false;
             probe_face_ = 0;
+            probe_since_capture_ = 0.0f;
+            probe_capture_position_ = position;
             probe_capture_sun_ = to_light;
             probe_capture_signature_ = std::move(signature);
         }
         return true;
     }
+    // Tiempo minimo entre capturas completas (render.probe.MinSeconds): al
+    // correr o con el ciclo de dia se recapturaba sin parar (cada cara, un
+    // frame entero de mas). La primera captura no espera, ni (con el valor del
+    // nivel de la GPU) la de una camara que se ha ido a donde la sonda no ve:
+    // a esa ya la limita el fundido. Con la CVar puesta a mano, tambien espera.
+    if (probe_ready_ && (!lost || probe_limits_.min_seconds > 0.0f) &&
+        probe_since_capture_ < probeMinSeconds()) {
+        return false;
+    }
 
     const float moved = core::length(position - probe_position_);
-    const bool due = !probe_ready_ || core::dot(to_light, probe_sun_) < kProbeLightCos ||
+    // Parado entre dos capturas (p. ej. la de fuera, junto a la puerta, y la
+    // de la habitacion: las dos ven la camara): volver al otro cubo pide 1 m
+    // de ventaja y la parada normal kProbeMoveDistance, asi que la habitacion
+    // seguia con la sonda de fuera hasta adentrarse o pararse lejos.
+    bool between = false;
+    if (probe_ready_ && probe_still_seconds_ >= kProbeStopSeconds && moved > kProbeBetweenDistance) {
+        const std::uint32_t other = 1 - probe_cube_;
+        float away_other = 0.0f;
+        between = !probe_distances_[other].empty() && sees(other, away_other, true) &&
+                  away_other < moved + kProbeBetweenDistance;
+    }
+    const bool due = !probe_ready_ || lost || between || core::dot(to_light, probe_sun_) < kProbeLightCos ||
                      signatureChanged(signature, probe_signature_, kProbeLightChange) ||
                      moved > kProbeFarDistance ||
-                     (moved > kProbeMoveDistance && speed < kProbeSlowSpeed);
+                     (moved > kProbeMoveDistance && probe_slow_seconds_ >= kProbeStopSeconds);
     if (!due) {
         return false;
     }
 
+    // Lo que bajo la confianza este frame no cuenta: ya se esta sustituyendo.
+    if (lost) probe_trust_[probe_cube_] = trust_before;
     probe_face_ = 0;
+    probe_capture_mixed_ = false;
+    probe_capture_restarted_ = false;
     probe_since_capture_ = 0.0f;
     probe_capture_position_ = position;
     probe_capture_sun_ = to_light;
@@ -5022,6 +5212,9 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
     const std::uint32_t target_cube = probe_ready_ ? 1 - probe_cube_ : 0;
     if (last_face) {
         reflection_probe_.recordPrefilter(cmd, target_cube);
+        // Lo que ve (distancias), a la CPU: probeCaptureDue sabe asi si la
+        // camara se va a donde esta sonda no ve.
+        reflection_probe_.recordDistanceReadback(cmd, target_cube);
     }
 
     cmd.end();
@@ -5052,10 +5245,27 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
         probe_fade_ = probe_ready_ ? 0.0f : 1.0f;
         probe_cube_ = target_cube;
         probe_centers_[target_cube] = probe_capture_position_;
+        // (La fence de arriba garantiza que la copia termino.)
+        reflection_probe_.readDistances(probe_distances_[target_cube]);
+        probe_trust_[target_cube] = 1.0f;  // capturado donde esta la camara
+        probe_cube_sun_[target_cube] = probe_capture_sun_;
+        probe_cube_signature_[target_cube] = probe_capture_signature_;
+        // La luz cambio a mitad de captura (probeCaptureDue lo mira en cada
+        // cara): sus caras mezclan dos luces. Se usa hasta recapturar, aunque
+        // la luz vuelva a ser la de antes (firma vacia: nunca coincide), y no
+        // se vuelve a el.
+        if (probe_capture_mixed_) {
+            probe_cube_signature_[target_cube].clear();
+        }
         probe_ready_ = true;
         probe_position_ = probe_capture_position_;
         probe_sun_ = probe_capture_sun_;
         probe_signature_ = probe_capture_signature_;
+        if (probe_capture_mixed_) {
+            probe_signature_.clear();
+        }
+        probe_last_capture_mixed_ = probe_capture_mixed_;
+        probe_lost_swap_valid_ = false;  // era entre el cubo que se acaba de sustituir y este
         probe_face_ = -1;
     } else {
         ++probe_face_;
@@ -6081,8 +6291,11 @@ void VulkanRenderer::recordVolumetricPass(const vk::raii::CommandBuffer& cmd,
 // con los vecinos. Solo con rayos por hardware, en la vista de pantalla y si
 // hay luces locales con sombra.
 void VulkanRenderer::recordRtShadowPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
-    rt_shadows_this_frame_ = rt_shadows_planned_;
-    if (!rt_shadows_planned_) {
+    // Solo la vista principal (o cada ojo de VR): la segunda vista del editor
+    // no lee la mascara (su iluminacion va sin sombras por rayos) y su
+    // acumulacion pisaba la historia de la principal con otra camara.
+    rt_shadows_this_frame_ = rt_shadows_planned_ && !isolated();
+    if (!rt_shadows_this_frame_) {
         // Lo acumulado se queda viejo (la camara sigue moviendose).
         if (!isolated()) rt_shadow_history_valid_ = false;
         return;
@@ -6166,18 +6379,6 @@ void VulkanRenderer::recordRtReflectionFilter(const vk::raii::CommandBuffer& cmd
                                       vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eTransferRead,
                                       vk::PipelineStageFlagBits2::eComputeShader,
                                       vk::AccessFlagBits2::eShaderStorageWrite));
-    // La historia del filtro del SSR (recordFilterHistoryCopies copia el
-    // resultado en ella cada frame) recien creada: como textura, igual que la
-    // deja el SSR la primera vez.
-    if (!ssr_filter_history_valid_) {
-        // (Despues de las lecturas y la copia de frames anteriores.)
-        pipelineBarrier(cmd, colorBarrier(*ssr_history_.handle(), vk::ImageLayout::eUndefined,
-                                          vk::ImageLayout::eShaderReadOnlyOptimal,
-                                          vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eCopy,
-                                          vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eTransferWrite,
-                                          vk::PipelineStageFlagBits2::eFragmentShader,
-                                          vk::AccessFlagBits2::eShaderSampledRead));
-    }
     memoryBarrier(cmd, vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eCopy,
                   vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageWrite |
                       vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite,
@@ -6236,6 +6437,9 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     // GI horneada: las sondas en lugar de los rayos o el SSGI.
     const bool baked = bakedGiActive();
     const bool ray_traced = !baked && rayTracingActive() && !isolated();
+    // La historia HDR (ssr_pyramids_) vale como frame anterior: existe y el
+    // frame anterior la guardo (con todo apagado no se copia).
+    const bool history = scene_history_valid_ && !scene_history_stale_;
 
     // GI apagada (preset Bajo, presupuesto adaptativo, movil): la iluminacion
     // no la lee (lights.counts.w = 0) y sus imagenes siguen en General, asi
@@ -6243,19 +6447,12 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     // justo en los PC de gama baja. Con rayos sigue: su cache de radiancia la
     // leen tambien los reflejos.
     // Con el path tracing pintando la vista, tampoco (se sobrescribiria).
+    // (La historia que leen el SSR y la GI es otra imagen, siempre como
+    // textura: la imagen HDR ya no hace falta pasarla a textura aqui.)
     if ((!post_.global_illumination && !baked && !ray_traced) || pathTraceReplacesLighting()) {
-        // El SSR lee la imagen HDR del frame anterior: recien creada, se pasa
-        // a textura como hace la GI.
-        if (!scene_history_valid_ && !isolated()) {
-            pipelineBarrier(cmd, colorBarrier(*scene_color_.handle(), vk::ImageLayout::eUndefined,
-                                              vk::ImageLayout::eShaderReadOnlyOptimal,
-                                              vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
-                                              vk::PipelineStageFlagBits2::eFragmentShader,
-                                              vk::AccessFlagBits2::eShaderSampledRead));
-        }
         if (!isolated()) {
             gi_filter_history_valid_ = false;  // al volver, sin la luz de hace rato
-            ssr_history_ready_ = scene_history_valid_;
+            ssr_history_ready_ = history;
             scene_history_valid_ = true;
         }
         return;
@@ -6270,34 +6467,29 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
                                   vk::PipelineStageFlagBits2::eComputeShader,
                                   vk::AccessFlagBits2::eShaderStorageWrite)
                    : discardToAttachment(*gi_raw_.handle())};
-
-    // La imagen HDR guarda aun el frame anterior (ya como textura). Recien
-    // creada no tiene nada: se pasa a textura para poder enlazarla y el
-    // shader no la lee.
-    if (!scene_history_valid_ && !isolated()) {
-        barriers.push_back(colorBarrier(*scene_color_.handle(), vk::ImageLayout::eUndefined,
-                                        vk::ImageLayout::eShaderReadOnlyOptimal,
-                                        vk::PipelineStageFlagBits2::eTopOfPipe,
-                                        vk::AccessFlagBits2::eNone,
-                                        vk::PipelineStageFlagBits2::eFragmentShader,
-                                        vk::AccessFlagBits2::eShaderSampledRead));
-    }
     pipelineBarrier(cmd, barriers);
 
     // Las caras de la sonda no tienen frame anterior (la imagen HDR es la de
     // la pantalla): solo la visibilidad del cielo, sin luz rebotada.
     GpuSsgiPush push{};
-    push.previous_view_projection = previous_view_projection_;
-    push.params = Vec4{scene_history_valid_ && !isolated() ? 1.0f : 0.0f, 1.0f, 0.0f, 0.0f};
+    // La historia HDR (ssr_pyramids_) y la vista-proyeccion, con su jitter,
+    // con la que se dibujo.
+    push.previous_view_projection = scene_history_view_projection_;
+    push.params = Vec4{history && !isolated() ? 1.0f : 0.0f, 1.0f, 0.0f, 0.0f};
     // Rayos distintos cada frame, y la sonda para lo que no esta en pantalla
-    // (con el mismo fundido entre cubos que la iluminacion).
+    // (con el mismo fundido entre cubos que la iluminacion, por la confianza
+    // en cada uno). Con el centro de cada cubo: desde ahi se mira hacia un
+    // punto golpeado que no estaba en el frame anterior.
     push.extra.x = static_cast<float>(noise_frame_ % 64);
     if (probe_enabled_ && probe_ready_ && !capturing_) {
         const std::uint32_t previous = 1 - probe_cube_;
-        const float current_weight = probe_fade_;
-        const float previous_weight = probe_fade_ < 1.0f ? 1.0f - probe_fade_ : 0.0f;
+        const float current_weight = probe_fade_ * probe_trust_[probe_cube_];
+        const float previous_weight = probe_fade_ < 1.0f ? (1.0f - probe_fade_) * probe_trust_[previous] : 0.0f;
         (probe_cube_ == 0 ? push.extra.y : push.extra.z) = current_weight;
         (previous == 0 ? push.extra.y : push.extra.z) = previous_weight;
+        for (std::uint32_t cube = 0; cube < ReflectionProbe::kCubeCount; ++cube) {
+            push.probe_center[cube] = toVec4(probe_centers_[cube], 0.0f);
+        }
     }
 
     vk::ImageMemoryBarrier2 raw_to_sampled = writtenToSampled(*gi_raw_.handle());
@@ -6317,14 +6509,19 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
                           vk::AccessFlagBits2::eShaderStorageRead);
 
         RayTracing::Push rt_push{};
-        rt_push.previous_view_projection = previous_view_projection_;
-        rt_push.params = Vec4{static_cast<float>(noise_frame_ % 64),
-                              scene_history_valid_ ? 1.0f : 0.0f, 0.0f, 0.0f};
+        // La historia HDR (lo que se ve en pantalla) con la vista-proyeccion,
+        // con su jitter, con la que se dibujo.
+        rt_push.previous_view_projection = scene_history_view_projection_;
+        rt_push.params = Vec4{static_cast<float>(noise_frame_ % 64), history ? 1.0f : 0.0f, 0.0f, 0.0f};
         ray_tracing_.record(cmd, frame_index, RayTracing::Pass::Gi, gi_raw_.extent(), rt_push);
         // La cache de radiancia en el mundo: las muestras de este frame a su
-        // media (la leen los rayos de los reflejos y la GI del siguiente).
+        // media (la leen los rayos de los reflejos y la GI del siguiente). y:
+        // segundos desde la anterior (lo que envejecen las entradas sin
+        // muestras; 0 en el segundo ojo de VR, el mismo instante).
+        RayTracing::Push resolve_push = rt_push;
+        resolve_push.params.y = frame_delta_seconds_;
         ray_tracing_.record(cmd, frame_index, RayTracing::Pass::CacheResolve, RayTracing::cacheResolveExtent(),
-                            rt_push);
+                            resolve_push);
 
         raw_to_sampled = colorBarrier(*gi_raw_.handle(), vk::ImageLayout::eGeneral,
                                       vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -6340,7 +6537,7 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
             pipelineBarrier(cmd, raw_to_sampled);
             if (!isolated()) {
                 gi_filter_history_valid_ = false;
-                ssr_history_ready_ = scene_history_valid_;
+                ssr_history_ready_ = history;
                 scene_history_valid_ = true;
             }
             return;
@@ -6439,7 +6636,7 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     }
 
     // El SSR de este frame puede leer la imagen anterior solo si ya existia.
-    ssr_history_ready_ = scene_history_valid_;
+    ssr_history_ready_ = history;
 
     scene_history_valid_ = true;
 }
@@ -6458,12 +6655,11 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
     // Reflejos apagados (preset Bajo, presupuesto adaptativo, movil): el SSR
     // escribe ceros y la iluminacion usa el entorno. Con la imagen ya a ceros
     // no hace falta repetirlo cada frame: eran dos pasadas a pantalla
-    // completa mas la copia a la historia, en los PC que menos pueden.
+    // completa, en los PC que menos pueden.
     // (Las vistas aisladas siempre lo escriben con ceros: no lo estropean.)
     if (!reflections && !isolated() && ssr_zeroed_) {
         ssr_skipped_ = true;
-        ssr_filter_history_valid_ = false;  // al volver, sin reflejos de hace rato
-        rt_reflection_history_valid_ = false;
+        rt_reflection_history_valid_ = false;  // al volver, sin reflejos de hace rato
         return;
     }
 
@@ -6476,7 +6672,9 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
                                           vk::PipelineStageFlagBits2::eComputeShader,
                                           vk::AccessFlagBits2::eShaderStorageWrite));
         RayTracing::Push rt_push{};
-        rt_push.previous_view_projection = previous_view_projection_;
+        // La historia HDR con la vista-proyeccion (con su jitter) con la que
+        // se dibujo, como el SSR.
+        rt_push.previous_view_projection = scene_history_view_projection_;
         rt_push.params = Vec4{static_cast<float>(noise_frame_ % 64),
                               ssr_history_ready_ ? 1.0f : 0.0f, 0.0f, 0.0f};
         ray_tracing_.record(cmd, frame_index, RayTracing::Pass::Reflections, ssr_raw_.extent(),
@@ -6495,44 +6693,29 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
     } else {
         // Lo acumulado por el filtro de los reflejos por rayos se queda viejo.
         if (!isolated()) rt_reflection_history_valid_ = false;
-        // Va despues de la GI: la imagen HDR ya esta como textura.
+        // Sin frame anterior, con el SSR apagado o en las vistas aisladas (las
+        // caras de la sonda), el shader no refleja nada y no hace falta la
+        // piramide.
+        const bool trace = reflections && ssr_history_ready_ && !isolated();
+        // La profundidad minima de este frame, que recorre el rayo.
+        if (trace) ssr_pyramids_.recordDepthPyramid(cmd);
+        // Va despues de la GI: la historia HDR ya esta como textura.
         pipelineBarrier(cmd, discardToAttachment(*ssr_raw_.handle()));
 
         GpuSsgiPush push{};
-        push.previous_view_projection = previous_view_projection_;
-        // Sin frame anterior o con el SSR apagado, el shader no refleja nada.
-        // z: numero de frame, para que el ruido del primer paso cambie cada
-        // frame.
-        push.params = Vec4{reflections && ssr_history_ready_ && !isolated() ? 1.0f : 0.0f,
-                           1.0f, static_cast<float>(noise_frame_ % 64), 0.0f};
+        // La vista-proyeccion, con su jitter, con la que se dibujo la historia.
+        push.previous_view_projection = scene_history_view_projection_;
+        // w: mips de la historia que valen (el frame anterior pudo guardar
+        // solo el nivel 0: reflejos apagados o por rayos).
+        push.params = Vec4{trace ? 1.0f : 0.0f, 1.0f, static_cast<float>(ssr_pyramids_.depthLevels()),
+                           static_cast<float>(scene_history_mips_ ? ssr_pyramids_.colorLevels() : 1u)};
         drawFullscreen(cmd, ssr_pass_, &ssr_sets_[frame_index], ssr_raw_, &push);
     }
 
-    // --- Filtro temporal ---
-    // La historia recien creada no tiene nada: se pasa a textura para poder
-    // enlazarla y el shader no la lee.
-    std::vector<vk::ImageMemoryBarrier2> barriers = {raw_to_sampled,
-                                                     discardToAttachment(*ssr_image_.handle())};
-    if (!ssr_filter_history_valid_) {
-        // Despues de las lecturas y la copia de frames anteriores (la
-        // transicion tambien escribe la imagen), como en recordFilterHistoryCopies.
-        barriers.push_back(colorBarrier(*ssr_history_.handle(), vk::ImageLayout::eUndefined,
-                                        vk::ImageLayout::eShaderReadOnlyOptimal,
-                                        vk::PipelineStageFlagBits2::eFragmentShader |
-                                            vk::PipelineStageFlagBits2::eCopy,
-                                        vk::AccessFlagBits2::eShaderSampledRead |
-                                            vk::AccessFlagBits2::eTransferWrite,
-                                        vk::PipelineStageFlagBits2::eFragmentShader,
-                                        vk::AccessFlagBits2::eShaderSampledRead));
-    }
-    pipelineBarrier(cmd, barriers);
-
-    // Las caras de la sonda no usan la historia (es de la camara de pantalla).
-    // (Su historia es de esta vista: en VR, de este ojo.)
+    // --- Filtro espacial (suaviza el borde del reflejo en lo satinado) ---
+    pipelineBarrier(cmd, {raw_to_sampled, discardToAttachment(*ssr_image_.handle())});
     GpuSsgiPush resolve{};
-    resolve.previous_view_projection = history_view_projection_;
-    resolve.params = Vec4{ssr_filter_history_valid_ && reflections && !isolated() ? 1.0f : 0.0f,
-                          kSsrHistoryWeight, 0.0f, 0.0f};
+    resolve.params = Vec4{reflections && !isolated() ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
     drawFullscreen(cmd, ssr_resolve_pass_, &ssr_resolve_sets_[frame_index + eyeSet() * kMaxFramesInFlight],
                    ssr_image_, &resolve);
     // Apagados, las dos pasadas dejan ceros en toda la imagen.
@@ -6540,64 +6723,29 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
 }
 
 void VulkanRenderer::recordFilterHistoryCopies(const vk::raii::CommandBuffer& cmd) {
-    if (isolated()) return;  // la segunda vista no escribe las historias
-    if (ssr_skipped_) return;  // reflejos apagados: nada nuevo que guardar
-    // Reflejos por rayos: su filtro tiene su propia historia; esta solo la lee
-    // el filtro del SSR (ssr_resolve), que no ha corrido. Al volver al SSR
-    // empieza sin historia.
-    if (ssr_image_from_compute_) {
-        ssr_filter_history_valid_ = false;
+    // La segunda vista del editor y las caras de la sonda no escriben las
+    // historias.
+    if (isolated()) return;
+    // Nadie la va a leer (reflejos y GI de pantalla apagados, sin rayos: el
+    // preset Bajo, los moviles): ni se copia. Queda vieja: al volver, el
+    // primer frame va sin ella.
+    if (!post_.reflections && !post_.global_illumination && !rayTracingWanted()) {
+        scene_history_stale_ = true;
         return;
     }
-    // La iluminacion ya leyo los reflejos y la luz rebotada filtrados: se
-    // copian a sus historias. Todas quedan como textura al terminar.
-    constexpr vk::ImageLayout kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
-    // (La GI guarda su historia en su propio filtro: recordSsgiPass.)
-    const std::array<std::pair<const VulkanImage*, const VulkanImage*>, 1> copies = {{
-        {&ssr_image_, &ssr_history_},
-    }};
-
-    std::vector<vk::ImageMemoryBarrier2> before;
-    std::vector<vk::ImageMemoryBarrier2> after;
-    for (const auto& [source, history] : copies) {
-        before.push_back(colorBarrier(*source->handle(), kRead,
-                                      vk::ImageLayout::eTransferSrcOptimal,
-                                      vk::PipelineStageFlagBits2::eFragmentShader,
-                                      vk::AccessFlagBits2::eShaderSampledRead,
-                                      vk::PipelineStageFlagBits2::eCopy,
-                                      vk::AccessFlagBits2::eTransferRead));
-        before.push_back(colorBarrier(*history->handle(), kRead,
-                                      vk::ImageLayout::eTransferDstOptimal,
-                                      vk::PipelineStageFlagBits2::eFragmentShader,
-                                      vk::AccessFlagBits2::eShaderSampledRead,
-                                      vk::PipelineStageFlagBits2::eCopy,
-                                      vk::AccessFlagBits2::eTransferWrite));
-        after.push_back(colorBarrier(*source->handle(), vk::ImageLayout::eTransferSrcOptimal,
-                                     kRead, vk::PipelineStageFlagBits2::eCopy,
-                                     vk::AccessFlagBits2::eTransferRead,
-                                     vk::PipelineStageFlagBits2::eFragmentShader,
-                                     vk::AccessFlagBits2::eShaderSampledRead));
-        after.push_back(colorBarrier(*history->handle(), vk::ImageLayout::eTransferDstOptimal,
-                                     kRead, vk::PipelineStageFlagBits2::eCopy,
-                                     vk::AccessFlagBits2::eTransferWrite,
-                                     vk::PipelineStageFlagBits2::eFragmentShader,
-                                     vk::AccessFlagBits2::eShaderSampledRead));
-    }
-    pipelineBarrier(cmd, before);
-
-    for (const auto& [source, history] : copies) {
-        const vk::Extent2D extent = source->extent();
-        vk::ImageCopy region{};
-        region.srcSubresource =
-            vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
-        region.dstSubresource = region.srcSubresource;
-        region.extent = vk::Extent3D{extent.width, extent.height, 1};
-        cmd.copyImage(*source->handle(), vk::ImageLayout::eTransferSrcOptimal,
-                      *history->handle(), vk::ImageLayout::eTransferDstOptimal, region);
-    }
-
-    pipelineBarrier(cmd, after);
-    ssr_filter_history_valid_ = true;
+    scene_history_stale_ = false;
+    // La imagen HDR de este frame (iluminacion, vidrio, agua, particulas) a la
+    // historia con mips que el frame siguiente leen el SSR, la GI y los rayos
+    // como "frame anterior", con la vista-proyeccion (y el jitter) de esta
+    // camara. Antes leian la propia imagen HDR: la segunda vista del editor la
+    // sobrescribia (reflejos y rebotes de la otra camara) y sin escalado
+    // temporal ya llevaba la profundidad de campo y el motion blur del frame.
+    // (La GI guarda su propia historia en su filtro: recordSsgiPass.) Los
+    // mips solo los lee el SSR (con rayos, sus reflejos van por otro lado).
+    const bool screen_reflections = post_.reflections && !rayTracingActive() && !pathTraceReplacesLighting();
+    ssr_pyramids_.recordColorPyramid(cmd, *scene_color_.handle(), screen_reflections);
+    scene_history_mips_ = screen_reflections;
+    scene_history_view_projection_ = current_jittered_view_projection_;
 }
 
 void VulkanRenderer::recordLightingPass(const vk::raii::CommandBuffer& cmd,
@@ -7105,6 +7253,8 @@ void VulkanRenderer::shiftOrigin(const core::Vec3& offset) {
     voxel_pass_.shiftOrigin(offset);
     probe_position_ = probe_position_ - offset;
     probe_capture_position_ = probe_capture_position_ - offset;
+    probe_last_camera_ = probe_last_camera_ - offset;  // (si no, parece que corre)
+    probe_lost_swap_position_ = probe_lost_swap_position_ - offset;
     for (core::Vec3& center : probe_centers_) center = center - offset;
     // El mapa de oclusion del cielo esta en las coordenadas viejas: se rehace.
     sky_map_drawn_ = false;
@@ -7114,6 +7264,7 @@ void VulkanRenderer::shiftOrigin(const core::Vec3& offset) {
     const core::Mat4 to_old = core::translate(offset);
     motion_view_projection_ = motion_view_projection_ * to_old;
     history_view_projection_ = history_view_projection_ * to_old;
+    scene_history_view_projection_ = scene_history_view_projection_ * to_old;
     camera_view_projection_ = camera_view_projection_ * to_old;
     previous_view_projection_ = previous_view_projection_ * to_old;
     xr_eye1_.motion_view_projection = xr_eye1_.motion_view_projection * to_old;
@@ -7133,11 +7284,10 @@ void VulkanRenderer::invalidateHistory() {
     taa_history_valid_ = false;
     scene_history_valid_ = false;
     ssr_history_ready_ = false;
-    ssr_filter_history_valid_ = false;
     gi_filter_history_valid_ = false;
     rt_shadow_history_valid_ = false;
     rt_reflection_history_valid_ = false;
-    xr_eye1_.taa_valid = xr_eye1_.ssr_valid = xr_eye1_.gi_valid = false;  // el otro ojo
+    xr_eye1_.taa_valid = xr_eye1_.gi_valid = false;  // el otro ojo
     xr_eye1_.rt_shadow_valid = xr_eye1_.rt_reflection_valid = false;
     // Corte de camara, cambio de vista o escena nueva: la exposicion no viene
     // de la vista anterior. (El desplazamiento del origen y el cambio de
@@ -7473,14 +7623,12 @@ void VulkanRenderer::renderXrEye(const scene::Scene& scene, const scene::Camera&
 // sets del ojo (eyeSet()) apuntan a sus imagenes.
 void VulkanRenderer::swapEyeState() {
     std::swap(taa_history_, xr_eye1_.taa_history);
-    std::swap(ssr_history_, xr_eye1_.ssr_history);
     std::swap(gi_history_, xr_eye1_.gi_history);
     std::swap(gi_moments_history_, xr_eye1_.gi_moments_history);
     std::swap(rt_shadow_history_, xr_eye1_.rt_shadow_history);
     std::swap(rt_reflection_history_, xr_eye1_.rt_reflection_history);
     std::swap(rt_reflection_moments_history_, xr_eye1_.rt_reflection_moments_history);
     std::swap(taa_history_valid_, xr_eye1_.taa_valid);
-    std::swap(ssr_filter_history_valid_, xr_eye1_.ssr_valid);
     std::swap(gi_filter_history_valid_, xr_eye1_.gi_valid);
     std::swap(rt_shadow_history_valid_, xr_eye1_.rt_shadow_valid);
     std::swap(rt_reflection_history_valid_, xr_eye1_.rt_reflection_valid);
@@ -7489,7 +7637,7 @@ void VulkanRenderer::swapEyeState() {
 }
 
 bool VulkanRenderer::xrEyeStateReady() const {
-    return xr_eye1_.taa_history.isValid() && xr_eye1_.ssr_history.isValid() && xr_eye1_.gi_history.isValid() &&
+    return xr_eye1_.taa_history.isValid() && xr_eye1_.gi_history.isValid() &&
            xr_eye1_.gi_moments_history.isValid() && xr_eye1_.rt_shadow_history.isValid() &&
            xr_eye1_.rt_reflection_history.isValid() && xr_eye1_.rt_reflection_moments_history.isValid();
 }
@@ -7498,11 +7646,10 @@ bool VulkanRenderer::xrEyeStateReady() const {
 // izquierdo). Sin casco no se crean.
 void VulkanRenderer::createXrEyeTargets(vk::Extent2D render, vk::Extent2D output) {
     if (eye_state_swapped_) swapEyeState();
-    xr_eye1_.taa_valid = xr_eye1_.ssr_valid = xr_eye1_.gi_valid = false;
+    xr_eye1_.taa_valid = xr_eye1_.gi_valid = false;
     xr_eye1_.rt_shadow_valid = xr_eye1_.rt_reflection_valid = false;
     if ((xr_output_extent_.width == 0 || xr_output_extent_.height == 0) && !stereo_emulation_) {
         xr_eye1_.taa_history.destroy();
-        xr_eye1_.ssr_history.destroy();
         xr_eye1_.gi_history.destroy();
         xr_eye1_.gi_moments_history.destroy();
         xr_eye1_.rt_shadow_history.destroy();
@@ -7510,9 +7657,6 @@ void VulkanRenderer::createXrEyeTargets(vk::Extent2D render, vk::Extent2D output
         xr_eye1_.rt_reflection_moments_history.destroy();
         return;
     }
-    xr_eye1_.ssr_history.create(device_, render, kHdrFormat,
-                                vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
-                                vk::ImageAspectFlagBits::eColor);
     const vk::ImageUsageFlags filter_usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
                                              vk::ImageUsageFlagBits::eTransferSrc |
                                              vk::ImageUsageFlagBits::eTransferDst;
@@ -7531,7 +7675,7 @@ void VulkanRenderer::createXrEyeTargets(vk::Extent2D render, vk::Extent2D output
                                 vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
                                 vk::ImageAspectFlagBits::eColor);
     // Como las del ojo izquierdo: las de la GI en General y a cero, la del TAA
-    // como textura (la del SSR la prepara su filtro la primera vez).
+    // como textura.
     device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
         std::vector<vk::ImageMemoryBarrier2> barriers;
         for (const VulkanImage* image : {&xr_eye1_.gi_history, &xr_eye1_.gi_moments_history, &xr_eye1_.rt_shadow_history,
@@ -9016,6 +9160,8 @@ void VulkanRenderer::recordAutoExposurePass(const vk::raii::CommandBuffer& cmd) 
     push.max_log_exposure = std::max(post_.min_ev, post_.max_ev);
     push.speed_up = std::max(post_.adaptation_speed_up, 0.01f);
     push.speed_down = std::max(post_.adaptation_speed_down, 0.01f);
+    // La rodilla nocturna solo de noche (con la luz del dia de este frame).
+    push.night = std::clamp(1.0f - last_daylight_, 0.0f, 1.0f);
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *exposure_average_pass_.pipeline());
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *exposure_average_pass_.layout(), 0,
                            *exposure_average_sets_[0], nullptr);
