@@ -229,6 +229,33 @@ std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std:
     return asset;
 }
 
+std::shared_ptr<ModelAsset> AssetManager::readModelGeometry(const Uuid& uuid, const std::filesystem::path& file,
+                                                           const std::string& name, const std::vector<bool>& wanted) {
+    if (primitives::isBuiltin(uuid)) {
+        return primitives::make(uuid);
+    }
+    if (file.empty()) {
+        return nullptr;
+    }
+    crdata::Header header{};
+    crdata::ModelContent content{};
+    if (!crdata::readModelGeometry(file, header, content, wanted)) {
+        std::cerr << "[Assets] No se pudo leer la geometria de " << crdata::utf8(file) << "\n";
+        return nullptr;
+    }
+    auto asset = std::make_shared<ModelAsset>();
+    asset->uuid = uuid;
+    asset->name = name;
+    asset->nodes = std::move(content.nodes);
+    asset->animated = content.animated;
+    asset->animation_names = std::move(content.animation_names);
+    asset->parts.reserve(content.parts.size());
+    for (asset::ModelData& part : content.parts) {
+        asset->parts.push_back(std::make_shared<asset::ModelData>(std::move(part)));
+    }
+    return asset;
+}
+
 std::shared_ptr<const ModelAsset> AssetManager::loadModel(const Uuid& uuid) {
     if (const auto it = models_.find(uuid); it != models_.end()) {
         return it->second;

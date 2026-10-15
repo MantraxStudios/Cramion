@@ -843,6 +843,8 @@ void testFrameBudget() {
     check(changes_late <= 1, "no oscila (casi sin cambios en los ultimos 10 s)");
     check(budget.level(Lever::Lod) + budget.level(Lever::ShadowDetail) > 0 && budget.level(Lever::Gi) == 0,
           "baja primero lo que mas ahorra y menos se nota (sombras/LOD antes que la GI)");
+    check(budget.level(Lever::CameraFx) == 0 && budget.level(Lever::Clouds) == 0,
+          "una escena sin desenfoques ni nubes nunca baja esas palancas");
     std::printf("    ahorro medido del primer paso de LOD: %.2f ms\n", budget.learnedSaving(Lever::Lod, 0));
     check(budget.learnedSaving(Lever::Lod, 0) > 0.5f, "mide y recuerda lo que ahorro el paso que dio");
 
@@ -914,7 +916,8 @@ void testFrameBudget() {
               "gama baja: llega a 60 FPS en menos de 15 s");
         check(late_changes <= 1, "gama baja: estable al final");
         const gfx::PostProcessSettings low = weak.apply(gfx::PostProcessSettings{});
-        check(weak.level(Lever::Volumetric) == 0 || (low.volumetric_light && low.volumetric_steps == 16 && !low.light_shafts),
+        check(weak.level(Lever::Volumetric) == 0 ||
+                  (low.volumetric_light && low.volumetric_steps <= 16 && low.volumetric_steps >= 8 && !low.light_shafts),
               "gama baja: el polvo se abarata pero no se apaga (no depende de mirar al sol)");
     }
 
@@ -945,6 +948,346 @@ void testFrameBudget() {
     check(gfx::tierFor(2048, false) == gfx::HardwareTier::Low && gfx::tierFor(8192, false) == gfx::HardwareTier::High &&
               gfx::tierFor(16384, true) == gfx::HardwareTier::Low && gfx::shadowResolutionFor(gfx::HardwareTier::Low) == 1536,
           "perfiles de hardware y resolucion de sombras");
+}
+
+int budgetLevelSum(const gfx::FrameBudget& b) {
+    int sum = 0;
+    for (std::size_t i = 0; i < gfx::kLeverCount; ++i) sum += b.level(static_cast<gfx::Lever>(i));
+    return sum;
+}
+
+// Arranque en una GPU lenta (el "media 0" de los logs): el perfilador aun no
+// tiene el primer frame (0 ms) y despues todos pasan de 8 ms. Y los tirones.
+void testFrameBudgetStartup() {
+    std::printf("\nPresupuesto: arranque, tirones y saltos\n");
+    using gfx::Lever;
+    {
+        gfx::FrameBudget b;
+        b.setStartLevels(gfx::HardwareTier::Low);
+        b.setTargetFps(60.0f);
+        const int start_sum = budgetLevelSum(b);
+        b.update(1.0f / 60.0f, 0.0f, {});
+        const std::vector<gfx::GpuTiming> passes = {{"GI", 10.0f}, {"Iluminacion", 8.0f}, {"Geometria + culling", 12.0f}};
+        for (int frame = 0; frame < 15 * 20; ++frame) b.update(1.0f / 15.0f, 70.0f, passes);
+        std::printf("    GPU lenta: media %.2f ms, escala %.2f, suma de palancas %d (salida %d)\n", b.smoothedGpuMs(),
+                    b.renderScale(), budgetLevelSum(b), start_sum);
+        check(b.smoothedGpuMs() > 50.0f, "GPU lenta: la media no se queda en 0 (el 0 del primer frame no cuenta)");
+        check(b.level(Lever::RenderScale) >= 3 && budgetLevelSum(b) >= start_sum,
+              "GPU lenta: no sube la calidad por encima del arranque Bajo");
+    }
+    {
+        // Un salto que dura es la nueva normalidad, no un tiron.
+        gfx::FrameBudget b;
+        b.setTargetFps(60.0f);
+        for (int frame = 0; frame < 120; ++frame) b.update(1.0f / 60.0f, 3.0f, {});
+        for (int frame = 0; frame < 120; ++frame) b.update(1.0f / 60.0f, 30.0f, {});
+        std::printf("    salto de 3 a 30 ms: media %.2f ms\n", b.smoothedGpuMs());
+        check(b.smoothedGpuMs() > 25.0f, "un salto sostenido se acepta (antes se tiraba para siempre)");
+    }
+    {
+        gfx::FrameBudget b;
+        b.setTargetFps(60.0f);
+        for (int frame = 0; frame < 120; ++frame) b.update(1.0f / 60.0f, frame == 60 ? 250.0f : 10.0f, {});
+        std::printf("    10 ms con un tiron de 250 ms: media %.2f ms\n", b.smoothedGpuMs());
+        check(b.smoothedGpuMs() < 12.0f, "un tiron suelto no cuenta");
+    }
+    {
+        gfx::FrameBudget b;
+        b.update(1.0f / 60.0f, 0.0f, {});
+        b.update(1.0f / 60.0f, std::nanf(""), {});
+        b.update(1.0f / 60.0f, 20.0f, {});
+        check(std::fabs(b.smoothedGpuMs() - 20.0f) < 1e-3f, "sin medida (0, NaN) no cuenta: siembra el primer dato real");
+    }
+    {
+        // Calentamiento: tras sembrar, medio segundo (y 4 muestras) sin tocar nada.
+        gfx::FrameBudget b;
+        b.setTargetFps(60.0f);
+        const std::vector<gfx::GpuTiming> heavy = {{"GI", 20.0f}, {"SSAO", 4.0f}, {"Reflejos", 4.0f}};
+        float first_change = -1.0f;
+        for (int frame = 0; frame < 120; ++frame) {
+            b.update(1.0f / 60.0f, 40.0f, heavy);
+            if (first_change < 0.0f && !b.lastAction().empty()) first_change = static_cast<float>(frame + 1) / 60.0f;
+        }
+        std::printf("    primer cambio a los %.2f s\n", first_change);
+        check(first_change >= 0.5f && first_change < 1.5f, "calentamiento: el primer cambio espera medio segundo");
+    }
+    {
+        // A 4 FPS cada cambio se mide con al menos 6 muestras (antes con 1-2,
+        // y la mitad aun eran de antes del cambio).
+        gfx::FrameBudget b;
+        b.setTargetFps(60.0f);
+        const std::vector<gfx::GpuTiming> heavy = {
+            {"GI", 100.0f}, {"SSAO", 40.0f}, {"Reflejos", 40.0f}, {"Iluminacion", 60.0f}};
+        std::vector<int> changes;
+        std::string last;
+        for (int frame = 0; frame < 60; ++frame) {
+            b.update(0.25f, 250.0f, heavy);
+            if (b.lastAction() != last) {
+                changes.push_back(frame);
+                last = b.lastAction();
+            }
+        }
+        bool spaced = changes.size() >= 2;
+        for (std::size_t i = 1; i < changes.size(); ++i) spaced = spaced && changes[i] - changes[i - 1] >= 6;
+        std::printf("    a 4 FPS: %zu cambios\n", changes.size());
+        check(spaced, "a pocos FPS cada cambio se mide con al menos 6 muestras");
+    }
+}
+
+// Reinicios que pide la escena (setPostProcess en cada frame con la mezcla de
+// volumenes): uno entero cada 10 s como mucho; entre medias, solo la palanca
+// de lo que se prendio, para que se vea ya.
+void testBudgetResets() {
+    std::printf("\nPresupuesto: reinicios por la escena\n");
+    using gfx::Lever;
+    const gfx::PostProcessSettings before{};
+    gfx::PostProcessSettings after = before;
+    after.lod_pixel_error = before.lod_pixel_error * 0.8f;
+    check(gfx::postLeversRaised(before, after) == 0, "bajar el error de LOD un 20 % no reinicia (antes bastaba un 1 %)");
+    after.lod_pixel_error = before.lod_pixel_error * 0.5f;
+    check(gfx::postLeversRaised(before, after) == (1u << static_cast<unsigned>(Lever::Lod)),
+          "bajarlo a la mitad devuelve la palanca de LOD");
+    after = before;
+    after.depth_of_field = true;
+    check(gfx::postLeversRaised(before, after) == (1u << static_cast<unsigned>(Lever::CameraFx)),
+          "prender la profundidad de campo devuelve los desenfoques");
+
+    gfx::FrameBudget b;
+    b.setTargetFps(60.0f);
+    const std::vector<gfx::GpuTiming> heavy = {{"GI", 20.0f}, {"SSAO", 4.0f}, {"Reflejos", 4.0f}};
+    for (int frame = 0; frame < 60 * 12; ++frame) b.update(1.0f / 60.0f, 40.0f, heavy);
+    check(b.level(Lever::Gi) == 1 && b.level(Lever::Ssao) == 1, "con la GPU desbordada baja la GI y el SSAO");
+    b.qualityRaised(1u << static_cast<unsigned>(Lever::Gi));
+    check(budgetLevelSum(b) == 0 && b.lastAction() == "Ajustes cambiados: calidad restablecida",
+          "el primer aviso de la escena reinicia entero");
+    for (int frame = 0; frame < 60 * 3; ++frame) b.update(1.0f / 60.0f, 40.0f, heavy);
+    const bool lowered = b.level(Lever::Gi) == 1 && b.level(Lever::Ssao) == 1;
+    b.qualityRaised(1u << static_cast<unsigned>(Lever::Gi));
+    check(lowered && b.level(Lever::Gi) == 0 && b.level(Lever::Ssao) == 1,
+          "otro aviso antes de 10 s: solo vuelve lo que se prendio");
+}
+
+// Palancas nuevas (desenfoques de camara despues del escalado, nubes y la
+// volumetrica en tres niveles) y los niveles de salida por gama.
+void testFrameBudgetLevers() {
+    std::printf("\nPresupuesto: desenfoques, nubes, volumetrica y arranque por gama\n");
+    using gfx::Lever;
+    const float dt = 1.0f / 60.0f;
+    {
+        // Caso tipo WhatIs: escena pesada con profundidad de campo y motion
+        // blur (6 ms a la resolucion de salida: la escala no los baja).
+        gfx::FrameBudget b;
+        b.setStartLevels(gfx::HardwareTier::High);
+        b.setTargetFps(60.0f);
+        static constexpr float kCameraFx[] = {1.0f, 0.5f, 0.0f};
+        float first_camera_fx = -1.0f;
+        float first_gi = -1.0f;
+        float reached = -1.0f;
+        float gpu = 0.0f;
+        float camera_fx_ms = 0.0f;
+        for (int frame = 0; frame < 60 * 30; ++frame) {
+            const float res = b.renderScale() * b.renderScale();
+            const float lod = 1.0f / (1.0f + 0.5f * b.level(Lever::Lod));
+            const float shadow = 1.0f / (1.0f + 0.6f * b.level(Lever::ShadowDetail));
+            camera_fx_ms = 6.0f * kCameraFx[std::min<int>(b.level(Lever::CameraFx), 2)];
+            const std::vector<gfx::GpuTiming> passes = {
+                {"Sombras (cascadas)", 12.0f * shadow * (0.6f + 0.4f * lod)},
+                {"Geometria + culling", 7.5f * lod * (0.5f + 0.5f * res)},
+                {"GI", b.level(Lever::Gi) > 0 ? 0.0f : 3.4f * res},
+                {"Reflejos", b.level(Lever::Reflections) > 0 ? 0.0f : 0.9f * res},
+                {"SSAO", b.level(Lever::Ssao) > 0 ? 0.0f : 0.3f * res},
+                {"Iluminacion", 0.6f * res},
+                {"Motion blur + profundidad de campo", camera_fx_ms},
+                {"Bloom", 0.5f},
+                {"Composicion", 0.3f}};
+            gpu = 0.4f;
+            for (const gfx::GpuTiming& t : passes) gpu += t.milliseconds;
+            b.update(dt, gpu, passes);
+            const float t = static_cast<float>(frame + 1) * dt;
+            if (first_camera_fx < 0.0f && b.level(Lever::CameraFx) > 0) first_camera_fx = t;
+            if (first_gi < 0.0f && b.level(Lever::Gi) > 0) first_gi = t;
+            if (reached < 0.0f && b.smoothedGpuMs() <= b.targetMilliseconds()) reached = t;
+        }
+        std::printf("    tipo WhatIs: GPU %.2f ms, en objetivo a los %.1f s; desenfoques %u (a los %.1f s), GI %u, escala %.2f\n",
+                    gpu, reached, b.level(Lever::CameraFx), first_camera_fx, b.level(Lever::Gi), b.renderScale());
+        check(first_camera_fx >= 0.0f && (first_gi < 0.0f || first_camera_fx < first_gi),
+              "los desenfoques de camara bajan antes que la GI");
+        check(reached >= 0.0f && reached < 10.0f && gpu <= b.targetMilliseconds() * 1.02f,
+              "con desenfoques llega al objetivo en menos de 10 s");
+    }
+    {
+        // Nubes y volumetrica pesadas (exterior con muchas luces en una GPU floja).
+        gfx::FrameBudget b;
+        b.setStartLevels(gfx::HardwareTier::High);
+        b.setTargetFps(60.0f);
+        static constexpr float kClouds[] = {1.0f, 0.5f, 0.2f};
+        static constexpr float kVolumetric[] = {1.0f, 0.55f, 0.3f, 0.1f};
+        float clouds_ms = 0.0f;
+        float volumetric_ms = 0.0f;
+        float gpu = 0.0f;
+        std::uint8_t max_clouds = 0;
+        std::uint8_t max_volumetric = 0;
+        for (int frame = 0; frame < 60 * 30; ++frame) {
+            const float res = b.renderScale() * b.renderScale();
+            clouds_ms = 10.0f * kClouds[std::min<int>(b.level(Lever::Clouds), 2)] * res;
+            volumetric_ms = 8.0f * kVolumetric[std::min<int>(b.level(Lever::Volumetric), 3)] * res;
+            const std::vector<gfx::GpuTiming> passes = {
+                {"Sombras (cascadas)", 2.0f},
+                {"Geometria + culling", 2.0f * (0.5f + 0.5f * res)},
+                {"Nubes", clouds_ms},
+                {"Volumetrica", volumetric_ms},
+                {"Rayos de luz", b.level(Lever::Volumetric) > 0 ? 0.0f : 0.5f},
+                {"Iluminacion", 1.0f * res},
+                {"GI", b.level(Lever::Gi) > 0 ? 0.0f : 2.0f * res}};
+            gpu = 0.4f;
+            for (const gfx::GpuTiming& t : passes) gpu += t.milliseconds;
+            b.update(dt, gpu, passes);
+            max_clouds = std::max(max_clouds, b.level(Lever::Clouds));
+            max_volumetric = std::max(max_volumetric, b.level(Lever::Volumetric));
+        }
+        std::printf("    nubes y volumetrica: GPU %.2f ms; nubes %u (%.2f ms), volumetrica %u (%.2f ms), escala %.2f\n", gpu,
+                    b.level(Lever::Clouds), clouds_ms, b.level(Lever::Volumetric), volumetric_ms, b.renderScale());
+        check(max_clouds > 0 && max_volumetric > 0, "baja las nubes y la volumetrica");
+        check(clouds_ms < 6.0f && volumetric_ms < 4.8f && gpu <= b.targetMilliseconds() * 1.02f,
+              "y sus pasadas bajan hasta entrar en el presupuesto");
+    }
+    {
+        // Lo que aplica cada nivel.
+        gfx::FrameBudget b;
+        gfx::PostProcessSettings user{};
+        user.depth_of_field = true;
+        user.motion_blur = true;
+        const gfx::PostProcessSettings full = b.apply(user);
+        check(full.dof_samples == 64 && full.motion_blur_samples == 24 && full.cloud_steps == 128 &&
+                  full.cloud_shadow_interval == 1 && full.volumetric_steps == 32 && full.volumetric_local_lights,
+              "a tope, la calidad de siempre");
+        b.setStartLevel(Lever::CameraFx, 1);
+        gfx::PostProcessSettings s = b.apply(user);
+        check(s.depth_of_field && s.motion_blur && s.dof_samples == 32 && s.motion_blur_samples == 12,
+              "desenfoque de camara 1: 32 y 12 muestras");
+        b.setStartLevel(Lever::CameraFx, 2);
+        s = b.apply(user);
+        check(!s.depth_of_field && !s.motion_blur, "desenfoque de camara 2: sin profundidad de campo ni motion blur");
+        b.setStartLevel(Lever::Volumetric, 2);
+        s = b.apply(user);
+        check(s.volumetric_light && s.volumetric_steps == 8 && s.volumetric_local_lights && !s.light_shafts,
+              "volumetrica 2: 8 tramos");
+        b.setStartLevel(Lever::Volumetric, 3);
+        s = b.apply(user);
+        check(s.volumetric_light && s.volumetric_steps == 8 && !s.volumetric_local_lights,
+              "volumetrica 3: sin luces locales (solo el sol)");
+        b.setStartLevel(Lever::Clouds, 1);
+        s = b.apply(user);
+        check(s.cloud_steps == 64 && s.cloud_shadow_interval == 1, "nubes 1: 64 pasos");
+        b.setStartLevel(Lever::Clouds, 2);
+        s = b.apply(user);
+        check(s.cloud_steps == 32 && s.cloud_shadow_interval == 4, "nubes 2: 32 pasos y su sombra cada 4 frames");
+        check(b.maxLevel(Lever::CameraFx) == 2 && b.maxLevel(Lever::Clouds) == 2 && b.maxLevel(Lever::Volumetric) == 3,
+              "niveles de las palancas nuevas");
+    }
+    {
+        // Arranque por gama: Bajo empieza sin lo mas caro (SSAO, reflejos,
+        // desenfoques, nubes a 64 pasos); Medio, sin desenfoques completos.
+        gfx::FrameBudget low;
+        low.setStartLevels(gfx::HardwareTier::Low);
+        check(low.level(Lever::Lod) == 1 && low.level(Lever::ShadowDetail) == 2 && low.level(Lever::Volumetric) == 1 &&
+                  low.level(Lever::ContactShadows) == 1 && low.level(Lever::Lighting) == 1 && low.level(Lever::Ssao) == 1 &&
+                  low.level(Lever::Reflections) == 1 && low.level(Lever::Gi) == 0 &&
+                  low.level(Lever::RenderScale) == 3 && low.level(Lever::CameraFx) == 2 && low.level(Lever::Clouds) == 1,
+              "arranque Bajo: SSAO, reflejos, desenfoques y nubes incluidos");
+        gfx::FrameBudget medium;
+        medium.setStartLevels(gfx::HardwareTier::Medium);
+        check(medium.level(Lever::Lod) == 1 && medium.level(Lever::ShadowDetail) == 1 &&
+                  medium.level(Lever::Volumetric) == 1 && medium.level(Lever::CameraFx) == 1 &&
+                  budgetLevelSum(medium) == 4,
+              "arranque Medio: LOD, sombras, volumetrica y desenfoques");
+        gfx::FrameBudget high;
+        high.setStartLevels(gfx::HardwareTier::High);
+        check(budgetLevelSum(high) == 0, "arranque Alto: a tope");
+    }
+}
+
+// Resolucion interna: sin doble reduccion (preset que ya escala), con suelo,
+// y un paso cada 3 s como mucho.
+void testRenderScaleFloor() {
+    std::printf("\nResolucion interna: suelo y sin doble reduccion\n");
+    using gfx::Lever;
+    check(gfx::renderScaleStartLevel(gfx::HardwareTier::Low, 1.0f / 1.5f) == 0 &&
+              gfx::renderScaleStartLevel(gfx::HardwareTier::Low, 1.0f) == 3 &&
+              gfx::renderScaleStartLevel(gfx::HardwareTier::High, 1.0f) == 0,
+          "con un preset que ya escala, la resolucion no empieza bajada");
+    check(std::fabs(gfx::renderScaleFloor(1009, 1.0f) - 540.0f / 1009.0f) < 1e-4f &&
+              std::fabs(gfx::renderScaleFloor(2160, 1.0f) - 0.5f) < 1e-4f && gfx::renderScaleFloor(400, 1.0f) == 1.0f &&
+              gfx::renderScaleFloor(1080, 0.5f) == 1.0f,
+          "suelo: max(540 lineas, la mitad de la salida), nunca por debajo de lo que ya pide el preset");
+    {
+        // Bajo con FSR 1 Calidad (0.67), como Keryan: antes 0.67 x 0.67 = 0.45 (862x453).
+        const float preset = 1.0f / 1.5f;
+        gfx::FrameBudget b;
+        b.setStartLevels(gfx::HardwareTier::Low);
+        b.setStartLevel(Lever::RenderScale, gfx::renderScaleStartLevel(gfx::HardwareTier::Low, preset));
+        b.setRenderScaleFloor(gfx::renderScaleFloor(1009, preset));
+        const float scale = preset * b.renderScale();
+        std::printf("    Bajo + preset 0.67: escala %.3f (%ldx%ld de 1920x1009)\n", scale, std::lround(1920.0f * scale),
+                    std::lround(1009.0f * scale));
+        check(scale >= 0.58f && std::lround(1009.0f * scale) == 673, "Bajo con un preset de 0.67 arranca a 0.58 o mas");
+    }
+    {
+        const float floor = gfx::renderScaleFloor(1009, 1.0f);
+        gfx::FrameBudget b;
+        b.setStartLevels(gfx::HardwareTier::High);
+        b.setTargetFps(60.0f);
+        b.setRenderScaleFloor(floor);
+        const std::vector<gfx::GpuTiming> passes = {{"Geometria + culling", 19.0f}};
+        float last_change = -100.0f;
+        float min_gap = 100.0f;
+        std::uint8_t level = b.level(Lever::RenderScale);
+        // Por encima del objetivo (sin llegar a 1.5 veces) todo el rato.
+        for (int frame = 0; frame < 60 * 30; ++frame) {
+            b.update(1.0f / 60.0f, 20.0f, passes);
+            if (b.level(Lever::RenderScale) != level) {
+                const float t = static_cast<float>(frame + 1) / 60.0f;
+                min_gap = std::min(min_gap, t - last_change);
+                last_change = t;
+                level = b.level(Lever::RenderScale);
+            }
+        }
+        std::printf("    por encima: escala %.3f (suelo %.3f), pasos separados %.1f s como poco\n", b.renderScale(),
+                    floor, min_gap);
+        check(b.renderScale() >= floor - 1e-4f && !b.renderScaleFloorLifted(),
+              "por encima del objetivo (sin llegar a 1.5 veces) no baja del suelo");
+        check(min_gap >= 2.99f, "un paso de resolucion cada 3 s como mucho");
+        // Una GPU que no llega ni de lejos durante mas de 3 s: baja del suelo.
+        for (int frame = 0; frame < 60 * 15; ++frame) b.update(1.0f / 60.0f, 55.0f, passes);
+        std::printf("    muy por encima: escala %.3f\n", b.renderScale());
+        check(b.renderScaleFloorLifted() && b.renderScale() < floor, "muy por encima durante 3 s: baja del suelo");
+        // Con margen vuelve a subir y el suelo vuelve a valer.
+        for (int frame = 0; frame < 60 * 40; ++frame) b.update(1.0f / 60.0f, 4.0f, passes);
+        std::printf("    con margen: escala %.3f\n", b.renderScale());
+        check(!b.renderScaleFloorLifted() && b.renderScale() >= floor - 1e-4f,
+              "con margen la resolucion sube y el suelo vuelve");
+    }
+}
+
+// Objetos diminutos: umbral por gama y con histeresis (sin parpadeo).
+void testTinyObjects() {
+    std::printf("\nObjetos diminutos por gama\n");
+    check(gfx::tinyObjectPixelsFor(gfx::HardwareTier::Low) == 1.5f &&
+              gfx::tinyObjectPixelsFor(gfx::HardwareTier::Medium) == 1.0f &&
+              gfx::tinyObjectPixelsFor(gfx::HardwareTier::High) == 0.75f &&
+              gfx::tinyObjectPixelsFor(gfx::HardwareTier::Ultra) == 0.5f,
+          "umbral por gama: 1.5 / 1 / 0.75 / 0.5 px");
+    const float t = gfx::tinyObjectPixelsFor(gfx::HardwareTier::Low);
+    bool tiny = false;
+    tiny = gfx::tinyObject(1.6f, t, tiny);
+    const bool a = !tiny;
+    tiny = gfx::tinyObject(1.4f, t, tiny);
+    const bool b = tiny;
+    tiny = gfx::tinyObject(1.7f, t, tiny);
+    const bool c = tiny;
+    tiny = gfx::tinyObject(1.9f, t, tiny);
+    const bool d = !tiny;
+    check(a && b && c && d, "histeresis: se oculta por debajo de t y vuelve por encima de 1.25 t");
 }
 
 // VR: la resolucion de cada ojo no se hunde (presupuesto con tope, tope de
@@ -995,6 +1338,11 @@ void testVrResolution() {
 
 int main() {
     testFrameBudget();
+    testFrameBudgetStartup();
+    testBudgetResets();
+    testFrameBudgetLevers();
+    testRenderScaleFloor();
+    testTinyObjects();
     testVrResolution();
     testLods();
     testPrimitives();

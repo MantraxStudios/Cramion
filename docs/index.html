@@ -495,6 +495,7 @@
         <a href="#scripting">C++</a>
         <a href="#novedades">Novedades</a>
         <a href="manual/index.html">Documentación</a>
+        <a href="store/index.html">Assets</a>
         <a href="manual/licencia.html">Licencia</a>
       </nav>
       <div class="nav-right">
@@ -514,6 +515,7 @@
         <a href="#scripting">C++</a>
         <a href="#novedades">Novedades</a>
         <a href="manual/index.html">Documentación</a>
+        <a href="store/index.html">Assets</a>
         <a href="manual/licencia.html">Licencia</a>
         <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
         <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate"><svg class="ic ic-sm"><use href="#i-heart"/></svg>Donar con PayPal</a>
@@ -530,7 +532,7 @@
       </video>
       <div class="wrap">
         <div class="hero-copy">
-          <a href="#novedades" class="pill"><b>Nuevo en la 2.4.11</b><span>Habitaciones que ya no se oscurecen al volver, SSR reescrito y rayos en el juego exportado</span></a>
+          <a href="#novedades" class="pill"><b>Nuevo en la 2.4.13</b><span>Cramion Store con Package Manager y horneado de luz con los modelos Static</span></a>
           <h1 id="hero-title">Un motor de juegos 3D para Windows, <em>con su editor.</em></h1>
           <p class="lead">
             Montas la escena en el editor, escribes el juego en C++ y le das a Play. Render en Vulkan (1.3, o desde 1.0 en Android), física con Jolt,
@@ -543,7 +545,7 @@
             </a>
             <a href="manual/index.html" class="btn btn-glass btn-lg"><svg class="ic"><use href="#i-book"/></svg>Leer la documentación</a>
           </div>
-          <p class="meta">2.4.11 · Windows 10/11 x64 · Android (64 y 32 bits) · realidad virtual · Vulkan</p>
+          <p class="meta">2.4.13 · Windows 10/11 x64 · Android (64 y 32 bits) · realidad virtual · Vulkan</p>
         </div>
       </div>
       <div class="hud" aria-hidden="true">
@@ -744,6 +746,18 @@ CRAMION_SCRIPT(Jugador)</code></pre>
         </div>
 
         <div class="news">
+          <div class="card wide reveal">
+            <p class="tag">2.4.13 · Novedad</p>
+            <h3>Cramion Store, Package Manager y horneado de luz con los modelos Static</h3>
+            <ul>
+              <li><a href="store/index.html" class="link">Cramion Store</a>: assets gratis de la comunidad, con cuenta propia para publicar los tuyos y sus versiones.</li>
+              <li>Package Manager en el editor, como el de Unity: instala, actualiza o vuelve a una versión anterior; las dependencias se instalan solas.</li>
+              <li>Formato propio <span class="fg">.crwpack</span>, comprimido en todos los núcleos, y la herramienta <code>crwpack.exe</code>.</li>
+              <li>El horneado de luz vuelve a ver los modelos Static: antes una ciudad entera daba «Nada que hornear».</li>
+              <li>Ciudades enteras sin «demasiadas sondas», el vidrio deja pasar la luz y más herramientas arregladas (Fracturar, Blueprints, VFX).</li>
+            </ul>
+            <a href="manual/novedades-24.html#v2413" class="btn btn-outline btn-sm">Qué trae la 2.4.13<svg class="ic ic-sm"><use href="#i-arrow"/></svg></a>
+          </div>
           <div class="card wide reveal">
             <p class="tag">2.4.11 · Corrección</p>
             <h3>Habitaciones al volver a entrar, reflejos de pantalla, exposición de día y trazado de rayos</h3>
@@ -1008,7 +1022,7 @@ CRAMION_SCRIPT(Jugador)</code></pre>
       <div class="wrap download">
         <div class="card dl-main reveal">
           <p class="eyebrow">Descargar</p>
-          <h2>Cramion 2.4.11 para Windows</h2>
+          <h2>Cramion 2.4.13 para Windows</h2>
           <p>Descomprime y abre <code>CramionEditor.exe</code>. El motor avisa de las versiones nuevas y se actualiza solo.</p>
           <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary btn-lg">
             <svg class="ic"><use href="#i-download"/></svg>Cramion-win64.zip
@@ -1033,6 +1047,7 @@ CRAMION_SCRIPT(Jugador)</code></pre>
                 <tr><td>CramionPlayer.exe</td><td>base de los juegos exportados</td></tr>
                 <tr><td>CramionUpdater.exe</td><td>actualizador</td></tr>
                 <tr><td>cramion.exe</td><td>demo de render</td></tr>
+                <tr><td>crwpack.exe</td><td>paquetes .crwpack de la Store</td></tr>
                 <tr><td>shaders/</td><td>SPIR-V compilado</td></tr>
                 <tr><td>*.dll</td><td>AMD FSR 3.1 y NVIDIA DLSS 4</td></tr>
                 <tr><td>android/</td><td>runtime para exportar a Android</td></tr>

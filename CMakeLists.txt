@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Cramion
-    VERSION 2.4.11
+    VERSION 2.4.13
     DESCRIPTION "Motor con capa de plataforma DirectX 12 (CramionDM) y renderizador Vulkan (CramionFX)"
     LANGUAGES CXX
 )
@@ -306,7 +306,7 @@ add_custom_target(cramion_package
             -P "${CMAKE_SOURCE_DIR}/cmake/PackageRelease.cmake"
     COMMENT "Empaquetando Cramion ${CRAMION_VERSION_FULL} (Cramion-win64.zip)"
     VERBATIM)
-add_dependencies(cramion_package cramion CramionEditor CramionPlayer CramionUpdater)
+add_dependencies(cramion_package cramion CramionEditor CramionPlayer CramionUpdater crwpack)
 if(CRAMION_ANDROID)
     foreach(_abi IN LISTS CRAMION_ANDROID_ABIS)
         add_dependencies(cramion_package cramion_android_${_abi})

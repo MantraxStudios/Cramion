@@ -1,0 +1,140 @@
+<p>
+  La <strong>Cramion Store</strong> es la tienda de assets gratis de la comunidad: modelos, materiales, audio, efectos, scripts,
+  plantillas... Cada asset es un <strong>paquete</strong> <code>.crwpack</code> con un identificador
+  (<code>com.autor.rocas</code>) y sus <strong>versiones</strong>. Desde el editor se instalan con el <strong>Package
+  Manager</strong>, como el de Unity: eliges la versión, actualizas o vuelves a una anterior cuando quieras.
+</p>
+
+<h3 id="web">La web: cuenta y publicar</h3>
+<ul>
+  <li><strong>Catálogo</strong>: en <a href="../store/index.html">cramion.mantraxtools.store/store</a>, con búsqueda,
+    categorías y orden (destacados, más descargados, recientes, nombre). Cada paquete tiene su ficha con la descripción, las
+    versiones (con sus cambios, tamaño y descargas), las dependencias y el botón de descarga.</li>
+  <li><strong>Cuenta</strong>: <em>Entrar</em> o <em>Crear cuenta</em> (usuario, email y contraseña). Subir assets es gratis:
+    10 GB por cuenta y hasta 2 GB por paquete.</li>
+  <li><strong>Publicar</strong>: en <em>Mis paquetes</em> se crea el paquete (identificador, nombre, categoría, descripción,
+    etiquetas, licencia, enlace y portada) y se suben sus versiones arrastrando el <code>.crwpack</code>. El servidor lee el
+    manifiesto del archivo: el identificador y la versión deben coincidir con los del formulario.</li>
+  <li><strong>Retirar una versión</strong> la quita como «última» pero se sigue pudiendo instalar (para quien necesite volver
+    a ella). <strong>Borrarla</strong> elimina el archivo.</li>
+</ul>
+<p>
+  Las versiones siguen <strong>semver</strong>: <code>MAYOR.MENOR.PARCHE</code>, con sufijo de prueba si hace falta
+  (<code>1.2.0</code>, <code>1.3.0-beta.1</code>). Una versión publicada no se puede reemplazar: sube una nueva.
+</p>
+
+<h3 id="package-manager">El Package Manager</h3>
+<p>
+  <em>Ventana &gt; Package Manager</em>. Arriba se elige la lista:
+</p>
+<ul>
+  <li><strong>En el proyecto</strong>: los paquetes instalados con su versión. Si hay una más nueva en la Store, sale en
+    amarillo (<code>1.0.0 -&gt; 1.2.0</code>).</li>
+  <li><strong>Cramion Store</strong>: el catálogo, con búsqueda, categoría y orden.</li>
+</ul>
+<p>
+  Al elegir un paquete se ve su ficha y el desplegable <strong>Versión</strong> con todas las publicadas (la última, las
+  retiradas y la instalada marcadas). Según la que elijas, el botón es <strong>Instalar</strong>, <strong>Actualizar
+  a</strong>, <strong>Bajar a</strong> o <strong>Reinstalar</strong>. <strong>Quitar</strong> borra el paquete del proyecto.
+  La descarga va en segundo plano con su barra de progreso y se puede <em>Cancelar</em>.
+</p>
+<ul>
+  <li><strong>Dependencias</strong>: si el manifiesto del paquete pide otros (<code>"com.otro.base": "1.0.0"</code>), se
+    instalan antes, salvo que ya tengas una versión igual o más nueva.</li>
+  <li><strong>Seguridad</strong>: cada descarga se comprueba con el SHA-256 que guardó la Store; si no coincide, no se
+    instala. Al extraer se rechazan las rutas con <code>..</code>, absolutas o con <code>:</code>.</li>
+  <li><strong>+ ...</strong>: <em>Instalar desde archivo .crwpack...</em> (un paquete que te pasaron), <em>Exportar carpeta
+    como .crwpack...</em>, abrir la Store en el navegador y <em>Servidor de paquetes...</em> para usar otra API (por ejemplo
+    la tuya en <code>http://localhost:8000/api</code> para probar; http sin cifrar solo a localhost).</li>
+</ul>
+
+<h4 id="carpetas">Dónde va cada cosa</h4>
+<pre><code>Assets/Packages/&lt;identificador&gt;/            los assets del paquete (se importan como los demás)
+ProjectSettings/Packages.json             lo instalado: identificador, versión, origen y dependencias
+Library/PackageCache/&lt;id&gt;@&lt;versión&gt;.crwpack  cada versión descargada
+Library/PackageCache/&lt;id&gt;@&lt;versión&gt;/         y su contenido ya extraído</code></pre>
+<div class="note">
+  <strong>Modelos sin importar.</strong> Si un paquete trae modelos originales (<code>.fbx</code>, <code>.obj</code>,
+  <code>.gltf</code>, <code>.glb</code>, <code>.dae</code>), se importan al instalarlo, como al arrastrarlos al proyecto.
+  Mientras se importan, otra instalación espera a que terminen y <em>Quitar</em> no se deja. Cada importación les da un
+  UUID nuevo, así que al cambiar de versión las escenas que los usaban pierden la referencia. Los paquetes que exporta el
+  editor no tienen este problema: llevan los modelos ya importados (<code>.crdata</code>, con su UUID dentro).
+</div>
+<p>
+  Cambiar de versión sustituye la carpeta <code>Assets/Packages/&lt;identificador&gt;</code> entera (como Unity: lo de un
+  paquete no se edita a mano; si quieres cambiar algo, cópialo fuera). Volver a una versión que ya usaste no descarga ni
+  descomprime nada: sale de <code>Library/PackageCache</code>. Sube <code>ProjectSettings/Packages.json</code> a Git;
+  <code>Library</code> no hace falta.
+</p>
+
+<h3 id="exportar">Crear un paquete</h3>
+<p>
+  <em>Archivo &gt; Exportar carpeta como paquete .crwpack...</em> (o <em>+ ...</em> en el Package Manager). La carpeta es la
+  que tengas abierta en el navegador del proyecto; se puede cambiar. Rellena:
+</p>
+<ul>
+  <li><strong>Identificador</strong>: minúsculas, números, <code>.</code>, <code>_</code> o <code>-</code>, por ejemplo
+    <code>com.tunombre.rocas</code>. Es el mismo en todas sus versiones.</li>
+  <li><strong>Versión</strong>, <strong>Nombre visible</strong>, <strong>Autor</strong>, <strong>Descripción</strong> y
+    <strong>Cambios</strong> de esta versión.</li>
+  <li><strong>Dependencias</strong>: <code>com.otro.base=1.0.0, com.otro.mas</code> (sin versión: la última).</li>
+  <li><strong>Compresión</strong>: rápida (zstd 3), normal (zstd 9) o máxima (zstd 19, más lenta).</li>
+</ul>
+<p>
+  <em>Exportar...</em> pide dónde guardarlo y comprime con todos los núcleos. Luego súbelo en la web
+  (<em>Publicar en la web</em> abre tu panel).
+</p>
+
+<h3 id="formato">El formato .crwpack</h3>
+<p>
+  Es el contenedor propio de Cramion, pensado para paquetes grandes:
+</p>
+<ol>
+  <li>Una <strong>cabecera</strong> de 64 bytes (<code>CRWPACK</code>, versión del formato, tamaños y posiciones).</li>
+  <li>El <strong>manifiesto</strong> en JSON, sin comprimir: el servidor y la web lo leen sin descomprimir nada.</li>
+  <li>El contenido de todos los archivos en un solo flujo, cortado en <strong>bloques de 4 MiB</strong>, cada uno
+    comprimido con zstd (o guardado tal cual si no gana) y con su CRC32. Así comprimir y extraer usan todos los núcleos, y
+    los archivos pequeños comparten bloque.</li>
+  <li>Un <strong>índice</strong> con los archivos y los bloques, con su propio CRC.</li>
+</ol>
+<p>El manifiesto lleva, como mínimo, el identificador y la versión:</p>
+<pre><code class="language-json">{
+  "name": "com.tunombre.rocas",
+  "version": "1.2.0",
+  "displayName": "Rocas low poly",
+  "description": "12 rocas con LODs y materiales PBR",
+  "author": "Tu nombre",
+  "engine": "&gt;=2.4.13",
+  "dependencies": { "com.tunombre.materiales-base": "1.0.0" },
+  "changelog": "Dos rocas nuevas y colliders más ajustados"
+}</code></pre>
+
+<h3 id="crwpack">La herramienta crwpack</h3>
+<p>
+  <code>crwpack.exe</code> va en la carpeta del editor y hace lo mismo desde la consola (para scripts y servidores):
+</p>
+<pre><code>crwpack pack Rocas rocas-1.2.0.crwpack --name com.tunombre.rocas --version 1.2.0 ^
+        --display "Rocas low poly" --dep com.tunombre.materiales-base=1.0.0 --level max
+crwpack unpack rocas-1.2.0.crwpack Rocas
+crwpack list   rocas-1.2.0.crwpack     los archivos con su tamaño y los bloques
+crwpack info   rocas-1.2.0.crwpack     el manifiesto
+crwpack verify rocas-1.2.0.crwpack     lo descomprime en memoria y comprueba los CRC</code></pre>
+<p>
+  Más opciones: <code>--description</code>, <code>--author</code>, <code>--engine</code>, <code>--changelog</code>,
+  <code>--block-mb</code> (tamaño de bloque) y <code>-j</code> (hilos). Sin argumentos muestra la ayuda.
+</p>
+
+<h3 id="ia">Desde una IA (MCP)</h3>
+<p>
+  Con el <a href="mcp.html">MCP</a>, una IA usa las mismas funciones que la ventana: <code>packages</code> (lo instalado y,
+  con <code>store</code>, el catálogo; con <code>show</code> abre la ventana), <code>package_versions</code>,
+  <code>package_install</code> (por versión o desde un archivo), <code>package_remove</code>, <code>package_state</code>
+  (progreso, modelos que aún se importan y resultado), <code>package_registry</code> y <code>package_export</code>.
+</p>
+
+<h3 id="servidor">Tu propio servidor</h3>
+<p>
+  La API de la Store es <code>web-api/cramion_api.py</code>: un solo archivo de Python 3.10+ sin dependencias (SQLite,
+  scrypt), que sirve la API en <code>/api</code> y la web. Cómo ponerla en marcha, el superadmin, el servicio de systemd y
+  nginx están en <code>web-api/README.md</code>. Para usarla desde el editor: <em>+ ... &gt; Servidor de paquetes...</em>.
+</p>

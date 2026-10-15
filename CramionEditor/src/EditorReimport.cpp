@@ -45,11 +45,14 @@ bool EditorApp::startReimport(const Uuid& model, std::optional<assets::ModelImpo
     }
     ImportJob job{info->path, info->path.parent_path(), std::make_shared<assets::ImportProgress>(), {}, model, {}, settings};
     // Los materiales de cada pieza de antes: sus nombres casan los .crmat
-    // asignados con las piezas nuevas.
-    if (const std::shared_ptr<const assets::ModelAsset> old = asset_manager_->loadModel(model)) {
+    // asignados con las piezas nuevas (con las piezas que ya se dibujan: en
+    // el AssetManager quedan vacias y los .crmat acababan todos en un hueco).
+    if (const std::shared_ptr<const assets::ModelAsset> old = fullModel(model)) {
         for (const auto& part : old->parts) {
             std::vector<std::string> names;
-            for (const asset::MaterialData& m : part->materials) names.push_back(m.name);
+            if (part) {
+                for (const asset::MaterialData& m : part->materials) names.push_back(m.name);
+            }
             job.old_materials.push_back(std::move(names));
         }
     }

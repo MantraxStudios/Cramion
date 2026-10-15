@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Entrar · Cramion Store</title>
+  <meta name="theme-color" content="#232323">
+  <link rel="icon" href="../img/icon.png">
+  <script>try { const t = localStorage.getItem("cramion-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="store.css?v=2">
+</head>
+<body>
+  <header id="site-header" class="site-header"></header>
+  <main class="wrap">
+    <div class="auth">
+      <div style="text-align:center;margin-bottom:22px">
+        <img src="../img/icon.png" alt="" width="48" height="48" style="margin:0 auto 12px">
+        <h1 class="title" style="font-size:28px" id="heading">Entra en tu cuenta</h1>
+        <p class="muted" style="margin:8px 0 0" id="sub">Para publicar assets gratis en la Cramion Store.</p>
+      </div>
+      <div class="card card-pad">
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" id="tab-login" aria-selected="true" aria-controls="form-login">Entrar</button>
+          <button type="button" role="tab" id="tab-register" aria-selected="false" aria-controls="form-register">Crear cuenta</button>
+        </div>
+        <div class="alert err" id="error" role="alert" hidden></div>
+
+        <form id="form-login" novalidate>
+          <label class="field"><span>Usuario o email</span>
+            <input class="input" name="login" autocomplete="username" required></label>
+          <label class="field"><span>Contraseña</span>
+            <input class="input" name="password" type="password" autocomplete="current-password" required></label>
+          <button class="btn btn-primary btn-block" type="submit">Entrar</button>
+        </form>
+
+        <form id="form-register" novalidate hidden>
+          <label class="field"><span>Usuario</span>
+            <input class="input" name="username" autocomplete="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_][A-Za-z0-9_.\-]{2,31}">
+            <small>3 a 32 caracteres: letras, números, «_», «.» o «-». Sale como autor de tus paquetes.</small></label>
+          <label class="field"><span>Email</span>
+            <input class="input" name="email" type="email" autocomplete="email" required></label>
+          <label class="field"><span>Contraseña</span>
+            <input class="input" name="password" type="password" autocomplete="new-password" required minlength="8">
+            <small>Mínimo 8 caracteres.</small></label>
+          <button class="btn btn-primary btn-block" type="submit">Crear cuenta gratis</button>
+          <p class="faint" style="font-size:12.5px;margin:12px 0 0;text-align:center">Al publicar aceptas compartir tus assets con la licencia que elijas en cada paquete.</p>
+        </form>
+      </div>
+    </div>
+  </main>
+  <footer id="site-footer"></footer>
+  <script src="store.js?v=2"></script>
+  <script>
+    const { api, $ } = Store;
+    Store.header("");
+    const next = (() => {
+      const n = Store.param("next") || "panel.html";
+      return /^[a-z0-9_-]+\.html([?#].*)?$/i.test(n) ? n : "panel.html";  // solo paginas de la Store
+    })();
+
+    Store.refreshUser().then(u => { if (u) location.replace(next); });
+
+    function tab(which) {
+      const login = which === "login";
+      $("#tab-login").setAttribute("aria-selected", String(login));
+      $("#tab-register").setAttribute("aria-selected", String(!login));
+      $("#form-login").hidden = !login;
+      $("#form-register").hidden = login;
+      $("#heading").textContent = login ? "Entra en tu cuenta" : "Crea tu cuenta";
+      $("#sub").textContent = login ? "Para publicar assets gratis en la Cramion Store." : "Gratis. Sube tus assets y compártelos con la comunidad.";
+      $("#error").hidden = true;
+      history.replaceState(null, "", login ? location.pathname + location.search : location.pathname + location.search + "#registro");
+      (login ? $("#form-login") : $("#form-register")).querySelector("input").focus();
+    }
+    $("#tab-login").onclick = () => tab("login");
+    $("#tab-register").onclick = () => tab("register");
+    if (location.hash === "#registro") tab("register");
+
+    function showError(msg) { const e = $("#error"); e.textContent = msg; e.hidden = false; }
+
+    async function submit(form, path, body) {
+      const btn = form.querySelector("button[type=submit]");
+      const text = btn.textContent;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>';
+      $("#error").hidden = true;
+      try {
+        const r = await api("POST", path, body, { keepSession: true });
+        Store.setSession(r.token, r.user);
+        location.replace(next);
+      } catch (e) {
+        showError(e.message);
+        btn.disabled = false;
+        btn.textContent = text;
+      }
+    }
+
+    $("#form-login").addEventListener("submit", e => {
+      e.preventDefault();
+      const f = e.target;
+      if (!f.login.value.trim() || !f.password.value) return showError("Escribe tu usuario y contraseña.");
+      submit(f, "/auth/login", { login: f.login.value.trim(), password: f.password.value });
+    });
+    $("#form-register").addEventListener("submit", e => {
+      e.preventDefault();
+      const f = e.target;
+      for (const input of f.querySelectorAll("input")) {
+        input.setAttribute("aria-invalid", String(!input.checkValidity()));
+        if (!input.checkValidity()) {
+          input.focus();
+          return showError(input.name === "username" ? "El usuario debe tener 3-32 caracteres: letras, números, «_», «.» o «-»."
+            : input.name === "email" ? "Escribe un email válido." : "La contraseña debe tener al menos 8 caracteres.");
+        }
+      }
+      submit(f, "/auth/register", { username: f.username.value.trim(), email: f.email.value.trim(), password: f.password.value });
+    });
+  </script>
+</body>
+</html>

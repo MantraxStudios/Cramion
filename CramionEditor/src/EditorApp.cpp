@@ -121,6 +121,7 @@ EditorApp::~EditorApp() {
     cpp_scripts_.setPhysics(nullptr);
     scripts_.unmountDataPacks();  // cerrar en Play: lo montado sale del proyecto
     if (datapack_job_ && datapack_job_->thread.joinable()) datapack_job_->thread.join();
+    package_manager_.reset();  // cancela y espera descargas/extracciones
     scripts_.setVoxels(nullptr);
     voxels_.stop();
     cancelExport();
@@ -270,14 +271,17 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     // Fisica: ajustes del proyecto y el mundo fisico (en modo edicion).
     loadPhysicsSettings();
     physics_.setAssetManager(asset_manager_.get());
+    // La malla que se dibuja o, sin actor (oculta), su pieza en la escena o
+    // en el AssetManager: un MeshCollider oculto cuya pieza dibuja otro
+    // objeto se quedaba sin colision (en el AssetManager estaba vacia).
     physics_.setMeshProvider([this](ecs::Entity entity) -> const asset::ModelData* {
-        return sync_ ? sync_->actorModelData(entity, scene_) : nullptr;
+        return sync_ ? sync_->collisionModelData(entity, scene_) : nullptr;
     });
     physics_.start(world_);
     // Navegacion: la misma geometria de colision que la fisica.
     nav_.clear();
     nav_.setMeshProvider([this](ecs::Entity entity) -> const asset::ModelData* {
-        return sync_ ? sync_->actorModelData(entity, scene_) : nullptr;
+        return sync_ ? sync_->collisionModelData(entity, scene_) : nullptr;
     });
     nav_.setTerrainProvider([this](ecs::Entity entity) -> std::shared_ptr<const terrain::TerrainData> {
         const terrain::Terrain* comp = entity.tryGet<terrain::Terrain>();
@@ -1266,6 +1270,7 @@ void EditorApp::drawUi(float delta_seconds) {
     drawPlatformWindows();  // Git, Pruebas y avisos (en cualquier pestana)
     drawInsightsWindow();   // perfilador de CPU (EditorInsights.cpp)
     drawAccessibilityWindow();  // daltonismo, texto, movimiento (EditorAccessibility.cpp)
+    drawPackageManagerWindow();  // Cramion Store (EditorPackageManager.cpp)
     drawGameplayWindows();  // Localizacion, Partidas y Dialogos (EditorGameplay.cpp)
     drawEffectsWindows();   // VFX Graph y Repeticiones (EditorEffects.cpp)
     drawGraphEditors();     // Shader Graph, Visual Script, Behavior Tree y 2D
@@ -1573,6 +1578,10 @@ void EditorApp::drawMenuBar() {
         if (ImGui::MenuItem("Exportar juego...")) exportGame(false);
         if (ImGui::MenuItem("Exportar y jugar...")) exportGame(true);
         if (ImGui::MenuItem("Exportar escena como DataPack...")) openDataPackExport();
+        if (ImGui::MenuItem("Exportar carpeta como paquete .crwpack...")) {
+            show_package_manager_ = true;
+            packageOpenExport();
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Guardar proyecto como plantilla...")) show_save_template_ = true;
         if (ImGui::MenuItem("Abrir proyecto (Hub)...")) runOrAskToSave(PendingAction::BackToHub);
@@ -1607,6 +1616,7 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Proyecto", nullptr, &show_project_);
         ImGui::MenuItem("Estadísticas", nullptr, &show_statistics_);
         ImGui::MenuItem("Insights (perfilador de CPU)", nullptr, &show_insights_);
+        ImGui::MenuItem("Package Manager", nullptr, &show_package_manager_);
         ImGui::MenuItem("Accesibilidad", nullptr, &show_accessibility_);
         ImGui::MenuItem("Consola", nullptr, &show_console_);
         ImGui::MenuItem("Configuración gráfica", nullptr, &show_render_settings_);

@@ -480,6 +480,7 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
             else if (tier == "ultra") hardware_.tier = HardwareTier::Ultra;
         }
         budget_.setStartLevels(hardware_.tier);
+        updateRenderScaleStart();  // por si los ajustes llegaron antes
         // Hierba y arboles: densidad, distancias y detalle segun la gama.
         terrain_pass_.setQualityTier(hardware_.tier);
         foliage_pass_.setQualityTier(hardware_.tier);
@@ -1619,7 +1620,16 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     lod_error_per_meter_ = post_.lods && pixels_per_unit > 0.0f
                                ? std::max(post_.lod_pixel_error, 0.05f) / pixels_per_unit
                                : 0.0f;
-    const float cull_pixels = budget_.cullPixels();
+    // Objetos diminutos: el umbral de la gama (1.5 px en Bajo .. 0.5 en Ultra)
+    // o el del presupuesto si es mayor. En VR y en el movil, el de siempre.
+    const float tiny_base = xr_view_frame_ || mobile_level_ >= 0 ? 0.5f : tinyObjectPixelsFor(hardware_.tier);
+    const float cull_pixels = std::max(tiny_base, budget_.cullPixels());
+    // Con histeresis solo en la vista principal (otra camara ve otros
+    // tamanos): se oculta por debajo del umbral y vuelve por encima de 1.25
+    // veces, asi no parpadea en el borde.
+    if (tiny_hysteresis_view_ && tiny_actors_.size() != scene.actors().size()) {
+        tiny_actors_.assign(scene.actors().size(), 0);
+    }
     draw_batches_.clear();
     batch_lookup_.clear();
 
@@ -1694,8 +1704,16 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
             // Mas pequeno que un pixel (o lo que diga el presupuesto): la
             // camara no lo dibuja; su sombra sigue.
             const float camera_distance = core::length(draw.bounds_center - camera_position);
-            const bool tiny = camera_distance > draw.bounds_radius &&
-                              draw.bounds_radius * pixels_per_unit / camera_distance < cull_pixels;
+            const bool far_enough = camera_distance > draw.bounds_radius;
+            const float screen_pixels = far_enough ? draw.bounds_radius * pixels_per_unit / camera_distance : 0.0f;
+            bool tiny = false;
+            if (tiny_hysteresis_view_ && draw.scene_actor < tiny_actors_.size()) {
+                std::uint8_t& was_tiny = tiny_actors_[draw.scene_actor];
+                tiny = far_enough && tinyObject(screen_pixels, cull_pixels, was_tiny != 0);
+                was_tiny = tiny ? 1 : 0;
+            } else {
+                tiny = far_enough && screen_pixels < cull_pixels;
+            }
             if (tiny) ++culled_small_;
             const std::vector<asset::SubMesh>& lod_submeshes = model.lodSubmeshes(draw.lod);
             if (draw.lod > 0) {
@@ -3155,6 +3173,7 @@ void VulkanRenderer::setGraphicsSettings(const GraphicsSettings& settings) {
     const bool changed = !(settings == user_graphics_);
     user_graphics_ = settings;
     asset::setMaxTextureSize(desiredTextureSize());
+    updateRenderScaleStart();  // antes del reinicio: parte de ahi
     budget_.setEnabled(settings.adaptive);
     budget_.setTargetFps(settings.target_fps);
     // Lo que el presupuesto adaptativo ya habia bajado (resolucion, efectos)
@@ -3259,6 +3278,12 @@ void VulkanRenderer::applyEffectiveGraphics() {
         settings.custom_scale = vr_scale;
     }
     const float base_scale = renderScale(settings);
+    // Suelo de la resolucion interna (renderScaleFloor): el presupuesto no la
+    // baja de max(540, la mitad de la salida) encima del escalado del preset.
+    // La VR y el movil tienen sus propios topes.
+    floor_base_scale_ = base_scale;
+    floor_exempt_ = xr_eyes || mobile_level_ >= 0;
+    updateRenderScaleFloor();
     const float budget_scale = budget_.renderScale();
     applied_budget_scale_ = budget_scale;
     if (budget_scale < 0.999f) {
@@ -3307,6 +3332,31 @@ void VulkanRenderer::applyEffectiveGraphics() {
     // tirones (y con FSR 3 / DLSS, que ademas rehacian su contexto, mas lag).
     if (vsync_changed) settings_dirty_ = true;
     if (rebuild) targets_dirty_ = true;
+}
+
+void VulkanRenderer::updateRenderScaleFloor() {
+    budget_.setRenderScaleFloor(floor_exempt_ ? 0.0f : renderScaleFloor(outputExtent().height, floor_base_scale_));
+}
+
+void VulkanRenderer::updateRenderScaleStart() {
+    // Si el preset ya dibuja por debajo del 90 %, el presupuesto no baja la
+    // resolucion de salida (eran dos reducciones encima: FSR 1 Calidad en un
+    // PC Bajo arrancaba al 45 %, 862x453); si no llega a los FPS, la baja el.
+    // El movil ya empieza en 0 (setMobileProfile); en VR manda el perfil (el
+    // preset de escritorio no escala los ojos).
+    std::uint8_t wanted = startLevelsFor(hardware_.tier)[static_cast<std::size_t>(Lever::RenderScale)];
+    if (mobile_level_ >= 0) wanted = 0;
+    else if (!xr_.running()) wanted = renderScaleStartLevel(hardware_.tier, renderScale(user_graphics_));
+    if (budget_.startLevel(Lever::RenderScale) != wanted) budget_.setStartLevel(Lever::RenderScale, wanted);
+    // Movil: los efectos los decide su perfil (mobilePost y la calidad de la
+    // compilacion); el presupuesto empieza donde siempre, sin lo que el
+    // arranque Bajo de escritorio baja ademas (SSAO, reflejos, desenfoques y
+    // nubes). PlayerMain llama a setGraphicsSettings tras setMobileProfile.
+    if (mobile_level_ >= 0) {
+        for (const Lever lever : {Lever::Ssao, Lever::Reflections, Lever::CameraFx, Lever::Clouds}) {
+            if (budget_.startLevel(lever) != 0) budget_.setStartLevel(lever, 0);
+        }
+    }
 }
 
 void VulkanRenderer::createRenderTargets() {
@@ -4168,10 +4218,10 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // suyas.
     // x: nubes; y, z: niebla por altura (densidad y caida con la altura).
     // w: cobertura de las nubes (el cielo cubierto da una luz ambiente gris).
-    light_data.clouds = Vec4{clouds_enabled_ && !environmentActive() ? 1.0f : 0.0f, std::max(post_.fog_density, 0.0f),
+    // Sin cobertura no se dibujan (cloudsActive): la iluminacion no las lee.
+    light_data.clouds = Vec4{cloudsActive() ? 1.0f : 0.0f, std::max(post_.fog_density, 0.0f),
                              std::max(post_.fog_height_falloff, 0.0001f),
-                             clouds_enabled_ && !environmentActive() ? std::clamp(cloud_settings_.coverage, 0.0f, 1.0f)
-                                                                     : 0.0f};
+                             cloudsActive() ? std::clamp(cloud_settings_.coverage, 0.0f, 1.0f) : 0.0f};
     // y: luz volumetrica. No en las caras de la sonda: su imagen es de la
     // camara de pantalla.
     // z: sombras de contacto (largo del rayo); no en la sonda (su depth es otro).
@@ -4241,8 +4291,11 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     {
         const float bottom = std::max(cloud_settings_.bottom, 50.0f);
         const float wind_angle = cloud_settings_.wind_direction * (core::kPi / 180.0f);
+        // w: pasos maximos por rayo (palanca Clouds del presupuesto; de ellos
+        // salen los de la luz).
         cloud_push_.layer = Vec4{bottom, bottom + std::max(cloud_settings_.thickness, 100.0f),
-                                 std::clamp(cloud_settings_.type, 0.0f, 1.0f), 0.0f};
+                                 std::clamp(cloud_settings_.type, 0.0f, 1.0f),
+                                 static_cast<float>(std::clamp(post_.cloud_steps, 8, 128))};
         // Las cimas van por delante con el viento (mas rapido en altura).
         cloud_push_.wind = Vec4{std::cos(wind_angle), std::sin(wind_angle),
                                 std::min(cloud_settings_.wind_speed * 40.0f, 1500.0f), 0.0f};
@@ -4257,9 +4310,25 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         cloud_shadow_push_.wind.w = 1.0f;
         cloud_shadow_push_.shadow = Vec4{cx, cz, kCloudShadowExtent, std::clamp(cloud_settings_.shadow_strength, 0.0f, 1.0f)};
         cloud_push_.shadow = cloud_shadow_push_.shadow;
-        const bool cloud_shadows = clouds_enabled_ && !environmentActive() && cloud_settings_.shadows &&
-                                   cloud_settings_.coverage > 0.0f && cloud_settings_.shadow_strength > 0.0f;
-        light_data.cloud_shadow = cloud_shadows ? cloud_shadow_push_.shadow : Vec4{};
+        const bool cloud_shadows = cloudsActive() && cloud_settings_.shadows && cloud_settings_.shadow_strength > 0.0f;
+        // El mapa se rehace cada frame, salvo en la vista principal con la
+        // palanca Clouds al maximo (cada N frames). La iluminacion lee el
+        // centro con el que se dibujo; otra vista (sonda, Render Texture, ojo
+        // de VR) lo dibuja desde su camara y la principal lo rehace despues.
+        if (!isolated() && !xr_view_frame_) {
+            const auto interval = static_cast<std::uint32_t>(std::max(post_.cloud_shadow_interval, 1));
+            cloud_shadow_redraw_ = !cloud_shadow_valid_ || ++cloud_shadow_age_ >= interval;
+            if (cloud_shadow_redraw_) {
+                cloud_shadow_age_ = 0;
+                cloud_shadow_drawn_ = cloud_shadow_push_.shadow;
+                cloud_shadow_valid_ = cloud_shadows;
+            }
+        } else {
+            cloud_shadow_redraw_ = true;
+            cloud_shadow_valid_ = false;
+            cloud_shadow_drawn_ = cloud_shadow_push_.shadow;
+        }
+        light_data.cloud_shadow = cloud_shadows ? cloud_shadow_drawn_ : Vec4{};
         // Sin trazado de rayos: lo que tapa el cielo desde arriba. Uno que toca
         // redibujar (planSkyMap) se dibuja en este mismo frame, antes de la
         // iluminacion: tambien vale. (Antes, tras crearlo o mover el origen,
@@ -4596,33 +4665,78 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     mirror_only_ = present && xr_views_active_ && xrViewsMode();
     const bool profiled = !mirror_only_ && gpu_profiler_.collect(current_frame_);
     {
-        // En VR cuenta el frame entero del casco: los tiempos del ojo derecho
-        // se guardan y, con los del izquierdo del mismo frame (sombras, cielo y
-        // su vista), se mide contra los Hz del casco.
-        bool budget_frame = !xrViewsMode();
-        float gpu_ms = gpu_profiler_.totalMilliseconds();
-        if (xrViewsMode() && profiled) {
-            const int eye = slot_xr_eye_[current_frame_];
-            if (eye == 1) xr_right_eye_gpu_ms_ = gpu_profiler_.lastTotalMilliseconds();
-            if (eye == 0) {
-                budget_frame = true;
-                gpu_ms = gpu_profiler_.lastTotalMilliseconds() +
-                         (xr_.stereo() || stereo_emulation_ ? xr_right_eye_gpu_ms_ : 0.0f);
+        // El presupuesto recibe una muestra cuando hay una nueva (antes, en
+        // cada frame la media del perfilador: en el 2.o frame aun era 0 y la
+        // del presupuesto se quedaba en 0 para siempre en las GPU lentas), con
+        // los tiempos de ese frame sin medias (la del perfilador tardaba
+        // segundos en ver un cambio y a pocos FPS aprendia ahorros de nada).
+        bool budget_frame = false;
+        float gpu_ms = 0.0f;
+        const std::vector<GpuTiming>* budget_passes = &gpu_profiler_.lastTimings();
+        if (xrViewsMode()) {
+            // En VR cuenta el frame entero del casco: los tiempos del ojo
+            // derecho se guardan y, con los del izquierdo del mismo frame
+            // (sombras, cielo y su vista), se mide contra los Hz del casco.
+            budget_extra_ms_ = 0.0f;
+            budget_extra_passes_.clear();
+            budget_passes = &gpu_profiler_.timings();
+            if (profiled) {
+                const int eye = slot_xr_eye_[current_frame_];
+                if (eye == 1) xr_right_eye_gpu_ms_ = gpu_profiler_.lastTotalMilliseconds();
+                if (eye == 0) {
+                    budget_frame = true;
+                    gpu_ms = gpu_profiler_.lastTotalMilliseconds() +
+                             (xr_.stereo() || stereo_emulation_ ? xr_right_eye_gpu_ms_ : 0.0f);
+                }
             }
+        } else if (!gpu_profiler_.supported()) {
+            // Sin timestamps de GPU (algunas de movil, Mali y PowerVR
+            // antiguas): el tiempo del frame entero hace de tiempo de GPU (con
+            // VSync no baja de los Hz, pero si la GPU no llega es lo que
+            // tarda), medido entre vistas principales (las Render Textures y
+            // la segunda vista del editor van dentro).
+            budget_frame = present && !xr_views_active_;
+        } else if (profiled && slot_budget_extra_[current_frame_]) {
+            // Lo que se recogio es de una vista extra (Render Texture, segunda
+            // vista del editor): se suma a la siguiente muestra de la principal
+            // (el presupuesto mide todo lo que cuesta el frame).
+            budget_extra_ms_ += gpu_profiler_.lastTotalMilliseconds();
+            for (const GpuTiming& t : gpu_profiler_.lastTimings()) {
+                auto it = std::find_if(budget_extra_passes_.begin(), budget_extra_passes_.end(),
+                                       [&](const GpuTiming& e) { return e.name == t.name; });
+                if (it == budget_extra_passes_.end()) budget_extra_passes_.push_back(t);
+                else it->milliseconds += t.milliseconds;
+            }
+        } else if (profiled) {
+            budget_frame = true;
+            gpu_ms = gpu_profiler_.lastTotalMilliseconds() + budget_extra_ms_;
+            if (!budget_extra_passes_.empty()) {
+                budget_passes_ = gpu_profiler_.lastTimings();
+                for (const GpuTiming& e : budget_extra_passes_) {
+                    auto it = std::find_if(budget_passes_.begin(), budget_passes_.end(),
+                                           [&](const GpuTiming& t) { return t.name == e.name; });
+                    if (it == budget_passes_.end()) budget_passes_.push_back(e);
+                    else it->milliseconds += e.milliseconds;
+                }
+                budget_passes = &budget_passes_;
+            }
+            budget_extra_ms_ = 0.0f;
+            budget_extra_passes_.clear();
         }
         if (budget_frame) {
+            // Segundos desde la muestra anterior (los frames sin muestra van
+            // dentro).
             const auto now = std::chrono::steady_clock::now();
             const float dt = last_budget_time_.time_since_epoch().count() == 0
                                  ? 0.0f
                                  : std::chrono::duration<float>(now - last_budget_time_).count();
             last_budget_time_ = now;
-            // Sin timestamps de GPU (algunas de movil, Mali y PowerVR antiguas):
-            // el tiempo del frame entero hace de tiempo de GPU (con VSync no baja
-            // de los Hz, pero si la GPU no llega es lo que tarda). Sin esto el
-            // presupuesto veia 0 ms, creia que sobraba tiempo y lo subia todo.
             if (!gpu_profiler_.supported()) gpu_ms = std::min(dt, 0.5f) * 1000.0f;
-            if (!budget_suspended_) budget_.update(std::min(dt, 0.5f), gpu_ms, gpu_profiler_.timings());
+            if (!budget_suspended_) budget_.update(std::min(dt, 0.5f), gpu_ms, *budget_passes);
         }
+        // Suelo de la resolucion interna con la salida de ahora (cambia al
+        // redimensionar la vista).
+        updateRenderScaleFloor();
         post_ = mobilePost(budget_.apply(user_post_));
         if (const SceneDrawMode mode = drawModeNow(); mode == SceneDrawMode::Unlit || mode == SceneDrawMode::Wireframe) {
             post_.auto_exposure = false;
@@ -4692,6 +4806,10 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
                 stereo_last_bone_ranges_ = last_bone_ranges_;
             }
         }
+        // Histeresis de los objetos diminutos: solo la vista que se presenta
+        // (misma condicion que secondary_view_, sin Render Textures ni VR).
+        tiny_hysteresis_view_ = present && !xr_views_active_ && !xr_view_frame_ && render_texture_target_ < 0 &&
+                                xr_eye_target_ < 0;
         updateActors(scene, current_frame_);
     }
     frame_timings_.actors_ms += since(stage);
@@ -4784,6 +4902,9 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     stage = TimingClock::now();
     if (!mirror_only_) updateUniforms(scene, camera_override_ != nullptr ? *camera_override_ : scene.camera(), current_frame_);
     if (!mirror_only_) slot_xr_eye_[current_frame_] = xr_view_frame_ ? xr_view_eye_ : -1;
+    // Una vista extra (Render Texture, segunda vista del editor): su tiempo de
+    // GPU se suma al de la principal cuando se recoja (presupuesto).
+    if (!mirror_only_) slot_budget_extra_[current_frame_] = secondary_view_;
     if (xr_view_frame_) xr_eye_recorded_ = true;
     frame_timings_.uniforms_ms += since(stage);
 
@@ -5127,7 +5248,7 @@ std::vector<float> VulkanRenderer::lightingSignature(const scene::Scene& scene) 
     signature.push_back(sun_shadows_ ? 1.0f : 0.0f);
     signature.push_back(post_.global_illumination ? 1.0f : 0.0f);
     signature.push_back(post_.ambient_occlusion ? 1.0f : 0.0f);
-    signature.push_back(clouds_enabled_ ? 1.0f : 0.0f);
+    signature.push_back(clouds_enabled_ && clouds_allowed_ ? 1.0f : 0.0f);
     return signature;
 }
 
@@ -6278,7 +6399,10 @@ void VulkanRenderer::recordVolumetricPass(const vk::raii::CommandBuffer& cmd,
     // (salvo para llegar a los volumenes de niebla).
     push.params = Vec4{post_.volumetric_density, post_.volumetric_anisotropy, weather_time_,
                        std::clamp(fog_reach, 60.0f, 250.0f)};
-    push.quality = Vec4{static_cast<float>(std::clamp(post_.volumetric_steps, 8, 32)), 0.0f, 0.0f, 0.0f};
+    // y = 1: sin luces puntuales ni focos (palanca Volumetric al maximo: solo
+    // el sol y el cielo; con muchas luces eran casi todo el coste).
+    push.quality = Vec4{static_cast<float>(std::clamp(post_.volumetric_steps, 8, 32)),
+                        post_.volumetric_local_lights ? 0.0f : 1.0f, 0.0f, 0.0f};
     drawFullscreen(cmd, volumetric_pass_, &volumetric_sets_[frame_index], volumetric_image_,
                    &push);
 
@@ -9001,10 +9125,12 @@ void VulkanRenderer::recordRainMap(const vk::raii::CommandBuffer& cmd,
 void VulkanRenderer::recordCloudPass(const vk::raii::CommandBuffer& cmd,
                                      std::uint32_t frame_index) {
     // Sombra de las nubes sobre el suelo (antes que la iluminacion). En VR, una
-    // vez por frame: el segundo ojo usa la del primero.
-    if (!xrSecondEye()) {
+    // vez por frame: el segundo ojo usa la del primero. Con la palanca Clouds
+    // al maximo, cada pocos frames (updateUniforms decide): entre medias se
+    // queda como textura con lo de la ultima vez.
+    if (!xrSecondEye() && cloud_shadow_redraw_) {
         pipelineBarrier(cmd, discardToAttachment(*cloud_shadow_image_.handle()));
-        if (clouds_enabled_ && !environmentActive() && cloud_settings_.shadows && cloud_settings_.coverage > 0.0f) {
+        if (cloudsActive() && cloud_settings_.shadows && cloud_settings_.shadow_strength > 0.0f) {
             drawFullscreen(cmd, cloud_shadow_pass_, &clouds_sets_[frame_index], cloud_shadow_image_,
                            &cloud_shadow_push_);
         }
@@ -9012,9 +9138,9 @@ void VulkanRenderer::recordCloudPass(const vk::raii::CommandBuffer& cmd,
     }
 
     pipelineBarrier(cmd, discardToAttachment(*clouds_image_.handle()));
-    // Apagadas no se dibujan (la iluminacion no las lee), pero la imagen
-    // queda igualmente como textura para el descriptor.
-    if (clouds_enabled_ && !environmentActive()) {
+    // Apagadas o sin cobertura no se dibujan (la iluminacion no las lee),
+    // pero la imagen queda igualmente como textura para el descriptor.
+    if (cloudsActive()) {
         drawFullscreen(cmd, clouds_pass_, &clouds_sets_[frame_index], clouds_image_,
                        &cloud_push_);
     }
@@ -9053,7 +9179,12 @@ void VulkanRenderer::recordCameraFxPass(const vk::raii::CommandBuffer& cmd) {
     push.camera = Vec4{camera_projection_.m[3][2], camera_projection_.m[2][2],
                        static_cast<float>(extent.width) / static_cast<float>(std::max(extent.height, 1u)),
                        1.0f / static_cast<float>(std::max(extent.height, 1u))};
-    push.projection_w = Vec4{camera_projection_.m[2][3], camera_projection_.m[3][3], 0.0f, 0.0f};
+    // zw: muestras de la profundidad de campo y del motion blur (palanca
+    // CameraFx del presupuesto: 64/24, 32/12). La constante ya ocupa los 128
+    // bytes garantizados: van en lo que estaba libre.
+    push.projection_w = Vec4{camera_projection_.m[2][3], camera_projection_.m[3][3],
+                             static_cast<float>(std::clamp(p.dof_samples, 1, 64)),
+                             static_cast<float>(std::clamp(p.motion_blur_samples, 1, 24))};
 
     const auto run = [&](float mode) {
         // Copia de lo que hay (la lee el shader) y se dibuja encima.
@@ -9312,6 +9443,7 @@ bool VulkanRenderer::applyPendingResize() {
         // una GPU de gama baja ya empezaba en 67 %); antes baja GI, reflejos,
         // volumetrica, sombras y LODs.
         if (xr_.running()) {
+            updateRenderScaleStart();  // en VR, el del perfil (no cambia nada si ya lo es)
             budget_.setLevelCap(Lever::RenderScale, 1);
             budget_.setEnabled(user_graphics_.adaptive);
             budget_.setTargetFps(xr_.displayHz());
@@ -9319,6 +9451,7 @@ bool VulkanRenderer::applyPendingResize() {
             applyEffectiveGraphics();  // estereo: TAA por ojo en vez de FSR 3 / DLSS
         } else if (xr_budget_applied_) {
             xr_budget_applied_ = false;
+            updateRenderScaleStart();  // otra vez el del preset de escritorio
             budget_.setLevelCap(Lever::RenderScale, 255);
             budget_.setEnabled(user_graphics_.adaptive);
             budget_.setTargetFps(user_graphics_.target_fps);

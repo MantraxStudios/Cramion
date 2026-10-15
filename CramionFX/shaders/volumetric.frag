@@ -128,7 +128,9 @@ layout(push_constant) uniform PushConstants {
     // x = densidad del polvo (1/m), y = anisotropia (g de Henyey-Greenstein),
     // z = segundos (deriva del polvo), w = distancia maxima (m)
     vec4 params;
-    // x = tramos por rayo (8-32; el presupuesto adaptativo baja a 16)
+    // x = tramos por rayo (8-32; el presupuesto adaptativo baja a 16 y a 8),
+    // y = 1 sin luces locales (solo el sol y el cielo: el ultimo nivel del
+    // presupuesto; con muchas luces eran casi todo el coste)
     vec4 quality;
 } push;
 
@@ -393,8 +395,9 @@ void main() {
     vec3 sun_source = sun_radiance * phaseFunction(dot(direction, to_sun));
 
     // --- Que tramo del rayo cruza cada luz local (las que no toca, fuera) ---
-    int point_count = min(lights.counts.x, kMaxPointLights);
-    int spot_count = min(lights.counts.y, kMaxSpotLights);
+    bool local_lights = push.quality.y < 0.5;
+    int point_count = local_lights ? min(lights.counts.x, kMaxPointLights) : 0;
+    int spot_count = local_lights ? min(lights.counts.y, kMaxSpotLights) : 0;
     vec2 point_segments[kMaxPointLights];
     vec2 spot_segments[kMaxSpotLights];
     bool any_local = false;

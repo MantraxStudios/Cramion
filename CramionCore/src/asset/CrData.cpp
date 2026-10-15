@@ -168,7 +168,12 @@ void writeModel(const std::filesystem::path& file, const Header& header,
     });
 }
 
-bool readModel(const std::filesystem::path& file, Header& header, ModelContent& content) {
+namespace {
+
+// readModel y readModelGeometry. `geometry`: sin los bytes de las texturas y
+// solo las piezas de `wanted` (vacio = todas).
+bool readModelFrom(const std::filesystem::path& file, Header& header, ModelContent& content, bool geometry,
+                   const std::vector<bool>& wanted) {
     std::ifstream in(file, std::ios::binary);
     if (!in || !readHeaderFrom(in, header) || header.type != AssetType::Model) {
         return false;
@@ -202,13 +207,17 @@ bool readModel(const std::filesystem::path& file, Header& header, ModelContent& 
         return false;
     }
     result.parts.resize(count);
-    for (asset::ModelData& part : result.parts) {
+    for (std::size_t i = 0; i < result.parts.size(); ++i) {
+        asset::ModelData& part = result.parts[i];
         std::uint64_t bytes = 0;
         if (!get(in, bytes)) {
             return false;
         }
         const std::streampos start = in.tellg();
-        if (!asset::readModelPayload(in, part)) {
+        const bool read = !geometry || wanted.empty() || (i < wanted.size() && wanted[i]);
+        // Solo la geometria: los bytes de las texturas se saltan sin leerlos
+        // (la ciudad de un usuario: 650 MB de texturas, 50 de mallas).
+        if (read && !asset::readModelPayload(in, part, geometry)) {
             return false;
         }
         // Robustez: seguir desde donde dice el tamano, no desde donde acabo
@@ -217,6 +226,17 @@ bool readModel(const std::filesystem::path& file, Header& header, ModelContent& 
     }
     content = std::move(result);
     return true;
+}
+
+}  // namespace
+
+bool readModel(const std::filesystem::path& file, Header& header, ModelContent& content) {
+    return readModelFrom(file, header, content, false, {});
+}
+
+bool readModelGeometry(const std::filesystem::path& file, Header& header, ModelContent& content,
+                       const std::vector<bool>& wanted) {
+    return readModelFrom(file, header, content, true, wanted);
 }
 
 void writeEnvironment(const std::filesystem::path& file, const Header& header,

@@ -2,7 +2,7 @@
 #
 #   Cramion-<version>-win64/
 #     CramionEditor.exe, CramionPlayer.exe, cramion.exe, CramionMcp.exe (puente MCP),
-#     CramionUpdater.exe (actualizador)
+#     CramionUpdater.exe (actualizador), crwpack.exe (paquetes .crwpack de la Cramion Store)
 #     shaders/ (con source/ de los .crshader), editor_icons/, player_banner.png
 #     android/ (libmain.so y libcramion_scripthost.so por ABI: Exportar a Android)
 #     shaderc_shared.dll                  (compila los shaders propios)
@@ -33,7 +33,7 @@ set(zip "${BIN_DIR}/Cramion-win64.zip")
 file(REMOVE_RECURSE "${BIN_DIR}/package")
 file(MAKE_DIRECTORY "${stage}")
 
-foreach(exe CramionEditor.exe CramionPlayer.exe cramion.exe CramionMcp.exe CramionUpdater.exe CramionScriptHost.exe)
+foreach(exe CramionEditor.exe CramionPlayer.exe cramion.exe CramionMcp.exe CramionUpdater.exe CramionScriptHost.exe crwpack.exe)
     if(NOT EXISTS "${BIN_DIR}/${exe}")
         message(FATAL_ERROR "Falta ${BIN_DIR}/${exe}: compila antes el proyecto.")
     endif()
@@ -85,13 +85,13 @@ if(EXISTS "${SOURCE_DIR}/CHANGELOG.md")
     file(COPY "${SOURCE_DIR}/CHANGELOG.md" DESTINATION "${stage}")
 endif()
 # La documentacion viaja con el motor (se abre sin conexion salvo el estilo).
-# Solo lo que la web necesita (html, manual, imagenes): sin el video de fondo,
+# Solo lo que la web necesita (html, manual, imagenes, la Store): sin el video de fondo,
 # el docs.zip para subirla ni restos que acaben en la carpeta (una copia de
 # 16 MB de docs.zip con otro nombre llego a colarse en el zip).
 file(MAKE_DIRECTORY "${stage}/docs")
 file(GLOB docs_pages "${SOURCE_DIR}/docs/*.html" "${SOURCE_DIR}/docs/.nojekyll")
 file(COPY ${docs_pages} DESTINATION "${stage}/docs")
-foreach(folder manual img)
+foreach(folder manual img store)
     if(EXISTS "${SOURCE_DIR}/docs/${folder}")
         file(COPY "${SOURCE_DIR}/docs/${folder}" DESTINATION "${stage}/docs" PATTERN "*.mp4" EXCLUDE)
     endif()
@@ -127,6 +127,10 @@ CramionUpdater.exe  Actualizador: busca, descarga e instala la version nueva
                     (el editor avisa solo y guarda todo antes).
 cramion.exe         Demo de render. Necesita las escenas de demostracion en
                     assets/ (no incluidas; ver README.md).
+crwpack.exe         Paquetes .crwpack de la Cramion Store desde la consola:
+                    crwpack pack|unpack|list|info|verify (crwpack sin
+                    argumentos muestra la ayuda). En el editor: Ventana >
+                    Package Manager y Archivo > Exportar carpeta como paquete.
 
 Requisitos
 ----------

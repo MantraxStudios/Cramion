@@ -210,6 +210,12 @@ vsedit::Host EditorApp::blueprintHost() {
     return host;
 }
 
+std::shared_ptr<const assets::ModelAsset> EditorApp::fullModel(const Uuid& uuid, bool wait) {
+    if (sync_) return sync_->completeModel(uuid, scene_, wait);
+    if (!asset_manager_) return nullptr;
+    return wait ? asset_manager_->loadModel(uuid) : asset_manager_->requestModel(uuid);
+}
+
 const asset::ModelData* EditorApp::skinnedModelData(ecs::Entity e, ecs::Entity& skinned,
                                                     std::shared_ptr<const assets::ModelAsset>& keep, bool wait) {
     skinned = {};
@@ -220,13 +226,21 @@ const asset::ModelData* EditorApp::skinnedModelData(ecs::Entity e, ecs::Entity& 
         const ecs::Entity x = stack.back();
         stack.pop_back();
         if (const ecs::MeshRenderer* mr = x.tryGet<ecs::MeshRenderer>(); mr != nullptr && !mr->mesh && mr->model.valid()) {
-            const std::shared_ptr<const assets::ModelAsset> model =
-                wait ? asset_manager_->loadModel(mr->model.uuid) : asset_manager_->requestModel(mr->model.uuid);
-            const auto part = static_cast<std::size_t>(std::max(mr->part, 0));
-            if (model && part < model->parts.size() && model->parts[part] && !model->parts[part]->bones.empty()) {
+            // Solo su pieza (se llama cada frame con el menu de la Jerarquia
+            // o el panel del Blueprint abiertos: fullModel copiaria el modelo
+            // entero por objeto). Ya dibujada, la de la escena (en el
+            // AssetManager queda vacia y el esqueleto no aparecia).
+            const int part = std::max(mr->part, 0);
+            const asset::ModelData* data = sync_ ? sync_->partModelData(mr->model.uuid, part, scene_) : nullptr;
+            std::shared_ptr<const assets::ModelAsset> model;
+            if (data == nullptr) {
+                model = wait ? asset_manager_->loadModel(mr->model.uuid) : asset_manager_->requestModel(mr->model.uuid);
+                if (model && static_cast<std::size_t>(part) < model->parts.size()) data = model->parts[static_cast<std::size_t>(part)].get();
+            }
+            if (data != nullptr && !data->bones.empty()) {
                 skinned = x;
-                keep = model;
-                return model->parts[part].get();
+                keep = std::move(model);
+                return data;
             }
         }
         const std::vector<entt::entity>& children = x.children();
@@ -398,7 +412,8 @@ bool EditorApp::createActorBlueprintIn(const Uuid& source, assets::AssetType typ
     if (!source.valid()) {
         ok = ecs::createEmptyBlueprint(options, result, &error);
     } else if (type == assets::AssetType::Model) {
-        const std::shared_ptr<const assets::ModelAsset> model = asset_manager_ ? asset_manager_->loadModel(source) : nullptr;
+        // Con todas sus mallas (las piezas ya dibujadas estan en la escena).
+        const std::shared_ptr<const assets::ModelAsset> model = asset_manager_ ? fullModel(source) : nullptr;
         if (!model) {
             std::cerr << "[Blueprint] No se pudo cargar el modelo\n";
             return false;

@@ -1139,6 +1139,46 @@ const asset::ModelData* RenderSync::actorModelData(Entity entity, const scene::S
     return model < scene.models().size() ? scene.models()[model].get() : nullptr;
 }
 
+const asset::ModelData* RenderSync::partModelData(const Uuid& uuid, int part, const scene::Scene& scene) const {
+    const auto it = models_.find(PartKey{uuid, part});
+    if (it == models_.end() || it->second >= scene.models().size()) return nullptr;
+    return scene.models()[it->second].get();
+}
+
+std::shared_ptr<const assets::ModelAsset> RenderSync::completeModel(const Uuid& uuid, const scene::Scene& scene,
+                                                                    bool wait) {
+    std::shared_ptr<const assets::ModelAsset> model = wait ? assets_.loadModel(uuid) : assets_.requestModel(uuid);
+    if (!model) return nullptr;
+    std::shared_ptr<assets::ModelAsset> view;
+    for (std::size_t p = 0; p < model->parts.size(); ++p) {
+        const auto it = models_.find(PartKey{uuid, static_cast<int>(p)});
+        if (it == models_.end() || it->second >= scene.models().size()) continue;
+        if (!view) view = std::make_shared<assets::ModelAsset>(*model);
+        // Sin copiar la malla: apunta a la de la escena (y mantiene vivo el
+        // ModelData vacio del AssetManager, no el de la escena).
+        view->parts[p] = std::shared_ptr<asset::ModelData>(model->parts[p], scene.models()[it->second].get());
+    }
+    if (view) return view;
+    return model;
+}
+
+const asset::ModelData* RenderSync::collisionModelData(Entity entity, const scene::Scene& scene) const {
+    if (const asset::ModelData* data = actorModelData(entity, scene)) return data;
+    const MeshRenderer* renderer = entity.tryGet<MeshRenderer>();
+    if (renderer == nullptr || renderer->mesh || !renderer->model.valid() || renderer->part < 0) return nullptr;
+    if (const asset::ModelData* data = partModelData(renderer->model.uuid, renderer->part, scene)) return data;
+    // Lo que se dibuja y aun no tiene actor llega en otro frame (asi no se
+    // hace dos veces su colision). Lo que no se dibuja nunca (oculto, en el
+    // lote estatico) tiene su pieza entera en el AssetManager.
+    const EntityInfo* info = entity.tryGet<EntityInfo>();
+    const bool drawn = renderer->visible && (info == nullptr || !info->static_batched);
+    if (drawn || !assets_.isLoaded(renderer->model.uuid)) return nullptr;
+    const std::shared_ptr<const assets::ModelAsset> model = assets_.loadModel(renderer->model.uuid);  // ya en memoria
+    if (!model || static_cast<std::size_t>(renderer->part) >= model->parts.size()) return nullptr;
+    const asset::ModelData* data = model->parts[static_cast<std::size_t>(renderer->part)].get();
+    return data != nullptr && !data->indices.empty() ? data : nullptr;
+}
+
 void RenderSync::reset(scene::Scene& scene) {
     const bool trace = std::getenv("CRAMION_TRACE_SHUTDOWN") != nullptr;
     const auto marca = [&](const char* paso) { if (trace) std::cout << "[RenderSync] reset: " << paso << std::endl; };
@@ -1260,7 +1300,9 @@ std::optional<std::uint32_t> RenderSync::resolveModel(const assets::AssetRef& re
     }
 
     // La pieza pasa a la escena UNA vez (sin copiar gigas de mallas): el
-    // AssetManager se queda con un ModelData vacio de esa pieza.
+    // AssetManager se queda con un ModelData vacio de esa pieza. Quien lea
+    // mallas de un modelo dibujado pasa por partModelData, completeModel o
+    // collisionModelData (no por el AssetManager).
     CR_PROFILE_SCOPE("Modelo nuevo en la escena");
     const std::uint32_t index = scene.addModel(std::move(*asset->parts[part]));
     const asset::ModelData& data = *scene.models()[index];

@@ -131,6 +131,22 @@ struct PostProcessSettings {
     // volvia cuando el frame se abarataba (mirando al cielo o al sol).
     int volumetric_steps = 32;
 
+    // --- Calidad que baja el presupuesto adaptativo (FrameBudget::apply) ---
+    // Como volumetric_steps: no se guardan en la escena ni las mezclan los
+    // volumenes (siempre parten de estos valores).
+    // Luces puntuales y focos dentro de la luz volumetrica (false: solo el sol
+    // y el cielo; con muchas luces era casi todo su coste).
+    bool volumetric_local_lights = true;
+    // Muestras por pixel de la profundidad de campo y del motion blur
+    // (camera_fx.frag; como mucho 64 y 24).
+    int dof_samples = 64;
+    int motion_blur_samples = 24;
+    // Nubes volumetricas (clouds.frag): pasos maximos por rayo (de ellos salen
+    // los de la luz: 128 -> 6, 64 -> 4, 32 -> 2) y cada cuantos frames se
+    // rehace el mapa de sombra de las nubes.
+    int cloud_steps = 128;
+    int cloud_shadow_interval = 1;
+
     // --- Rendimiento ---
     // LODs automaticos: cada objeto estatico se dibuja (tambien en las
     // sombras) con el nivel mas simple cuyo error en pantalla no pasa de

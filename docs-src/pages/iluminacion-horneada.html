@@ -12,9 +12,11 @@
     cuentan todas las mallas que no se mueven. El terreno cuenta siempre (desde su mapa de alturas, tenga o no colisión).</li>
   <li>Opcional: pon uno o varios <strong>Light Probe Volume</strong> (componente o el botón de la ventana): una caja centrada en
     el objeto llena de sondas cada <em>Separación</em> metros. Más juntas = más detalle (y más tiempo). Si no hay ninguno, se
-    usa uno automático que cubre la escena.</li>
-  <li><em>Ventana &gt; Iluminación (horneado)</em> &gt; <strong>Generar iluminación</strong>. Corre en otro hilo con barra de
-    progreso; se puede cancelar.</li>
+    usa uno automático que cubre las mallas y el terreno (como mucho 400 × 60 × 400 m, desde el suelo; con un terreno más
+    grande, alrededor de las mallas); si con la <em>Separación automática</em> pasarían de 200 000 sondas (una ciudad), las
+    separa más y lo dice en el informe.</li>
+  <li><em>Ventana &gt; Iluminación (horneado)</em> &gt; <strong>Generar iluminación</strong> (fuera de Play). Corre en otro hilo
+    con barra de progreso; se puede cancelar.</li>
 </ol>
 <p>
   El resultado se guarda junto a la escena (<code>Nivel1.crbake</code>), se carga solo al abrirla y va con el juego
@@ -32,7 +34,11 @@
     Rigidbody en Kinematic);</li>
   <li>las mallas que mueve un <strong>Animator</strong> que reproduce. Los modelos con animaciones (FBX, GLB) sin Animator sí
     entran, en su pose de reposo, como se ven en el editor;</li>
-  <li>si hay objetos Static, los que no lo son.</li>
+  <li>si hay objetos Static, los que no lo son;</li>
+  <li>los materiales <strong>transparentes</strong> (vidrio, agua): dejan pasar la luz y el sol, como en tiempo real (no
+    proyectan sombra);</li>
+  <li>las mallas de las que no se puede leer ningún triángulo (por ejemplo, el <code>.crdata</code> ya no está): salen como
+    <em>sin geometría</em>, con su nombre; las que no tienen ninguno, como <em>malla vacía</em>.</li>
 </ul>
 
 <h3 id="luces">Luz directa y sombras horneadas</h3>
@@ -51,8 +57,12 @@
 <p>
   El sol toma el modo de su Light direccional; si la escena no tiene, el de <em>Sol</em> en la ventana. La luz horneada va a
   las sondas y al <strong>lightmap de superficie</strong> (texeles en el mundo pegados a la geometría, sin UV2), que se enciende
-  solo a 0.5 m si hay luces horneadas; con texeles más pequeños las sombras salen más nítidas (y el horneado tarda más). Lo que
-  se mueve recibe la luz horneada de las sondas (con su sombra), pero no proyecta sombra de las luces horneadas.
+  solo a 0.5 m si hay luces horneadas; con texeles más pequeños las sombras salen más nítidas (y el horneado tarda más). El
+  lightmap cubre lo que hay dentro de los Light Probe Volume y, con luces horneadas, también lo que alcanza su luz fuera de
+  ellos (con el sol horneado, toda la escena), porque esas luces ya no se dibujan en tiempo real. Lo de fuera entra si el
+  lightmap no pasa de un millón de texeles; si no, se queda sin esa luz y el informe lo dice. Si lo de dentro no cabe (más de
+  2 millones de texeles), el texel encendido solo crece; puesto a mano, el horneado avisa al momento. Lo que se mueve recibe
+  la luz horneada de las sondas (con su sombra), pero no proyecta sombra de las luces horneadas.
 </p>
 <div class="note">
   Al aire libre conviene el sol <strong>Mixto</strong>: un sol horneado deja de valer en cuanto la hora del día lo mueve (más

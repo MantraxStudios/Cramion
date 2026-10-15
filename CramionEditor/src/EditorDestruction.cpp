@@ -98,7 +98,9 @@ void EditorApp::drawFractureWindow() {
             source = physics::sourceFromMesh(*renderer->mesh);
             have = true;
         } else if (renderer->model.valid() && asset_manager_) {
-            if (const auto model = asset_manager_->loadModel(renderer->model.uuid)) {
+            // Con la malla aunque ya se dibuje (esta en la escena del
+            // renderizador; en el AssetManager queda vacia: "No salio ningun trozo").
+            if (const auto model = fullModel(renderer->model.uuid)) {
                 if (renderer->part >= 0 && renderer->part < static_cast<int>(model->parts.size()) &&
                     model->parts[static_cast<std::size_t>(renderer->part)]) {
                     source = physics::sourceFromModel(*model->parts[static_cast<std::size_t>(renderer->part)]);

@@ -16,12 +16,14 @@
 // Lo que aporta luz rebotada: los objetos "Static" (Inspector) con malla (o
 // hijos de un objeto Static: basta marcar la raiz de un modelo o de una
 // instancia de prefab); si no hay ninguno, todas las mallas que no se mueven
-// con fisica. El terreno siempre (desde su mapa de alturas).
+// con fisica. El terreno siempre (desde su mapa de alturas). Lo transparente
+// (vidrio, agua) deja pasar la luz.
 //
 // Luces "Horneadas" (Light > Modo): su luz directa y sus sombras suaves
 // tambien se hornean (sondas + lightmap de superficie) y en modo horneado no
 // se dibujan en tiempo real. Las "Mixtas" solo aportan su rebote.
 
+#include "CramionCore/Uuid.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/World.h"
@@ -42,6 +44,10 @@
 
 namespace cramion::assets {
 class AssetManager;
+}
+
+namespace cramion::asset {
+struct ModelData;
 }
 
 namespace cramion::terrain {
@@ -134,6 +140,16 @@ struct BakeStats {
     std::size_t invalid_probes = 0;
     std::size_t surface_texels = 0;
     std::size_t baked_lights = 0;  // con su luz directa horneada (el sol cuenta)
+    // Lado del texel del lightmap de superficie que se uso (0 = sin el). Si
+    // se encendio solo y no cabia en el tope, se agranda: surface_texel_grown.
+    float surface_texel = 0.0f;
+    bool surface_texel_grown = false;
+    // Texeles fuera de los volumenes, donde llega la luz directa de las luces
+    // horneadas. Si no cabian (outside_texels_dropped), no hay ninguno: esas
+    // superficies se quedan sin esa luz (los de dentro no cambian).
+    std::size_t outside_texels = 0;
+    bool outside_texels_dropped = false;
+    std::size_t dropped_volumes = 0;  // mas de gfx::kMaxBakedVolumes: los mas grandes no entran
     double seconds = 0.0;
 };
 
@@ -146,6 +162,9 @@ enum class BakeSkip : int {
     NoModel,         // el modelo no se pudo cargar
     BadPart,         // la pieza no existe en el modelo
     NotStatic,       // hay objetos Static y este no lo es
+    NoGeometry,      // entraba, pero la malla de su modelo no se pudo leer (ni de la escena ni del disco)
+    Transparent,     // todos sus materiales son transparentes (vidrio, agua): no tapan la luz
+    EmptyMesh,       // su malla (de codigo o la pieza leida) no tiene ningun triangulo
     Count
 };
 
@@ -156,7 +175,10 @@ struct BakeGatherReport {
     std::size_t static_marked = 0;  // mallas validas Static (propias o heredadas)
     std::size_t terrains = 0;
     std::size_t triangles = 0;
+    std::size_t mesh_triangles = 0;  // los de las mallas (van primero en BakeScene::triangles)
     std::size_t terrain_triangles = 0;
+    std::size_t transparent_triangles = 0;  // de materiales transparentes: fuera (dejan pasar la luz)
+    std::size_t reread_models = 0;          // modelos cuya geometria se volvio a leer del disco (no las primitivas)
     std::size_t skinned_rest_pose = 0;     // con huesos: en su pose de reposo
     std::size_t static_with_dynamic_rb = 0;
     std::size_t static_with_animator = 0;  // Static con un Animator que reproduce: en reposo
@@ -183,10 +205,19 @@ bool bakeProbes(const BakeScene& scene, gfx::BakedLighting& out, BakeProgress* p
 // materiales), del terreno y las cajas de los LightProbeVolume. `extra`
 // anade geometria; `terrains` da los datos de cada terreno (sin el, no hay
 // terreno). `report` cuenta lo que entra y lo que no, y por que.
+//
+// La malla de cada pieza de modelo sale, por orden: de `parts` (con el
+// renderizador en marcha, RenderSync::partModelData: al dibujar una pieza
+// RenderSync la mueve del AssetManager a la escena y alli queda vacia); de
+// la pieza del AssetManager si aun la tiene; y si no, se relee solo la
+// geometria del disco (una vez por modelo y sin texturas; se suelta al
+// terminar). Sin `parts` (pruebas, herramientas) sirve igual.
 using ExtraGeometry = std::function<void(std::vector<BakeTriangle>& triangles)>;
 using TerrainProvider = std::function<std::shared_ptr<const terrain::TerrainData>(ecs::Entity)>;
+using ModelPartProvider = std::function<const asset::ModelData*(const Uuid& model, int part)>;
 void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene& scene, const ExtraGeometry& extra = {},
-                     const TerrainProvider& terrains = {}, BakeGatherReport* report = nullptr);
+                     const TerrainProvider& terrains = {}, BakeGatherReport* report = nullptr,
+                     const ModelPartProvider& parts = {});
 
 // Puede entrar en el horneado (Static propio o de algun padre)?
 bool staticInHierarchy(ecs::Entity entity);
@@ -197,8 +228,15 @@ bool staticInHierarchy(ecs::Entity entity);
 void gatherBakeLights(ecs::World& world, const scene::LightSet& sun, BakeScene& scene,
                       ecs::LightBakeMode sun_mode = ecs::LightBakeMode::Mixed, BakeGatherReport* report = nullptr);
 
-// Volumen por defecto que cubre toda la geometria (si la escena no tiene).
-BakeVolume volumeAround(const std::vector<BakeTriangle>& triangles, float spacing);
+// Volumen por defecto que cubre la geometria (si la escena no tiene): toda
+// (mallas y terreno) si cabe en 400 x 60 x 400 m; si no, ese tope alrededor
+// de los primeros `bounds_count` triangulos (> 0: las mallas,
+// BakeGatherReport::mesh_triangles; un terreno de kilometros alejaria la caja
+// de ellas) sin salirse de la geometria. De alto, desde abajo (el suelo, donde
+// se mueve lo dinamico). Si con `spacing` salen mas de `max_probes` sondas
+// (0 = sin tope), las separa mas: la separacion final es size / (n - 1).
+BakeVolume volumeAround(const std::vector<BakeTriangle>& triangles, float spacing, float max_probes = 0.0f,
+                        std::size_t bounds_count = 0);
 
 // <escena>.crbake
 std::filesystem::path bakedLightingFile(const std::filesystem::path& scene_file);

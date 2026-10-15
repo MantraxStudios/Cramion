@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cramion Store</title>
+  <meta name="description" content="Assets gratis para Cramion Engine: modelos, materiales, audio, efectos, scripts y plantillas. Se instalan desde el Package Manager del editor.">
+  <meta name="theme-color" content="#232323">
+  <link rel="icon" href="../img/icon.png">
+  <script>try { const t = localStorage.getItem("cramion-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="store.css?v=2">
+</head>
+<body>
+  <header id="site-header" class="site-header"></header>
+
+  <main class="wrap">
+    <section class="page-head">
+      <p class="eyebrow">Cramion Store</p>
+      <h1 class="title">Assets gratis para tus juegos</h1>
+      <p class="lead">Modelos, materiales, audio, efectos, scripts y plantillas que comparte la comunidad. Se instalan con un clic desde <b>Ventana › Package Manager</b> en el editor, con su versión, y puedes actualizar o volver a una anterior cuando quieras.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:20px">
+        <a class="btn btn-primary" href="panel.html" id="cta-publish"></a>
+        <a class="btn btn-outline" href="../manual/index.html">Documentación</a>
+      </div>
+    </section>
+
+    <form class="toolbar" id="filters" role="search">
+      <label class="search">
+        <span class="ic-wrap" id="search-ic"></span>
+        <input class="input" type="search" id="q" placeholder="Buscar assets, etiquetas, autores..." aria-label="Buscar" autocomplete="off">
+      </label>
+      <select class="input" id="sort" aria-label="Orden">
+        <option value="featured">Destacados</option>
+        <option value="downloads">Más descargados</option>
+        <option value="recent">Recientes</option>
+        <option value="name">Nombre</option>
+      </select>
+    </form>
+    <div class="chips" id="chips" role="group" aria-label="Categorías"></div>
+
+    <p class="muted" id="count" style="margin:0 0 12px;font-size:13.5px" aria-live="polite"></p>
+    <div class="grid" id="grid"></div>
+    <div class="pager" id="pager"></div>
+    <div style="height:64px"></div>
+  </main>
+
+  <footer id="site-footer"></footer>
+  <script src="store.js?v=2"></script>
+  <script>
+    const { api, esc, $, icon, fmtNum, imageUrl, timeAgo, param, categoryName } = Store;
+    Store.header("store");
+    Store.refreshUser();
+    $("#search-ic").outerHTML = icon("search");
+    $("#cta-publish").innerHTML = icon("upload", "ic ic-sm") + "Publicar un asset";
+
+    const PER_PAGE = 24;
+    const state = { q: param("q") || "", cat: param("cat") || "", sort: param("sort") || "featured", page: Math.max(1, +param("page") || 1) };
+    $("#q").value = state.q;
+    $("#sort").value = state.sort;
+    let cats = [];
+    let ctrl = null;
+
+    function syncUrl() {
+      const p = new URLSearchParams();
+      if (state.q) p.set("q", state.q);
+      if (state.cat) p.set("cat", state.cat);
+      if (state.sort !== "featured") p.set("sort", state.sort);
+      if (state.page > 1) p.set("page", state.page);
+      history.replaceState(null, "", location.pathname + (p.toString() ? "?" + p : ""));
+    }
+
+    function chips() {
+      const all = [{ id: "", name: "Todo" }].concat(cats);
+      $("#chips").innerHTML = all.map(c => '<button type="button" class="chip" data-cat="' + esc(c.id) + '" aria-pressed="' + (c.id === state.cat) + '">' + esc(c.name) + "</button>").join("");
+      $("#chips").querySelectorAll(".chip").forEach(b => b.addEventListener("click", () => {
+        state.cat = b.dataset.cat; state.page = 1; chips(); load();
+      }));
+    }
+
+    function card(p) {
+      const v = p.latest ? p.latest.version : "";
+      return '<a class="card pkg" href="paquete.html?n=' + encodeURIComponent(p.name) + '">' +
+        '<div class="thumb">' + (p.has_image ? '<img loading="lazy" alt="" src="' + imageUrl(p.name) + '?v=' + p.updated_at + '">' : icon("box")) +
+        (p.featured ? '<span class="badge warn">' + icon("star", "ic ic-sm") + "Destacado</span>" : "") + "</div>" +
+        '<div class="pkg-body"><h3>' + esc(p.display_name) + "</h3><p>" + esc(p.description || "Sin descripción") + "</p>" +
+        '<div class="pkg-meta"><span>' + esc(p.author ? p.author.display_name : "") + ' · v' + esc(v) + "</span>" +
+        '<span title="Descargas">' + icon("download", "ic ic-sm") + " " + fmtNum(p.downloads) + "</span></div></div></a>";
+    }
+
+    async function load() {
+      syncUrl();
+      if (ctrl) ctrl.abort();
+      ctrl = new AbortController();
+      $("#grid").innerHTML = Array.from({ length: 8 }, () => '<div class="skeleton" style="aspect-ratio:4/4"></div>').join("");
+      $("#pager").innerHTML = "";
+      const q = new URLSearchParams({ limit: PER_PAGE, page: state.page, sort: state.sort });
+      if (state.q) q.set("q", state.q);
+      if (state.cat) q.set("category", state.cat);
+      try {
+        const r = await api("GET", "/packages?" + q, undefined, { signal: ctrl.signal });
+        $("#count").textContent = r.total === 0 ? "" : fmtNum(r.total) + (r.total === 1 ? " paquete" : " paquetes") +
+          (state.cat ? " en " + categoryName(cats, state.cat) : "");
+        if (!r.packages.length) {
+          $("#grid").innerHTML = '<div class="empty" style="grid-column:1/-1"><b>No hay paquetes' + (state.q ? ' para "' + esc(state.q) + '"' : " todavía") +
+            '</b>¿Tienes algo que compartir? <a class="link" href="panel.html">Publica el primero</a>.</div>';
+          return;
+        }
+        $("#grid").innerHTML = r.packages.map(card).join("");
+        const pages = Math.ceil(r.total / PER_PAGE);
+        if (pages > 1) {
+          $("#pager").innerHTML = '<button class="btn btn-outline btn-sm" id="prev"' + (state.page <= 1 ? " disabled" : "") + ">Anterior</button>" +
+            '<span class="muted" style="font-size:13.5px">Página ' + state.page + " de " + pages + "</span>" +
+            '<button class="btn btn-outline btn-sm" id="next"' + (state.page >= pages ? " disabled" : "") + ">Siguiente</button>";
+          $("#prev").onclick = () => { state.page--; load(); scrollTo({ top: 0, behavior: "smooth" }); };
+          $("#next").onclick = () => { state.page++; load(); scrollTo({ top: 0, behavior: "smooth" }); };
+        }
+      } catch (e) {
+        if (e.name === "AbortError") return;
+        $("#count").textContent = "";
+        $("#grid").innerHTML = '<div class="empty" style="grid-column:1/-1"><b>No se pudo cargar la Store</b>' + esc(e.message) +
+          '<div style="margin-top:14px"><button class="btn btn-outline btn-sm" onclick="load()">Reintentar</button></div></div>';
+      }
+    }
+
+    let timer;
+    $("#q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => { state.q = $("#q").value.trim(); state.page = 1; load(); }, 300); });
+    $("#filters").addEventListener("submit", e => { e.preventDefault(); clearTimeout(timer); state.q = $("#q").value.trim(); state.page = 1; load(); });
+    $("#sort").addEventListener("change", () => { state.sort = $("#sort").value; state.page = 1; load(); });
+
+    Store.categories().then(c => { cats = c; chips(); });
+    load();
+  </script>
+</body>
+</html>

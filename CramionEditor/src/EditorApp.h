@@ -104,6 +104,8 @@ void setXrStereoPreference(bool on);
 
 class RendererGraphicsHost;
 struct PlatformState;  // EditorPlatform.cpp: Steam, Git, pruebas automaticas y avisos
+struct PackageManagerState;  // EditorPackageManager.cpp: paquetes .crwpack de la Cramion Store
+struct PackageStaged;
 struct GameplayEditorState;  // EditorGameplay.cpp: localizacion, partidas y dialogos
 struct EffectsEditorState;   // EditorEffects.cpp: VFX Graph, 2D y repeticiones
 struct GraphEditorState;     // EditorGraphs.cpp: Shader Graph y Visual Scripting
@@ -424,6 +426,11 @@ private:
     // hasta que llegue).
     const asset::ModelData* skinnedModelData(ecs::Entity e, ecs::Entity& skinned,
                                              std::shared_ptr<const assets::ModelAsset>& keep, bool wait);
+    // Un modelo con todas sus mallas, materiales y huesos para usarlo al
+    // momento (RenderSync::completeModel: las piezas que ya se dibujan estan
+    // en la escena del renderizador, en el AssetManager quedan vacias). `wait`
+    // = cargarlo si aun no esta (si no, nullptr hasta que llegue).
+    std::shared_ptr<const assets::ModelAsset> fullModel(const Uuid& uuid, bool wait = true);
     // Pestana de la maquina de estados abierta (a toda la ventana, como un script).
     void openStateMachineWorkspace();
     bool savePrefabWorkspace();
@@ -2400,6 +2407,23 @@ private:
     bool show_insights_ = false;
     bool show_accessibility_ = false;  // Ventana > Accesibilidad (EditorAccessibility.cpp)
     void drawAccessibilityWindow();
+    // Ventana > Package Manager (EditorPackageManager.cpp): instalar, actualizar,
+    // bajar de version y quitar paquetes .crwpack de la Cramion Store.
+    bool show_package_manager_ = false;
+    std::shared_ptr<PackageManagerState> package_manager_;
+    PackageManagerState& packageManager();
+    void drawPackageManagerWindow();  // cada frame (aplica lo que terminan los hilos)
+    void packageFetchCatalog();
+    void packageFetchDetail(const std::string& name);
+    void packageInstall(const std::string& name, const std::string& version, const std::filesystem::path& local_file);
+    void packageApplyStaged(const std::vector<PackageStaged>& staged);
+    void packageRemove(const std::string& name);
+    void packageOpenExport();  // Archivo > Exportar carpeta como paquete .crwpack
+    // Sin `file` lo pide con un dialogo (la ventana); el MCP lo pasa.
+    void packageExport(const std::filesystem::path& file = {});
+    // Herramientas MCP packages, package_versions, package_install,
+    // package_remove, package_state, package_registry y package_export.
+    std::string packageMcpTool(const std::string& name, const std::string& args_json, std::string& error);
     void drawInsightsWindow();
     bool show_console_ = true;
     bool show_render_settings_ = true;

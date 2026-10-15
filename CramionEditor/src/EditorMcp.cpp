@@ -458,6 +458,30 @@ const std::vector<ToolDef>& toolDefs() {
                       {"surface_texel", prop("number", "Lado del texel del lightmap de superficie en m (0 = apagado; con luces horneadas se enciende a 0.5)")},
                       {"direct_samples", prop("integer", "Rayos de sombra por luz horneada y texel (16)")}}, {}});
         d.push_back({"lighting_state", "Estado de la iluminacion horneada: baking, progress, mode (baked/realtime), volumes, probes, surface_texels, sun_baked, baked_lights, last_error y gather_report (lo que entro en el horneado y por que se omitio lo demas).", json::object(), {}});
+        // --- Package Manager: paquetes .crwpack de la Cramion Store (EditorPackageManager.cpp) ---
+        d.push_back({"packages", "Paquetes del proyecto (Ventana > Package Manager): los instalados (en Assets/Packages/<nombre>, con version, origen store/local y dependencias) y, con store=true (o query/category), el catalogo de la Cramion Store con la ultima version de cada paquete y si hay actualizacion.",
+                     {{"store", prop("boolean", "Consultar tambien el catalogo de la Store")}, {"query", prop("string", "Buscar en la Store (nombre, etiquetas, autor)")},
+                      {"category", prop("string", "Categoria: 3d, 2d, materiales, entornos, personajes, animaciones, audio, vfx, shaders, scripts, ui, herramientas, plantillas u otros")},
+                      {"sort", prop("string", "downloads (por defecto), recent, name o featured")}, {"limit", prop("integer", "Cuantos (1-100, 50)")},
+                      {"show", prop("boolean", "Abrir la ventana del Package Manager (para ensenarla o capturarla con screenshot)")},
+                      {"select", prop("string", "Con show: el paquete elegido en la ventana")}}, {}});
+        d.push_back({"package_versions", "Todas las versiones publicadas de un paquete de la Store, de la mas nueva a la mas vieja: tamano, SHA-256, cambios, dependencias, motor y si el autor la retiro; y la version instalada.",
+                     {{"name", prop("string", "Identificador del paquete (com.autor.paquete)")}}, {"name"}});
+        d.push_back({"package_install", "Instala, actualiza o baja de version un paquete: 'name' y 'version' (sin version o 'latest': la ultima no retirada) desde la Store, o 'file' con un .crwpack del disco. Descarga (o lo toma de Library/PackageCache), comprueba el SHA-256, instala antes sus dependencias y cambia Assets/Packages/<nombre> por la version pedida. Corre en segundo plano: mira package_state.",
+                     {{"name", prop("string", "Identificador del paquete")}, {"version", prop("string", "Version exacta (1.2.0) o latest")},
+                      {"file", prop("string", "Ruta de un .crwpack (en vez de la Store)")}}, {}});
+        d.push_back({"package_remove", "Quita un paquete del proyecto: borra Assets/Packages/<nombre> y lo saca de ProjectSettings/Packages.json.",
+                     {{"name", prop("string", "Identificador del paquete")}}, {"name"}});
+        d.push_back({"package_state", "Estado del Package Manager: busy, status y progreso (done/total en bytes) de la tarea en curso, importing (modelos .fbx/.obj de un paquete que aun se importan: quitar espera a 0), last_result, last_error, export_result, el servidor y los paquetes instalados.", json::object(), {}});
+        d.push_back({"package_registry", "Servidor de paquetes (la API de la Cramion Store). Sin 'url' dice cual se usa; con 'url' lo cambia (save=false: solo hasta cerrar el editor) y reset=true vuelve al de por defecto.",
+                     {{"url", prop("string", "https://servidor/api (http solo a localhost, para pruebas)")}, {"save", prop("boolean", "Guardarlo para las proximas veces (por defecto si)")},
+                      {"reset", prop("boolean", "Volver al servidor por defecto")}}, {}});
+        d.push_back({"package_export", "Exporta una carpeta como paquete .crwpack (multihilo, zstd) para subirlo a la Cramion Store. Corre en segundo plano: package_state.export_result dice el resultado.",
+                     {{"folder", prop("string", "Carpeta dentro de Assets (o ruta absoluta)")}, {"output", prop("string", "Ruta del .crwpack que se crea")},
+                      {"name", prop("string", "Identificador (com.autor.paquete: minusculas, numeros, '.', '_' o '-')")}, {"version", prop("string", "Version (1.0.0)")},
+                      {"display_name", prop("string", "Nombre visible")}, {"description", prop("string", "Descripcion")}, {"author", prop("string", "Autor")},
+                      {"dependencies", prop("object", "{identificador: version minima}")}, {"changelog", prop("string", "Cambios de esta version")},
+                      {"level", prop("string", "Compresion: fast, normal (por defecto) o max")}}, {"folder", "output", "name", "version"}});
         d.push_back({"create_vfx", "Crea un efecto del VFX Graph (.crvfx) desde una plantilla (Chispas, Fuego, Humo, Chispas que rebotan, Explosion, Magia, Luciernagas, Nieve, Lluvia, Estela; o su indice 0..9) o desde 'graph' (el JSON del .crvfx: capacity, world_space, duration, loop, params, spawn/initialize/update/output_blocks [{type, values{campo: valor}, bind{campo: parametro}}], output{orient, blend, intensity, texture...}). attach_to: le pone el componente Visual Effect.",
                      {{"name", prop("string", "Nombre del archivo")}, {"folder", prop("string", "Carpeta dentro de Assets (Efectos)")}, {"preset", prop("string", "Plantilla")},
                       {"graph", prop("object", "JSON del .crvfx")}, {"attach_to", entity}}, {}});
@@ -2556,6 +2580,14 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (args.contains("attach_to")) in["attach_to"] = entity(arg(args, "attach_to")).uuid().toString();
         std::string error;
         const std::string out = a.mcpTools21(name, in.dump(), error);
+        if (!error.empty()) throw ToolError(error);
+        return json::parse(out, nullptr, false);
+    }
+    if (name == "packages" || name == "package_versions" || name == "package_install" || name == "package_remove" ||
+        name == "package_state" || name == "package_registry" || name == "package_export") {
+        needProject();
+        std::string error;
+        const std::string out = a.packageMcpTool(name, args.dump(), error);
         if (!error.empty()) throw ToolError(error);
         return json::parse(out, nullptr, false);
     }

@@ -152,6 +152,30 @@ public:
     void setSupportQuery(SupportQuery query) { support_query_ = std::move(query); }
 
     const asset::ModelData* actorModelData(Entity entity, const scene::Scene& scene) const;
+
+    // --- Mallas de los modelos que ya se dibujan ---
+    // La primera vez que se dibuja una pieza, resolveModel la MUEVE del
+    // AssetManager a scene::Scene (sin copiar gigas de mallas): el ModelAsset
+    // del AssetManager se queda con un ModelData vacio de esa pieza. Quien
+    // necesite la geometria, los materiales o los huesos de un modelo de la
+    // escena debe pedirlos por aqui (todo en el hilo principal; los punteros
+    // valen hasta reset()).
+    //
+    // La pieza base (sin las variantes de material) de `uuid` en la escena,
+    // con sus vertices en el espacio de su nodo; nullptr si aun no se dibujo.
+    const asset::ModelData* partModelData(const Uuid& uuid, int part, const scene::Scene& scene) const;
+    // El modelo entero: el del AssetManager (`wait`: lo carga si hace falta;
+    // si no, nullptr mientras llega) con las piezas que ya pasaron a la
+    // escena apuntando a su copia de la escena (sin copiar). Para usarlo al
+    // momento: no guardarlo (sus piezas dejan de valer con reset()).
+    std::shared_ptr<const assets::ModelAsset> completeModel(const Uuid& uuid, const scene::Scene& scene,
+                                                            bool wait = true);
+    // La malla de `entity` para la fisica y la navegacion: la que dibuja
+    // (actorModelData); si no tiene actor, su pieza base en la escena; y si
+    // no se dibuja (oculta o en el lote estatico del juego exportado), la del
+    // AssetManager si el modelo ya esta en memoria (sin leer el disco).
+    const asset::ModelData* collisionModelData(Entity entity, const scene::Scene& scene) const;
+
     // Las texturas (perezosas: ruta o receta) de todos los materiales del
     // proyecto, como las usarian: para comprimirlas al abrir el proyecto.
     std::vector<asset::TextureData> materialTextureSources();
@@ -194,7 +218,8 @@ public:
     // los objetos que comparten uno se agrupan en las mismas llamadas.
     std::size_t variantCount() const { return variants_.size(); }
 
-    // El asset de un modelo ya cargado (nodos, nombres de animaciones).
+    // El asset de un modelo ya cargado (nodos, nombres de animaciones; sus
+    // piezas dibujadas estan vacias: para las mallas, completeModel).
     std::shared_ptr<const assets::ModelAsset> modelAsset(const Uuid& uuid) const;
     // Caja en el espacio del modelo de un actor (para seleccionar con rayos).
     bool actorLocalBounds(std::uint32_t actor, core::Vec3& min, core::Vec3& max) const;

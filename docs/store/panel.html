@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mis paquetes · Cramion Store</title>
+  <meta name="theme-color" content="#232323">
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="../img/icon.png">
+  <script>try { const t = localStorage.getItem("cramion-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="store.css?v=2">
+</head>
+<body>
+  <header id="site-header" class="site-header"></header>
+  <main class="wrap">
+    <div class="layout">
+      <nav class="side" aria-label="Panel">
+        <a href="#" data-view="paquetes" id="nav-paquetes"></a>
+        <button type="button" id="nav-nuevo"></button>
+        <a href="#perfil" data-view="perfil" id="nav-perfil"></a>
+        <a href="#ayuda" data-view="ayuda" id="nav-ayuda"></a>
+      </nav>
+
+      <div>
+        <!-- Mis paquetes -->
+        <section id="view-paquetes">
+          <div class="section-title" style="margin-bottom:18px">
+            <div><h1 class="title" style="font-size:28px;margin:0">Mis paquetes</h1>
+              <p class="muted" style="margin:4px 0 0;font-size:14px" id="usage"></p></div>
+            <button class="btn btn-primary" id="btn-new"></button>
+          </div>
+          <div class="list" id="my-list"><div class="skeleton" style="height:110px"></div></div>
+        </section>
+
+        <!-- Perfil -->
+        <section id="view-perfil" hidden>
+          <h1 class="title" style="font-size:28px;margin:0 0 18px">Mi perfil</h1>
+          <form class="card card-pad" id="form-profile" style="margin-bottom:18px">
+            <div class="section-title"><h2>Datos públicos</h2></div>
+            <div class="row2">
+              <label class="field"><span>Nombre visible</span><input class="input" name="display_name" maxlength="60"></label>
+              <label class="field"><span>Usuario</span><input class="input" name="username" disabled></label>
+            </div>
+            <label class="field"><span>Sobre ti</span><textarea class="input" name="bio" maxlength="500" placeholder="Qué haces, tu web, tus redes..."></textarea></label>
+            <label class="field"><span>Email</span><input class="input" name="email" disabled><small>No se muestra a nadie.</small></label>
+            <button class="btn btn-primary" type="submit">Guardar</button>
+          </form>
+          <form class="card card-pad" id="form-password">
+            <div class="section-title"><h2>Contraseña</h2></div>
+            <div class="row2">
+              <label class="field"><span>Actual</span><input class="input" type="password" name="password" autocomplete="current-password" required></label>
+              <label class="field"><span>Nueva</span><input class="input" type="password" name="new_password" autocomplete="new-password" minlength="8" required><small>Mínimo 8 caracteres. Cierra tus otras sesiones.</small></label>
+            </div>
+            <button class="btn btn-outline" type="submit">Cambiar contraseña</button>
+          </form>
+        </section>
+
+        <!-- Ayuda -->
+        <section id="view-ayuda" hidden>
+          <h1 class="title" style="font-size:28px;margin:0 0 18px">Cómo publicar</h1>
+          <div class="card card-pad" style="display:grid;gap:14px;font-size:15px">
+            <p style="margin:0"><b>1. Crea el .crwpack.</b> En el editor: <b>Archivo › Exportar carpeta como paquete .crwpack...</b> Elige la carpeta (por ejemplo <code>Assets/MisRocas</code>), el identificador (<code>com.tunombre.rocas</code>) y la versión (<code>1.0.0</code>). Se comprime en todos los núcleos.</p>
+            <p style="margin:0">También con la herramienta de consola:</p>
+            <div class="install">crwpack pack Assets/MisRocas rocas.crwpack --name com.tunombre.rocas --version 1.0.0 --display "Rocas"</div>
+            <p style="margin:0"><b>2. Crea el paquete aquí</b> con el mismo identificador y sube el archivo. El nombre y la versión de dentro del .crwpack tienen que coincidir.</p>
+            <p style="margin:0"><b>3. Nuevas versiones:</b> sube otro .crwpack con una versión mayor (<code>1.1.0</code>). Quien lo tenga instalado verá «Actualizar» en el Package Manager y podrá volver a cualquier versión anterior.</p>
+            <p style="margin:0"><b>Retirar una versión</b> la oculta como «última» sin romper los proyectos que ya la usan. Todo es gratis: hasta <b>2 GB por paquete</b> y <b>10 GB por cuenta</b>.</p>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <!-- Crear / editar paquete -->
+  <dialog class="modal" id="dlg-pkg">
+    <form id="form-pkg" method="dialog" novalidate>
+      <div class="modal-head"><h2 id="pkg-title">Nuevo paquete</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar"></button></div>
+      <div class="modal-body">
+        <div class="alert err" id="pkg-error" hidden></div>
+        <label class="field"><span>Identificador</span>
+          <input class="input mono" name="pkgname" required placeholder="com.tunombre.rocas" maxlength="64" autocapitalize="off" spellcheck="false">
+          <small>Único y para siempre: minúsculas, números, «.», «_» o «-». El mismo que pusiste al exportar el .crwpack.</small></label>
+        <div class="row2">
+          <label class="field"><span>Nombre visible</span><input class="input" name="display_name" required maxlength="80" placeholder="Rocas low poly"></label>
+          <label class="field"><span>Categoría</span><select class="input" name="category"></select></label>
+        </div>
+        <label class="field"><span>Descripción</span><textarea class="input" name="description" maxlength="5000" placeholder="Qué incluye, cómo se usa, requisitos..."></textarea></label>
+        <div class="row2">
+          <label class="field"><span>Licencia</span>
+            <select class="input" name="license">
+              <option>CC0</option><option>CC-BY 4.0</option><option>CC-BY-SA 4.0</option><option>MIT</option><option>Apache-2.0</option>
+              <option value="Uso libre en juegos">Uso libre en juegos (no revender)</option>
+            </select></label>
+          <label class="field"><span>Etiquetas</span><input class="input" name="tags" placeholder="roca, naturaleza, low poly"></label>
+        </div>
+        <label class="field"><span>Enlace (opcional)</span><input class="input" name="repo_url" type="url" placeholder="https://github.com/..."></label>
+        <div class="field"><span>Imagen de portada (opcional)</span>
+          <label class="drop" id="img-drop"><input type="file" accept="image/png,image/jpeg,image/webp" hidden id="img-input">
+            <span id="img-label"><b>Elige una imagen</b><br><small>PNG, JPG o WEBP, máx. 2 MB, mejor 16:9</small></span></label></div>
+        <div id="first-version">
+          <div class="field"><span>Primera versión (opcional, puedes subirla después)</span>
+            <label class="drop" id="pack-drop"><input type="file" accept=".crwpack" hidden id="pack-input">
+              <span id="pack-label"><b>Arrastra tu .crwpack</b> o toca para elegirlo</span></label></div>
+        </div>
+        <div id="pkg-progress" hidden><div class="progress"><i></i></div><p class="muted" style="font-size:13px;margin:6px 0 0" id="pkg-progress-text"></p></div>
+      </div>
+      <div class="modal-foot"><button type="button" class="btn btn-outline" data-close>Cancelar</button><button class="btn btn-primary" type="submit" id="pkg-submit">Crear paquete</button></div>
+    </form>
+  </dialog>
+
+  <!-- Subir version -->
+  <dialog class="modal" id="dlg-ver">
+    <form id="form-ver" method="dialog" novalidate>
+      <div class="modal-head"><h2>Nueva versión de <span id="ver-pkg"></span></h2><button type="button" class="icon-btn" data-close aria-label="Cerrar"></button></div>
+      <div class="modal-body">
+        <div class="alert err" id="ver-error" hidden></div>
+        <label class="drop" id="ver-drop"><input type="file" accept=".crwpack" hidden id="ver-input">
+          <span id="ver-label"><b>Arrastra el .crwpack</b> o toca para elegirlo</span></label>
+        <div class="row2" style="margin-top:14px">
+          <label class="field"><span>Versión</span><input class="input mono" name="version" required placeholder="1.1.0"><small id="ver-hint"></small></label>
+          <div class="field"><span>Contenido</span><div class="input" id="ver-info" style="display:flex;align-items:center;color:var(--muted-foreground)">—</div></div>
+        </div>
+        <label class="field"><span>Cambios</span><textarea class="input" name="changelog" maxlength="5000" placeholder="Qué trae esta versión"></textarea></label>
+        <div id="ver-progress" hidden><div class="progress"><i></i></div><p class="muted" style="font-size:13px;margin:6px 0 0" id="ver-progress-text"></p></div>
+      </div>
+      <div class="modal-foot"><button type="button" class="btn btn-outline" data-close>Cancelar</button><button class="btn btn-primary" type="submit" id="ver-submit">Publicar versión</button></div>
+    </form>
+  </dialog>
+
+  <!-- Versiones -->
+  <dialog class="modal" id="dlg-versions">
+    <div class="modal-head"><h2>Versiones de <span id="vs-pkg"></span></h2><button type="button" class="icon-btn" data-close aria-label="Cerrar"></button></div>
+    <div class="modal-body" style="padding:0"><table class="table" id="vs-table"></table></div>
+  </dialog>
+
+  <footer id="site-footer"></footer>
+  <script src="store.js?v=2"></script>
+  <script>
+    const { api, esc, $, $$, icon, fmtNum, fmtBytes, fmtDate, timeAgo, imageUrl } = Store;
+    Store.header("panel");
+    if (Store.requireLogin()) init();
+
+    let packages = [];
+    let cats = [];
+    let me = null;
+    const MAX_QUOTA = 10 * 1024 ** 3;
+
+    $("#nav-paquetes").innerHTML = icon("grid", "ic ic-sm") + "Mis paquetes";
+    $("#nav-nuevo").innerHTML = icon("plus", "ic ic-sm") + "Nuevo paquete";
+    $("#nav-perfil").innerHTML = icon("user", "ic ic-sm") + "Perfil";
+    $("#nav-ayuda").innerHTML = icon("book", "ic ic-sm") + "Cómo publicar";
+    $("#btn-new").innerHTML = icon("plus", "ic ic-sm") + '<span>Nuevo paquete</span>';
+    $$("[data-close]").forEach(b => { if (!b.textContent.trim()) b.innerHTML = icon("x"); b.addEventListener("click", () => b.closest("dialog").close()); });
+
+    // --- Vistas por hash ---
+    function route() {
+      const h = decodeURIComponent(location.hash.slice(1));
+      const view = h === "perfil" || h === "ayuda" ? h : "paquetes";
+      for (const v of ["paquetes", "perfil", "ayuda"]) {
+        $("#view-" + v).hidden = v !== view;
+        $("#nav-" + v).toggleAttribute("aria-current", v === view);
+        if (v === view) $("#nav-" + v).setAttribute("aria-current", "page");
+      }
+      if (view === "paquetes" && h) {
+        const p = packages.find(x => x.name === h);
+        if (p) openEdit(p);
+      }
+    }
+    addEventListener("hashchange", route);
+
+    async function init() {
+      [me, cats] = await Promise.all([Store.refreshUser(), Store.categories()]);
+      if (!me) { Store.requireLogin(); return; }
+      $("select[name=category]").innerHTML = cats.map(c => '<option value="' + esc(c.id) + '">' + esc(c.name) + "</option>").join("");
+      fillProfile();
+      await loadMine();
+      route();
+    }
+
+    async function loadMine() {
+      try {
+        packages = (await api("GET", "/me/packages")).packages;
+      } catch (e) {
+        $("#my-list").innerHTML = '<div class="empty"><b>No se pudieron cargar tus paquetes</b>' + esc(e.message) + "</div>";
+        return;
+      }
+      const used = packages.reduce((s, p) => s + p.versions.reduce((a, v) => a + v.size, 0), 0);
+      $("#usage").textContent = packages.length + (packages.length === 1 ? " paquete" : " paquetes") + " · " + fmtBytes(used) + " de " + fmtBytes(MAX_QUOTA) + " usados";
+      if (!packages.length) {
+        $("#my-list").innerHTML = '<div class="empty"><b>Aún no has publicado nada</b>Exporta una carpeta como .crwpack desde el editor y súbela aquí.' +
+          '<div style="margin-top:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button class="btn btn-primary" onclick="openCreate()">Crear mi primer paquete</button><a class="btn btn-outline" href="#ayuda">Cómo publicar</a></div></div>';
+        return;
+      }
+      $("#my-list").innerHTML = packages.map((p, i) => {
+        const v = p.latest;
+        const st = p.hidden ? '<span class="badge err">oculto</span>' : !v ? '<span class="badge warn">sin versiones</span>' : '<span class="badge ok">publicado</span>';
+        return '<div class="card my-pkg">' +
+          '<div class="thumb">' + (p.has_image ? '<img alt="" src="' + imageUrl(p.name) + "?v=" + p.updated_at + '">' : icon("box")) + "</div>" +
+          '<div class="cell-main"><b>' + esc(p.display_name) + " " + st + "</b>" +
+          '<small class="mono">' + esc(p.name) + "</small>" +
+          '<small>' + (v ? "v" + esc(v.version) + " · " : "") + p.versions.length + " versiones · " + fmtNum(p.downloads) + " descargas · " + timeAgo(p.updated_at) + "</small></div>" +
+          '<div class="actions" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">' +
+          '<button class="btn btn-primary btn-sm" data-act="ver" data-i="' + i + '">' + icon("upload", "ic ic-sm") + "Nueva versión</button>" +
+          '<button class="btn btn-outline btn-sm" data-act="edit" data-i="' + i + '">' + icon("edit", "ic ic-sm") + "Editar</button>" +
+          '<button class="btn btn-outline btn-sm" data-act="versions" data-i="' + i + '">Versiones</button>' +
+          (v ? '<a class="btn btn-ghost btn-sm" href="paquete.html?n=' + encodeURIComponent(p.name) + '">' + icon("eye", "ic ic-sm") + "Ver</a>" : "") +
+          '<button class="btn btn-danger btn-sm" data-act="del" data-i="' + i + '" aria-label="Eliminar">' + icon("trash", "ic ic-sm") + "</button>" +
+          "</div></div>";
+      }).join("");
+      $$("#my-list [data-act]").forEach(b => b.addEventListener("click", () => {
+        const p = packages[+b.dataset.i];
+        ({ ver: openVersion, edit: openEdit, versions: openVersions, del: removePackage })[b.dataset.act](p);
+      }));
+    }
+
+    // --- Zonas para soltar archivos ---
+    function dropZone(zone, input, onFile) {
+      zone.addEventListener("dragover", e => { e.preventDefault(); zone.classList.add("over"); });
+      zone.addEventListener("dragleave", () => zone.classList.remove("over"));
+      zone.addEventListener("drop", e => {
+        e.preventDefault(); zone.classList.remove("over");
+        if (e.dataTransfer.files[0]) onFile(e.dataTransfer.files[0]);
+      });
+      input.addEventListener("change", () => { if (input.files[0]) onFile(input.files[0]); });
+    }
+    function progress(box, done, total, label) {
+      box.hidden = false;
+      box.querySelector("i").style.width = (total ? (done / total) * 100 : 0) + "%";
+      box.querySelector("p").textContent = label || (fmtBytes(done) + " de " + fmtBytes(total));
+    }
+
+    // --- Crear / editar ---
+    let editing = null, imgFile = null, firstPack = null, firstManifest = null;
+    function resetPkgForm() {
+      $("#form-pkg").reset();
+      $("#pkg-error").hidden = true;
+      $("#pkg-progress").hidden = true;
+      imgFile = null; firstPack = null; firstManifest = null;
+      $("#img-label").innerHTML = "<b>Elige una imagen</b><br><small>PNG, JPG o WEBP, máx. 2 MB, mejor 16:9</small>";
+      $("#pack-label").innerHTML = "<b>Arrastra tu .crwpack</b> o toca para elegirlo";
+    }
+    window.openCreate = function () {
+      editing = null;
+      resetPkgForm();
+      $("#pkg-title").textContent = "Nuevo paquete";
+      $("#pkg-submit").textContent = "Crear paquete";
+      $("#form-pkg").pkgname.disabled = false;
+      $("#first-version").hidden = false;
+      $("#dlg-pkg").showModal();
+    };
+    function openEdit(p) {
+      editing = p;
+      resetPkgForm();
+      const f = $("#form-pkg");
+      $("#pkg-title").textContent = "Editar " + p.display_name;
+      $("#pkg-submit").textContent = "Guardar cambios";
+      f.pkgname.value = p.name; f.pkgname.disabled = true;
+      f.display_name.value = p.display_name;
+      f.category.value = p.category;
+      f.description.value = p.description;
+      if (![...f.license.options].some(o => o.value === p.license)) f.license.add(new Option(p.license, p.license));
+      f.license.value = p.license;
+      f.tags.value = p.tags.join(", ");
+      f.repo_url.value = p.repo_url;
+      $("#first-version").hidden = true;
+      if (p.has_image) $("#img-label").innerHTML = '<img alt="" style="max-height:120px;border-radius:6px;margin:0 auto 8px" src="' + imageUrl(p.name) + "?v=" + p.updated_at + '"><small>Toca para cambiarla</small>';
+      $("#dlg-pkg").showModal();
+    }
+    $("#btn-new").onclick = $("#nav-nuevo").onclick = () => openCreate();
+
+    dropZone($("#img-drop"), $("#img-input"), file => {
+      if (file.size > 2 << 20) return Store.toast("La imagen pesa más de 2 MB", "err");
+      imgFile = file;
+      $("#img-label").innerHTML = '<img alt="" style="max-height:120px;border-radius:6px;margin:0 auto 8px" src="' + URL.createObjectURL(file) + '"><small>' + esc(file.name) + "</small>";
+    });
+    dropZone($("#pack-drop"), $("#pack-input"), async file => {
+      try {
+        firstManifest = await Store.readManifest(file);
+        firstPack = file;
+        const f = $("#form-pkg");
+        if (!f.pkgname.value && firstManifest.name) f.pkgname.value = firstManifest.name;
+        if (!f.display_name.value && firstManifest.displayName) f.display_name.value = firstManifest.displayName;
+        if (!f.description.value && firstManifest.description) f.description.value = firstManifest.description;
+        $("#pack-label").innerHTML = "<b>" + esc(file.name) + "</b><br><small>" + esc(firstManifest.name || "") + " v" + esc(firstManifest.version || "?") + " · " +
+          fmtNum(firstManifest._fileCount) + " archivos · " + fmtBytes(file.size) + "</small>";
+      } catch (e) {
+        firstPack = null;
+        Store.toast(e.message, "err");
+      }
+    });
+
+    $("#form-pkg").addEventListener("submit", async e => {
+      e.preventDefault();
+      const f = e.target, err = $("#pkg-error");
+      err.hidden = true;
+      const body = {
+        display_name: f.display_name.value.trim(), category: f.category.value, description: f.description.value,
+        license: f.license.value, tags: f.tags.value, repo_url: f.repo_url.value.trim(),
+      };
+      const fail = m => { err.textContent = m; err.hidden = false; $("#pkg-submit").disabled = false; f.querySelector(".modal-body").scrollTop = 0; };
+      if (!editing && !/^[a-z0-9][a-z0-9._-]{1,63}$/.test(f.pkgname.value.trim())) return fail("El identificador debe tener 2-64 caracteres en minúsculas: letras, números, «.», «_» o «-».");
+      if (!body.display_name) return fail("Pon un nombre visible.");
+      if (firstPack && firstManifest && firstManifest.name && firstManifest.name !== f.pkgname.value.trim())
+        return fail("El .crwpack es del paquete «" + firstManifest.name + "». Usa ese identificador o exporta de nuevo.");
+      $("#pkg-submit").disabled = true;
+      let name = editing ? editing.name : f.pkgname.value.trim();
+      try {
+        if (editing) await api("PATCH", "/packages/" + encodeURIComponent(name), body);
+        else await api("POST", "/packages", Object.assign({ name }, body));
+        if (imgFile) await api("PUT", "/packages/" + encodeURIComponent(name) + "/image", undefined, { raw: imgFile, type: imgFile.type });
+        if (!editing && firstPack) {
+          await Store.uploadVersion(name, firstPack, firstManifest.version || "1.0.0", firstManifest.changelog || "",
+            (d, t) => progress($("#pkg-progress"), d, t, "Subiendo " + fmtBytes(d) + " de " + fmtBytes(t)));
+        }
+        $("#dlg-pkg").close();
+        Store.toast(editing ? "Cambios guardados" : "Paquete creado" + (firstPack ? " y publicado" : ""), "ok");
+        if (location.hash) history.replaceState(null, "", location.pathname);
+        await loadMine();
+      } catch (ex) {
+        // Si se creo pero fallo la subida, pasa a editar.
+        if (!editing) { await loadMine(); editing = packages.find(p => p.name === name) || null; if (editing) { $("#form-pkg").pkgname.disabled = true; $("#pkg-submit").textContent = "Guardar cambios"; } }
+        fail(ex.message);
+      }
+      $("#pkg-submit").disabled = false;
+    });
+
+    // --- Nueva version ---
+    let verPkg = null, verFile = null, verCtrl = null;
+    function openVersion(p) {
+      verPkg = p; verFile = null;
+      const f = $("#form-ver");
+      f.reset();
+      $("#ver-pkg").textContent = p.display_name;
+      $("#ver-error").hidden = true;
+      $("#ver-progress").hidden = true;
+      $("#ver-info").textContent = "—";
+      $("#ver-label").innerHTML = "<b>Arrastra el .crwpack</b> o toca para elegirlo";
+      $("#ver-hint").textContent = p.latest ? "La última es " + p.latest.version : "Por ejemplo 1.0.0";
+      $("#ver-submit").disabled = false;
+      $("#dlg-ver").showModal();
+    }
+    dropZone($("#ver-drop"), $("#ver-input"), async file => {
+      $("#ver-error").hidden = true;
+      try {
+        const m = await Store.readManifest(file);
+        if (m.name && m.name !== verPkg.name) throw new Error("Este .crwpack es de «" + m.name + "», no de «" + verPkg.name + "».");
+        verFile = file;
+        const f = $("#form-ver");
+        if (m.version) f.version.value = m.version;
+        if (!f.changelog.value && m.changelog) f.changelog.value = m.changelog;
+        $("#ver-label").innerHTML = "<b>" + esc(file.name) + "</b><br><small>" + fmtBytes(file.size) + "</small>";
+        $("#ver-info").textContent = fmtNum(m._fileCount) + " archivos · " + fmtBytes(m._rawSize);
+      } catch (e) {
+        verFile = null;
+        $("#ver-error").textContent = e.message; $("#ver-error").hidden = false;
+      }
+    });
+    $("#dlg-ver").addEventListener("close", () => { if (verCtrl) verCtrl.abort(); });
+    $("#form-ver").addEventListener("submit", async e => {
+      e.preventDefault();
+      const f = e.target, err = $("#ver-error");
+      err.hidden = true;
+      const version = f.version.value.trim();
+      if (!verFile) { err.textContent = "Elige el archivo .crwpack."; err.hidden = false; return; }
+      if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$/.test(version)) { err.textContent = "La versión debe ser MAYOR.MENOR.PARCHE, por ejemplo 1.1.0."; err.hidden = false; return; }
+      $("#ver-submit").disabled = true;
+      verCtrl = new AbortController();
+      try {
+        await Store.uploadVersion(verPkg.name, verFile, version, f.changelog.value, (d, t) =>
+          progress($("#ver-progress"), d, t, "Subiendo " + fmtBytes(d) + " de " + fmtBytes(t) + " (" + Math.round(d / t * 100) + "%)"), verCtrl.signal);
+        verCtrl = null;
+        $("#dlg-ver").close();
+        Store.toast(verPkg.display_name + " " + version + " publicado", "ok");
+        await loadMine();
+      } catch (ex) {
+        verCtrl = null;
+        if (ex.name !== "AbortError") { err.textContent = ex.message; err.hidden = false; }
+        $("#ver-submit").disabled = false;
+        $("#ver-progress").hidden = true;
+      }
+    });
+
+    // --- Versiones ---
+    function openVersions(p) {
+      $("#vs-pkg").textContent = p.display_name;
+      const rows = p.versions.map(v =>
+        "<tr><td class='main'><div class='cell-main'><b class='mono'>" + esc(v.version) + (v.yanked ? ' <span class="badge warn">retirada</span>' : "") + "</b><small>" + fmtDate(v.created_at) + "</small></div></td>" +
+        "<td data-label='Tamaño'>" + fmtBytes(v.size) + "</td><td data-label='Descargas'>" + fmtNum(v.downloads) + "</td>" +
+        "<td><div class='actions'><button class='btn btn-outline btn-sm' data-y='" + esc(v.version) + "'>" + (v.yanked ? "Restaurar" : "Retirar") + "</button>" +
+        "<button class='btn btn-danger btn-sm' data-d='" + esc(v.version) + "' aria-label='Borrar'>" + icon("trash", "ic ic-sm") + "</button></div></td></tr>").join("");
+      $("#vs-table").innerHTML = "<thead><tr><th>Versión</th><th>Tamaño</th><th>Descargas</th><th></th></tr></thead><tbody>" +
+        (rows || "<tr><td class='main muted'>Sin versiones.</td></tr>") + "</tbody>";
+      $$("#vs-table [data-y]").forEach(b => b.onclick = async () => {
+        const v = p.versions.find(x => x.version === b.dataset.y);
+        try {
+          await api("PATCH", "/packages/" + encodeURIComponent(p.name) + "/versions/" + encodeURIComponent(v.version), { yanked: !v.yanked });
+          await loadMine(); openVersions(packages.find(x => x.name === p.name));
+        } catch (e) { Store.toast(e.message, "err"); }
+      });
+      $$("#vs-table [data-d]").forEach(b => b.onclick = async () => {
+        if (!await Store.confirmDialog("Borrar versión " + b.dataset.d, "Se borra el archivo del servidor. Los proyectos que la usen no podrán volver a descargarla. Mejor «Retirar» si solo quieres que deje de ser la última.", "Borrar")) return;
+        try {
+          await api("DELETE", "/packages/" + encodeURIComponent(p.name) + "/versions/" + encodeURIComponent(b.dataset.d));
+          await loadMine(); openVersions(packages.find(x => x.name === p.name));
+        } catch (e) { Store.toast(e.message, "err"); }
+      });
+      if (!$("#dlg-versions").open) $("#dlg-versions").showModal();
+    }
+
+    async function removePackage(p) {
+      if (!await Store.confirmDialog("Eliminar " + p.display_name, "Se borran el paquete y todas sus versiones. No se puede deshacer.", "Eliminar")) return;
+      try {
+        await api("DELETE", "/packages/" + encodeURIComponent(p.name));
+        Store.toast("Paquete eliminado", "ok");
+        await loadMine();
+      } catch (e) { Store.toast(e.message, "err"); }
+    }
+
+    // --- Perfil ---
+    function fillProfile() {
+      const f = $("#form-profile");
+      f.display_name.value = me.display_name || "";
+      f.username.value = me.username;
+      f.email.value = me.email || "";
+      f.bio.value = me.bio || "";
+    }
+    $("#form-profile").addEventListener("submit", async e => {
+      e.preventDefault();
+      try {
+        const r = await api("PATCH", "/auth/me", { display_name: e.target.display_name.value, bio: e.target.bio.value });
+        me = r.user; Store.setSession(localStorage.getItem("cramion-token"), me);
+        Store.toast("Perfil guardado", "ok");
+      } catch (ex) { Store.toast(ex.message, "err"); }
+    });
+    $("#form-password").addEventListener("submit", async e => {
+      e.preventDefault();
+      const f = e.target;
+      if (f.new_password.value.length < 8) return Store.toast("La contraseña nueva debe tener al menos 8 caracteres", "err");
+      try {
+        await api("PATCH", "/auth/me", { password: f.password.value, new_password: f.new_password.value }, { keepSession: true });
+        f.reset();
+        Store.toast("Contraseña cambiada", "ok");
+      } catch (ex) { Store.toast(ex.message, "err"); }
+    });
+  </script>
+</body>
+</html>

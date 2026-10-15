@@ -258,6 +258,8 @@ struct GpuCameraFxPush {
     core::Vec4 camera{};
     // x, y = proyeccion [2][3] y [3][3]: con ellos la profundidad lineal vale
     // tambien con la camara ortografica (-1, 0 en perspectiva; 0, 1 en orto).
+    // z, w = muestras de la profundidad de campo y del motion blur (0 = las
+    // de siempre, 64 y 24; las baja el presupuesto adaptativo).
     core::Vec4 projection_w{-1.0f, 0.0f, 0.0f, 0.0f};
 };
 
@@ -338,7 +340,7 @@ struct GpuVolumetricPush {
     // x = densidad del polvo (1/m), y = anisotropia (g de Henyey-Greenstein),
     // z = segundos (deriva del polvo), w = distancia maxima del rayo (m).
     core::Vec4 params{};
-    // x = tramos por rayo (8-32).
+    // x = tramos por rayo (8-32), y = 1 sin luces locales (solo el sol y el cielo).
     core::Vec4 quality{32.0f, 0.0f, 0.0f, 0.0f};
 };
 
@@ -346,7 +348,9 @@ struct GpuCloudPush {
     core::Vec4 to_light_time{};   // xyz = hacia la luz direccional, w = segundos
     core::Vec4 light_coverage{};  // rgb = su radiancia, a = cobertura (0..1)
     core::Vec4 params{};          // x = numero de frame, y = densidad, zw = origen del mundo + viento xz (mod 168 km)
-    core::Vec4 layer{};           // x = base (m), y = cima (m), z = tipo (0 estratos .. 1 cumulonimbos)
+    // x = base (m), y = cima (m), z = tipo (0 estratos .. 1 cumulonimbos),
+    // w = pasos maximos por rayo (0 = 128; los de la luz salen de ahi)
+    core::Vec4 layer{};
     core::Vec4 wind{};            // xy = direccion del viento (x, z), z = inclinacion con la altura (m), w = 1 mapa de sombra
     core::Vec4 shadow{};          // xy = centro del mapa de sombra (x, z de la escena), z = lado (m), w = fuerza
     core::Vec4 flash{};           // rayo (ambiente): xyz = donde cayo (mundo), w = brillo del destello

@@ -217,8 +217,10 @@ void EditorApp::setupEffects() {
         const auto info = database_->find(uuid);
         return info ? info->path : std::filesystem::path{};
     });
+    // Position Mesh: con las mallas que ya se dibujan (estan en la escena del
+    // renderizador; en el AssetManager quedan vacias y no salia ningun punto).
     vfx_.setModelProvider([this](const Uuid& uuid) -> std::shared_ptr<const assets::ModelAsset> {
-        return asset_manager_ ? asset_manager_->loadModel(uuid) : nullptr;
+        return asset_manager_ ? fullModel(uuid) : nullptr;
     });
     vfx_.reloadGraphs();
     twod_.stop();

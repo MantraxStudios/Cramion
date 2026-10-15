@@ -262,7 +262,7 @@ void DestructionSystem::breakEntity(ecs::World& world, PhysicsSystem& physics, e
     for (auto& [id, listener] : listeners_) listener(event);
 }
 
-void DestructionSystem::spawnPieces(ecs::World& world, PhysicsSystem& /*physics*/, ecs::Entity source,
+void DestructionSystem::spawnPieces(ecs::World& world, PhysicsSystem& physics, ecs::Entity source,
                                     const FractureData& data, const std::vector<int>& pieces, const core::Mat4& frame,
                                     const Vec3& velocity, float mass, const Destructible& settings, const Vec3& point,
                                     float force, std::vector<ecs::Entity>& spawned) {
@@ -273,16 +273,24 @@ void DestructionSystem::spawnPieces(ecs::World& world, PhysicsSystem& /*physics*
         if (!renderer->materials.empty()) exterior_override = renderer->materials.front();
         if (renderer->mesh && !renderer->mesh->materials.empty()) {
             exterior = renderer->mesh->materials.front();
-        } else if (assets_ != nullptr && renderer->model.valid()) {
-            if (const auto model = assets_->loadModel(renderer->model.uuid)) {
-                const int part = std::clamp(renderer->part, 0, std::max(0, static_cast<int>(model->parts.size()) - 1));
-                if (!model->parts.empty() && model->parts[static_cast<std::size_t>(part)] &&
-                    !model->parts[static_cast<std::size_t>(part)]->materials.empty()) {
-                    const asset::MaterialData& m = model->parts[static_cast<std::size_t>(part)]->materials.front();
-                    exterior.color = fractureSrgbColor(m.base_color);
-                    exterior.metallic = m.metallic;
-                    exterior.roughness = m.roughness;
+        } else if (renderer->model.valid()) {
+            // La pieza tal como se dibuja (el proveedor de mallas de la
+            // fisica): la del AssetManager ya se la llevo el renderizador y
+            // quedaba sin materiales (los trozos salian con el color por defecto).
+            const asset::ModelData* part = physics.modelData(source);
+            std::shared_ptr<const assets::ModelAsset> model;
+            if ((part == nullptr || part->materials.empty()) && assets_ != nullptr) {
+                model = assets_->loadModel(renderer->model.uuid);
+                if (model && !model->parts.empty()) {
+                    const int index = std::clamp(renderer->part, 0, static_cast<int>(model->parts.size()) - 1);
+                    part = model->parts[static_cast<std::size_t>(index)].get();
                 }
+            }
+            if (part != nullptr && !part->materials.empty()) {
+                const asset::MaterialData& m = part->materials.front();
+                exterior.color = fractureSrgbColor(m.base_color);
+                exterior.metallic = m.metallic;
+                exterior.roughness = m.roughness;
             }
         }
     }

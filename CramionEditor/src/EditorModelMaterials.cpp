@@ -16,7 +16,9 @@ bool EditorApp::applyModelMaterials(ecs::Entity root, const Uuid& model, bool re
     if (!root.valid() || !asset_manager_ || !database_) return false;
     const assets::ModelMaterialMap map = assets::loadModelMaterialMap(project_.settingsFolder(), model);
     if (map.empty()) return false;
-    const std::shared_ptr<const assets::ModelAsset> asset = asset_manager_->loadModel(model);
+    // Los nombres de los materiales de cada pieza, tambien de las que ya se
+    // dibujan (en el AssetManager quedan vacias y no se asignaba ninguno).
+    const std::shared_ptr<const assets::ModelAsset> asset = fullModel(model);
     if (!asset) return false;
 
     bool any = false;

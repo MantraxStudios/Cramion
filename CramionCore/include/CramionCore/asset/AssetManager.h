@@ -61,6 +61,15 @@ public:
     // estan en el .crdata (para reescribirlas, p. ej. el lote estatico).
     static std::shared_ptr<ModelAsset> readModel(const Uuid& uuid, const std::filesystem::path& file,
                                                  const std::string& name, bool decode_textures = true);
+    // Solo las mallas (vertices, indices, submallas, materiales, nodos y
+    // huesos): sin los bytes de las texturas, sin LODs y sin cache. Para
+    // quien necesita la geometria de un modelo que el renderizador ya se
+    // llevo (RenderSync mueve cada pieza dibujada a scene::Scene y aqui queda
+    // vacia), como el horneado de luz. `wanted`: que piezas (vacio = todas;
+    // las demas quedan vacias). Las primitivas se generan. Cualquier hilo.
+    static std::shared_ptr<ModelAsset> readModelGeometry(const Uuid& uuid, const std::filesystem::path& file,
+                                                         const std::string& name,
+                                                         const std::vector<bool>& wanted = {});
     // Las texturas incrustadas de un .crdata tal como estan (sin decodificar,
     // con su uso: TextureData::usage), sin las mallas: exportar el juego.
     static std::vector<asset::TextureData> readModelTextures(const std::filesystem::path& file);

@@ -332,9 +332,11 @@ public:
     // cambia entero y los setters sueltos de abajo cambian un campo. Todo se
     // aplica en el frame siguiente.
     void setPostProcess(const PostProcessSettings& settings) {
-        // Se prendio algo que el presupuesto adaptativo puede apagar: vuelve a
-        // medir desde el principio para que el cambio se vea ya.
-        if (postQualityRaised(user_post_, settings)) budget_.reset();
+        // Se prendio algo que el presupuesto adaptativo puede apagar: lo que
+        // habia bajado de eso vuelve para que el cambio se vea ya. Reinicio
+        // entero (medir desde el principio) como mucho cada 10 s: la mezcla de
+        // volumenes llama aqui en cada frame y lo reiniciaba sin parar.
+        budget_.qualityRaised(postLeversRaised(user_post_, settings));
         user_post_ = settings;
         post_ = mobilePost(budget_.apply(settings));
     }
@@ -675,6 +677,11 @@ public:
     void setCloudsEnabled(bool enabled) { clouds_enabled_ = enabled; }
     void setCloudSettings(const CloudSettings& settings) { cloud_settings_ = settings; }
     bool cloudsEnabled() const { return clouds_enabled_; }
+    // Tope de calidad propio del renderizador (el movil en Baja y Media): con
+    // false no hay nubes aunque la escena las pida. setCloudsEnabled lo llama
+    // la escena en cada frame (RenderSync, componente Sky) y no puede pisarlo.
+    void setCloudsAllowed(bool allowed) { clouds_allowed_ = allowed; }
+    bool cloudsAllowed() const { return clouds_allowed_; }
 
     // Sonda de reflexion de la escena (si no, lo que el SSR no ve refleja el
     // cielo).
@@ -2099,6 +2106,25 @@ private:
     bool shadow_map_dirty_ = false;
     std::uint32_t culled_small_ = 0;
     std::chrono::steady_clock::time_point last_budget_time_{};
+    // Presupuesto con muestras frescas: cada hueco de frame recuerda si lo
+    // grabo una vista extra (Render Texture, segunda vista del editor). Su
+    // GPU se suma a la siguiente muestra de la vista principal.
+    std::array<bool, kMaxFramesInFlight> slot_budget_extra_{};
+    float budget_extra_ms_ = 0.0f;
+    std::vector<GpuTiming> budget_extra_passes_;
+    std::vector<GpuTiming> budget_passes_;  // la muestra que se pasa (sin reservar cada frame)
+    // Suelo de la resolucion interna: escala del preset (con la de la VR) y
+    // si no aplica (VR y movil tienen sus propios topes).
+    float floor_base_scale_ = 1.0f;
+    bool floor_exempt_ = false;
+    void updateRenderScaleFloor();
+    // Nivel de salida de la palanca RenderScale segun el preset (si ya escala,
+    // 0), el movil (0) y la VR (el del perfil).
+    void updateRenderScaleStart();
+    // Objetos diminutos: el que estaba oculto el frame anterior (histeresis),
+    // por actor de la escena; solo la vista principal lo actualiza.
+    std::vector<std::uint8_t> tiny_actors_;
+    bool tiny_hysteresis_view_ = false;
     vk::Extent2D render_extent_{0, 0};
     vk::Extent2D view_extent_request_{0, 0};  // 0 = el de la swapchain
     bool targets_dirty_ = false;              // otro tamano de vista: rehacer los destinos
@@ -2141,6 +2167,21 @@ private:
     bool sunShadows() const { return shadows_enabled_ && sun_shadows_; }
     bool cascade_debug_ = false;
     bool clouds_enabled_ = true;
+    bool clouds_allowed_ = true;  // tope del renderizador (setCloudsAllowed)
+    // Hay nubes que dibujar: la escena las pide, el tope las deja, sin cielo
+    // fotografiado y con algo de cobertura (a 0 el rayo recorria la capa para
+    // nada).
+    bool cloudsActive() const {
+        return clouds_enabled_ && clouds_allowed_ && !environmentActive() && cloud_settings_.coverage > 0.0f;
+    }
+    // Mapa de sombra de las nubes: con la palanca Clouds al maximo se rehace
+    // cada N frames en la vista principal. Centro del ultimo dibujado (el que
+    // lee la iluminacion), si vale (otra vista lo pudo dibujar desde su
+    // camara) y frames desde entonces.
+    bool cloud_shadow_redraw_ = true;
+    bool cloud_shadow_valid_ = false;
+    std::uint32_t cloud_shadow_age_ = 0;
+    core::Vec4 cloud_shadow_drawn_{};
     int mobile_level_ = -1;
     int lite_lighting_forced_ = -1;  // -1 = lo decide el presupuesto
     int sky_frames_skipped_ = 0;

@@ -138,6 +138,29 @@ FetchContent_Declare(enet
 FetchContent_MakeAvailable(enet)
 target_compile_options(enet PRIVATE -O2 -w)
 
+# --- CramionCrwPack ----------------------------------------------------------
+# Paquetes .crwpack de la Cramion Store (crwpack/CrwPack.h): solo zstd y JSON,
+# sin el renderizador, para que la herramienta de consola compile en segundos.
+add_library(CramionCrwPack STATIC "${CMAKE_CURRENT_SOURCE_DIR}/src/crwpack/CrwPack.cpp")
+add_library(Cramion::CrwPack ALIAS CramionCrwPack)
+target_include_directories(CramionCrwPack PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_include_directories(CramionCrwPack PRIVATE "${zstd_SOURCE_DIR}/lib")
+target_link_libraries(CramionCrwPack PUBLIC nlohmann_json::nlohmann_json PRIVATE libzstd_static)
+target_compile_options(CramionCrwPack PRIVATE -Wall -Wextra)
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+    target_link_libraries(CramionCrwPack PUBLIC Threads::Threads)
+endif()
+
+# crwpack: empaquetar, extraer, listar y verificar .crwpack desde la consola.
+if(NOT ANDROID)
+add_executable(crwpack "${CMAKE_CURRENT_SOURCE_DIR}/tools/CrwPackTool.cpp")
+target_link_libraries(crwpack PRIVATE Cramion::CrwPack)
+target_compile_options(crwpack PRIVATE -Wall -Wextra)
+# Junto a los demas ejecutables (el zip de la release lo lleva).
+set_target_properties(crwpack PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+endif()
+
 # --- CramionAssets -----------------------------------------------------------
 
 file(GLOB_RECURSE CRAMION_ASSETS_SOURCES CONFIGURE_DEPENDS
@@ -168,7 +191,7 @@ endif()
 # --- CramionCore -------------------------------------------------------------
 
 file(GLOB_RECURSE CRAMION_CORE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
-list(FILTER CRAMION_CORE_SOURCES EXCLUDE REGEX "/src/(asset|project)/")
+list(FILTER CRAMION_CORE_SOURCES EXCLUDE REGEX "/src/(asset|project|crwpack)/")
 
 # Los objetos del ECS se compilan aparte (OBJECT) y solo con las cabeceras de
 # los assets: asi se pueden compilar aunque CramionAssets este a medias.
@@ -211,7 +234,7 @@ add_library(CramionCore STATIC $<TARGET_OBJECTS:CramionCoreObjects>)
 add_library(Cramion::Core ALIAS CramionCore)
 target_include_directories(CramionCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/sdk")
 target_link_libraries(CramionCore
-    PUBLIC Cramion::Assets Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
+    PUBLIC Cramion::Assets Cramion::CrwPack Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
     PRIVATE Jolt cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
             RecastNavigation::DetourCrowd enet
 )

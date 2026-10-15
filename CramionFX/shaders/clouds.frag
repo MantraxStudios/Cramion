@@ -43,7 +43,10 @@ layout(push_constant) uniform PushConstants {
     vec4 to_light_time;     // xyz = hacia la luz direccional activa, w = segundos
     vec4 light_coverage;    // rgb = su radiancia, a = cobertura (0..1)
     vec4 params;            // x = numero de frame (ruido), y = densidad, zw = origen del mundo + viento (xz)
-    vec4 layer;             // x = base (m), y = cima (m), z = tipo (0 estratos .. 1 cumulonimbos)
+    // x = base (m), y = cima (m), z = tipo (0 estratos .. 1 cumulonimbos),
+    // w = pasos maximos por rayo (0 = kMaxSteps; el presupuesto adaptativo
+    // pide 64 o 32 y de ahi salen los de la luz: 6, 4 o 2)
+    vec4 layer;
     vec4 wind;              // xy = direccion del viento, z = adelanto de las cimas (m), w = 1 mapa de sombra
     vec4 shadow;            // xy = centro del mapa de sombra, z = lado (m), w = fuerza
     vec4 flash;             // rayo: xyz = donde cayo (mundo), w = brillo del destello (0 = nada)
@@ -69,6 +72,11 @@ const float kExtinction = 0.045;           // por metro, con densidad 1
 
 float cloudBottom() { return push.layer.x; }
 float cloudTop() { return push.layer.y; }
+
+// Calidad que pide el presupuesto adaptativo (palanca Clouds): pasos por rayo
+// y, de ellos, los del rayo hacia la luz (128 -> 6, 64 -> 4, 32 -> 2).
+int maxSteps() { return push.layer.w > 0.5 ? clamp(int(push.layer.w + 0.5), 8, kMaxSteps) : kMaxSteps; }
+int lightSteps() { return clamp(maxSteps() / 16, 2, kLightSteps); }
 
 float remap(float value, float low, float high, float new_low, float new_high) {
     return new_low + (value - low) / max(high - low, 0.0001) * (new_high - new_low);
@@ -179,12 +187,17 @@ float phase(float cos_angle, float scale) {
                0.3);
 }
 
-// Profundidad optica hacia la luz desde un punto de la nube.
+// Profundidad optica hacia la luz desde un punto de la nube. Con menos pasos
+// (presupuesto adaptativo), mas largos: el rayo sigue llegando lejos.
 float lightOpticalDepth(vec3 planet_position, vec3 to_light) {
     float depth = 0.0;
-    float step_length = 90.0;
+    int steps = lightSteps();
+    float step_length = 90.0 * float(kLightSteps) / float(steps);
     vec3 p = planet_position;
     for (int i = 0; i < kLightSteps; ++i) {
+        if (i >= steps) {
+            break;
+        }
         p += to_light * step_length;
         depth += cloudDensity(p, i < 2 ? 1 : 0) * step_length;
         step_length *= 1.7;
@@ -279,9 +292,13 @@ void main() {
     vec3 ground_ambient = groundRadiance(light_radiance, to_light) * 0.5;
 
     // Paso fino: la capa en ~96 tramos, mas largos lejos (el detalle no se
-    // ve y el horizonte llega a decenas de km).
+    // ve y el horizonte llega a decenas de km). Con menos pasos por rayo
+    // (presupuesto adaptativo), tramos mas largos: la capa se recorre entera,
+    // con menos detalle.
+    int max_steps = maxSteps();
     float span = t_end - t_start;
-    float fine_step = clamp(span / 96.0, 40.0, 450.0) * (1.0 + t_start / 25000.0);
+    float fine_step = clamp(span / 96.0, 40.0, 450.0) * (1.0 + t_start / 25000.0) *
+                      (float(kMaxSteps) / float(max_steps));
     float jitter = interleavedNoise(gl_FragCoord.xy);
     float t = t_start + fine_step * jitter;
     float transmittance = 1.0;
@@ -291,7 +308,7 @@ void main() {
     bool searching = true;          // pasos largos sin detalle hasta tocar nube
     int empty_steps = 0;
 
-    for (int i = 0; i < kMaxSteps && t < t_end && transmittance > 0.01; ++i) {
+    for (int i = 0; i < kMaxSteps && i < max_steps && t < t_end && transmittance > 0.01; ++i) {
         vec3 p = origin + direction * t;
         if (searching) {
             if (cloudDensity(p, 0) > 0.0) {

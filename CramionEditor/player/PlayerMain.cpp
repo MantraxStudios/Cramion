@@ -634,8 +634,10 @@ int runPlayer() {
             editor::applyQualityPreset(renderer, level);
             renderer.setRayTracingEnabled(false);
             renderer.setMobileProfile(level);
-            // Las nubes volumetricas cuestan mucho en un movil: desde Alta.
-            if (level < 2) renderer.setCloudsEnabled(false);
+            // Las nubes volumetricas cuestan mucho en un movil: desde Alta. Con
+            // el tope del renderizador: setCloudsEnabled lo volvia a encender
+            // la escena en cada frame (componente Sky) y no duraba.
+            renderer.setCloudsAllowed(level >= 2);
             gfx::GraphicsSettings g = renderer.graphicsSettings();
             const int fps = std::atoi(readIniValue(ini, "android_fps").c_str());
             g.target_fps = static_cast<float>(fps >= 15 ? fps : 30);
@@ -687,7 +689,10 @@ int runPlayer() {
             const terrain::Terrain* comp = entity.tryGet<terrain::Terrain>();
             return comp != nullptr ? terrains.get(*comp) : nullptr;
         });
-        physics.setMeshProvider([&](ecs::Entity entity) -> const asset::ModelData* { return sync.actorModelData(entity, scene); });
+        // La malla que se dibuja o, sin actor (oculta o en el lote estatico),
+        // su pieza en la escena o en el AssetManager (RenderSync mueve cada
+        // pieza dibujada a la escena y en el AssetManager queda vacia).
+        physics.setMeshProvider([&](ecs::Entity entity) -> const asset::ModelData* { return sync.collisionModelData(entity, scene); });
         // Suelo para el IK de los pies (el propio personaje no cuenta).
         sync.setGroundQuery([&](const core::Vec3& origin, const core::Vec3& direction, float max_distance, core::Vec3& point,
                                 core::Vec3& normal, ecs::Entity self) {
@@ -778,7 +783,7 @@ int runPlayer() {
         navigation::loadNavigationSettings(project->settingsFolder() / "Navigation.json", nav_settings);
         navigation::NavigationSystem nav;
         nav.setSettings(nav_settings);
-        nav.setMeshProvider([&](ecs::Entity entity) -> const asset::ModelData* { return sync.actorModelData(entity, scene); });
+        nav.setMeshProvider([&](ecs::Entity entity) -> const asset::ModelData* { return sync.collisionModelData(entity, scene); });
         nav.setTerrainProvider([&](ecs::Entity entity) -> std::shared_ptr<const terrain::TerrainData> {
             const terrain::Terrain* comp = entity.tryGet<terrain::Terrain>();
             return comp != nullptr ? terrains.get(*comp) : nullptr;
@@ -903,7 +908,8 @@ int runPlayer() {
             if (!info) return {};
             return info->path.is_absolute() ? info->path : database.root() / info->path;
         });
-        vfx_system.setModelProvider([&asset_manager](const Uuid& uuid) { return asset_manager.loadModel(uuid); });
+        // Position Mesh: con las mallas ya dibujadas (estan en la escena).
+        vfx_system.setModelProvider([&](const Uuid& uuid) { return sync.completeModel(uuid, scene); });
         twod::System2D twod_system;
         twod_system.setAssetsRoot(project->assetsFolder());
         twod::loadSortingLayers(project->settingsFolder() / "SortingLayers.json");

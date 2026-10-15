@@ -32,7 +32,10 @@ void writeModelCache(const std::filesystem::path& cache, const std::filesystem::
 // CramionCore, que llevan su propia cabecera. Las texturas se guardan tal
 // como esten en el modelo (encoded + source_path).
 void writeModelPayload(std::ostream& stream, const ModelData& model);
-bool readModelPayload(std::istream& stream, ModelData& out);
+// `skip_texture_bytes`: los pixeles y los bytes codificados de las texturas
+// se saltan en el stream sin leerlos (quedan su nombre, tamano y formato):
+// para quien solo quiere la geometria.
+bool readModelPayload(std::istream& stream, ModelData& out, bool skip_texture_bytes = false);
 
 }  // namespace cramion::asset
 

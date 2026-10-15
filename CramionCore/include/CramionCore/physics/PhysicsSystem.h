@@ -194,12 +194,16 @@ public:
 
     // Geometria de los MeshCollider: la de la pieza del MeshRenderer de la
     // entidad, en el espacio local de la entidad. Con el renderizador en
-    // marcha, las piezas ya se movieron a la escena de CramionFX: el editor
-    // conecta aqui RenderSync::actorModelData(entity, scene). Sin proveedor
-    // (o si devuelve nullptr) se pide al AssetManager.
+    // marcha, las piezas dibujadas ya se movieron a la escena de CramionFX (en
+    // el AssetManager quedan vacias): el editor y el juego conectan aqui
+    // RenderSync::collisionModelData(entity, scene). Sin proveedor (o si
+    // devuelve nullptr) se pide al AssetManager.
     using MeshProvider = std::function<const asset::ModelData*(ecs::Entity)>;
     void setMeshProvider(MeshProvider provider);
     void setAssetManager(assets::AssetManager* manager);
+    // La malla del MeshRenderer de `entity` como la ve un MeshCollider (el
+    // proveedor y, si no, el AssetManager), o nullptr. Hilo principal.
+    const asset::ModelData* modelData(ecs::Entity entity) const;
     // Datos de los terrenos (componente Terrain con colision): su collider es
     // un campo de alturas. Se rehace cuando sube TerrainData::collisionVersion.
     using TerrainProvider = std::function<std::shared_ptr<const terrain::TerrainData>(ecs::Entity)>;

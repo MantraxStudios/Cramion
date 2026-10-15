@@ -198,7 +198,8 @@ bool EditorApp::navigationSceneBounds(Vec3& lo, Vec3& hi) const {
     for (const entt::entity h : registry.view<physics::MeshCollider>()) {
         const ecs::Entity e = world_.wrap(h);
         if (!e.activeInHierarchy() || e.has<navigation::NavAgent>() || !sync_) continue;
-        if (const asset::ModelData* data = sync_->actorModelData(e, scene_)) {
+        // La misma malla que usa la navegacion (tambien la de un MeshCollider oculto).
+        if (const asset::ModelData* data = sync_->collisionModelData(e, scene_)) {
             Vec3 mlo{1e9f, 1e9f, 1e9f};
             Vec3 mhi{-1e9f, -1e9f, -1e9f};
             for (const auto& v : data->vertices) {

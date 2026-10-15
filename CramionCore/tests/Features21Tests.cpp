@@ -6,6 +6,7 @@
 #include "CramionCore/ai/BehaviorTree.h"
 #include "CramionCore/asset/AssetDatabase.h"
 #include "CramionCore/asset/AssetManager.h"
+#include "CramionCore/asset/Importer.h"
 #include "CramionCore/asset/ShaderGraph.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/World.h"
@@ -20,6 +21,8 @@
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/twod/System2D.h"
 #include "CramionCore/vfx/VisualEffect.h"
+
+#include <CramionFX/scene/Scene.h>
 
 #include <cmath>
 #include <cstdio>
@@ -407,6 +410,177 @@ void testBakeGather() {
               "luces: 1 horneada y 1 mixta en el horneado, la de tiempo real fuera");
         check(!scene.sun_baked && report.lights_realtime == 1, "el sol mixto no se hornea entero");
     }
+    {
+        // Una pieza que el renderizador ya se llevo: al dibujarla, RenderSync
+        // MUEVE su ModelData del AssetManager a scene::Scene y en el
+        // AssetManager queda vacio. Con el editor abierto no entraba ningun
+        // modelo ("0 de 105 mallas entran ... Marca los objetos como Static").
+        database.refresh();  // con las primitivas en la base de datos (sin archivo), como en el editor
+        const std::shared_ptr<const assets::ModelAsset> cube_asset = manager.loadModel(assets::builtin::kCube);
+        const std::size_t cube_triangles = cube_asset ? cube_asset->parts[0]->indices.size() / 3 : 0;
+        scene::Scene drawn;
+        const std::uint32_t index = drawn.addModel(std::move(*cube_asset->parts[0]));  // como RenderSync::resolveModel
+        check(cube_triangles > 0 && cube_asset->parts[0]->indices.empty(), "la pieza del AssetManager queda vacia al dibujarla");
+        ecs::World world;
+        ecs::Entity e = world.create("Cubo dibujado");
+        e.get<ecs::EntityInfo>().is_static = true;
+        e.add<ecs::MeshRenderer>().model = assets::AssetRef{assets::builtin::kCube, assets::AssetType::Model};
+        lighting::BakeScene scene;
+        lighting::BakeGatherReport report;
+        lighting::gatherBakeScene(world, manager, scene, {}, {}, &report,
+                                  [&](const Uuid& model, int part) -> const asset::ModelData* {
+                                      return model == assets::builtin::kCube && part == 0 ? drawn.models()[index].get() : nullptr;
+                                  });
+        check(report.meshes_baked == 1 && scene.triangles.size() == cube_triangles && report.reread_models == 0,
+              "la pieza movida se hornea con la malla de la escena del renderizador");
+        lighting::BakeScene scene2;
+        lighting::BakeGatherReport report2;
+        lighting::gatherBakeScene(world, manager, scene2, {}, {}, &report2);
+        check(report2.meshes_baked == 1 && scene2.triangles.size() == cube_triangles && report2.reread_models == 0 &&
+                  report2.summary().find("del disco") == std::string::npos,
+              "sin el renderizador, la primitiva movida se vuelve a generar (no cuenta como leida del disco)");
+        manager.unload(assets::builtin::kCube);
+    }
+    {
+        // Un modelo de verdad (.crdata) con un suelo y un cristal (material
+        // transparente). Sus piezas se mueven como al dibujarlas: con la
+        // escena del renderizador entran; sin ella se releen del disco; y si
+        // el archivo ya no esta, el informe dice por que (sin culpar a Static).
+        const std::filesystem::path folder = std::filesystem::temp_directory_path() / "cramion_bake_model_test";
+        std::error_code ec;
+        std::filesystem::remove_all(folder, ec);
+        std::filesystem::create_directories(folder, ec);
+        const auto quad = [](const char* name, float y, bool transparent) {
+            asset::ModelData d;
+            d.name = name;
+            for (const Vec3& p : {Vec3{-1.0f, y, -1.0f}, Vec3{1.0f, y, -1.0f}, Vec3{1.0f, y, 1.0f}, Vec3{-1.0f, y, 1.0f}}) {
+                asset::SkinnedVertex v{};
+                v.position = p;
+                v.normal = Vec3{0.0f, 1.0f, 0.0f};
+                d.vertices.push_back(v);
+            }
+            d.indices = {0, 2, 1, 0, 3, 2};
+            asset::SubMesh sm;
+            sm.index_count = 6;
+            d.submeshes.push_back(sm);
+            asset::MaterialData material;
+            material.name = name;
+            material.transparent = transparent;
+            d.materials.push_back(material);
+            // Una textura incrustada (la relectura de la geometria la salta).
+            asset::TextureData texture;
+            texture.name = std::string(name) + "_albedo";
+            texture.width = 2;
+            texture.height = 2;
+            texture.pixels.assign(16, 200);
+            d.textures.push_back(texture);
+            return d;
+        };
+        const Uuid model_uuid = Uuid::generate();
+        const std::vector<assets::ModelNode> nodes = {{"Casa", -1, core::Mat4::identity(), -1},
+                                                      {"Suelo", 0, core::Mat4::identity(), 0},
+                                                      {"Cristal", 0, core::Mat4::identity(), 1}};
+        const std::vector<asset::ModelData> pieces = {quad("Suelo", 0.0f, false), quad("Cristal", 1.0f, true)};
+        const std::filesystem::path file = folder / "Casa.crdata";
+        std::string error;
+        check(assets::writeGeneratedModel(file, model_uuid, "Casa", nodes, pieces, &error), "un .crdata de prueba con dos piezas");
+        assets::AssetDatabase models_db;
+        models_db.open(folder);
+        assets::AssetManager models(models_db);
+        const std::shared_ptr<const assets::ModelAsset> casa = models.loadModel(model_uuid);
+        check(casa && casa->parts.size() == 2, "se carga");
+        if (casa && casa->parts.size() == 2) {
+            ecs::World world;
+            ecs::Entity root = world.create("Casa");
+            root.get<ecs::EntityInfo>().is_static = true;
+            world.create("Suelo", root).add<ecs::MeshRenderer>().model = assets::AssetRef{model_uuid, assets::AssetType::Model};
+            ecs::MeshRenderer& glass = world.create("Cristal", root).add<ecs::MeshRenderer>();
+            glass.model = assets::AssetRef{model_uuid, assets::AssetType::Model};
+            glass.part = 1;
+            scene::Scene drawn;
+            const std::uint32_t floor_index = drawn.addModel(std::move(*casa->parts[0]));
+            const std::uint32_t glass_index = drawn.addModel(std::move(*casa->parts[1]));
+            const lighting::ModelPartProvider from_scene = [&](const Uuid& model, int part) -> const asset::ModelData* {
+                if (model != model_uuid) return nullptr;
+                return part == 0 ? drawn.models()[floor_index].get() : (part == 1 ? drawn.models()[glass_index].get() : nullptr);
+            };
+            const int no_geometry = static_cast<int>(lighting::BakeSkip::NoGeometry);
+            const int transparent = static_cast<int>(lighting::BakeSkip::Transparent);
+            lighting::BakeScene scene;
+            lighting::BakeGatherReport report;
+            lighting::gatherBakeScene(world, models, scene, {}, {}, &report, from_scene);
+            std::printf("  (%s)\n", report.summary().c_str());
+            check(report.meshes_baked == 1 && scene.triangles.size() == 2 && report.skipped[no_geometry] == 0,
+                  "las piezas movidas de un .crdata entran desde la escena");
+            check(report.skipped[transparent] == 1 && report.transparent_triangles == 2 &&
+                      report.summary().find("transparentes") != std::string::npos,
+                  "el cristal transparente no tapa la luz (y se dice)");
+            lighting::BakeScene scene2;
+            lighting::BakeGatherReport report2;
+            lighting::gatherBakeScene(world, models, scene2, {}, {}, &report2);
+            check(report2.meshes_baked == 1 && scene2.triangles.size() == 2 && report2.reread_models == 1,
+                  "sin la escena, la geometria se relee del .crdata (una vez)");
+            // La relectura salta los bytes de las texturas sin leerlos (y lee
+            // bien lo que va detras) y solo trae las piezas pedidas.
+            const std::shared_ptr<assets::ModelAsset> geometry =
+                assets::AssetManager::readModelGeometry(model_uuid, file, "Casa", {false, true});
+            check(geometry && geometry->parts.size() == 2 && geometry->parts[0]->indices.empty() &&
+                      geometry->parts[1]->indices.size() == 6 && geometry->parts[1]->materials.size() == 1 &&
+                      geometry->parts[1]->materials[0].transparent && geometry->parts[1]->textures.size() == 1 &&
+                      geometry->parts[1]->textures[0].name == "Cristal_albedo" &&
+                      geometry->parts[1]->textures[0].width == 2 && geometry->parts[1]->textures[0].pixels.empty(),
+                  "la geometria se relee sin los pixeles de las texturas (y solo las piezas pedidas)");
+            std::filesystem::remove(file, ec);
+            lighting::BakeScene scene3;
+            lighting::BakeGatherReport report3;
+            lighting::gatherBakeScene(world, models, scene3, {}, {}, &report3);
+            const std::string summary = report3.summary();
+            std::printf("  (%s)\n", summary.c_str());
+            check(scene3.triangles.empty() && report3.static_marked == 2 && report3.skipped[no_geometry] == 2 &&
+                      summary.find("sin geometría") != std::string::npos && summary.find("Suelo") != std::string::npos,
+                  "sin malla legible: el informe dice 'sin geometría' y la nombra");
+            check(summary.find("como Static") == std::string::npos, "y no pide marcar Static (ya lo estan)");
+        }
+        std::filesystem::remove_all(folder, ec);
+    }
+    {
+        // Una malla Static sin triangulos tampoco se pierde sin motivo (y no
+        // se dice que no se pudo leer: es de codigo, no hay archivo).
+        ecs::World world;
+        cube(world, "Cubo").get<ecs::EntityInfo>().is_static = true;
+        ecs::Entity empty = world.create("Malla vacia");
+        empty.get<ecs::EntityInfo>().is_static = true;
+        empty.add<ecs::MeshRenderer>().mesh = std::make_shared<ecs::Mesh>();
+        lighting::BakeScene scene;
+        lighting::BakeGatherReport report;
+        lighting::gatherBakeScene(world, manager, scene, {}, {}, &report);
+        const std::string summary = report.summary();
+        const int empty_mesh = static_cast<int>(lighting::BakeSkip::EmptyMesh);
+        std::printf("  (%s)\n", summary.c_str());
+        check(report.meshes_baked == 1 && report.skipped[empty_mesh] == 1 &&
+                  report.skipped[static_cast<int>(lighting::BakeSkip::NoGeometry)] == 0 &&
+                  report.meshes_baked + report.skipped[empty_mesh] == report.meshes_seen &&
+                  summary.find("Malla vacia") != std::string::npos && summary.find("vacía") != std::string::npos,
+              "cada malla cuenta: horneada o con su motivo (la vacia, como vacia)");
+    }
+    {
+        // Static solo en algo que no aporta (un cristal, una malla vacia): no
+        // entra nada y el resto no es Static. Ahi marcar los demas si sirve, y
+        // se dice.
+        ecs::World world;
+        cube(world, "Muro");
+        ecs::Entity glass = world.create("Ventana");
+        glass.get<ecs::EntityInfo>().is_static = true;
+        glass.add<ecs::MeshRenderer>().mesh = std::make_shared<ecs::Mesh>();
+        lighting::BakeScene scene;
+        lighting::BakeGatherReport report;
+        lighting::gatherBakeScene(world, manager, scene, {}, {}, &report);
+        const std::string summary = report.summary();
+        std::printf("  (%s)\n", summary.c_str());
+        check(scene.triangles.empty() && report.skipped[static_cast<int>(lighting::BakeSkip::NotStatic)] == 1 &&
+                  summary.find("marca también los demás") != std::string::npos,
+              "si lo Static no aporta nada, pide marcar los demas");
+    }
 }
 
 // Lee un texel del lightmap de superficie (la misma tabla que baked_gi.frag)
@@ -480,6 +654,132 @@ void testBakedDirect() {
     std::filesystem::remove(file, ec);
 }
 
+// Escenas grandes (una ciudad): el volumen automatico cabe en el tope de
+// sondas (y cubre el terreno si cabe), una caja enorme no tumba el horneado,
+// el sol horneado llega tambien fuera de los volumenes (si cabe) y el texel
+// automatico crece si lo de dentro no cabe.
+void testBakeLargeScenes() {
+    std::printf("Horneado de escenas grandes\n");
+    const Vec3 albedo{0.5f, 0.5f, 0.5f};
+    {
+        // 400 x 400 m con sondas cada 2 m son 1.25 millones (tope 200000):
+        // antes el horneado fallaba; ahora se separan mas.
+        const std::vector<lighting::BakeTriangle> city = {{Vec3{0, 0, 0}, Vec3{400, 0, 0}, Vec3{0, 0, 400}, albedo, {}},
+                                                          {Vec3{0, 0, 0}, Vec3{10, 120, 0}, Vec3{0, 0, 10}, albedo, {}}};
+        const lighting::BakeVolume v = lighting::volumeAround(city, 2.0f, 200000.0f);
+        const double probes = static_cast<double>(v.nx) * v.ny * v.nz;
+        const float spacing = v.size.x / static_cast<float>(v.nx - 1);
+        std::printf("  (%u x %u x %u = %.0f sondas, cada %.2f m, y de %.1f a %.1f m)\n", v.nx, v.ny, v.nz, probes,
+                    static_cast<double>(spacing), static_cast<double>(v.min.y), static_cast<double>(v.min.y + v.size.y));
+        check(probes <= 200000.0 && spacing > 2.0f, "el volumen automatico cabe en el tope de sondas");
+        check(v.min.y <= 0.0f && v.min.y + v.size.y > 50.0f, "de alto empieza en el suelo (la torre de 120 m no lo levanta)");
+        // Una caja de kilometros con sondas cada 10 cm: antes reservaba
+        // gigas (std::bad_alloc en el hilo del horneado cerraba el editor).
+        lighting::BakeScene scene;
+        scene.triangles = city;
+        lighting::BakeVolume too_big = v;
+        too_big.nx = too_big.ny = too_big.nz = 100001;
+        scene.volumes = {too_big};
+        gfx::BakedLighting out;
+        std::string error;
+        const bool ok = lighting::bakeProbes(scene, out, nullptr, nullptr, &error);
+        std::printf("  (%s)\n", error.c_str());
+        check(!ok && error.find("demasiadas sondas") != std::string::npos && out.probes.empty(),
+              "una caja enorme se rechaza antes de reservar memoria");
+    }
+    {
+        // Una casa (las mallas, los 2 primeros triangulos) en un terreno.
+        const auto with_terrain = [&](float half_side, const Vec3& house) {
+            const Vec3 h0 = house, h1 = house + Vec3{10.0f, 6.0f, 0.0f}, h2 = house + Vec3{0.0f, 0.0f, 10.0f};
+            return std::vector<lighting::BakeTriangle>{
+                {h0, h1, h2, albedo, {}},
+                {h0, h2, house + Vec3{10.0f, 0.0f, 10.0f}, albedo, {}},
+                {Vec3{-half_side, 0, -half_side}, Vec3{half_side, 0, -half_side}, Vec3{-half_side, 0, half_side}, albedo, {}},
+                {Vec3{half_side, 0, half_side}, Vec3{-half_side, 0, half_side}, Vec3{half_side, 0, -half_side}, albedo, {}}};
+        };
+        // Un terreno de 100 m: la caja lo cubre entero (lo dinamico va por el
+        // terreno, no solo junto a la casa).
+        const lighting::BakeVolume small = lighting::volumeAround(with_terrain(50.0f, Vec3{0, 0, 0}), 2.0f, 200000.0f, 2);
+        std::printf("  (terreno de 100 m: caja de %.0f a %.0f m)\n", static_cast<double>(small.min.x),
+                    static_cast<double>(small.min.x + small.size.x));
+        check(small.min.x <= -50.0f && small.min.x + small.size.x >= 50.0f && small.min.z <= -50.0f &&
+                  small.min.z + small.size.z >= 50.0f,
+              "con terreno, el volumen automatico lo cubre si cabe");
+        // Uno de 2 km con la casa en una esquina: 400 m alrededor de la casa.
+        const lighting::BakeVolume big = lighting::volumeAround(with_terrain(1000.0f, Vec3{800, 0, 800}), 2.0f, 200000.0f, 2);
+        std::printf("  (terreno de 2 km: caja de %.0f a %.0f m)\n", static_cast<double>(big.min.x),
+                    static_cast<double>(big.min.x + big.size.x));
+        check(big.size.x <= 400.0f && big.min.x <= 800.0f && big.min.x + big.size.x >= 810.0f && big.min.z <= 800.0f &&
+                  big.min.z + big.size.z >= 810.0f && big.min.x + big.size.x <= 1001.5f,
+              "con un terreno enorme, el volumen va alrededor de las mallas");
+    }
+    {
+        // Sol horneado y un volumen que solo cubre la mitad del suelo: la
+        // otra mitad tambien tiene texeles con el sol (en modo horneado no se
+        // dibuja en tiempo real; antes se quedaba sin sol).
+        lighting::BakeScene scene;
+        scene.triangles.push_back({Vec3{-4, 0, -4}, Vec3{4, 0, 4}, Vec3{4, 0, -4}, albedo, {}});
+        scene.triangles.push_back({Vec3{-4, 0, -4}, Vec3{-4, 0, 4}, Vec3{4, 0, 4}, albedo, {}});
+        scene.lights.sun.direction = Vec3{0.0f, -1.0f, 0.0f};
+        scene.lights.sun.color = Vec3{1.0f, 1.0f, 1.0f};
+        scene.lights.sun.intensity = 3.0f;
+        scene.sun_baked = true;
+        lighting::BakeVolume half;
+        half.min = Vec3{-4.0f, -1.0f, -4.0f};
+        half.size = Vec3{4.0f, 2.0f, 8.0f};
+        half.nx = half.ny = half.nz = 2;
+        scene.volumes = {half};
+        scene.settings.sky_intensity = 0.0f;
+        scene.settings.bounces = 0;
+        scene.settings.rays = 16;
+        scene.settings.surface_rays = 16;
+        scene.settings.direct_samples = 2;
+        scene.settings.threads = 2;
+        gfx::BakedLighting out;
+        lighting::BakeStats stats;
+        std::string error;
+        const bool ok = lighting::bakeProbes(scene, out, nullptr, &stats, &error);
+        const float outside = surfaceIrradiance(out.surface, Vec3{2.1f, 0.0f, 0.1f}, Vec3{0.0f, 1.0f, 0.0f});
+        std::printf("  (fuera del volumen %.3f, texel %.2f m, %zu texeles)\n", outside, static_cast<double>(stats.surface_texel),
+                    stats.surface_texels);
+        check(ok && outside > 2.4f && outside < 3.6f && stats.outside_texels > 0 && !stats.outside_texels_dropped,
+              "el sol horneado llega tambien fuera de los volumenes");
+
+        // Los de fuera son un extra: si no caben se quedan fuera, sin
+        // agrandar el texel de dentro ni hacer fallar un horneado que sin
+        // ellos cabe (dentro: unos 153 texeles de 0.5 m; con los de fuera, ~290).
+        scene.settings.max_surface_texels = 200;
+        lighting::BakeStats kept;
+        const bool auto_ok = lighting::bakeProbes(scene, out, nullptr, &kept, &error);
+        std::printf("  (tope 200: texel %.2f m, %zu texeles, fuera %s)\n", static_cast<double>(kept.surface_texel),
+                    kept.surface_texels, kept.outside_texels_dropped ? "no caben" : "caben");
+        check(auto_ok && !kept.surface_texel_grown && kept.outside_texels_dropped && kept.outside_texels == 0 &&
+                  kept.surface_texels > 100 && kept.surface_texels <= 200,
+              "lo de fuera que no cabe no agranda el texel automatico");
+        scene.settings.surface_texel = 0.5f;
+        lighting::BakeStats manual;
+        error.clear();
+        check(lighting::bakeProbes(scene, out, nullptr, &manual, &error) && manual.outside_texels_dropped &&
+                  manual.surface_texels == kept.surface_texels,
+              "ni hace fallar un texel puesto a mano que dentro cabe");
+        scene.settings.surface_texel = 0.0f;
+
+        // Con un tope de texeles pequeno el texel automatico crece hasta caber...
+        scene.settings.max_surface_texels = 100;
+        lighting::BakeStats grown;
+        const bool fits = lighting::bakeProbes(scene, out, nullptr, &grown, &error);
+        std::printf("  (texel automatico %.2f m, %zu texeles)\n", static_cast<double>(grown.surface_texel), grown.surface_texels);
+        check(fits && grown.surface_texel_grown && grown.surface_texel > 0.5f && grown.surface_texels <= 100,
+              "el texel automatico se agranda si no cabe en el tope");
+        // ...pero uno puesto a mano no cambia: falla al momento y dice que hacer.
+        scene.settings.surface_texel = 0.5f;
+        error.clear();
+        check(!lighting::bakeProbes(scene, out, nullptr, nullptr, &error) &&
+                  error.find("Tamaño del texel") != std::string::npos,
+              "con el texel puesto a mano, el error nombra el ajuste");
+    }
+}
+
 void testReplay() {
     std::printf("Repeticiones\n");
     ecs::World world;
@@ -518,6 +818,7 @@ int main() {
     testBake();
     testBakeGather();
     testBakedDirect();
+    testBakeLargeScenes();
     testReplay();
     std::printf("\n%d de %d comprobaciones bien\n", checks - failures, checks);
     return failures == 0 ? 0 : 1;

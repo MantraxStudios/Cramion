@@ -23,7 +23,9 @@ layout(push_constant) uniform Push {
     vec4 params;     // x = modo, y = intensidad del motion blur, z = rastro maximo, w = frame
     vec4 dof;        // x = enfoque (m, < 0 = auto), y = numero f, z = focal (mm), w = desenfoque maximo
     vec4 camera;     // x, y = proyeccion [3][2] y [2][2], z = ancho / alto, w = 1 / alto
-    vec4 projection_w;  // x, y = proyeccion [2][3] y [3][3] (perspectiva -1, 0; ortografica 0, 1)
+    // x, y = proyeccion [2][3] y [3][3] (perspectiva -1, 0; ortografica 0, 1);
+    // z, w = muestras de la profundidad de campo y del motion blur (0 = todas)
+    vec4 projection_w;
 } push;
 
 layout(location = 0) in vec2 v_uv;
@@ -76,7 +78,10 @@ vec3 depthOfField() {
     // confusion es un diametro: el radio es la mitad (con el diametro entero
     // el desenfoque salia el doble de lo que dicen la focal y el diafragma).
     float radius = 0.5 * push.dof.w;
+    // Tope fijo del bucle; el presupuesto adaptativo pide menos (32: el disco
+    // entero con la mitad de lecturas, algo mas de ruido que el TAA suaviza).
     const int kSamples = 64;
+    int samples = push.projection_w.z > 0.5 ? clamp(int(push.projection_w.z + 0.5), 1, kSamples) : kSamples;
     float rotation = interleavedGradientNoise(gl_FragCoord.xy) * 6.2831853;
     float pixel = push.camera.w;  // un pixel en fraccion del alto
 
@@ -87,7 +92,10 @@ vec3 depthOfField() {
     float front = 0.0;
     float counted = 0.0;
     for (int i = 0; i < kSamples; ++i) {
-        float t = (float(i) + 0.5) / float(kSamples);
+        if (i >= samples) {
+            break;
+        }
+        float t = (float(i) + 0.5) / float(samples);
         float r = sqrt(t) * radius;
         float a = float(i) * kGoldenAngle + rotation;
         vec2 offset = vec2(cos(a) / push.camera.z, sin(a)) * r;
@@ -156,13 +164,18 @@ vec3 motionBlur() {
     }
 
     float center_z = linearDepth(center_depth_raw);
+    // Tope fijo del bucle; el presupuesto adaptativo pide menos (12).
     const int kSamples = 24;
+    int samples = push.projection_w.w > 0.5 ? clamp(int(push.projection_w.w + 0.5), 1, kSamples) : kSamples;
     float jitter = interleavedGradientNoise(gl_FragCoord.xy + push.params.w * 5.588238) - 0.5;
     vec3 sum = center;
     float weight_sum = 1.0;
     for (int i = 0; i < kSamples; ++i) {
+        if (i >= samples) {
+            break;
+        }
         // De -0.5 a 0.5 del vector (el obturador centrado en el frame).
-        float t = (float(i) + 0.5 + jitter) / float(kSamples) - 0.5;
+        float t = (float(i) + 0.5 + jitter) / float(samples) - 0.5;
         if (abs(t) < 1e-3) {
             continue;
         }

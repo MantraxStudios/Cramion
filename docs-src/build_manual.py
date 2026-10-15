@@ -217,6 +217,7 @@ FOOTER = f"""
       <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la {{version}}. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
+        <a href="../store/index.html">Assets</a>
         <a href="licencia.html">Licencia</a>
         <a href="{DISCORD}" target="_blank" rel="noopener">Discord</a>
         <a href="{DONATE}" target="_blank" rel="noopener">Donar con PayPal</a>
@@ -511,7 +512,7 @@ hub_main = f"""
     <main class="doc">
       <div class="doc-inner" style="max-width: 1040px">
         <section class="hero">
-          <a class="badge" href="novedades-24.html#v2411"><b>Nuevo en la {VERSION}</b> Habitaciones que ya no se oscurecen al volver y reflejos de pantalla reescritos {icon("arrow")}</a>
+          <a class="badge" href="novedades-24.html#v2413"><b>Nuevo en la {VERSION}</b> Cramion Store con Package Manager y horneado de luz con los modelos Static {icon("arrow")}</a>
           <h1>Documentación de Cramion</h1>
           <div class="intro">{intro_html}</div>
           <div class="actions">

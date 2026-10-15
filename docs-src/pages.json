@@ -471,6 +471,11 @@
           "desc": "Escenas y objetos con todo lo que usan en un .datapack que el juego carga en marcha, como los AssetBundles."
         },
         {
+          "slug": "paquetes",
+          "title": "Cramion Store y paquetes",
+          "desc": "Package Manager con versiones como el de Unity, publicar assets gratis y el formato .crwpack."
+        },
+        {
           "slug": "plantillas",
           "title": "Plantillas",
           "desc": "Vacío, Tercera persona, IA, Mundo de bloques, MMO RPG, Criaturas, Online, Mundo abierto y las tuyas."

@@ -3689,6 +3689,10 @@ void PhysicsSystem::setAssetManager(assets::AssetManager* manager) {
     impl_->destruction->setAssetManager(manager);
 }
 
+const asset::ModelData* PhysicsSystem::modelData(ecs::Entity entity) const {
+    return entity.valid() ? impl_->meshOf(entity) : nullptr;
+}
+
 DestructionSystem& PhysicsSystem::destruction() {
     return *impl_->destruction;
 }

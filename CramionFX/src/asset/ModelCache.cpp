@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -86,6 +87,24 @@ public:
         pod(count);
         text.resize(static_cast<std::size_t>(count));
         read(text.data(), text.size());
+    }
+
+    // Un podVector saltado sin leerlo (no se trae del disco).
+    template <typename T>
+    void skipPodVector() {
+        static_assert(std::is_trivially_copyable_v<T>);
+        std::uint64_t count = 0;
+        pod(count);
+        if (count == 0) {
+            return;
+        }
+        if (count > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max()) / sizeof(T)) {
+            throw std::runtime_error("datos del modelo corruptos");
+        }
+        file_.seekg(static_cast<std::streamoff>(count * sizeof(T)), std::ios::cur);
+        if (!file_) {
+            throw std::runtime_error("datos del modelo truncados");
+        }
     }
 
 private:
@@ -206,7 +225,7 @@ void writePayload(Writer& out, const ModelData& model) {
     }
 }
 
-void readPayload(Reader& in, ModelData& model) {
+void readPayload(Reader& in, ModelData& model, bool skip_texture_bytes = false) {
     in.string(model.name);
     in.podVector(model.vertices);
     in.podVector(model.indices);
@@ -227,8 +246,13 @@ void readPayload(Reader& in, ModelData& model) {
         in.pod(texture.height);
         in.pod(texture.format);
         in.pod(texture.mip_levels);
-        in.podVector(texture.pixels);
-        in.podVector(texture.encoded);
+        if (skip_texture_bytes) {
+            in.skipPodVector<std::uint8_t>();
+            in.skipPodVector<std::uint8_t>();
+        } else {
+            in.podVector(texture.pixels);
+            in.podVector(texture.encoded);
+        }
         in.string(texture.source_path);
         std::uint8_t height_map = 0;
         in.pod(height_map);
@@ -338,11 +362,11 @@ void writeModelPayload(std::ostream& stream, const ModelData& model) {
     }
 }
 
-bool readModelPayload(std::istream& stream, ModelData& out) {
+bool readModelPayload(std::istream& stream, ModelData& out, bool skip_texture_bytes) {
     try {
         Reader in(stream);
         ModelData model{};
-        readPayload(in, model);
+        readPayload(in, model, skip_texture_bytes);
         out = std::move(model);
         return true;
     } catch (const std::exception&) {

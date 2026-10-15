@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <random>
@@ -441,35 +442,122 @@ void registerLightingComponents() {
 
 // --- Lightmap de superficie --------------------------------------------------------------
 
-// Las celdas que tocan las superficies (dentro de los volumenes, si los hay) y
-// en cada una un mini-horneado L1 desde un punto de su superficie, un poco
-// hacia fuera. Todo en los nucleos (job system).
-static bool bakeSurfaceTexels(const BakeScene& scene, const Tracer& tracer, float texel, gfx::SurfaceLightmap& out,
-                              BakeProgress* progress, std::string* error) {
-    const float cell = std::clamp(texel, 0.1f, 8.0f);
+namespace {
+
+struct SurfaceCell {
+    Vec3 normal{};
+    Vec3 point{};
+    int samples = 0;
+};
+using SurfaceCells = std::unordered_map<std::uint64_t, SurfaceCell>;
+
+enum class CellSearch { Ok, TooMany, Cancelled };
+
+// Texel automatico (luces horneadas sin el lightmap encendido): si no cabe en
+// el tope se agranda hasta este lado.
+constexpr float kMaxAutoTexel = 4.0f;
+
+// Texeles fuera de los volumenes (findSurfaceCells): solo si con ellos el
+// total no pasa de aqui. Asi la tabla (la mitad llena) se queda en 2^21
+// huecos, 128 MiB de texeles: el buffer de almacenamiento mas grande que
+// Vulkan garantiza en cualquier GPU (maxStorageBufferRange; Android).
+constexpr std::size_t kOutsideTexelBudget = (std::size_t{1} << 20) - 1;
+
+// Las celdas de `cell` metros que tocan las superficies dentro de los
+// volumenes (sin volumenes, en todas), en `cells`; TooMany si pasan de
+// max_surface_texels (para ahi). Con `outside`, ademas las de fuera de los
+// volumenes donde llega la luz directa de las luces horneadas (con el sol
+// horneado, todas): en modo horneado esas luces no se dibujan en tiempo
+// real y sin texel esas superficies se quedaban sin su luz y sin su sombra
+// (en la casa de un usuario, el tejado y lo alto de las paredes). Son un
+// extra: si con ellas se pasaria de `outside_budget` celdas en total, se
+// vacia `outside` y outside_dropped = true. No hacen fallar el horneado ni
+// agrandan el texel: lo de dentro de los volumenes queda como sin ellas.
+CellSearch findSurfaceCells(const BakeScene& scene, float cell, SurfaceCells& cells, SurfaceCells* outside,
+                            std::size_t outside_budget, bool& outside_dropped, BakeProgress* progress) {
+    cells.clear();
+    if (outside != nullptr) outside->clear();
+    outside_dropped = false;
     const float inv = 1.0f / cell;
-    struct CellInfo {
-        Vec3 normal{};
-        Vec3 point{};
-        int samples = 0;
+    const bool everywhere = scene.volumes.empty();
+    const bool sun = scene.sun_baked && scene.lights.sun.intensity > 0.0f;
+    struct Sphere {
+        Vec3 center;
+        float radius;
     };
-    std::unordered_map<std::uint64_t, CellInfo> cells;
-    const auto inside_volumes = [&](const Vec3& p) {
-        if (scene.volumes.empty()) return true;
-        for (const BakeVolume& v : scene.volumes) {
-            if (p.x >= v.min.x && p.y >= v.min.y && p.z >= v.min.z && p.x <= v.min.x + v.size.x &&
-                p.y <= v.min.y + v.size.y && p.z <= v.min.z + v.size.z) {
-                return true;
-            }
+    std::vector<Sphere> lights;  // alcance de las luces locales horneadas
+    bool collect = outside != nullptr && !everywhere;  // se siguen buscando las de fuera
+    bool keep = true;                                  // y aun caben (si no, solo se mira si habia)
+    if (collect && !sun) {
+        for (std::size_t i = 0; i < scene.lights.points.size() && i < scene.point_baked.size(); ++i) {
+            if (scene.point_baked[i] != 0) lights.push_back(Sphere{scene.lights.points[i].position, scene.lights.points[i].range});
+        }
+        for (std::size_t i = 0; i < scene.lights.spots.size() && i < scene.spot_baked.size(); ++i) {
+            if (scene.spot_baked[i] != 0) lights.push_back(Sphere{scene.lights.spots[i].position, scene.lights.spots[i].range});
+        }
+        collect = !lights.empty();
+    }
+    const auto in_box = [](const Vec3& p, const Vec3& mn, const Vec3& mx) {
+        return p.x >= mn.x && p.y >= mn.y && p.z >= mn.z && p.x <= mx.x && p.y <= mx.y && p.z <= mx.z;
+    };
+    // Por triangulo, solo lo que toca su caja (casi siempre nada o una cosa).
+    std::vector<const BakeVolume*> near_volumes;
+    std::vector<const Sphere*> near_lights;
+    const auto in_volumes = [&](const Vec3& p) {
+        for (const BakeVolume* v : near_volumes) {
+            if (in_box(p, v->min, v->min + v->size)) return true;
         }
         return false;
     };
-    if (progress) progress->setStage("Lightmap de superficie: buscando texeles");
-    for (const BakeTriangle& t : scene.triangles) {
+    const auto lit = [&](const Vec3& p) {
+        if (sun) return true;
+        for (const Sphere* s : near_lights) {
+            const Vec3 d = p - s->center;
+            if (core::dot(d, d) <= s->radius * s->radius) return true;
+        }
+        return false;
+    };
+    const std::size_t total = scene.triangles.size();
+    for (std::size_t index = 0; index < total; ++index) {
+        if (progress && (index & 0xFFFFu) == 0) {
+            if (progress->cancel.load()) return CellSearch::Cancelled;
+            progress->fraction.store(static_cast<float>(index) / static_cast<float>(total));
+        }
+        const BakeTriangle& t = scene.triangles[index];
         Vec3 n = core::cross(t.b - t.a, t.c - t.a);
         const float area2 = core::length(n);
         if (area2 < 1e-8f) continue;
         n = n * (1.0f / area2);
+        bool inside = everywhere;  // entero dentro de un volumen
+        bool lights_outside = false;
+        if (!inside) {
+            const Vec3 tmin = minv(t.a, minv(t.b, t.c));
+            const Vec3 tmax = maxv(t.a, maxv(t.b, t.c));
+            near_volumes.clear();
+            near_lights.clear();
+            for (const BakeVolume& v : scene.volumes) {
+                const Vec3 vmax = v.min + v.size;
+                if (tmax.x < v.min.x || tmax.y < v.min.y || tmax.z < v.min.z || tmin.x > vmax.x || tmin.y > vmax.y ||
+                    tmin.z > vmax.z) {
+                    continue;
+                }
+                if (in_box(tmin, v.min, vmax) && in_box(tmax, v.min, vmax)) {
+                    inside = true;
+                    break;
+                }
+                near_volumes.push_back(&v);
+            }
+            if (!inside && collect) {
+                for (const Sphere& s : lights) {
+                    const Vec3 q{std::clamp(s.center.x, tmin.x, tmax.x), std::clamp(s.center.y, tmin.y, tmax.y),
+                                 std::clamp(s.center.z, tmin.z, tmax.z)};
+                    const Vec3 d = q - s.center;
+                    if (core::dot(d, d) <= s.radius * s.radius) near_lights.push_back(&s);
+                }
+                lights_outside = sun || !near_lights.empty();
+            }
+            if (!inside && near_volumes.empty() && !lights_outside) continue;
+        }
         const float edge = std::max({core::length(t.b - t.a), core::length(t.c - t.a), core::length(t.c - t.b)});
         const int steps = std::clamp(static_cast<int>(std::ceil(edge / (cell * 0.5f))), 1, 512);
         for (int i = 0; i <= steps; ++i) {
@@ -477,23 +565,45 @@ static bool bakeSurfaceTexels(const BakeScene& scene, const Tracer& tracer, floa
                 const float u = static_cast<float>(i) / static_cast<float>(steps);
                 const float w = static_cast<float>(j) / static_cast<float>(steps);
                 const Vec3 p = t.a + (t.b - t.a) * u + (t.c - t.a) * w;
-                if (!inside_volumes(p)) continue;
+                SurfaceCells* target = nullptr;
+                if (inside || in_volumes(p)) {
+                    target = &cells;
+                } else if (lights_outside && lit(p)) {
+                    if (keep) target = outside;
+                    else outside_dropped = true;
+                }
+                if (target == nullptr) continue;
                 const std::uint64_t key = gfx::surfaceCellKey(static_cast<int>(std::floor(p.x * inv)),
                                                               static_cast<int>(std::floor(p.y * inv)),
                                                               static_cast<int>(std::floor(p.z * inv)));
-                CellInfo& c = cells[key];
+                SurfaceCell& c = (*target)[key];
                 c.normal += n;
                 if (c.samples == 0) c.point = p;
                 ++c.samples;
             }
         }
-        if (cells.size() > scene.settings.max_surface_texels) {
-            if (error) *error = "demasiados texeles de lightmap (" + std::to_string(cells.size()) + "): sube el tamano del texel";
-            return false;
+        if (cells.size() > scene.settings.max_surface_texels) return CellSearch::TooMany;
+        if (keep && collect && cells.size() + outside->size() > outside_budget) {
+            // No caben: fuera todas (cuales quedarian dependeria del orden
+            // de los triangulos).
+            outside_dropped = !outside->empty();
+            SurfaceCells().swap(*outside);
+            keep = false;
         }
+        if (outside_dropped) collect = false;  // ya se sabe que no caben: no hace falta mirar mas
     }
+    return CellSearch::Ok;
+}
+
+}  // namespace
+
+// En cada celda un mini-horneado L1 desde un punto de su superficie, un poco
+// hacia fuera. Todo en los nucleos (job system).
+static bool bakeSurfaceCells(const BakeScene& scene, const Tracer& tracer, float cell, SurfaceCells&& cells,
+                             gfx::SurfaceLightmap& out, BakeProgress* progress, std::string* error) {
     if (cells.empty()) return true;
-    std::vector<std::pair<std::uint64_t, CellInfo>> list(cells.begin(), cells.end());
+    std::vector<std::pair<std::uint64_t, SurfaceCell>> list(cells.begin(), cells.end());
+    SurfaceCells().swap(cells);
     std::vector<Vec4> texels(list.size() * gfx::kSurfaceTexelVec4, Vec4{});
     std::vector<char> valid(list.size(), 0);
     const int rays = std::clamp(scene.settings.surface_rays, 8, 4096);
@@ -506,7 +616,7 @@ static bool bakeSurfaceTexels(const BakeScene& scene, const Tracer& tracer, floa
         std::uniform_real_distribution<float> u01(0.0f, 1.0f);
         for (std::size_t i = begin; i < end; ++i) {
             if (progress && progress->cancel.load()) return;
-            const CellInfo& c = list[i].second;
+            const SurfaceCell& c = list[i].second;
             const float nl = core::length(c.normal);
             const Vec3 n = nl > 1e-4f ? c.normal * (1.0f / nl) : Vec3{0.0f, 1.0f, 0.0f};
             // Un poco hacia fuera de la superficie (dos caras: nl pequeno, menos).
@@ -615,13 +725,91 @@ bool bakeProbes(const BakeScene& scene, gfx::BakedLighting& out, BakeProgress* p
     for (const std::uint8_t b : scene.point_baked) any_baked = any_baked || b != 0;
     for (const std::uint8_t b : scene.spot_baked) any_baked = any_baked || b != 0;
     float surface_texel = scene.settings.surface_texel;
-    if (any_baked && surface_texel <= 0.0f && scene.settings.auto_surface_texel > 0.0f) {
-        surface_texel = scene.settings.auto_surface_texel;
-    }
+    const bool auto_texel = any_baked && surface_texel <= 0.0f && scene.settings.auto_surface_texel > 0.0f;
+    if (auto_texel) surface_texel = scene.settings.auto_surface_texel;
     if (scene.volumes.empty() && surface_texel <= 0.0f) {
         if (error) *error = "no hay volumenes de sondas";
         return false;
     }
+
+    // Volumenes del mas pequeno al mas grande (el shader usa el primero que contiene el punto).
+    std::vector<BakeVolume> volumes = scene.volumes;
+    std::sort(volumes.begin(), volumes.end(), [](const BakeVolume& a, const BakeVolume& b) {
+        return a.size.x * a.size.y * a.size.z < b.size.x * b.size.y * b.size.z;
+    });
+    std::size_t dropped_volumes = 0;
+    if (volumes.size() > gfx::kMaxBakedVolumes) {
+        dropped_volumes = volumes.size() - gfx::kMaxBakedVolumes;
+        volumes.resize(gfx::kMaxBakedVolumes);
+    }
+    // Cuantas sondas, antes de reservar nada: una caja enorme o una
+    // separacion minima piden miles de millones (std::bad_alloc en el hilo
+    // del horneado cerraba el editor).
+    std::uint64_t total_probes = 0;
+    for (const BakeVolume& v : volumes) {
+        total_probes += static_cast<std::uint64_t>(std::max(v.nx, 2u)) * std::max(v.ny, 2u) * std::max(v.nz, 2u);
+    }
+    constexpr std::uint64_t kHardProbeLimit = 1ull << 24;  // indices de 32 bits y ~2 GB de sondas
+    if (static_cast<double>(total_probes) > static_cast<double>(scene.settings.max_probes) || total_probes > kHardProbeLimit) {
+        if (error) {
+            *error = "demasiadas sondas (" + std::to_string(total_probes) + ", el tope es " +
+                     std::to_string(static_cast<std::uint64_t>(std::min<double>(scene.settings.max_probes, kHardProbeLimit))) +
+                     "): sube la Separación de los Light Probe Volume o hazlos más pequeños";
+        }
+        return false;
+    }
+
+    // Lightmap de superficie: primero donde van los texeles (es rapido). Si
+    // los de dentro de los volumenes no caben se sabe ya, no tras minutos de
+    // sondas; y si el lightmap se encendio solo (luces horneadas), se agranda
+    // el texel hasta que quepan. Los de fuera (luz de las luces horneadas)
+    // entran si caben (findSurfaceCells).
+    SurfaceCells cells;
+    bool texel_grown = false;
+    bool outside_dropped = false;
+    std::size_t outside_texels = 0;
+    if (surface_texel > 0.0f) {
+        surface_texel = std::clamp(surface_texel, 0.1f, 8.0f);
+        const std::size_t outside_budget =
+            std::min<std::size_t>(scene.settings.max_surface_texels, kOutsideTexelBudget);
+        SurfaceCells outside;
+        if (progress) progress->setStage("Lightmap de superficie: buscando texeles");
+        for (;;) {
+            const CellSearch found = findSurfaceCells(scene, surface_texel, cells, any_baked ? &outside : nullptr,
+                                                      outside_budget, outside_dropped, progress);
+            if (found == CellSearch::Ok) break;
+            if (found == CellSearch::Cancelled) {
+                if (error) *error = "cancelado";
+                return false;
+            }
+            if (auto_texel && surface_texel < kMaxAutoTexel) {
+                surface_texel = std::min(surface_texel * 1.5f, kMaxAutoTexel);
+                texel_grown = true;
+                continue;
+            }
+            if (error) {
+                char size[32];
+                std::snprintf(size, sizeof(size), "%.2f", static_cast<double>(surface_texel));
+                *error = "demasiados texeles de lightmap (más de " + std::to_string(scene.settings.max_surface_texels) +
+                         " con texeles de " + size + " m): " +
+                         (auto_texel ? std::string("pon las luces horneadas en Mixta") : std::string("sube el Tamaño del texel")) +
+                         (scene.volumes.empty() ? std::string() : std::string(" o haz más pequeños los Light Probe Volume"));
+            }
+            return false;
+        }
+        // Los de fuera con los de dentro (una celda en el borde de un volumen
+        // tiene muestras en los dos).
+        for (const auto& [key, c] : outside) {
+            SurfaceCell& d = cells[key];
+            if (d.samples == 0) {
+                d.point = c.point;
+                ++outside_texels;
+            }
+            d.normal += c.normal;
+            d.samples += c.samples;
+        }
+    }
+
     if (progress) progress->setStage("Construyendo el BVH");
     const Bvh bvh(scene.triangles);
 
@@ -631,17 +819,12 @@ bool bakeProbes(const BakeScene& scene, gfx::BakedLighting& out, BakeProgress* p
     tracer.sun_color = srgbToLinear(scene.lights.sun.color) * std::max(scene.lights.sun.intensity, 0.0f);
     tracer.daylight = std::clamp(scene.lights.sky.daylight, 0.0f, 1.0f);
 
-    // Volumenes del mas pequeno al mas grande (el shader usa el primero que contiene el punto).
-    std::vector<BakeVolume> volumes = scene.volumes;
-    std::sort(volumes.begin(), volumes.end(), [](const BakeVolume& a, const BakeVolume& b) {
-        return a.size.x * a.size.y * a.size.z < b.size.x * b.size.y * b.size.z;
-    });
-    if (volumes.size() > gfx::kMaxBakedVolumes) volumes.resize(gfx::kMaxBakedVolumes);
     struct ProbeJob {
         Vec3 position;
         std::size_t index;
     };
     std::vector<ProbeJob> jobs;
+    jobs.reserve(static_cast<std::size_t>(total_probes));
     std::uint32_t first = 0;
     for (const BakeVolume& v : volumes) {
         gfx::BakedProbeVolume g;
@@ -663,11 +846,6 @@ bool bakeProbes(const BakeScene& scene, gfx::BakedLighting& out, BakeProgress* p
         }
         first += g.nx * g.ny * g.nz;
         out.volumes.push_back(g);
-        if (static_cast<float>(first) > scene.settings.max_probes) {
-            if (error) *error = "demasiadas sondas (" + std::to_string(first) + "): sube la separacion";
-            out = gfx::BakedLighting{};
-            return false;
-        }
     }
     out.probes.assign(static_cast<std::size_t>(first) * gfx::kBakedProbeVec4, Vec4{});
 
@@ -753,7 +931,7 @@ bool bakeProbes(const BakeScene& scene, gfx::BakedLighting& out, BakeProgress* p
         return false;
     }
     if (surface_texel > 0.0f) {
-        if (!bakeSurfaceTexels(scene, tracer, surface_texel, out.surface, progress, error)) {
+        if (!bakeSurfaceCells(scene, tracer, surface_texel, std::move(cells), out.surface, progress, error)) {
             out = gfx::BakedLighting{};
             return false;
         }
@@ -766,6 +944,11 @@ bool bakeProbes(const BakeScene& scene, gfx::BakedLighting& out, BakeProgress* p
         stats->triangles = scene.triangles.size();
         stats->probes = jobs.size();
         stats->invalid_probes = invalid.load();
+        stats->surface_texel = surface_texel > 0.0f ? surface_texel : 0.0f;
+        stats->surface_texel_grown = texel_grown;
+        stats->outside_texels = outside_texels;
+        stats->outside_texels_dropped = outside_dropped;
+        stats->dropped_volumes = dropped_volumes;
         stats->surface_texels = out.surface.count;
         stats->baked_lights = out.baked_lights.size() + (out.sun_baked ? 1u : 0u);
         stats->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -785,6 +968,9 @@ const char* bakeSkipLabel(BakeSkip reason) {
         case BakeSkip::NoModel: return "con un modelo que no se pudo cargar";
         case BakeSkip::BadPart: return "con una pieza que no existe en el modelo";
         case BakeSkip::NotStatic: return "sin marcar Static";
+        case BakeSkip::NoGeometry: return "sin geometría (no se pudo leer la malla de su modelo)";
+        case BakeSkip::Transparent: return "transparentes (vidrio, agua: dejan pasar la luz)";
+        case BakeSkip::EmptyMesh: return "con una malla vacía (sin triángulos)";
         default: return "?";
     }
 }
@@ -808,6 +994,7 @@ std::string BakeGatherReport::summary() const {
         if (!text.empty()) text += skipped[i] > examples[i].size() ? "...)" : ")";
         return text;
     };
+    const auto count_of = [&](BakeSkip reason) { return skipped[static_cast<int>(reason)]; };
     if (triangles == 0) {
         std::string reasons;
         for (int i = 0; i < static_cast<int>(BakeSkip::Count); ++i) {
@@ -815,9 +1002,21 @@ std::string BakeGatherReport::summary() const {
             if (!reasons.empty()) reasons += ", ";
             reasons += std::to_string(skipped[i]) + " " + bakeSkipLabel(static_cast<BakeSkip>(i)) + examples_of(i);
         }
-        line("Nada que hornear: 0 de " + std::to_string(meshes_seen) + " mallas entran" +
-             (reasons.empty() ? std::string(" (la escena no tiene mallas ni terreno)") : ". Motivos: " + reasons) +
-             ". Marca los objetos (o sus padres) como Static o revisa los filtros.");
+        std::string text = "Nada que hornear: 0 de " + std::to_string(meshes_seen) + " mallas entran" +
+                           (reasons.empty() ? std::string(" (la escena no tiene mallas ni terreno)") : ". Motivos: " + reasons);
+        // Solo el consejo que lo arregla: marcar Static solo si asi entrarian
+        // mas mallas (antes lo decia siempre, tambien con una ciudad entera
+        // Static).
+        if (count_of(BakeSkip::NoGeometry) > 0) {
+            text += ". Reimporta el modelo de las mallas sin geometría o comprueba que su archivo sigue en Assets";
+        }
+        if (static_marked > 0 && count_of(BakeSkip::NotStatic) > 0) {
+            text += ". Con objetos Static solo entran ellos (hay " + std::to_string(static_marked) +
+                    "): marca también los demás (o sus padres) si deben aportar luz";
+        } else if (static_marked == 0 && count_of(BakeSkip::DynamicBody) + count_of(BakeSkip::AnimatorDriven) > 0) {
+            text += ". Marca los objetos (o sus padres) como Static para hornearlos aunque se muevan";
+        }
+        line(text + ".");
     } else {
         line(std::to_string(meshes_baked) + " mallas" +
              (terrains > 0 ? " y " + std::to_string(terrains) + " terreno(s)" : std::string()) + ": " +
@@ -833,6 +1032,13 @@ std::string BakeGatherReport::summary() const {
         }
     }
     if (terrain_triangles > 0) line("Terreno: " + std::to_string(terrain_triangles) + " triángulos desde el mapa de alturas");
+    if (transparent_triangles > 0) {
+        line("Vidrio y agua: " + std::to_string(transparent_triangles) +
+             " triángulos con material transparente no tapan la luz");
+    }
+    if (reread_models > 0) {
+        line("Geometría leída de nuevo del disco: " + std::to_string(reread_models) + " modelo(s)");
+    }
     if (static_with_dynamic_rb > 0) {
         line(std::to_string(static_with_dynamic_rb) +
              " Static con Rigidbody Dynamic: se hornean igual (pon el Rigidbody en Kinematic o quita Static)");
@@ -861,6 +1067,14 @@ bool staticInHierarchy(ecs::Entity entity) {
 }
 
 namespace {
+
+// Sondas a lo largo de un lado de `size` metros con `spacing` entre ellas (2
+// como poco). En doble y con tope: una caja de kilometros con sondas cada
+// 10 cm desbordaba el entero (y bakeProbes la rechaza por el total).
+std::uint32_t probesAlong(float size, float spacing) {
+    const double steps = std::round(static_cast<double>(std::fabs(size)) / std::max(static_cast<double>(spacing), 1e-3));
+    return static_cast<std::uint32_t>(std::clamp(steps, 1.0, 100000.0)) + 1u;
+}
 
 // Posiciones de los vertices en la pose de reposo (como los dibuja el editor
 // sin Animator). Sin huesos, las del modelo tal cual.
@@ -899,20 +1113,33 @@ std::vector<Vec3> restPosePositions(const asset::ModelData& data) {
     return positions;
 }
 
-// El terreno desde su mapa de alturas (como el collider: esquina en el
-// origen del objeto, `size` x `size` m, alturas 0..1 por `height`). Como
-// mucho ~400k triangulos (se salta vertices si hace falta).
-std::size_t appendTerrain(ecs::Entity e, const terrain::Terrain& t, const terrain::TerrainData& data,
-                          std::vector<BakeTriangle>& out) {
+// Las filas (y columnas) del mapa de alturas que usa appendTerrain: como
+// mucho ~400k triangulos (se salta vertices si hace falta). Vacio si no sirve.
+std::vector<std::uint32_t> terrainSamples(const terrain::TerrainData& data) {
     const std::uint32_t res = data.resolution();
-    if (res < 2 || data.heights().size() < static_cast<std::size_t>(res) * res) return 0;
+    if (res < 2 || data.heights().size() < static_cast<std::size_t>(res) * res) return {};
     const double cells = static_cast<double>(res - 1) * static_cast<double>(res - 1);
     const std::uint32_t step = std::max<std::uint32_t>(1u, static_cast<std::uint32_t>(std::ceil(std::sqrt(cells * 2.0 / 400000.0))));
     std::vector<std::uint32_t> samples;
     for (std::uint32_t i = 0; i < res - 1; i += step) samples.push_back(i);
     samples.push_back(res - 1);
+    return samples;
+}
+
+// Los triangulos que anadira appendTerrain.
+std::size_t terrainTriangleCount(const terrain::TerrainData& data) {
+    const std::size_t n = terrainSamples(data).size();
+    return n < 2 ? 0 : (n - 1) * (n - 1) * 2;
+}
+
+// El terreno desde su mapa de alturas (como el collider: esquina en el
+// origen del objeto, `size` x `size` m, alturas 0..1 por `height`).
+std::size_t appendTerrain(ecs::Entity e, const terrain::Terrain& t, const terrain::TerrainData& data,
+                          std::vector<BakeTriangle>& out) {
+    const std::vector<std::uint32_t> samples = terrainSamples(data);
     const std::size_t n = samples.size();
     if (n < 2) return 0;
+    const std::uint32_t res = data.resolution();
     const core::Mat4& m = e.worldMatrix();
     const float inv = 1.0f / static_cast<float>(res - 1);
     std::vector<Vec3> grid(n * n);
@@ -926,7 +1153,10 @@ std::size_t appendTerrain(ecs::Entity e, const terrain::Terrain& t, const terrai
     Vec3 albedo{0.18f, 0.2f, 0.12f};
     if (!t.layers.empty() && t.layers.front().albedo.empty()) albedo = srgbToLinear(t.layers.front().tint) * 0.8f;
     const std::size_t before = out.size();
-    out.reserve(out.size() + (n - 1) * (n - 1) * 2);
+    // Creciendo de golpe (x1.5): con muchas teselas, reservar justo lo de
+    // cada una copiaba todos los triangulos (cientos de MB) en cada tesela.
+    const std::size_t needed = out.size() + (n - 1) * (n - 1) * 2;
+    if (needed > out.capacity()) out.reserve(std::max(needed, out.capacity() + out.capacity() / 2));
     for (std::size_t z = 0; z + 1 < n; ++z) {
         for (std::size_t x = 0; x + 1 < n; ++x) {
             const Vec3& p00 = grid[z * n + x];
@@ -944,7 +1174,7 @@ std::size_t appendTerrain(ecs::Entity e, const terrain::Terrain& t, const terrai
 }  // namespace
 
 void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene& scene, const ExtraGeometry& extra,
-                     const TerrainProvider& terrains, BakeGatherReport* report) {
+                     const TerrainProvider& terrains, BakeGatherReport* report, const ModelPartProvider& parts) {
     auto& registry = world.registry();
     BakeGatherReport local_report;
     BakeGatherReport& rep = report != nullptr ? *report : local_report;
@@ -952,6 +1182,7 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
     struct MaterialColor {
         Vec3 albedo;
         Vec3 emission;
+        bool transparent = false;
     };
     std::unordered_map<std::uint64_t, std::optional<MaterialColor>> material_cache;
     const auto override_material = [&](const assets::AssetRef& ref) -> std::optional<MaterialColor> {
@@ -965,7 +1196,8 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
             assets::loadMaterial(info->path, material, nullptr)) {
             result = MaterialColor{Vec3{material.base_color.x, material.base_color.y, material.base_color.z} *
                                        (material.albedo.empty() ? 1.0f : 0.6f),
-                                   material.emissive * material.emissive_intensity};
+                                   material.emissive * material.emissive_intensity,
+                                   material.mode == assets::MaterialMode::Transparent};
         }
         material_cache[key] = result;
         return result;
@@ -976,6 +1208,7 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
         entt::entity handle;
         bool is_static;
         std::shared_ptr<const assets::ModelAsset> model;  // nulo = malla de codigo
+        const asset::ModelData* data = nullptr;           // la malla de su pieza (paso 3)
     };
     std::vector<Candidate> candidates;
     for (const entt::entity h : registry.view<ecs::MeshRenderer>()) {
@@ -1030,7 +1263,7 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
                 }
             }
         }
-        candidates.push_back(Candidate{h, is_static, std::move(model)});
+        candidates.push_back(Candidate{h, is_static, std::move(model), nullptr});
     }
     // 2) Solo las Static si hay alguna (como Contribute GI de Unity); si no,
     // todas las que no se mueven.
@@ -1038,6 +1271,80 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
     for (const Candidate& c : candidates) any_static = any_static || c.is_static;
     rep.used_all_non_moving = !any_static && !candidates.empty();
 
+    // 3) La malla de cada pieza de modelo que entra. RenderSync MUEVE al
+    // dibujarla cada pieza del AssetManager a la escena (en el AssetManager
+    // queda un ModelData vacio: por eso con el editor abierto no entraba
+    // ningun modelo). Primero la de la escena (`parts`), luego la del
+    // AssetManager si aun la tiene, y lo que falte se relee del disco (solo
+    // la geometria, una vez por modelo; se suelta al terminar).
+    const auto has_triangles = [](const asset::ModelData* d) {
+        return d != nullptr && d->indices.size() >= 3 && !d->vertices.empty();
+    };
+    std::unordered_map<Uuid, std::vector<bool>> missing;  // modelo -> piezas que faltan
+    for (Candidate& c : candidates) {
+        if (!c.model || (any_static && !c.is_static)) continue;
+        const ecs::MeshRenderer& r = world.wrap(c.handle).get<ecs::MeshRenderer>();
+        const auto part = static_cast<std::size_t>(r.part);
+        const asset::ModelData* data = parts ? parts(r.model.uuid, r.part) : nullptr;
+        if (!has_triangles(data)) data = c.model->parts[part].get();
+        if (has_triangles(data)) {
+            c.data = data;
+            continue;
+        }
+        std::vector<bool>& wanted = missing[r.model.uuid];
+        if (wanted.size() < c.model->parts.size()) wanted.resize(c.model->parts.size(), false);
+        wanted[part] = true;
+    }
+    std::unordered_map<Uuid, std::shared_ptr<const assets::ModelAsset>> reread;
+    for (const auto& [uuid, wanted] : missing) {
+        const std::optional<assets::AssetInfo> info = assets.database().find(uuid);
+        // Las primitivas (cubo, esfera...) estan en la base de datos sin
+        // archivo: se generan, no se leen del disco.
+        const bool model_file = info && info->type == assets::AssetType::Model && !info->path.empty();
+        std::shared_ptr<const assets::ModelAsset> model = assets::AssetManager::readModelGeometry(
+            uuid, model_file ? info->path : std::filesystem::path{}, model_file ? info->name : std::string{}, wanted);
+        if (model && model_file) ++rep.reread_models;  // las primitivas se generan (no se leen)
+        reread.emplace(uuid, std::move(model));
+    }
+    for (Candidate& c : candidates) {
+        if (c.data != nullptr || !c.model || (any_static && !c.is_static)) continue;
+        const ecs::MeshRenderer& r = world.wrap(c.handle).get<ecs::MeshRenderer>();
+        const auto it = reread.find(r.model.uuid);
+        if (it == reread.end() || !it->second) continue;
+        const auto part = static_cast<std::size_t>(r.part);
+        if (part < it->second->parts.size() && has_triangles(it->second->parts[part].get())) {
+            c.data = it->second->parts[part].get();
+        }
+    }
+
+    // 4) Sus triangulos, en el mundo. Una sola reserva para las mallas y el
+    // terreno (que va despues): si no, la primera tesela agrandaba x1.5 todo
+    // lo de las mallas y esa holgura se quedaba sin usar todo el horneado.
+    std::vector<std::pair<entt::entity, std::shared_ptr<const terrain::TerrainData>>> terrain_data;
+    std::size_t expected = 0;
+    if (terrains) {
+        for (const entt::entity h : registry.view<terrain::Terrain>()) {
+            const ecs::Entity e = world.wrap(h);
+            if (!e.activeInHierarchy()) continue;
+            std::shared_ptr<const terrain::TerrainData> data = terrains(e);
+            if (!data) continue;
+            expected += terrainTriangleCount(*data);
+            terrain_data.emplace_back(h, std::move(data));
+        }
+    }
+    for (const Candidate& c : candidates) {
+        if (any_static && !c.is_static) continue;
+        if (c.data != nullptr) {
+            expected += c.data->indices.size() / 3;
+        } else if (!c.model) {
+            const ecs::MeshRenderer& r = world.wrap(c.handle).get<ecs::MeshRenderer>();
+            if (r.mesh) {
+                for (int s = 0; s < r.mesh->subMeshCount(); ++s) expected += r.mesh->triangles(s).size() / 3;
+            }
+        }
+    }
+    scene.triangles.reserve(scene.triangles.size() + expected);
+    const std::size_t first_mesh_triangle = scene.triangles.size();
     for (const Candidate& c : candidates) {
         const ecs::Entity e = world.wrap(c.handle);
         if (any_static && !c.is_static) {
@@ -1049,6 +1356,7 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
         const core::Mat4& m = e.worldMatrix();
         const auto tp = [&](const Vec3& p) { return ecs::transformPoint(m, p); };
         const std::size_t before = scene.triangles.size();
+        std::size_t see_through = 0;
         if (r.mesh) {
             const ecs::Mesh& mesh = *r.mesh;
             for (int s = 0; s < mesh.subMeshCount(); ++s) {
@@ -1066,23 +1374,33 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
                                                            tp(mesh.vertices[idx[t + 2]]), albedo, emission});
                 }
             }
-        } else {
-            const asset::ModelData& data = *c.model->parts[static_cast<std::size_t>(r.part)];
+        } else if (c.data != nullptr) {
+            const asset::ModelData& data = *c.data;
             if (data.bones.size() > 1) ++rep.skinned_rest_pose;
             const std::vector<Vec3> positions = restPosePositions(data);
             for (const asset::SubMesh& sm : data.submeshes) {
                 Vec3 albedo{0.5f, 0.5f, 0.5f};
                 Vec3 emission{};
+                bool transparent = false;
                 if (sm.material < data.materials.size()) {
                     const asset::MaterialData& md = data.materials[sm.material];
                     albedo = Vec3{md.base_color.x, md.base_color.y, md.base_color.z} * (md.albedo_texture >= 0 ? 0.6f : 1.0f);
                     emission = md.emissive;
+                    transparent = md.transparent;
                 }
                 if (sm.material < r.materials.size()) {
                     if (const std::optional<MaterialColor> over = override_material(r.materials[sm.material])) {
                         albedo = over->albedo;
                         emission = over->emission;
+                        transparent = over->transparent;
                     }
+                }
+                if (transparent) {
+                    // Vidrio, agua: el renderizador no los usa para las
+                    // sombras; aqui tampoco tapan la luz (una fachada de
+                    // cristal dejaba el interior sin sol ni cielo).
+                    see_through += sm.index_count / 3;
+                    continue;
                 }
                 for (std::uint32_t t = sm.first_index; t + 2 < sm.first_index + sm.index_count && t + 2 < data.indices.size(); t += 3) {
                     const std::uint32_t i0 = data.indices[t], i1 = data.indices[t + 1], i2 = data.indices[t + 2];
@@ -1091,20 +1409,33 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
                 }
             }
         }
-        if (scene.triangles.size() > before) ++rep.meshes_baked;
-    }
-    // 3) El terreno (tambien las teselas de un TerrainGrid), desde sus alturas.
-    if (terrains) {
-        for (const entt::entity h : registry.view<terrain::Terrain>()) {
-            const ecs::Entity e = world.wrap(h);
-            if (!e.activeInHierarchy()) continue;
-            const std::shared_ptr<const terrain::TerrainData> data = terrains(e);
-            if (!data) continue;
-            const std::size_t added = appendTerrain(e, e.get<terrain::Terrain>(), *data, scene.triangles);
-            if (added > 0) {
-                ++rep.terrains;
-                rep.terrain_triangles += added;
+        rep.transparent_triangles += see_through;
+        if (scene.triangles.size() > before) {
+            ++rep.meshes_baked;
+        } else if (see_through > 0) {
+            rep.skip(BakeSkip::Transparent, e.name());
+        } else {
+            // Ningun triangulo: que se diga (antes no contaba en ningun
+            // motivo y el aviso culpaba a Static). Sin geometria si la malla
+            // de su modelo no se pudo leer; si se leyo (o es de codigo), vacia.
+            bool unreadable = false;
+            if (!r.mesh && c.data == nullptr) {
+                // Tambien si el archivo ya no tiene esa pieza (cambio sin reimportar).
+                const auto it = reread.find(r.model.uuid);
+                unreadable = it == reread.end() || !it->second ||
+                             static_cast<std::size_t>(r.part) >= it->second->parts.size();
             }
+            rep.skip(unreadable ? BakeSkip::NoGeometry : BakeSkip::EmptyMesh, e.name());
+        }
+    }
+    rep.mesh_triangles = scene.triangles.size() - first_mesh_triangle;
+    // 5) El terreno (tambien las teselas de un TerrainGrid), desde sus alturas.
+    for (const auto& [h, data] : terrain_data) {
+        const ecs::Entity e = world.wrap(h);
+        const std::size_t added = appendTerrain(e, e.get<terrain::Terrain>(), *data, scene.triangles);
+        if (added > 0) {
+            ++rep.terrains;
+            rep.terrain_triangles += added;
         }
     }
     if (extra) extra(scene.triangles);
@@ -1118,9 +1449,9 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
         b.min = e.worldPosition() - size * 0.5f;
         b.size = size;
         const float spacing = std::max(v.spacing, 0.1f);
-        b.nx = std::max(2u, static_cast<std::uint32_t>(std::lround(size.x / spacing)) + 1u);
-        b.ny = std::max(2u, static_cast<std::uint32_t>(std::lround(size.y / spacing)) + 1u);
-        b.nz = std::max(2u, static_cast<std::uint32_t>(std::lround(size.z / spacing)) + 1u);
+        b.nx = probesAlong(size.x, spacing);
+        b.ny = probesAlong(size.y, spacing);
+        b.nz = probesAlong(size.z, spacing);
         b.intensity = v.intensity;
         scene.volumes.push_back(b);
     }
@@ -1196,29 +1527,59 @@ void gatherBakeLights(ecs::World& world, const scene::LightSet& sun, BakeScene& 
     }
 }
 
-BakeVolume volumeAround(const std::vector<BakeTriangle>& triangles, float spacing) {
+BakeVolume volumeAround(const std::vector<BakeTriangle>& triangles, float spacing, float max_probes,
+                        std::size_t bounds_count) {
+    // La caja de todo y la de lo que manda donde va si no cabe (las mallas).
+    const std::size_t focus_count = bounds_count > 0 ? std::min(bounds_count, triangles.size()) : triangles.size();
     Vec3 mn{1e30f, 1e30f, 1e30f}, mx{-1e30f, -1e30f, -1e30f};
-    for (const BakeTriangle& t : triangles) {
-        mn = minv(mn, minv(t.a, minv(t.b, t.c)));
-        mx = maxv(mx, maxv(t.a, maxv(t.b, t.c)));
+    Vec3 fmn = mn, fmx = mx;
+    for (std::size_t i = 0; i < triangles.size(); ++i) {
+        const BakeTriangle& t = triangles[i];
+        const Vec3 lo = minv(t.a, minv(t.b, t.c));
+        const Vec3 hi = maxv(t.a, maxv(t.b, t.c));
+        mn = minv(mn, lo);
+        mx = maxv(mx, hi);
+        if (i < focus_count) {
+            fmn = minv(fmn, lo);
+            fmx = maxv(fmx, hi);
+        }
     }
     BakeVolume v;
     if (triangles.empty()) {
         v.min = Vec3{-10.0f, 0.0f, -10.0f};
         v.size = Vec3{20.0f, 6.0f, 20.0f};
     } else {
-        // Un poco mas grande y como mucho 400 x 60 x 400 m.
-        mn = mn - Vec3{1.0f, 0.5f, 1.0f};
-        mx = mx + Vec3{1.0f, 2.0f, 1.0f};
-        Vec3 size = mx - mn;
-        size = Vec3{std::min(size.x, 400.0f), std::min(size.y, 60.0f), std::min(size.z, 400.0f)};
-        v.min = (mn + mx) * 0.5f - size * 0.5f;
+        // Un poco mas grande y como mucho 400 x 60 x 400 m: todo si cabe (el
+        // terreno alrededor de las mallas, por donde va lo dinamico); si no,
+        // centrada en las mallas sin salirse de todo. De alto se corta por
+        // arriba (antes por los dos lados: con torres de mas de 60 m la caja
+        // se despegaba del suelo, donde se mueve lo dinamico).
+        const Vec3 below{1.0f, 0.5f, 1.0f};
+        const Vec3 above{1.0f, 2.0f, 1.0f};
+        mn = mn - below;
+        mx = mx + above;
+        fmn = fmn - below;
+        fmx = fmx + above;
+        const Vec3 full = mx - mn;
+        const Vec3 size{std::min(full.x, 400.0f), std::min(full.y, 60.0f), std::min(full.z, 400.0f)};
+        // Donde empieza un lado de `side` dentro de [lo, hi] lo mas cerca de
+        // `start` (sin std::clamp: con side == hi - lo el redondeo puede
+        // dejar hi - side un pelo por debajo de lo).
+        const auto place = [](float lo, float hi, float side, float start) { return std::max(lo, std::min(start, hi - side)); };
+        v.min = Vec3{place(mn.x, mx.x, size.x, (fmn.x + fmx.x - size.x) * 0.5f), place(mn.y, mx.y, size.y, fmn.y),
+                     place(mn.z, mx.z, size.z, (fmn.z + fmx.z - size.z) * 0.5f)};
         v.size = size;
     }
     spacing = std::max(spacing, 0.25f);
-    v.nx = std::max(2u, static_cast<std::uint32_t>(std::lround(v.size.x / spacing)) + 1u);
-    v.ny = std::max(2u, static_cast<std::uint32_t>(std::lround(v.size.y / spacing)) + 1u);
-    v.nz = std::max(2u, static_cast<std::uint32_t>(std::lround(v.size.z / spacing)) + 1u);
+    // Que quepa en el tope de sondas (si no, el horneado fallaba con
+    // "demasiadas sondas": 400 x 60 x 400 m cada 2 m son 1.25 millones).
+    const auto probes = [&](float s) {
+        return static_cast<double>(probesAlong(v.size.x, s)) * probesAlong(v.size.y, s) * probesAlong(v.size.z, s);
+    };
+    while (max_probes > 0.0f && spacing < 1000.0f && probes(spacing) > static_cast<double>(max_probes)) spacing *= 1.1f;
+    v.nx = probesAlong(v.size.x, spacing);
+    v.ny = probesAlong(v.size.y, spacing);
+    v.nz = probesAlong(v.size.z, spacing);
     return v;
 }
 

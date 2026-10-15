@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paquete · Cramion Store</title>
+  <meta name="theme-color" content="#232323">
+  <link rel="icon" href="../img/icon.png">
+  <script>try { const t = localStorage.getItem("cramion-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="store.css?v=2">
+</head>
+<body>
+  <header id="site-header" class="site-header"></header>
+  <main class="wrap" id="main">
+    <div class="page-head"><span class="spinner"></span></div>
+  </main>
+  <footer id="site-footer"></footer>
+  <script src="store.js?v=2"></script>
+  <script>
+    const { api, esc, $, icon, fmtNum, fmtBytes, fmtDate, timeAgo, imageUrl, downloadUrl, param, categoryName } = Store;
+    Store.header("store");
+    const name = param("n") || "";
+
+    async function load() {
+      const [me, cats] = await Promise.all([Store.refreshUser(), Store.categories()]);
+      let p;
+      try {
+        p = (await api("GET", "/packages/" + encodeURIComponent(name))).package;
+      } catch (e) {
+        $("#main").innerHTML = '<div class="page-head"><a class="link" href="index.html">← Volver a la Store</a></div><div class="empty"><b>' +
+          (e.status === 404 ? "Ese paquete no existe" : "No se pudo cargar") + "</b>" + esc(e.message) + "</div><div style='height:60px'></div>";
+        return;
+      }
+      document.title = p.display_name + " · Cramion Store";
+      const latest = p.latest;
+      const own = me && p.author && me.id === p.author.id;
+      const versions = p.versions || [];
+      const deps = latest ? Object.entries(latest.dependencies || {}) : [];
+
+      $("#main").innerHTML =
+        '<div class="page-head" style="padding-bottom:18px">' +
+        '<a class="link" href="index.html" style="font-size:14px;display:inline-block;margin-bottom:18px">← Volver a la Store</a><br>' +
+        '<p class="eyebrow">' + esc(categoryName(cats, p.category)) + "</p>" +
+        '<h1 class="title">' + esc(p.display_name) + "</h1>" +
+        '<p class="muted mono" style="margin:6px 0 0;font-size:13.5px;overflow-wrap:anywhere">' + esc(p.name) + "</p>" +
+        (p.hidden ? '<p style="margin:12px 0 0"><span class="badge err">Oculto por un administrador</span></p>' : "") +
+        "</div>" +
+        '<div class="detail">' +
+        "<div>" +
+        '<div class="thumb">' + (p.has_image ? '<img alt="" src="' + imageUrl(p.name) + "?v=" + p.updated_at + '">' : icon("box")) + "</div>" +
+        '<div class="card card-pad" style="margin-top:18px"><div class="section-title"><h2>Descripción</h2></div>' +
+        '<div class="prose">' + (p.description ? esc(p.description) : '<span class="muted">Sin descripción.</span>') + "</div>" +
+        (p.tags.length ? '<div class="tags" style="margin-top:16px">' + p.tags.map(t => '<a class="tag" href="index.html?q=' + encodeURIComponent(t) + '">#' + esc(t) + "</a>").join("") + "</div>" : "") +
+        "</div>" +
+        '<div class="card card-pad" style="margin-top:18px"><div class="section-title"><h2>Versiones</h2><span class="muted" style="font-size:13px">' + versions.length + "</span></div>" +
+        '<ul class="versions">' + versions.map(v =>
+          "<li><div><b class='mono'>" + esc(v.version) + "</b> " + (latest && v.version === latest.version ? '<span class="badge ok">última</span>' : "") +
+          (v.yanked ? ' <span class="badge warn">retirada</span>' : "") +
+          '<div class="faint" style="font-size:12.5px">' + fmtDate(v.created_at) + " · " + fmtBytes(v.size) + " · " + fmtNum(v.downloads) + " descargas" + (v.engine ? " · motor " + esc(v.engine) : "") + "</div></div>" +
+          '<div><a class="btn btn-outline btn-sm" href="' + downloadUrl(p.name, v.version) + '" aria-label="Descargar ' + esc(v.version) + '">' + icon("download", "ic ic-sm") + '<span class="hide-sm">.crwpack</span></a></div>' +
+          (v.changelog ? '<div class="ch">' + esc(v.changelog) + "</div>" : "") + "</li>").join("") + "</ul></div>" +
+        "</div>" +
+        '<aside style="display:grid;gap:18px">' +
+        '<div class="card card-pad">' +
+        (latest ? '<a class="btn btn-primary btn-block" href="' + downloadUrl(p.name, "latest") + '">' + icon("download", "ic ic-sm") + "Descargar v" + esc(latest.version) + "</a>" +
+          '<p class="muted" style="font-size:13px;margin:14px 0 8px">O desde el editor: <b>Ventana › Package Manager › Cramion Store</b> y busca:</p>' +
+          '<div class="install" id="copy-name" title="Copiar">' + esc(p.name) + "</div>"
+          : '<p class="muted" style="margin:0">Este paquete todavía no tiene versiones publicadas.</p>') +
+        (own ? '<a class="btn btn-outline btn-block" style="margin-top:12px" href="panel.html#' + encodeURIComponent(p.name) + '">' + icon("edit", "ic ic-sm") + "Editar mi paquete</a>" : "") +
+        "</div>" +
+        '<div class="card card-pad"><dl class="kv">' +
+        "<dt>Autor</dt><dd>" + esc(p.author ? p.author.display_name : "") + "</dd>" +
+        "<dt>Versión</dt><dd class='mono'>" + esc(latest ? latest.version : "—") + "</dd>" +
+        "<dt>Licencia</dt><dd>" + esc(p.license) + "</dd>" +
+        "<dt>Descargas</dt><dd>" + fmtNum(p.downloads) + "</dd>" +
+        (latest ? "<dt>Tamaño</dt><dd>" + fmtBytes(latest.size) + "</dd><dt>Archivos</dt><dd>" + fmtNum(latest.file_count) + " (" + fmtBytes(latest.raw_size) + ")</dd>" : "") +
+        "<dt>Actualizado</dt><dd>" + timeAgo(p.updated_at) + "</dd>" +
+        (p.repo_url ? '<dt>Enlace</dt><dd><a class="link" rel="noopener nofollow" target="_blank" href="' + esc(p.repo_url) + '">' + esc(p.repo_url.replace(/^https?:\/\//, "")) + "</a></dd>" : "") +
+        "</dl></div>" +
+        (deps.length ? '<div class="card card-pad"><div class="section-title"><h2 style="font-size:16px">Dependencias</h2></div>' +
+          deps.map(([d, v]) => '<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;font-size:14px"><a class="link mono" href="paquete.html?n=' + encodeURIComponent(d) + '">' + esc(d) + '</a><span class="mono faint">' + esc(v) + "</span></div>").join("") +
+          '<p class="faint" style="font-size:12.5px;margin:10px 0 0">El Package Manager las instala solo.</p></div>' : "") +
+        "</aside></div><div style='height:64px'></div>";
+
+      const c = $("#copy-name");
+      if (c) c.addEventListener("click", () => {
+        navigator.clipboard && navigator.clipboard.writeText(p.name).then(() => Store.toast("Nombre copiado", "ok"));
+      });
+    }
+    load();
+  </script>
+</body>
+</html>

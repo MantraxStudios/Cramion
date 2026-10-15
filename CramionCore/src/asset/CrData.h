@@ -70,6 +70,12 @@ void writeModel(const std::filesystem::path& file, const Header& header,
                 const ModelContent& content);
 // Lee todo; las piezas quedan tal como se guardaron (sin decodificar).
 bool readModel(const std::filesystem::path& file, Header& header, ModelContent& content);
+// Solo la geometria: las piezas de `wanted` (vacio = todas; las demas se
+// saltan sin leerlas y quedan vacias) y sin los bytes de sus texturas (se
+// quedan su nombre y su tamano: los indices de los materiales siguen
+// valiendo). Pieza a pieza: nunca esta el archivo entero en memoria.
+bool readModelGeometry(const std::filesystem::path& file, Header& header, ModelContent& content,
+                       const std::vector<bool>& wanted = {});
 
 // --- Cielos HDR ---
 void writeEnvironment(const std::filesystem::path& file, const Header& header,

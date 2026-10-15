@@ -1,5 +1,61 @@
 # Cambios
 
+## 2.4.13
+
+**Novedad sobre la 2.4.11: la Cramion Store (cuentas, assets gratis y un Package Manager en el editor, como el de Unity, con versiones para actualizar o volver atrás, sobre el formato propio `.crwpack`), y el horneado de luz vuelve a ver los objetos Static de los modelos importados.** Con el editor abierto, el renderizador se queda con la malla de cada pieza que dibuja (para no tenerla dos veces en memoria) y en el AssetManager queda una copia vacía; el horneado leía esa copia, así que una ciudad entera marcada Static daba «Nada que hornear… Marca los objetos como Static». Ahora toma la malla de la escena del renderizador: en una casa de 101 piezas Static se pasa de 0 a 2.877.697 triángulos. El horneado también aguanta ciudades enteras (volumen automático que cabe en el tope de sondas, lightmap que crece en vez de fallar, sin cierres por falta de memoria), y las demás herramientas que leían la misma copia vacía (Fracturar, Blueprints, materiales del modelo, reimportar, VFX y colisiones ocultas) vuelven a funcionar.
+
+### Cramion Store: assets gratis con cuenta propia
+- **Web** (`docs/store/`, enlazada desde la portada y el manual): catálogo con búsqueda, categorías, orden y paginación; ficha de cada paquete con sus versiones, cambios, dependencias y descarga; registro e inicio de sesión; panel para crear paquetes, subir versiones (arrastrando el `.crwpack`), poner portada, retirar o borrar versiones y cambiar el perfil y la contraseña. Pensada también para el móvil.
+- **Administración** (`store/admin.html`): resumen (usuarios, paquetes, versiones, descargas, espacio, disco libre), usuarios (roles user/admin/superadmin, suspender, borrar), paquetes (destacar, ocultar, borrar) y registro de actividad. En el teléfono las tablas pasan a tarjetas.
+- **API** (`web-api/cramion_api.py`): solo la biblioteca estándar de Python (SQLite, scrypt, `http.server`); sirve la API en `/api` y la web, así que sustituye al `python -m http.server`. Contraseñas con scrypt, sesiones de 30 días, límite de intentos por IP, subidas por trozos de 8 MiB (Cloudflare corta los cuerpos de más de 100 MB), SHA-256 de cada versión, descargas con `Range` (se reanudan), 2 GB por paquete y 10 GB gratis por cuenta. `test_api.py` la recorre entera; el despliegue está en `web-api/README.md`.
+- **Package Manager del editor** (Ventana › Package Manager), como el de Unity: «En el proyecto» y «Cramion Store», búsqueda y categorías, versión a elegir con Instalar / Actualizar a / Bajar a / Reinstalar / Quitar, y las dependencias del manifiesto se instalan solas. Los paquetes van a `Assets/Packages/<nombre>/`, lo instalado queda en `ProjectSettings/Packages.json` y cada versión descargada se guarda (con su contenido extraído) en `Library/PackageCache/`, así que volver a una versión ya usada no descarga nada. Se comprueba el SHA-256 de cada descarga. «+ …» instala un `.crwpack` del disco y abre la exportación; «Servidor de paquetes…» cambia la dirección de la API (para probar uno propio). Los modelos sin importar que traiga un paquete (`.fbx`, `.obj`…) se importan al instalarlo; mientras tanto otra instalación espera y quitar no se deja (si no, el modelo de la versión anterior acababa en la carpeta de la nueva).
+- **Exportar un paquete**: Archivo › Exportar carpeta como paquete .crwpack… (identificador, versión, nombre, autor, descripción, dependencias, cambios y compresión rápida/normal/máxima). Lleva los modelos ya importados (`.crdata`, con su UUID), así que las escenas no pierden la referencia al cambiar de versión.
+- **MCP**: herramientas `packages` (con `show`, abre la ventana), `package_versions`, `package_install`, `package_remove`, `package_state`, `package_registry` y `package_export`, para que una IA busque, instale, actualice, baje de versión, quite y exporte paquetes con las mismas funciones que la ventana.
+
+### Formato .crwpack y herramienta crwpack
+- Contenedor propio: cabecera de 64 bytes, manifiesto JSON sin comprimir (el servidor y la web lo leen sin descomprimir), el contenido de todos los archivos en un solo flujo cortado en bloques de 4 MiB comprimidos cada uno con zstd (o guardados tal cual si no ganan) con su CRC32, e índice con su propio CRC. Comprimir y extraer usan todos los núcleos; los archivos pequeños comparten bloque.
+- Rutas con tildes y ñ, archivos vacíos; al extraer se rechazan rutas con `..`, absolutas o con `:`; un bloque dañado se detecta por su CRC.
+- `crwpack.exe pack|unpack|list|info|verify` (con `--level fast|normal|max`, `--block-mb`, `-j`), ahora en el zip junto al editor.
+
+### Horneado de luz: los modelos Static no entraban
+- **Por qué pasaba**: la primera vez que se dibuja una pieza de un modelo (o una primitiva: cubo, esfera…), `RenderSync` la mueve del AssetManager a la escena del renderizador y el AssetManager se queda con un `ModelData` vacío. El horneado leía esa pieza: 0 triángulos sin ningún motivo en el informe, y el aviso pedía marcar Static aunque ya lo estuviera todo. Pasaba desde que existe el horneado (2.1.0) con cualquier modelo visible; las pruebas no lo veían porque no pasaban por el renderizador.
+- **De dónde sale ahora la malla**, por orden: de la escena del renderizador (`RenderSync::partModelData`), de la pieza del AssetManager si aún la tiene y, si no, se relee del disco solo la geometría (una vez por modelo, solo las piezas que faltan y saltándose los bytes de las texturas; se suelta al terminar). No se guarda ninguna copia de las mallas.
+- **Informe**: cada malla entra o sale con su motivo. Motivos nuevos: «sin geometría» (no se pudo leer la malla de su modelo, con el consejo de reimportarlo), «transparentes» y «con una malla vacía». El consejo de marcar Static solo sale cuando así entrarían más mallas.
+- **Vidrio y agua**: los materiales transparentes ya no tapan la luz, como en las sombras en tiempo real. En la casa de prueba, 114.517 triángulos de cristal dejaban el interior sin sol ni cielo.
+
+### Horneado de ciudades enteras
+- **Volumen automático** (si la escena no tiene Light Probe Volume): cubre las mallas y el terreno si caben en 400 × 60 × 400 m; si no, va alrededor de las mallas sin salirse de la escena. De alto empieza en el suelo (antes una torre de más de 60 m lo despegaba). Si con la *Separación automática* pasaría de 200.000 sondas, las separa más (antes fallaba con «demasiadas sondas») y el informe dice el tamaño y la separación.
+- **Sondas contadas antes de reservar memoria**: una caja enorme o una separación mínima se rechazan al momento con «demasiadas sondas» (antes podían pedir gigas y cerrar el editor).
+- **Sin memoria ya no cierra el editor**: el horneado falla con un mensaje que dice qué bajar.
+- **Lightmap de superficie**: los texeles se buscan antes que las sondas, así que si no caben se sabe al momento y no tras minutos de horneado. Si el lightmap se encendió solo (luces horneadas) y no cabe, el texel crece hasta 4 m; con el texel puesto a mano, el error nombra el ajuste. La búsqueda tiene barra de progreso y se puede cancelar.
+- **Luz horneada fuera de los volúmenes**: en modo horneado esas luces no se dibujan en tiempo real, y las superficies fuera de los Light Probe Volume se quedaban sin su luz (en la casa de prueba, el tejado y lo alto de las paredes). Ahora el lightmap también cubre lo que alcanza una luz horneada (con el sol horneado, toda la escena), si con ello no pasa de un millón de texeles; si no cabe, se queda como antes y el informe lo dice.
+- **Más de 16 volúmenes**: el informe avisa de que los más grandes no entran.
+- **Fuera de Play**: en Play no se hornea (el World Partition descarga las celdas lejanas y lo que se mueve no está en su sitio); `bake_lighting` del MCP devuelve el motivo.
+- **Terreno por teselas**: una sola reserva para las mallas y todas las teselas (antes cada tesela copiaba todos los triángulos ya juntados).
+
+### Otras herramientas que leían la malla vacía
+- **Fracturar** (Destrucción): «No salió ningún trozo» con cualquier objeto visible, primitivas incluidas.
+- **Blueprints**: el esqueleto y los huesos de un modelo ya dibujado no aparecían; crear un Blueprint desde un modelo de la escena lo hace con todas sus mallas.
+- **Materiales del modelo**: asignar los `.crmat` por pieza (ModelMaterials) a un modelo que ya está en la escena no asignaba ninguno.
+- **Reimportar**: los `.crmat` asignados a cada hueco acababan todos en uno.
+- **VFX «Position Mesh»**: las partículas salían del origen del efecto en vez de la malla (también en el juego exportado).
+- **Trozos de la destrucción**: vuelven a salir con el color, el metálico y la rugosidad del material del modelo.
+- **Colisiones y navegación**: un MeshCollider oculto, o en el lote estático del juego exportado, cuya pieza se dibuja en otro objeto se quedaba sin forma. La física y la navegación (editor y juego) piden ahora la malla con `RenderSync::collisionModelData`.
+
+### Cambios a tener en cuenta
+- **Vuelve a hornear** las escenas con modelos importados: el `.crbake` anterior se hizo sin ellos (solo terreno y mallas de código).
+- **Vidrio**: los interiores detrás de cristaleras salen más claros, porque el vidrio ya no proyecta sombra en el horneado.
+- **Luz horneada fuera de los volúmenes**: con luces horneadas el `.crbake` lleva más texeles y el horneado tarda algo más.
+- **Navegación en el juego exportado**: los MeshCollider de los objetos del lote estático (Static, activo por defecto al exportar) entran en la malla de navegación que se construye en el juego, como ya pasaba en el editor y en la física.
+- **Cramion Store**: el Package Manager usa por defecto `https://cramion.mantraxtools.store/api`; para probar un servidor propio, «+ …» › «Servidor de paquetes…» (http solo a localhost).
+
+### Pruebas
+- `Features21Tests`: la pieza de una primitiva y la de un `.crdata` real movidas al renderizador entran desde su escena; sin renderizador se regeneran o se releen del disco una vez, sin los bytes de las texturas y solo las piezas pedidas; con el archivo borrado sale «sin geometría» y no pide Static; el cristal no tapa la luz; malla vacía; Static sin nada útil; volumen automático de una ciudad (tope de sondas, empieza en el suelo, con terreno de 100 m y de 2 km); caja enorme rechazada antes de reservar memoria; sol horneado fuera de los volúmenes; texel automático que crece y texel a mano que falla con su nombre.
+- Comprobado con un proyecto real (una casa de 101 piezas y una ciudad de 1.287 piezas a escala ×8) con el `RenderSync` del editor: 2.877.697 triángulos de la casa y 415.317 de la ciudad, iguales a los de sus `.crdata`.
+- En el editor, por MCP: la misma escena de la casa hornea 97 mallas y 2.877.697 triángulos en 2,4 s, y en Play se niega. El Package Manager contra una Store local: catálogo, búsqueda y categorías, instalar con su dependencia, bajar a 1.0.0, subir a 1.1.0, volver a 1.2.0 desde la caché sin descargar, versión inexistente, exportar una carpeta e instalarla desde el archivo, quitar, y cambiar de versión mientras se importa un modelo de 2 millones de triángulos.
+- `web-api/test_api.py`: registro, sesión, roles, subida por trozos, versiones, descargas con `Range`, retirar y administración.
+- `crwpack`: ida y vuelta idéntica (rutas UTF-8, archivos vacíos) y bloques dañados detectados.
+
 ## 2.4.11
 
 **Corrección sobre la 2.4.10: al salir de una habitación y volver a entrar ya no se ve más oscura hasta que, en un momento cualquiera, la luz vuelve de golpe; los reflejos de pantalla (SSR) están reescritos; y el trazado de rayos se enciende de verdad en el juego exportado.** La sonda de reflexión que sigue a la cámara (de ella salen los reflejos de respaldo y la luz rebotada de lo que no está en pantalla) se quedaba con la captura de fuera hasta que el jugador se paraba lejos. Ahora sabe qué ve cada cubo, recaptura en cuanto la cámara se va a otra habitación, vuelve al cubo de la habitación sin capturar al regresar, y todos los cambios son fundidos de 0,5 s. La exposición automática ya no oscurece los interiores de día con el ajuste de noche de la 2.4.10. El SSR traza sobre una pirámide de profundidad (como FidelityFX SSSR), lee el mip que corresponde a la rugosidad y ya no usa historial temporal.

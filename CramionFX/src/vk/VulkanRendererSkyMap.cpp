@@ -62,7 +62,9 @@ constexpr float kSkyMapRange = 400.0f;   // m de profundidad que cubre
 
 bool VulkanRenderer::skyMapWanted() const {
     const SceneDrawMode mode = drawModeNow();
-    return sky_occlusion_enabled_ && !rayTracingActive() && mode != SceneDrawMode::Unlit &&
+    // Con la iluminacion ligera (lighting.frag, kLite) no se lee: se dibujaba
+    // igual, y es el camino de las GPU de gama baja (sin rayos).
+    return sky_occlusion_enabled_ && !rayTracingActive() && !liteLighting() && mode != SceneDrawMode::Unlit &&
            mode != SceneDrawMode::Wireframe && *sky_map_scene_.handle() != nullptr;
 }
 
@@ -99,7 +101,13 @@ void VulkanRenderer::createSkyMap() {
 }
 
 void VulkanRenderer::planSkyMap() {
-    if (!skyMapWanted() || isolated()) return;
+    if (isolated()) return;
+    if (!skyMapWanted()) {
+        // Sin usarse (iluminacion ligera, rayos...): lo dibujado se queda
+        // viejo; cuando vuelva a hacer falta se rehace en ese mismo frame.
+        sky_map_age_ = 1u << 20;
+        return;
+    }
     const core::Vec3 camera = camera_position_;
     ++sky_map_age_;
     const float dx = camera.x - sky_map_center_.x;

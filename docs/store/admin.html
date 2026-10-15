@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Administración · Cramion Store</title>
+  <meta name="theme-color" content="#232323">
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="../img/icon.png">
+  <script>try { const t = localStorage.getItem("cramion-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="store.css?v=2">
+  <style>
+    .admin-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+    .admin-head .search { flex: 0 1 320px; }
+    .admin-head h1 { margin: 0; font-size: 26px; letter-spacing: -0.02em; }
+    .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 8px 0; font-size: 14px; border-top: 1px solid var(--border); }
+    .bar-row:first-child { border-top: 0; }
+    .bar-row .bar { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--muted); overflow: hidden; }
+    .bar-row .bar i { display: block; height: 100%; background: var(--blue); }
+    .log-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; padding: 10px 0; border-top: 1px solid var(--border); font-size: 13.5px; }
+    .log-row:first-child { border-top: 0; }
+    .log-row time { color: var(--faint); font: 500 12px/1.6 var(--mono); grid-row: span 2; white-space: nowrap; }
+    .log-row small { color: var(--muted-foreground); overflow-wrap: anywhere; }
+    .switch { position: relative; width: 38px; height: 22px; border-radius: 99px; background: var(--field); border: 0; cursor: pointer; flex-shrink: 0; transition: background .15s; }
+    .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 99px; background: #fff; transition: transform .15s; }
+    .switch[aria-checked="true"] { background: var(--blue); }
+    .switch[aria-checked="true"]::after { transform: translateX(16px); }
+    .switch.danger[aria-checked="true"] { background: var(--error); }
+    .table select.input { min-height: 32px; padding: 4px 8px; font-size: 13px; width: auto; }
+    .denied { max-width: 460px; margin: 60px auto; }
+    @media (max-width: 860px) { .two { grid-template-columns: 1fr; } }
+    @media (max-width: 640px) {
+      .admin-head h1 { font-size: 22px; }
+      .admin-head .search { flex: 1 1 100%; }
+      .table td .switch { margin-left: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header id="site-header" class="site-header"></header>
+  <main class="wrap">
+    <div class="denied card card-pad" id="denied" hidden>
+      <h1 style="margin:0 0 8px;font-size:22px">Sin acceso</h1>
+      <p class="muted" style="margin:0 0 16px">Esta zona es solo para administradores de la Cramion Store.</p>
+      <a class="btn btn-outline" href="index.html">Volver a la Store</a>
+    </div>
+
+    <div class="layout" id="admin" hidden>
+      <nav class="side" aria-label="Administración">
+        <a href="#resumen" data-view="resumen"></a>
+        <a href="#usuarios" data-view="usuarios"></a>
+        <a href="#paquetes" data-view="paquetes"></a>
+        <a href="#registro" data-view="registro"></a>
+      </nav>
+
+      <div>
+        <section id="view-resumen">
+          <div class="admin-head"><h1>Resumen</h1><span class="badge blue" id="role-badge"></span></div>
+          <div class="stats" id="stats"></div>
+          <div class="two">
+            <div class="card card-pad"><div class="section-title"><h2>Más descargados</h2></div><div id="top"></div></div>
+            <div class="card card-pad"><div class="section-title"><h2>Servidor</h2></div><dl class="kv" id="server"></dl></div>
+          </div>
+          <div class="card card-pad" style="margin-top:16px"><div class="section-title"><h2>Actividad reciente</h2><a class="link" href="#registro" style="font-size:13.5px">Ver todo</a></div><div id="recent"></div></div>
+        </section>
+
+        <section id="view-usuarios" hidden>
+          <div class="admin-head"><h1>Usuarios</h1>
+            <label class="search"><span id="ic-u"></span><input class="input" type="search" id="q-users" placeholder="Usuario, email o nombre"></label></div>
+          <div class="card" style="overflow:hidden"><table class="table" id="t-users"></table></div>
+          <div class="pager" id="pg-users"></div>
+        </section>
+
+        <section id="view-paquetes" hidden>
+          <div class="admin-head"><h1>Paquetes</h1>
+            <label class="search"><span id="ic-p"></span><input class="input" type="search" id="q-pkgs" placeholder="Nombre, etiqueta o descripción"></label></div>
+          <div class="card" style="overflow:hidden"><table class="table" id="t-pkgs"></table></div>
+          <div class="pager" id="pg-pkgs"></div>
+        </section>
+
+        <section id="view-registro" hidden>
+          <div class="admin-head"><h1>Registro</h1><span class="muted" style="font-size:13.5px">Últimas 200 acciones</span></div>
+          <div class="card card-pad" id="log"></div>
+        </section>
+      </div>
+    </div>
+  </main>
+  <footer id="site-footer"></footer>
+  <script src="store.js?v=2"></script>
+  <script>
+    const { api, esc, $, $$, icon, fmtNum, fmtBytes, fmtDate, timeAgo } = Store;
+    Store.header("");
+    let me = null;
+    const views = { resumen: ["gauge", "Resumen"], usuarios: ["user", "Usuarios"], paquetes: ["box", "Paquetes"], registro: ["log", "Registro"] };
+    $$(".side a").forEach(a => { const [ic, t] = views[a.dataset.view]; a.innerHTML = icon(ic === "gauge" ? "grid" : ic, "ic ic-sm") + t; });
+    $("#ic-u").outerHTML = icon("search");
+    $("#ic-p").outerHTML = icon("search");
+
+    const ACTIONS = {
+      "register": "se registró", "package.create": "creó el paquete", "package.delete": "borró el paquete",
+      "version.publish": "publicó", "version.yank": "retiró", "version.unyank": "restauró", "version.delete": "borró la versión",
+      "user.role": "cambió el rol de", "user.ban": "suspendió a", "user.unban": "reactivó a", "user.delete": "borró la cuenta de",
+      "package.hidden": "cambió la visibilidad de", "package.featured": "cambió el destacado de", "cli.role": "(consola) cambió el rol de",
+    };
+    const logRow = l => '<div class="log-row"><time title="' + new Date(l.created_at * 1000).toLocaleString("es") + '">' + timeAgo(l.created_at) + "</time>" +
+      "<span><b>" + esc(l.actor || "sistema") + "</b> " + esc(ACTIONS[l.action] || l.action) + " <span class='mono'>" + esc(l.target) + "</span></span>" +
+      (l.detail ? "<small>" + esc(l.detail) + "</small>" : "<small></small>") + "</div>";
+
+    // --- Navegacion ---
+    const loaded = {};
+    function route() {
+      const v = views[location.hash.slice(1)] ? location.hash.slice(1) : "resumen";
+      for (const k in views) {
+        $("#view-" + k).hidden = k !== v;
+        const a = $('.side a[data-view="' + k + '"]');
+        if (k === v) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+      }
+      if (!loaded[v]) { loaded[v] = true; ({ resumen: loadStats, usuarios: loadUsers, paquetes: loadPkgs, registro: loadLog })[v](); }
+    }
+    addEventListener("hashchange", route);
+
+    (async () => {
+      if (!Store.requireLogin()) return;
+      me = await Store.refreshUser();
+      if (!Store.isAdmin(me)) { $("#denied").hidden = false; return; }
+      $("#admin").hidden = false;
+      $("#role-badge").textContent = me.role;
+      route();
+    })();
+
+    // --- Resumen ---
+    async function loadStats() {
+      $("#stats").innerHTML = Array.from({ length: 4 }, () => '<div class="skeleton" style="height:84px"></div>').join("");
+      try {
+        const [s, log] = await Promise.all([api("GET", "/admin/stats"), api("GET", "/admin/log")]);
+        const tile = (n, label, sub) => '<div class="card stat"><b>' + n + "</b><small>" + label + (sub ? " · " + sub : "") + "</small></div>";
+        $("#stats").innerHTML =
+          tile(fmtNum(s.users), "usuarios", "+" + fmtNum(s.users_week) + " esta semana") +
+          tile(fmtNum(s.packages), "paquetes", s.hidden ? fmtNum(s.hidden) + " ocultos" : "") +
+          tile(fmtNum(s.versions), "versiones", "+" + fmtNum(s.versions_week) + " esta semana") +
+          tile(fmtNum(s.downloads), "descargas", "");
+        const max = Math.max(1, ...s.top.map(t => t.downloads));
+        $("#top").innerHTML = s.top.length ? s.top.map(t => '<div class="bar-row"><a class="link" href="paquete.html?n=' + encodeURIComponent(t.name) + '">' + esc(t.display_name) +
+          '</a><span class="mono faint">' + fmtNum(t.downloads) + '</span><div class="bar"><i style="width:' + (t.downloads / max * 100) + '%"></i></div></div>').join("")
+          : '<p class="muted" style="margin:0">Todavía no hay descargas.</p>';
+        $("#server").innerHTML = "<dt>Almacenamiento usado</dt><dd>" + fmtBytes(s.storage) + "</dd><dt>Libre en disco</dt><dd>" + fmtBytes(s.disk_free) +
+          "</dd><dt>Sesiones activas</dt><dd>" + fmtNum(s.sessions) + "</dd><dt>Cuentas suspendidas</dt><dd>" + fmtNum(s.banned) + "</dd><dt>API</dt><dd class='mono' style='font-size:12.5px'>" + esc(Store.API) + "</dd>";
+        $("#recent").innerHTML = log.log.slice(0, 8).map(logRow).join("") || '<p class="muted" style="margin:0">Sin actividad.</p>';
+      } catch (e) { $("#stats").innerHTML = '<div class="alert err" style="grid-column:1/-1">' + esc(e.message) + "</div>"; }
+    }
+
+    // --- Usuarios ---
+    let uPage = 1, uTimer;
+    $("#q-users").addEventListener("input", () => { clearTimeout(uTimer); uTimer = setTimeout(() => { uPage = 1; loadUsers(); }, 300); });
+    async function loadUsers() {
+      const t = $("#t-users");
+      t.innerHTML = '<tbody><tr><td class="main" style="padding:20px"><span class="spinner"></span></td></tr></tbody>';
+      try {
+        const q = new URLSearchParams({ page: uPage });
+        if ($("#q-users").value.trim()) q.set("q", $("#q-users").value.trim());
+        const r = await api("GET", "/admin/users?" + q);
+        const superadmin = me.role === "superadmin";
+        t.innerHTML = "<thead><tr><th>Usuario</th><th>Rol</th><th>Paquetes</th><th>Espacio</th><th>Alta</th><th>Suspendido</th><th></th></tr></thead><tbody>" +
+          r.users.map(u => {
+            const self = u.id === me.id;
+            const canTouch = !self && (superadmin || u.role === "user");
+            const role = superadmin && !self
+              ? '<select class="input" data-role="' + u.id + '">' + ["user", "admin", "superadmin"].map(x => "<option" + (x === u.role ? " selected" : "") + ">" + x + "</option>").join("") + "</select>"
+              : '<span class="badge' + (u.role !== "user" ? " blue" : "") + '">' + esc(u.role) + "</span>";
+            return "<tr><td class='main'><div class='cell-main'><b>" + esc(u.display_name) + (self ? " <span class='badge'>tú</span>" : "") + "</b><small>@" + esc(u.username) + " · " + esc(u.email) + "</small></div></td>" +
+              "<td data-label='Rol'>" + role + "</td><td data-label='Paquetes'>" + fmtNum(u.packages) + "</td><td data-label='Espacio'>" + fmtBytes(u.storage) + "</td>" +
+              "<td data-label='Alta'>" + fmtDate(u.created_at) + "</td>" +
+              "<td data-label='Suspendido'><button class='switch danger' role='switch' aria-label='Suspender' aria-checked='" + u.banned + "' data-ban='" + u.id + "'" + (canTouch ? "" : " disabled") + "></button></td>" +
+              "<td><div class='actions'>" + (superadmin && !self ? "<button class='btn btn-danger btn-sm' data-del='" + u.id + "' data-name='" + esc(u.username) + "'>" + icon("trash", "ic ic-sm") + "Borrar</button>" : "") + "</div></td></tr>";
+          }).join("") + "</tbody>";
+        if (!r.users.length) t.innerHTML = '<tbody><tr><td class="main muted" style="padding:20px">Sin resultados.</td></tr></tbody>';
+        pager($("#pg-users"), r.total, 50, uPage, p => { uPage = p; loadUsers(); });
+        $$("[data-ban]", t).forEach(b => b.onclick = async () => {
+          const on = b.getAttribute("aria-checked") !== "true";
+          try { await api("PATCH", "/admin/users/" + b.dataset.ban, { banned: on }); b.setAttribute("aria-checked", String(on)); Store.toast(on ? "Cuenta suspendida" : "Cuenta reactivada", "ok"); }
+          catch (e) { Store.toast(e.message, "err"); }
+        });
+        $$("[data-role]", t).forEach(s => s.onchange = async () => {
+          try { await api("PATCH", "/admin/users/" + s.dataset.role, { role: s.value }); Store.toast("Rol cambiado a " + s.value, "ok"); }
+          catch (e) { Store.toast(e.message, "err"); loadUsers(); }
+        });
+        $$("[data-del]", t).forEach(b => b.onclick = async () => {
+          if (!await Store.confirmDialog("Borrar a @" + b.dataset.name, "Se borran la cuenta y todos sus paquetes y versiones. No se puede deshacer.", "Borrar cuenta")) return;
+          try { await api("DELETE", "/admin/users/" + b.dataset.del); Store.toast("Cuenta borrada", "ok"); loadUsers(); }
+          catch (e) { Store.toast(e.message, "err"); }
+        });
+      } catch (e) { t.innerHTML = '<tbody><tr><td class="main"><div class="alert err" style="margin:0">' + esc(e.message) + "</div></td></tr></tbody>"; }
+    }
+
+    // --- Paquetes ---
+    let pPage = 1, pTimer;
+    $("#q-pkgs").addEventListener("input", () => { clearTimeout(pTimer); pTimer = setTimeout(() => { pPage = 1; loadPkgs(); }, 300); });
+    async function loadPkgs() {
+      const t = $("#t-pkgs");
+      t.innerHTML = '<tbody><tr><td class="main" style="padding:20px"><span class="spinner"></span></td></tr></tbody>';
+      try {
+        const q = new URLSearchParams({ page: pPage, limit: 50 });
+        if ($("#q-pkgs").value.trim()) q.set("q", $("#q-pkgs").value.trim());
+        const r = await api("GET", "/admin/packages?" + q);
+        t.innerHTML = "<thead><tr><th>Paquete</th><th>Autor</th><th>Versiones</th><th>Descargas</th><th>Espacio</th><th>Destacado</th><th>Oculto</th><th></th></tr></thead><tbody>" +
+          r.packages.map(p => "<tr><td class='main'><div class='cell-main'><b><a href='paquete.html?n=" + encodeURIComponent(p.name) + "' style='text-decoration:none'>" + esc(p.display_name) + "</a></b><small class='mono'>" + esc(p.name) + "</small></div></td>" +
+            "<td data-label='Autor'>" + esc(p.author ? "@" + p.author.username : "") + "</td>" +
+            "<td data-label='Versiones'><span>" + fmtNum(p.version_count) + (p.latest ? " <span class='faint mono'>(" + esc(p.latest.version) + ")</span>" : "") + "</span></td>" +
+            "<td data-label='Descargas'>" + fmtNum(p.downloads) + "</td><td data-label='Espacio'>" + fmtBytes(p.storage) + "</td>" +
+            "<td data-label='Destacado'><button class='switch' role='switch' aria-label='Destacar' aria-checked='" + p.featured + "' data-feat='" + esc(p.name) + "'></button></td>" +
+            "<td data-label='Oculto'><button class='switch danger' role='switch' aria-label='Ocultar' aria-checked='" + p.hidden + "' data-hide='" + esc(p.name) + "'></button></td>" +
+            "<td><div class='actions'><button class='btn btn-danger btn-sm' data-delp='" + esc(p.name) + "'>" + icon("trash", "ic ic-sm") + "Borrar</button></div></td></tr>").join("") + "</tbody>";
+        if (!r.packages.length) t.innerHTML = '<tbody><tr><td class="main muted" style="padding:20px">Sin resultados.</td></tr></tbody>';
+        pager($("#pg-pkgs"), r.total, 50, pPage, p => { pPage = p; loadPkgs(); });
+        const toggle = (attr, key) => $$("[data-" + attr + "]", t).forEach(b => b.onclick = async () => {
+          const on = b.getAttribute("aria-checked") !== "true";
+          try { await api("PATCH", "/admin/packages/" + encodeURIComponent(b.dataset[attr]), { [key]: on }); b.setAttribute("aria-checked", String(on)); }
+          catch (e) { Store.toast(e.message, "err"); }
+        });
+        toggle("feat", "featured");
+        toggle("hide", "hidden");
+        $$("[data-delp]", t).forEach(b => b.onclick = async () => {
+          if (!await Store.confirmDialog("Borrar " + b.dataset.delp, "Se borran el paquete y todas sus versiones del servidor.", "Borrar")) return;
+          try { await api("DELETE", "/packages/" + encodeURIComponent(b.dataset.delp)); Store.toast("Paquete borrado", "ok"); loadPkgs(); }
+          catch (e) { Store.toast(e.message, "err"); }
+        });
+      } catch (e) { t.innerHTML = '<tbody><tr><td class="main"><div class="alert err" style="margin:0">' + esc(e.message) + "</div></td></tr></tbody>"; }
+    }
+
+    async function loadLog() {
+      $("#log").innerHTML = '<span class="spinner"></span>';
+      try {
+        const r = await api("GET", "/admin/log");
+        $("#log").innerHTML = r.log.map(logRow).join("") || '<p class="muted" style="margin:0">Sin actividad.</p>';
+      } catch (e) { $("#log").innerHTML = '<div class="alert err" style="margin:0">' + esc(e.message) + "</div>"; }
+    }
+
+    function pager(el, total, per, page, go) {
+      const pages = Math.ceil(total / per);
+      if (pages <= 1) { el.innerHTML = ""; return; }
+      el.innerHTML = '<button class="btn btn-outline btn-sm"' + (page <= 1 ? " disabled" : "") + ">Anterior</button><span class='muted' style='font-size:13.5px'>" + page + " / " + pages +
+        '</span><button class="btn btn-outline btn-sm"' + (page >= pages ? " disabled" : "") + ">Siguiente</button>";
+      const [a, b] = el.querySelectorAll("button");
+      a.onclick = () => go(page - 1);
+      b.onclick = () => go(page + 1);
+    }
+  </script>
+</body>
+</html>

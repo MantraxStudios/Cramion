@@ -19,7 +19,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <cstdio>
 #include <iostream>
+#include <new>
 #include <thread>
 
 namespace cramion::editor {
@@ -83,10 +86,18 @@ void EditorApp::startLightingBake() {
         pushToast("Guarda la escena primero", "La iluminación se guarda junto a la escena (.crbake)", 2);
         return;
     }
+    if (playing()) {
+        // En Play el World Partition descarga las celdas lejanas y lo que se
+        // mueve ya no esta en su sitio: se hornearia (y guardaria) a medias.
+        st.error = "Sal de Play para hornear (en Play las cosas se mueven y el World Partition descarga las celdas lejanas).";
+        pushToast("Sal de Play para hornear", "En Play las cosas se mueven y las celdas lejanas del mundo no están cargadas", 2);
+        return;
+    }
     if (!asset_manager_) return;
     auto scene = std::make_shared<lighting::BakeScene>();
     // Mallas (Static, propio o heredado del padre) y terreno desde su mapa de
-    // alturas (no depende de su collider).
+    // alturas (no depende de su collider). La malla de cada pieza ya dibujada
+    // esta en la escena del renderizador (RenderSync la saco del AssetManager).
     lighting::BakeGatherReport report;
     lighting::gatherBakeScene(
         world_, *asset_manager_, *scene, {},
@@ -97,15 +108,38 @@ void EditorApp::startLightingBake() {
             // streaming; get() crearia una plana si aun no esta en memoria).
             return e.has<terrain::TerrainTile>() ? terrain_store_.find(*comp) : terrain_store_.get(*comp);
         },
-        &report);
+        &report,
+        [this](const Uuid& model, int part) -> const asset::ModelData* {
+            return sync_ ? sync_->partModelData(model, part, scene_) : nullptr;
+        });
     // Todas las luces del mundo con su modo (no solo las que el renderizador
     // tiene cerca de la camara); el sol, el de la hora del dia.
     lighting::gatherBakeLights(world_, scene_.lights(), *scene, static_cast<ecs::LightBakeMode>(st.sun_mode), &report);
     scene->settings = st.settings;
     st.report_text = report.summary();
-    std::cout << "[Iluminacion] " << st.report_text << "\n";
     st.auto_volume = scene->volumes.empty();
-    if (scene->volumes.empty()) scene->volumes.push_back(lighting::volumeAround(scene->triangles, st.auto_spacing));
+    if (scene->volumes.empty() && !scene->triangles.empty()) {
+        // La caja cubre las mallas y el terreno si cabe en su tope (si no, va
+        // alrededor de las mallas) y, si con la separacion pedida no cabe en
+        // el tope de sondas, se separan mas.
+        const lighting::BakeVolume volume =
+            lighting::volumeAround(scene->triangles, st.auto_spacing, scene->settings.max_probes, report.mesh_triangles);
+        scene->volumes.push_back(volume);
+        const float spacing = volume.size.x / static_cast<float>(std::max(volume.nx, 2u) - 1u);
+        // Las que saldrian con la separacion pedida (como volumeAround, sin el tope).
+        const auto along = [&](float size) {
+            return std::max(1.0, std::round(static_cast<double>(size) / std::max(st.auto_spacing, 0.25f))) + 1.0;
+        };
+        const bool spread = static_cast<double>(volume.nx) * volume.ny * volume.nz <
+                            along(volume.size.x) * along(volume.size.y) * along(volume.size.z);
+        char text[160];
+        std::snprintf(text, sizeof(text), "Volumen automático de %.0f x %.0f x %.0f m con sondas cada %.2f m%s",
+                      static_cast<double>(volume.size.x), static_cast<double>(volume.size.y),
+                      static_cast<double>(volume.size.z), static_cast<double>(spacing),
+                      spread ? " (más separadas: con la separación pedida no cabían)" : "");
+        st.report_text += std::string("\n") + text;
+    }
+    std::cout << "[Iluminacion] " << st.report_text << "\n";
     if (scene->triangles.empty()) {
         // El motivo, tambien para el MCP (lighting_state.last_error).
         st.error = st.report_text;
@@ -126,7 +160,18 @@ void EditorApp::startLightingBake() {
         gfx::BakedLighting out;
         lighting::BakeStats stats;
         std::string error;
-        const bool ok = lighting::bakeProbes(*scene, out, progress.get(), &stats, &error);
+        bool ok = false;
+        // Una excepcion aqui (sin memoria con una escena enorme) cerraba el
+        // editor entero (std::terminate): se cuenta como un horneado fallido.
+        try {
+            ok = lighting::bakeProbes(*scene, out, progress.get(), &stats, &error);
+        } catch (const std::bad_alloc&) {
+            out = gfx::BakedLighting{};
+            error = "sin memoria: haz más pequeños los Light Probe Volume o sube su Separación o el Tamaño del texel";
+        } catch (const std::exception& e) {
+            out = gfx::BakedLighting{};
+            error = e.what();
+        }
         state->result = std::move(out);
         state->stats = stats;
         state->error = error;
@@ -160,7 +205,29 @@ void EditorApp::drawLightingWindow() {
                 std::snprintf(text, sizeof(text), "%zu sondas, %zu texeles, %zu triángulos, %zu luces horneadas, %.1f s%s",
                               st.stats.probes, st.stats.surface_texels, st.stats.triangles, st.stats.baked_lights,
                               st.stats.seconds, st.auto_volume ? " (volumen automático)" : "");
-                pushToast("Iluminación horneada", text, 1);
+                // Lo que el horneado tuvo que cambiar, tambien en el informe.
+                std::string notes;
+                if (st.stats.surface_texel_grown) {
+                    char grown[160];
+                    std::snprintf(grown, sizeof(grown),
+                                  "\nLightmap de superficie con texeles de %.2f m (con %.2f m no cabían en el tope)",
+                                  static_cast<double>(st.stats.surface_texel),
+                                  static_cast<double>(st.settings.auto_surface_texel));
+                    notes += grown;
+                }
+                if (st.stats.outside_texels_dropped) {
+                    notes += "\nLa luz horneada no llega a lo que queda fuera de los Light Probe Volume: esos texeles no "
+                             "cabían en el lightmap (agranda el texel o pon esas luces en Mixta)";
+                }
+                if (st.stats.dropped_volumes > 0) {
+                    notes += "\n" + std::to_string(st.stats.dropped_volumes) + " Light Probe Volume de más: solo se usan los " +
+                             std::to_string(gfx::kMaxBakedVolumes) + " más pequeños";
+                }
+                if (!notes.empty()) {
+                    st.report_text += notes;
+                    std::cout << "[Iluminacion]" << notes << "\n";
+                }
+                pushToast("Iluminación horneada", text + notes, 1);
             } else {
                 pushToast("No se pudo guardar la iluminación", error, 3);
             }

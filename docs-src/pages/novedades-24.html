@@ -4,6 +4,36 @@
   lightmap de superficie, accesibilidad, mods, informe de cierres, job system y Linux.
 </p>
 
+<h3 id="v2413">2.4.13: Cramion Store, Package Manager y horneado de luz con los modelos Static</h3>
+<p>
+  Novedad sobre la 2.4.11.
+</p>
+<ul>
+  <li><strong>Cramion Store</strong>: assets gratis de la comunidad en la <a href="../store/index.html">web</a>, con cuenta
+    propia (registro e inicio de sesión), panel para publicar paquetes y sus versiones, y administración para los
+    moderadores, también desde el móvil. Ver <a href="paquetes.html">Cramion Store y paquetes</a>.</li>
+  <li><strong>Package Manager</strong> (<em>Ventana &gt; Package Manager</em>), como el de Unity: busca en la Store, elige la
+    versión e instala, actualiza o baja a una anterior; las dependencias se instalan solas y cada descarga se comprueba con
+    su SHA-256. Los paquetes van a <code>Assets/Packages</code>, y volver a una versión ya usada no descarga nada.</li>
+  <li><strong>Formato <code>.crwpack</code></strong>: el contenedor propio de los paquetes, comprimido con zstd por bloques en
+    todos los núcleos, con CRC por bloque. Se crea con <em>Archivo &gt; Exportar carpeta como paquete .crwpack...</em> o con
+    <code>crwpack.exe</code>, que ahora va en el zip.</li>
+  <li><strong>Horneado de luz con los modelos Static</strong>: con el editor abierto, el renderizador se queda con la malla de
+    cada pieza que dibuja y en el AssetManager quedaba una copia vacía, así que los modelos importados (y las primitivas)
+    no aportaban ni un triángulo y el aviso pedía marcar Static aunque ya lo estuviera todo. Ahora la malla sale de la escena
+    del renderizador (o se relee del disco, solo la geometría), y el informe dice el motivo de cada malla que no entra. El
+    vidrio y el agua ya no tapan la luz. Ver <a href="iluminacion-horneada.html">Iluminación horneada</a>.</li>
+  <li><strong>Ciudades enteras</strong>: el volumen automático cabe en el tope de sondas y empieza en el suelo, el lightmap
+    automático agranda el texel en vez de fallar, las luces horneadas también llegan fuera de los Light Probe Volume, y un
+    horneado sin memoria ya no cierra el editor. No se hornea en Play.</li>
+  <li><strong>Otras herramientas</strong> que leían la misma copia vacía vuelven a funcionar: <em>Fracturar</em>, el esqueleto
+    de los Blueprints, los materiales por pieza de un modelo, reimportar, el bloque <em>Position Mesh</em> del VFX Graph, el
+    color de los trozos de la destrucción y los MeshCollider de objetos ocultos.</li>
+</ul>
+<div class="note">
+  <strong>Vuelve a hornear</strong> las escenas con modelos importados: el <code>.crbake</code> anterior se hizo sin ellos.
+</div>
+
 <h3 id="v2411">2.4.11: habitaciones al volver a entrar, reflejos de pantalla, exposición de día y trazado de rayos</h3>
 <p>
   Corrección sobre la 2.4.10.
