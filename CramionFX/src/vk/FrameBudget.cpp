@@ -59,6 +59,14 @@ bool outputPass(const std::string& n) {
            n == "Picking" || n == "Gizmos 3D" || n == "FXAA + presentacion";
 }
 
+// Pasadas de antes del escalado que tampoco dependen de la resolucion
+// interna: el compute del principio (terreno, TLAS, hierba, oceano, liquidos;
+// antes se cobraba a las sombras), mapas de tamano fijo y subidas.
+bool fixedPass(const std::string& n) {
+    return n == "Preparacion (compute)" || n == "Oclusion del cielo" || n == "Cielo + IBL" || n == "Mapa de lluvia" ||
+           n == "Video (subidas)" || n == "UI en el mundo (texturas)";
+}
+
 }  // namespace
 
 HardwareTier tierFor(std::uint64_t vram_mb, bool integrated) {
@@ -128,6 +136,39 @@ float tinyObjectPixelsFor(HardwareTier tier) {
         case HardwareTier::Ultra: return 0.5f;
     }
     return 0.75f;
+}
+
+GraphicsSettings shippedGraphics(const GraphicsSettings& project, HardwareTier tier, float display_hz, bool locked) {
+    GraphicsSettings g = project;
+    if (locked) return g;
+    g.adaptive = true;
+    // Los Hz de la pantalla como mucho (mas FPS no se ven) y 144 como mucho
+    // (240 lo dejaba todo al minimo en cualquier PC); nunca menos de 30.
+    const float hz = std::isfinite(display_hz) && display_hz > 1.0f ? display_hz : 60.0f;
+    const float top = std::clamp(hz, 30.0f, 144.0f);
+    g.target_fps = std::clamp(std::isfinite(g.target_fps) ? g.target_fps : 60.0f, 30.0f, top);
+    // Lo que el proyecto fija pasa a ser tope del de la gama (0 = segun el PC).
+    const auto cap = [](std::int32_t value, std::uint32_t limit) {
+        if (value <= 0 || limit == 0) return value;
+        return std::min(value, static_cast<std::int32_t>(limit));
+    };
+    g.shadow_resolution = cap(g.shadow_resolution, shadowResolutionFor(tier));
+    g.texture_max_size = cap(g.texture_max_size, textureSizeFor(tier));
+    g.texture_filtering = cap(g.texture_filtering, anisotropyFor(tier));
+    if ((tier == HardwareTier::Low || tier == HardwareTier::Medium) && !(g.texture_lod_bias >= 0.0f)) {
+        g.texture_lod_bias = 0.0f;
+    }
+    return g;
+}
+
+int renderTextureIntervalFor(HardwareTier tier) {
+    switch (tier) {
+        case HardwareTier::Low: return 3;
+        case HardwareTier::Medium: return 2;
+        case HardwareTier::High: return 1;
+        case HardwareTier::Ultra: return 1;
+    }
+    return 1;
 }
 
 std::array<std::uint8_t, kLeverCount> startLevelsFor(HardwareTier tier) {
@@ -318,16 +359,18 @@ float FrameBudget::estimateSaving(Lever lever, std::uint8_t level) const {
             return 0.5f * p.volumetric;
         case Lever::ContactShadows: return 0.25f * p.lighting;
         // Las sombras suaves del sol (28 lecturas del mapa por pixel) y la
-        // oclusion del cielo (12) son lo mas caro de la iluminacion.
-        case Lever::Lighting: return 0.35f * p.lighting;
+        // oclusion del cielo (12) son lo mas caro de la iluminacion. Y sin
+        // leerla ya no se dibuja el mapa del cielo visto desde arriba.
+        case Lever::Lighting: return 0.35f * p.lighting + p.sky_map;
         case Lever::Ssao: return 0.95f * p.ssao;
         case Lever::Reflections: return 0.9f * p.reflections;
         case Lever::Gi: return 0.95f * p.gi;
         case Lever::RenderScale: {
             // Lo que depende de los pixeles baja con el area de la imagen:
-            // todo menos las sombras y lo que va despues del escalado
-            // (desenfoques, bloom, composicion: a la resolucion de salida).
-            const float pixel_ms = std::max(p.total - p.shadows - p.local_shadows - p.output, 0.0f);
+            // todo menos las sombras, lo que va despues del escalado
+            // (desenfoques, bloom, composicion: a la resolucion de salida) y
+            // lo que no depende de la resolucion (compute, mapas fijos).
+            const float pixel_ms = std::max(p.total - p.shadows - p.local_shadows - p.output - p.fixed, 0.0f);
             const float now = scaleAt(level);
             const float next = scaleAt(static_cast<std::uint8_t>(level + 1));
             return now > 0.0f ? pixel_ms * (1.0f - (next * next) / (now * now)) : 0.0f;
@@ -480,7 +523,9 @@ void FrameBudget::update(float dt, float gpu_ms, const std::vector<GpuTiming>& p
         else if (n == "GI") now.gi += ms;
         else if (n == "Nubes") now.clouds += ms;
         else if (n == "Motion blur + profundidad de campo") now.camera_fx += ms;
+        else if (n == "Oclusion del cielo") now.sky_map += ms;
         if (outputPass(n)) now.output += ms;
+        if (fixedPass(n)) now.fixed += ms;
     }
     now.total = gpu_ms;
     // Sin tiempos por pasada (GPU sin timestamps: solo el del frame), un
@@ -534,6 +579,8 @@ void FrameBudget::update(float dt, float gpu_ms, const std::vector<GpuTiming>& p
         blend(passes_.camera_fx, now.camera_fx);
         blend(passes_.clouds, now.clouds);
         blend(passes_.output, now.output);
+        blend(passes_.fixed, now.fixed);
+        blend(passes_.sky_map, now.sky_map);
         ema_ms_ = smooth(ema_ms_, gpu_ms, dt, 0.25f);
         ++samples_since_seed_;
     }

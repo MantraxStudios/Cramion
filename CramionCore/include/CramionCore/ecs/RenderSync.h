@@ -496,6 +496,11 @@ private:
     };
     std::unordered_map<std::string, RenderTextureGpu> render_textures_;  // por ruta absoluta
     std::uint64_t render_texture_checks_ = 0;
+    // Ritmo de las camaras con Target Texture (render.RenderTextureInterval):
+    // frames contados y las texturas ya dibujadas alguna vez (la primera vez
+    // se dibujan sin esperar su turno).
+    std::uint64_t render_texture_frame_ = 0;
+    std::unordered_set<std::int32_t> render_textures_drawn_;
     std::int32_t renderTextureForPath(const std::filesystem::path& file);
     std::int32_t renderTextureFor(const Uuid& uuid);
     void refreshRenderTextures();

@@ -1,6 +1,7 @@
 #include "CramionCore/profiling/Profiler.h"
 
 #include "CramionCore/cvar/CVar.h"
+#include "CramionCore/jobs/JobSystem.h"
 
 #include <algorithm>
 #include <atomic>
@@ -11,6 +12,7 @@
 #include <deque>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -26,6 +28,11 @@ cvar::CVar<float> g_hitch_ms("prof.HitchMs", 50.0f,
                              "Un frame mas largo que esto es un tiron: se guarda una captura .crtrace de los frames de "
                              "antes (0 = no capturar)",
                              cvar::Saved, 0.0f, 10000.0f);
+cvar::CVar<float> g_hitch_relative("prof.HitchRelative", 3.0f,
+                                   "Ademas de prof.HitchMs, un tiron tiene que pasar de este numero de veces la mediana "
+                                   "de los frames de antes (0 = solo prof.HitchMs): en un PC lento, con todos los "
+                                   "frames por encima de prof.HitchMs, solo cuentan los que se salen de lo normal",
+                                   cvar::Saved, 0.0f, 100.0f);
 cvar::CVar<int> g_hitch_frames("prof.HitchFrames", 120, "Frames que entran en una captura de tiron", cvar::Saved, 10,
                                2000);
 cvar::CVar<float> g_hitch_cooldown("prof.HitchCooldown", 10.0f,
@@ -49,9 +56,15 @@ struct Frame {
     std::uint64_t index = 0;
     std::int64_t start_ns = 0;
     std::int64_t end_ns = 0;
+    bool loading = false;  // frame de carga (setLoading): ni resumen ni capturas
     std::vector<Event> events;
     std::vector<std::pair<const char*, double>> counters;
 };
+
+// Los frames ya cerrados no cambian: el historial guarda punteros y una
+// captura de tiron se lleva una copia de los punteros (no de los frames) para
+// escribirlos en otro hilo.
+using FramePtr = std::shared_ptr<const Frame>;
 
 struct ThreadState {
     std::uint32_t id = 0;
@@ -64,13 +77,15 @@ struct State {
     std::mutex mutex;
     Frame current;
     bool in_frame = false;
-    std::deque<Frame> history;
+    bool loading = false;
+    std::deque<FramePtr> history;
     std::uint64_t frame_index = 0;
     std::set<std::string> interned;
     std::filesystem::path folder;
     std::filesystem::path last_capture;
     double last_capture_time = -1e9;
     std::function<void(const std::string&)> log;
+    std::vector<jobs::JobHandle> capture_jobs;  // capturas de tiron escribiendose
     std::atomic<std::uint32_t> next_thread{1};
     std::thread::id main_thread = std::this_thread::get_id();
 };
@@ -92,6 +107,8 @@ ThreadState& thread_state() {
 }
 
 double ms(std::int64_t ns) { return static_cast<double>(ns) / 1.0e6; }
+
+double frame_ms(const Frame& f) { return ms(f.end_ns - f.start_ns); }
 
 std::filesystem::path default_folder() {
     if (const char* local = std::getenv("LOCALAPPDATA")) {
@@ -119,7 +136,14 @@ std::string json_escape(const char* s) {
     return out;
 }
 
-bool write_trace_locked(State& s, const std::filesystem::path& file, int frames, std::string* error) {
+// Los ultimos `frames` frames del historial (del mas viejo al mas nuevo).
+std::vector<FramePtr> last_frames_locked(const State& s, int frames) {
+    const std::size_t n = std::min<std::size_t>(static_cast<std::size_t>(std::max(frames, 1)), s.history.size());
+    return std::vector<FramePtr>(s.history.end() - static_cast<std::ptrdiff_t>(n), s.history.end());
+}
+
+// Sin el mutex: los frames ya no cambian.
+bool write_trace(const std::vector<FramePtr>& frames, const std::filesystem::path& file, std::string* error) {
     std::error_code ec;
     if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path(), ec);
     std::ofstream out(file, std::ios::binary);
@@ -127,12 +151,12 @@ bool write_trace_locked(State& s, const std::filesystem::path& file, int frames,
         if (error) *error = "no se puede escribir " + file.string();
         return false;
     }
-    const std::size_t n = std::min<std::size_t>(static_cast<std::size_t>(std::max(frames, 1)), s.history.size());
-    out << "{\"displayTimeUnit\":\"ms\",\"otherData\":{\"engine\":\"Cramion\",\"frames\":" << n << "},\"traceEvents\":[\n";
+    out << "{\"displayTimeUnit\":\"ms\",\"otherData\":{\"engine\":\"Cramion\",\"frames\":" << frames.size()
+        << "},\"traceEvents\":[\n";
     out << "{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":0,\"args\":{\"name\":\"Principal\"}}";
     std::set<std::uint32_t> threads;
-    for (std::size_t k = s.history.size() - n; k < s.history.size(); ++k) {
-        const Frame& f = s.history[k];
+    for (const FramePtr& frame : frames) {
+        const Frame& f = *frame;
         char buf[256];
         std::snprintf(buf, sizeof(buf), ",\n{\"name\":\"Frame %llu\",\"cat\":\"frame\",\"ph\":\"X\",\"pid\":1,\"tid\":0,"
                                         "\"ts\":%.3f,\"dur\":%.3f}",
@@ -175,6 +199,45 @@ void prune_captures(const std::filesystem::path& folder) {
     for (std::size_t i = 0; i + keep < files.size(); ++i) std::filesystem::remove(files[i], ec);
 }
 
+// Mediana de la duracion de los ultimos frames normales (sin los de carga)
+// antes del ultimo; 0 si hay menos de `min_frames`.
+double recent_median_locked(const State& s, std::size_t max_frames, std::size_t min_frames) {
+    std::vector<double> recent;
+    recent.reserve(max_frames);
+    for (auto it = s.history.rbegin() + (s.history.empty() ? 0 : 1); it != s.history.rend() && recent.size() < max_frames;
+         ++it) {
+        if (!(*it)->loading) recent.push_back(frame_ms(**it));
+    }
+    if (recent.size() < min_frames || recent.empty()) return 0.0;
+    const auto mid = recent.begin() + static_cast<std::ptrdiff_t>(recent.size() / 2);
+    std::nth_element(recent.begin(), mid, recent.end());
+    return *mid;
+}
+
+// Una captura de tiron pendiente: los frames (punteros) y a donde van.
+struct HitchCapture {
+    std::vector<FramePtr> frames;
+    std::filesystem::path file;
+    std::filesystem::path folder;
+    std::string message;  // el aviso, sin la ruta
+};
+
+// En un hilo de disco (antes se escribia en endFrame con el mutex tomado:
+// en un PC con todos los frames por encima de 50 ms paraba el juego cada 10 s).
+void write_hitch_capture(const HitchCapture& capture) {
+    std::string error;
+    if (!write_trace(capture.frames, capture.file, &error)) return;
+    prune_captures(capture.folder);
+    std::function<void(const std::string&)> log;
+    {
+        State& s = S();
+        std::lock_guard lock(s.mutex);
+        s.last_capture = capture.file;
+        log = s.log;
+    }
+    if (log) log(capture.message + ". Captura: " + capture.file.string());
+}
+
 }  // namespace
 
 const char* intern(const std::string& name) {
@@ -186,6 +249,15 @@ const char* intern(const std::string& name) {
 bool enabled() { return g_enabled.get(); }
 void setEnabled(bool on) { g_enabled.set(on); }
 std::uint64_t frameIndex() { return S().frame_index; }
+
+void setLoading(bool loading) {
+    State& s = S();
+    std::lock_guard lock(s.mutex);
+    s.loading = loading;
+    // El frame en curso cuenta como de carga (en el de "Escena lista" se acaba
+    // de cargar: tambien es de carga).
+    if (s.in_frame) s.current.loading = true;
+}
 
 void begin(const char* name) {
     if (!g_enabled.get()) return;
@@ -230,13 +302,14 @@ void beginFrame() {
     s.current = Frame{};
     s.current.index = ++s.frame_index;
     s.current.start_ns = now_ns();
+    s.current.loading = s.loading;
     s.in_frame = g_enabled.get();
     thread_state().stack.clear();
 }
 
 void endFrame() {
     State& s = S();
-    std::string message;
+    std::shared_ptr<HitchCapture> capture;
     {
         std::lock_guard lock(s.mutex);
         if (!s.in_frame) return;
@@ -247,15 +320,26 @@ void endFrame() {
             if (e.end_ns == 0) e.end_ns = s.current.end_ns;
         }
         thread_state().stack.clear();
-        s.history.push_back(std::move(s.current));
+        s.history.push_back(std::make_shared<const Frame>(std::move(s.current)));
+        s.current = Frame{};
         if (s.history.size() > kHistory) s.history.pop_front();
-        // Tiron: captura de los frames de antes.
-        const Frame& f = s.history.back();
-        const double frame_ms = ms(f.end_ns - f.start_ns);
+        // Tiron: captura de los frames de antes. No en los de carga, y en un
+        // PC lento (todos los frames por encima de prof.HitchMs) solo lo que
+        // se sale de lo normal.
+        const Frame& f = *s.history.back();
+        const double duration = frame_ms(f);
         const double seconds = static_cast<double>(f.end_ns) / 1.0e9;
         const float threshold = g_hitch_ms.get();
-        if (threshold > 0.0f && frame_ms > threshold && s.history.size() > 30 &&
-            seconds - s.last_capture_time > g_hitch_cooldown.get()) {
+        const float relative = g_hitch_relative.get();
+        bool hitch = threshold > 0.0f && duration > threshold && !f.loading && s.history.size() > 30 &&
+                     seconds - s.last_capture_time > g_hitch_cooldown.get();
+        if (hitch && relative > 0.0f) {
+            // Sin 30 frames normales de antes (recien cargada la escena) no se
+            // sabe que es lo normal: no se captura.
+            const double median = recent_median_locked(s, 120, 30);
+            hitch = median > 0.0 && duration > relative * median;
+        }
+        if (hitch) {
             s.last_capture_time = seconds;
             if (s.folder.empty()) s.folder = default_folder();
             const std::time_t tt = std::time(nullptr);
@@ -267,30 +351,33 @@ void endFrame() {
 #endif
             char stamp[64];
             std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm);
-            const std::filesystem::path file =
-                s.folder / (std::string("tiron_") + stamp + "_" + std::to_string(static_cast<int>(frame_ms)) + "ms.crtrace");
-            std::string error;
-            if (write_trace_locked(s, file, g_hitch_frames.get(), &error)) {
-                s.last_capture = file;
-                prune_captures(s.folder);
-                // La zona mas cara del frame del tiron (para el aviso).
-                const char* worst = nullptr;
-                std::int64_t worst_ns = 0;
-                for (const Event& e : f.events) {
-                    if (e.depth == 0 && e.thread == 0 && e.end_ns - e.start_ns > worst_ns) {
-                        worst_ns = e.end_ns - e.start_ns;
-                        worst = e.name;
-                    }
+            capture = std::make_shared<HitchCapture>();
+            capture->folder = s.folder;
+            capture->file =
+                s.folder / (std::string("tiron_") + stamp + "_" + std::to_string(static_cast<int>(duration)) + "ms.crtrace");
+            capture->frames = last_frames_locked(s, g_hitch_frames.get());
+            // La zona mas cara del frame del tiron (para el aviso).
+            const char* worst = nullptr;
+            std::int64_t worst_ns = 0;
+            for (const Event& e : f.events) {
+                if (e.depth == 0 && e.thread == 0 && e.end_ns - e.start_ns > worst_ns) {
+                    worst_ns = e.end_ns - e.start_ns;
+                    worst = e.name;
                 }
-                message = "[Insights] Tiron de " + std::to_string(static_cast<int>(frame_ms)) + " ms" +
-                          (worst ? std::string(" (sobre todo ") + worst + ": " +
-                                       std::to_string(static_cast<int>(ms(worst_ns))) + " ms)"
-                                 : std::string()) +
-                          ". Captura: " + file.string();
             }
+            capture->message = "[Insights] Tiron de " + std::to_string(static_cast<int>(duration)) + " ms" +
+                               (worst ? std::string(" (sobre todo ") + worst + ": " +
+                                            std::to_string(static_cast<int>(ms(worst_ns))) + " ms)"
+                                      : std::string());
         }
     }
-    if (!message.empty() && s.log) s.log(message);
+    if (!capture) return;
+    // Fuera del mutex y en un hilo de disco: el frame no espera a la escritura
+    // (megas de JSON) ni las zonas de los demas hilos al mutex.
+    jobs::JobHandle job = jobs::scheduleIo([capture] { write_hitch_capture(*capture); }, jobs::Priority::Background);
+    std::lock_guard lock(s.mutex);
+    std::erase_if(s.capture_jobs, [](const jobs::JobHandle& h) { return !h || h->done(); });
+    if (job && !job->done()) s.capture_jobs.push_back(std::move(job));
 }
 
 std::vector<ZoneStats> stats(int frames) {
@@ -310,7 +397,7 @@ std::vector<ZoneStats> stats(int frames) {
     std::map<std::string, Acc> acc;
     std::size_t order = 0;
     for (std::size_t k = s.history.size() - n; k < s.history.size(); ++k) {
-        const Frame& f = s.history[k];
+        const Frame& f = *s.history[k];
         // Ruta de cada evento (por su padre).
         std::vector<std::string> paths(f.events.size());
         std::vector<double> child_ms(f.events.size(), 0.0);
@@ -379,7 +466,7 @@ std::vector<float> frameTimes() {
     std::lock_guard lock(s.mutex);
     std::vector<float> out;
     out.reserve(s.history.size());
-    for (const Frame& f : s.history) out.push_back(static_cast<float>(ms(f.end_ns - f.start_ns)));
+    for (const FramePtr& f : s.history) out.push_back(static_cast<float>(frame_ms(*f)));
     return out;
 }
 
@@ -390,7 +477,7 @@ std::vector<CounterStats> counters(int frames) {
     std::map<std::string, CounterStats> acc;
     std::map<std::string, int> count;
     for (std::size_t k = s.history.size() - n; k < s.history.size(); ++k) {
-        for (const auto& [name, value] : s.history[k].counters) {
+        for (const auto& [name, value] : s.history[k]->counters) {
             CounterStats& c = acc[name];
             c.name = name;
             c.last = value;
@@ -408,32 +495,88 @@ std::vector<CounterStats> counters(int frames) {
 }
 
 FrameSummary summary(int frames) {
-    std::vector<float> times = frameTimes();
+    State& s = S();
+    std::vector<double> v;
+    {
+        // Los ultimos frames sin los de carga (los de subir una escena duran
+        // cientos de ms y no son tirones del juego).
+        std::lock_guard lock(s.mutex);
+        const std::size_t want = static_cast<std::size_t>(std::max(frames, 1));
+        v.reserve(std::min(want, s.history.size()));
+        for (auto it = s.history.rbegin(); it != s.history.rend() && v.size() < want; ++it) {
+            if (!(*it)->loading) v.push_back(frame_ms(**it));
+        }
+    }
     FrameSummary r;
-    const std::size_t n = std::min<std::size_t>(static_cast<std::size_t>(std::max(frames, 1)), times.size());
+    const std::size_t n = v.size();
     if (n == 0) return r;
-    std::vector<double> v(times.end() - static_cast<std::ptrdiff_t>(n), times.end());
+    r.p50_ms = percentile(v, 0.50);
+    r.p95_ms = percentile(v, 0.95);
+    r.p99_ms = percentile(v, 0.99);
+    // Tirones como las capturas: por encima de prof.HitchMs y, si se pide, de
+    // prof.HitchRelative veces la mediana (en un PC lento no todo es un tiron).
+    const double hitch_ms = g_hitch_ms.get();
+    const double limit = std::max(hitch_ms, std::max(static_cast<double>(g_hitch_relative.get()), 0.0) * r.p50_ms);
     double sum = 0.0;
     for (double x : v) {
         sum += x;
         r.max_ms = std::max(r.max_ms, x);
-        if (g_hitch_ms.get() > 0.0f && x > g_hitch_ms.get()) ++r.hitches;
+        if (hitch_ms > 0.0 && x > limit) ++r.hitches;
     }
     r.avg_ms = sum / static_cast<double>(n);
-    r.p50_ms = percentile(v, 0.50);
-    r.p95_ms = percentile(v, 0.95);
-    r.p99_ms = percentile(v, 0.99);
     return r;
+}
+
+std::vector<ZoneCost> topZones(int frames, int count) {
+    State& s = S();
+    // Por el puntero del nombre (literales o intern()): sin rutas ni cadenas.
+    std::unordered_map<const char*, double> by_name;
+    std::size_t n = 0;
+    {
+        std::lock_guard lock(s.mutex);
+        const std::size_t want = static_cast<std::size_t>(std::max(frames, 1));
+        std::vector<double> child;
+        for (auto it = s.history.rbegin(); it != s.history.rend() && n < want; ++it) {
+            const Frame& f = **it;
+            if (f.loading) continue;
+            ++n;
+            child.assign(f.events.size(), 0.0);
+            for (std::size_t i = 0; i < f.events.size(); ++i) {
+                const Event& e = f.events[i];
+                if (e.parent != 0xFFFF && e.parent < i) child[e.parent] += ms(e.end_ns - e.start_ns);
+            }
+            for (std::size_t i = 0; i < f.events.size(); ++i) {
+                const Event& e = f.events[i];
+                if (e.thread != 0) continue;
+                by_name[e.name] += std::max(ms(e.end_ns - e.start_ns) - child[i], 0.0);
+            }
+        }
+    }
+    if (n == 0) return {};
+    // El mismo nombre con otro puntero (el mismo literal en dos archivos): juntos.
+    std::map<std::string, double> merged;
+    for (const auto& [name, total] : by_name) merged[name != nullptr ? name : "?"] += total;
+    std::vector<ZoneCost> out;
+    out.reserve(merged.size());
+    for (const auto& [name, total] : merged) out.push_back(ZoneCost{name, total / static_cast<double>(n)});
+    std::sort(out.begin(), out.end(), [](const ZoneCost& a, const ZoneCost& b) { return a.self_ms > b.self_ms; });
+    if (count >= 0 && out.size() > static_cast<std::size_t>(count)) out.resize(static_cast<std::size_t>(count));
+    return out;
 }
 
 bool saveTrace(const std::filesystem::path& file, int frames, std::string* error) {
     State& s = S();
-    std::lock_guard lock(s.mutex);
-    if (s.history.empty()) {
-        if (error) *error = "no hay frames medidos (prof.Enabled apagado?)";
-        return false;
+    std::vector<FramePtr> snapshot;
+    {
+        std::lock_guard lock(s.mutex);
+        if (s.history.empty()) {
+            if (error) *error = "no hay frames medidos (prof.Enabled apagado?)";
+            return false;
+        }
+        snapshot = last_frames_locked(s, frames);
     }
-    return write_trace_locked(s, file, frames, error);
+    // Sin el mutex: los demas hilos siguen midiendo mientras se escribe.
+    return write_trace(snapshot, file, error);
 }
 
 std::filesystem::path captureFolder() {
@@ -455,6 +598,17 @@ std::filesystem::path lastHitchCapture() {
     return s.last_capture;
 }
 
+void flushCaptures() {
+    State& s = S();
+    std::vector<jobs::JobHandle> pending;
+    {
+        std::lock_guard lock(s.mutex);
+        pending.swap(s.capture_jobs);
+    }
+    // Sin el mutex: la escritura lo toma al terminar.
+    for (const jobs::JobHandle& job : pending) jobs::wait(job);
+}
+
 void setLog(std::function<void(const std::string&)> log) {
     State& s = S();
     std::lock_guard lock(s.mutex);
@@ -462,11 +616,13 @@ void setLog(std::function<void(const std::string&)> log) {
 }
 
 void reset() {
+    flushCaptures();  // una captura a medias no se cuela despues de borrar
     State& s = S();
     std::lock_guard lock(s.mutex);
     s.history.clear();
     s.current = Frame{};
     s.in_frame = false;
+    s.loading = false;
     s.frame_index = 0;
     s.last_capture.clear();
     s.last_capture_time = -1e9;

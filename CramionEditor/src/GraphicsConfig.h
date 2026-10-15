@@ -26,9 +26,20 @@ class VulkanRenderer;
 
 namespace cramion::editor {
 
+// Version de los Graphics.ini que se escriben (version=). La 1 (sin la
+// clave) es la de antes: Graphics::save() guardaba tambien lo heredado del
+// proyecto, asi que lo que dice no siempre lo eligio el jugador.
+inline constexpr int kGraphicsIniVersion = 2;
+// De quien es el archivo: el del proyecto (lo escribe el editor) o el del
+// jugador (Graphics::save() desde un script del juego exportado).
+enum class GraphicsIniSource { Project, Player };
 // Lee un Graphics.ini y lo aplica al renderizador (lo que no esta, igual).
-void loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& renderer);
-// Escribe la configuracion actual del renderizador.
+// Devuelve su version (1 si no la lleva; 0 si no hay archivo). Del jugador,
+// adaptive=0 solo cuenta con version 2 o mas: en uno de antes puede ser el
+// del visor del editor heredado del proyecto, no una eleccion del jugador.
+int loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& renderer,
+                    GraphicsIniSource source = GraphicsIniSource::Project);
+// Escribe la configuracion actual del renderizador (con version=).
 bool saveGraphicsIni(const std::filesystem::path& file, const gfx::VulkanRenderer& renderer);
 
 // Calidades rapidas: 0 Baja, 1 Media, 2 Alta, 3 Ultra.

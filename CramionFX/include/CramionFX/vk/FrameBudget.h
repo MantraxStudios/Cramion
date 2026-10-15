@@ -20,6 +20,7 @@
 // algo que el apago.
 
 #include "CramionFX/vk/GpuProfiler.h"
+#include "CramionFX/vk/GraphicsSettings.h"
 #include "CramionFX/vk/PostProcessSettings.h"
 
 #include <array>
@@ -60,6 +61,35 @@ float tinyObjectPixelsFor(HardwareTier tier);
 // vuelve hasta pasar de 1.25 x `threshold` (en el borde no parpadea).
 inline bool tinyObject(float pixels, float threshold, bool was_tiny) {
     return pixels < (was_tiny ? threshold * 1.25f : threshold);
+}
+
+// --- Juego exportado ---
+// La configuracion grafica del proyecto (ProjectSettings/Graphics.ini: la del
+// visor del editor en el PC del autor, con su presupuesto apagado, 240 FPS o
+// sombras de 6144) adaptada a ESTE PC:
+//   - presupuesto adaptativo siempre encendido;
+//   - objetivo entre 30 y los Hz de la pantalla, 144 como mucho (60 si no se
+//     saben; con 240 el presupuesto lo bajaba todo en cualquier PC);
+//   - sombras, texturas y anisotropico del proyecto como tope de los de la
+//     gama (0 = segun el PC, se queda): 6144 y texturas de 16K no caben en una
+//     GPU de 2-4 GB;
+//   - en Bajo y Medio, sin sesgo negativo de mips (mas ancho de banda y
+//     parpadeo de lejos).
+// `locked` (graphics_lock=1 en game.ini, casilla "Respetar los ajustes
+// graficos del proyecto" de la configuracion de compilacion): tal cual.
+// `display_hz` <= 1: desconocidos.
+GraphicsSettings shippedGraphics(const GraphicsSettings& project, HardwareTier tier, float display_hz, bool locked);
+
+// Render Textures (camaras con Target Texture): cada una es otro frame entero
+// (dos portales eran 3 frames por frame). Cada cuantos frames se dibuja cada
+// camara segun el nivel: 1 en Alto y Ultra, 2 en Medio, 3 en Bajo.
+int renderTextureIntervalFor(HardwareTier tier);
+// Si a la camara `index` le toca dibujarse en el frame `frame`: escalonadas
+// (con dos camaras cada 3 frames, una en el 0, 3, 6... y la otra en el 2, 5,
+// 8...), no todas en el mismo frame.
+inline bool renderTextureDue(std::uint64_t frame, std::size_t index, int interval) {
+    if (interval <= 1) return true;
+    return (frame + index) % static_cast<std::uint64_t>(interval) == 0;
 }
 
 // Palancas, de la que menos se nota a la que mas. Las nuevas van al final:
@@ -211,10 +241,14 @@ private:
 
     // Ultimo tiempo medido de cada pasada (por nombre, solo las que importan).
     // `output`: lo que va despues del escalado (a la resolucion de salida: no
-    // baja con la resolucion interna).
+    // baja con la resolucion interna). `fixed`: lo que no depende de la
+    // resolucion (compute del mundo, mapas de tamano fijo, subidas).
+    // `sky_map`: la oclusion del cielo desde arriba (la quita la iluminacion
+    // ligera).
     struct PassCosts {
         float geometry = 0, shadows = 0, local_shadows = 0, volumetric = 0, shafts = 0, lighting = 0,
-              ssao = 0, reflections = 0, gi = 0, total = 0, camera_fx = 0, clouds = 0, output = 0;
+              ssao = 0, reflections = 0, gi = 0, total = 0, camera_fx = 0, clouds = 0, output = 0, fixed = 0,
+              sky_map = 0;
     } passes_;
 
     // Cambio en observacion: se mide lo que de verdad ahorro (o costo).

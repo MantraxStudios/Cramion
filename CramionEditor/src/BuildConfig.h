@@ -86,6 +86,11 @@ struct BuildConfig {
     bool vr = false;            // realidad virtual (OpenXR) si hay casco; solo Windows
     bool dedicated_server = false;  // copia <Juego>Server.exe (servidor sin ventana) junto al juego
     bool allow_mods = false;        // el juego carga los mods de Mods/ (mods=1 en game.ini)
+    // Escritorio: el juego usa tal cual ProjectSettings/Graphics.ini (la del
+    // visor del editor) en vez de adaptarla a cada PC (gfx::shippedGraphics:
+    // presupuesto siempre activo, objetivo hasta los Hz de la pantalla,
+    // sombras y texturas como tope de la gama...). graphics_lock=1 en game.ini.
+    bool graphics_lock = false;
     BuildPlatform platform = BuildPlatform::Windows;
     AndroidBuildSettings android;
     SteamBuildSettings steam;

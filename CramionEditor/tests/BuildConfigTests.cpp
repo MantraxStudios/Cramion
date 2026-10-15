@@ -62,6 +62,7 @@ int main(int argc, char** argv) {
     configs.configs[1].icon = "Assets/icono.png";
     configs.configs[1].window_mode = 1;
     configs.configs[1].show_fps = true;
+    configs.configs[1].graphics_lock = true;
     configs.active = 1;
     const std::filesystem::path file = folder / "ProjectSettings" / "BuildConfigs.json";
     check(saveBuildConfigs(file, configs), "se guardan las configuraciones");
@@ -71,11 +72,22 @@ int main(int argc, char** argv) {
     check(shipping.game_name == "Mi Juego" && shipping.version == "2.3.1" && shipping.icon == "Assets/icono.png" &&
               shipping.window_mode == 1 && shipping.show_fps && shipping.version_in_title,
           "los campos sobreviven");
+    check(shipping.graphics_lock && !loaded.configs[0].graphics_lock,
+          "la casilla de respetar los ajustes graficos sobrevive (y por defecto va apagada)");
     check(loadBuildConfigs(folder / "no_existe.json").configs.size() == 1, "sin archivo: una predeterminada");
     const std::string ini = buildConfigIni(shipping, "Mi Juego");
     check(ini.find("title=Mi Juego 2.3.1\n") != std::string::npos && ini.find("window=1\n") != std::string::npos &&
               ini.find("show_fps=1\n") != std::string::npos,
           "game.ini lleva titulo, ventana y FPS");
+    check(ini.find("graphics_lock=1\n") != std::string::npos &&
+              buildConfigIni(loaded.configs[0], "Mi Juego").find("graphics_lock") == std::string::npos,
+          "game.ini lleva graphics_lock=1 solo con la casilla");
+    {
+        BuildConfig android = shipping;
+        android.platform = BuildPlatform::Android;
+        check(buildConfigIni(android, "Mi Juego").find("graphics_lock") == std::string::npos,
+              "en Android no (tiene su perfil movil)");
+    }
 
     // Icono dentro de una copia del reproductor.
     const std::filesystem::path exe = folder / "Mi Juego.exe";

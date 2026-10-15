@@ -2461,7 +2461,9 @@ void EditorApp::drawGraphicsSettings() {
         ImGui::SetItemTooltip(
             "Mide cuánto tarda cada pasada de la GPU y, si no llega a los FPS objetivo, baja solo lo que más\n"
             "ahorra y menos se nota (LODs, detalle de sombras, efectos, resolución con FSR 1). Aprende lo que\n"
-            "cuesta cada cosa en este PC y vuelve a subir la calidad cuando sobra tiempo.");
+            "cuesta cada cosa en este PC y vuelve a subir la calidad cuando sobra tiempo.\n"
+            "Aquí es la del visor del editor. El juego exportado se adapta a cada PC: siempre la lleva activa,\n"
+            "salvo con \"Respetar los ajustes gráficos del proyecto\" en Configuraciones de compilación.");
         ImGui::BeginDisabled(!g.adaptive);
         static constexpr int kTargets[] = {30, 45, 60, 75, 90, 120, 144, 165, 240};
         char preview[16];
@@ -2478,6 +2480,10 @@ void EditorApp::drawGraphicsSettings() {
             }
             ImGui::EndCombo();
         }
+        ImGui::SetItemTooltip(
+            "FPS que intenta mantener la optimización adaptativa en el visor del editor.\n"
+            "El juego exportado lo limita a los Hz de la pantalla de cada jugador (entre 30 y 144), salvo con\n"
+            "\"Respetar los ajustes gráficos del proyecto\" en Configuraciones de compilación.");
         ImGui::EndDisabled();
 
         static constexpr int kShadowSizes[] = {0, 1024, 1536, 2048, 3072, 4096, 6144};

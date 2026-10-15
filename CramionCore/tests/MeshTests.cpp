@@ -1290,6 +1290,106 @@ void testTinyObjects() {
     check(a && b && c && d, "histeresis: se oculta por debajo de t y vuelve por encima de 1.25 t");
 }
 
+// Juego exportado: los ajustes del visor del editor (Graphics.ini del
+// proyecto) adaptados al PC del jugador, salvo con la casilla de bloqueo.
+void testShippedGraphics() {
+    std::printf("\nJuego exportado: ajustes del proyecto adaptados a cada PC\n");
+    gfx::GraphicsSettings project{};
+    project.adaptive = false;
+    project.target_fps = 240.0f;
+    project.shadow_resolution = 6144;
+    project.texture_max_size = 16384;
+    project.texture_filtering = 16;
+    project.texture_lod_bias = -1.0f;
+    const gfx::GraphicsSettings low = gfx::shippedGraphics(project, gfx::HardwareTier::Low, 60.0f, false);
+    std::printf("    Bajo a 60 Hz: adaptativo %d, objetivo %.0f, sombras %d, texturas %d, filtrado %d, sesgo %.1f\n",
+                low.adaptive ? 1 : 0, low.target_fps, low.shadow_resolution, low.texture_max_size, low.texture_filtering,
+                low.texture_lod_bias);
+    check(low.adaptive && low.target_fps == 60.0f && low.shadow_resolution == 1536 && low.texture_max_size == 2048 &&
+              low.texture_filtering == 4 && low.texture_lod_bias == 0.0f,
+          "{0, 240, 6144, 16384, 16, -1} en Bajo a 60 Hz da {1, 60, 1536, 2048, 4, 0}");
+    const gfx::GraphicsSettings locked = gfx::shippedGraphics(project, gfx::HardwareTier::Low, 60.0f, true);
+    check(locked == project && !locked.adaptive, "con el bloqueo, tal cual (adaptive sigue en 0)");
+    const gfx::GraphicsSettings fast = gfx::shippedGraphics(project, gfx::HardwareTier::Ultra, 240.0f, false);
+    check(fast.target_fps == 144.0f && fast.shadow_resolution == 4096 && fast.texture_max_size == 8192 &&
+              fast.texture_lod_bias == -1.0f,
+          "Ultra a 240 Hz: objetivo 144 como mucho; el sesgo negativo se queda");
+    gfx::GraphicsSettings automatic{};  // 0 = segun el PC
+    automatic.target_fps = 30.0f;
+    const gfx::GraphicsSettings keep = gfx::shippedGraphics(automatic, gfx::HardwareTier::Medium, 0.0f, false);
+    check(keep.target_fps == 30.0f && keep.shadow_resolution == 0 && keep.texture_max_size == 0 &&
+              keep.texture_filtering == 0,
+          "lo automatico (0) y un objetivo de 30 se quedan; Hz desconocidos no cambian nada");
+    gfx::GraphicsSettings small = project;
+    small.shadow_resolution = 1024;
+    small.texture_filtering = 1;
+    small.target_fps = 200.0f;
+    const gfx::GraphicsSettings capped = gfx::shippedGraphics(small, gfx::HardwareTier::Medium, 0.0f, false);
+    check(capped.shadow_resolution == 1024 && capped.texture_filtering == 1 && capped.target_fps == 60.0f,
+          "lo que ya es menor que la gama se respeta; sin Hz conocidos, 60 como mucho");
+    check(gfx::shippedGraphics(automatic, gfx::HardwareTier::High, 24.0f, false).target_fps == 30.0f,
+          "nunca por debajo de 30 FPS");
+}
+
+// Marcas de la GPU: el compute del principio y los mapas fijos no bajan con
+// la resolucion; el mapa del cielo cuenta en la iluminacion ligera.
+void testPassMarks() {
+    std::printf("\nPresupuesto: marcas de la GPU\n");
+    using gfx::Lever;
+    const auto first_lowered = [](const std::vector<gfx::GpuTiming>& passes, float gpu) {
+        gfx::FrameBudget b;
+        b.setStartLevels(gfx::HardwareTier::High);
+        b.setTargetFps(60.0f);
+        for (int frame = 0; frame < 120 && b.lastAction().empty(); ++frame) b.update(1.0f / 60.0f, gpu, passes);
+        for (std::size_t i = 0; i < gfx::kLeverCount; ++i) {
+            if (b.level(static_cast<Lever>(i)) > 0) return static_cast<int>(i);
+        }
+        return -1;
+    };
+    // 22 ms de compute (terreno, oceano, liquidos) y 8 de iluminacion: bajar
+    // la resolucion apenas ahorra (el compute no depende de ella).
+    const int compute = first_lowered({{"Preparacion (compute)", 22.0f}, {"Iluminacion", 8.0f}}, 30.0f);
+    std::printf("    con compute: primero %s\n", compute >= 0 ? gfx::FrameBudget::leverName(static_cast<Lever>(compute)) : "nada");
+    check(compute == static_cast<int>(Lever::Lighting),
+          "el compute del principio no cuenta como coste de la resolucion (baja antes la iluminacion ligera)");
+    // Sin la marca (todo era de la resolucion) habria bajado la resolucion.
+    const int unnamed = first_lowered({{"Algo", 22.0f}, {"Iluminacion", 8.0f}}, 30.0f);
+    check(unnamed == static_cast<int>(Lever::RenderScale), "(sin marca, el mismo coste se cobraba a la resolucion)");
+    // La oclusion del cielo la quita la iluminacion ligera.
+    const int sky = first_lowered({{"Oclusion del cielo", 6.0f}, {"Iluminacion", 2.0f}, {"Geometria + culling", 6.0f}},
+                                  22.0f);
+    check(sky == static_cast<int>(Lever::Lighting), "el mapa del cielo desde arriba cuenta en la iluminacion ligera");
+}
+
+// Render Textures a un ritmo segun la gama, escalonadas por camara.
+void testRenderTextureInterval() {
+    std::printf("\nRender Textures por gama\n");
+    check(gfx::renderTextureIntervalFor(gfx::HardwareTier::Low) == 3 &&
+              gfx::renderTextureIntervalFor(gfx::HardwareTier::Medium) == 2 &&
+              gfx::renderTextureIntervalFor(gfx::HardwareTier::High) == 1 &&
+              gfx::renderTextureIntervalFor(gfx::HardwareTier::Ultra) == 1,
+          "cada 3 frames en Bajo, 2 en Medio, todos en Alto y Ultra");
+    // Dos portales (como PortalLab) en Bajo: cada uno un frame de cada 3 y
+    // nunca los dos en el mismo frame.
+    int drawn[2] = {0, 0};
+    int both = 0;
+    int views = 0;
+    for (std::uint64_t frame = 0; frame < 300; ++frame) {
+        const bool a = gfx::renderTextureDue(frame, 0, 3);
+        const bool b = gfx::renderTextureDue(frame, 1, 3);
+        drawn[0] += a ? 1 : 0;
+        drawn[1] += b ? 1 : 0;
+        both += a && b ? 1 : 0;
+        views += 1 + (a ? 1 : 0) + (b ? 1 : 0);
+    }
+    std::printf("    dos camaras en Bajo: %d y %d de 300 frames, %.2f vistas por frame\n", drawn[0], drawn[1],
+                views / 300.0);
+    check(drawn[0] == 100 && drawn[1] == 100 && both == 0, "escalonadas: cada una 1 de cada 3 frames, nunca a la vez");
+    bool every = true;
+    for (std::uint64_t frame = 0; frame < 10; ++frame) every = every && gfx::renderTextureDue(frame, 1, 1);
+    check(every, "con intervalo 1 se dibujan todos los frames (como antes)");
+}
+
 // VR: la resolucion de cada ojo no se hunde (presupuesto con tope, tope de
 // VRAM segun la memoria, sesgo de mips al escalar).
 void testVrResolution() {
@@ -1343,6 +1443,9 @@ int main() {
     testFrameBudgetLevers();
     testRenderScaleFloor();
     testTinyObjects();
+    testShippedGraphics();
+    testPassMarks();
+    testRenderTextureInterval();
     testVrResolution();
     testLods();
     testPrimitives();

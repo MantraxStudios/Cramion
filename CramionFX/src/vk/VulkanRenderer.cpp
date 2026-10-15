@@ -4664,6 +4664,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     // dejaba a la mitad de frames). No mide: deja en su hueco los tiempos del ojo.
     mirror_only_ = present && xr_views_active_ && xrViewsMode();
     const bool profiled = !mirror_only_ && gpu_profiler_.collect(current_frame_);
+    if (profiled) gpu_total_ms_ += gpu_profiler_.lastTotalMilliseconds();  // todas las vistas (gpuTotalMs)
     {
         // El presupuesto recibe una muestra cuando hay una nueva (antes, en
         // cada frame la media del perfilador: en el 2.o frame aun era 0 y la
@@ -5473,6 +5474,10 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     if (!isolated() && !xrSecondEye() && !water_pass_.empty()) water_pass_.recordSimulation(cmd, frame_index);
     // Liquidos: los subpasos de este frame (compute; una vez por frame).
     if (!isolated() && !xrSecondEye()) fluid_pass_.recordSimulate(cmd, frame_index);
+    // Todo lo de arriba (terreno, escena de rayos, hierba, vegetacion, oceano,
+    // liquidos) con su propia marca: antes se cobraba a las sombras y el
+    // presupuesto bajaba el detalle de sombras por culpa del compute.
+    markPass(cmd, frame_index, "Preparacion (compute)");
 
     if (!rain_map_ready_ && (rainAvailable() || waterAvailable() || precipitation_.needsRainMap()) &&
         !actor_draws_.empty()) {
@@ -5492,7 +5497,12 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     recordCloudPass(cmd, frame_index);
     markPass(cmd, frame_index, "Nubes");
     fire_pass_.recordUpload(cmd, frame_index);  // mapa de quemado antes de la geometria
-    if (sky_map_redraw_ && !isolated() && !xrSecondEye()) recordSkyMap(cmd, frame_index);
+    if (sky_map_redraw_ && !isolated() && !xrSecondEye()) {
+        recordSkyMap(cmd, frame_index);
+        // Aparte de la geometria: se rehace de vez en cuando y la iluminacion
+        // ligera lo quita (palanca Lighting).
+        markPass(cmd, frame_index, "Oclusion del cielo");
+    }
     recordGeometryPass(cmd, frame_index);
     markPass(cmd, frame_index, "Geometria + culling");
     recordSsaoPass(cmd, frame_index);
@@ -5511,11 +5521,13 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     markPass(cmd, frame_index, "Path tracing");
     const bool wire_only = drawModeNow() == SceneDrawMode::Wireframe;
     if (!wire_only) recordGlassPass(cmd, frame_index);
+    // El vidrio con su marca justo detras (antes iba despues del agua: el
+    // vidrio se cobraba al agua y "Vidrio" medio 0).
+    markPass(cmd, frame_index, "Vidrio");
     if (!water_pass_.empty() && !capturing_ && !wire_only) {
         recordWaterPass(cmd, frame_index);
         markPass(cmd, frame_index, "Agua");
     }
-    markPass(cmd, frame_index, "Vidrio");
     if (fluid_pass_.active() && !capturing_ && !wire_only) {
         recordFluidPass(cmd, frame_index);
         markPass(cmd, frame_index, "Liquidos");

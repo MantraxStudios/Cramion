@@ -188,6 +188,32 @@ cvar::CVar<float> g_slow_frame_ms("perf.SlowFrameMs", 150.0f,
                                   "Frames mas lentos que esto (ms) se explican en el log (con CRAMION_PERF_LOG=1)",
                                   cvar::Saved, 5.0f, 10000.0f);
 
+#if defined(_WIN32)
+// Hz de la pantalla en la que esta la ventana (0 si no se saben: Windows
+// devuelve 0 o 1 para "los del hardware").
+float displayRefreshRate(HWND hwnd) {
+    MONITORINFOEXW monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) return 0.0f;
+    DEVMODEW mode{};
+    mode.dmSize = sizeof(mode);
+    if (!EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode)) return 0.0f;
+    return mode.dmDisplayFrequency > 1 ? static_cast<float>(mode.dmDisplayFrequency) : 0.0f;
+}
+#endif
+
+// El escalador que se usa de verdad (DLSS sin una RTX acaba en TAA).
+const char* upscalerName(gfx::Upscaler upscaler) {
+    switch (upscaler) {
+        case gfx::Upscaler::Off: return "ninguno";
+        case gfx::Upscaler::Taa: return "TAA";
+        case gfx::Upscaler::Fsr1: return "FSR 1";
+        case gfx::Upscaler::Fsr3: return "FSR 3";
+        case gfx::Upscaler::Dlss: return "DLSS";
+    }
+    return "?";
+}
+
 }  // namespace
 
 int runPlayer() {
@@ -425,7 +451,44 @@ int runPlayer() {
 #if defined(_WIN32)
         loading.reset();
         editor::loadGraphicsIni(project->settingsFolder() / "Graphics.ini", renderer);
-        editor::loadGraphicsIni(player_graphics, renderer);  // la del jugador, encima
+        // Lo del proyecto es lo que el autor tenia en el visor del editor de SU
+        // PC (presupuesto apagado, 240 FPS, sombras de 6144...): se adapta a
+        // este PC (shippedGraphics) salvo con graphics_lock=1 (configuracion
+        // de compilacion). La del jugador va encima: manda lo que el eligio.
+        {
+            const bool graphics_lock = readIniValue(ini, "graphics_lock") == "1";
+            const gfx::HardwareTier tier = renderer.hardwareProfile().tier;
+            const float display_hz = displayRefreshRate(window.handle());
+            const auto adapt = [&] {
+                renderer.setGraphicsSettings(gfx::shippedGraphics(renderer.graphicsSettings(), tier, display_hz, graphics_lock));
+                if (graphics_lock) return;
+                // Por debajo de Alto, sin trazado de rayos (si la GPU lo expone,
+                // no lo aguanta); en Bajo, sin sonda de reflexion (cada cara es
+                // casi un frame entero), como el preset Baja.
+                if (tier < gfx::HardwareTier::High) renderer.setRayTracingEnabled(false);
+                if (tier == gfx::HardwareTier::Low) renderer.setReflectionProbeEnabled(false);
+            };
+            adapt();
+            const int player_version =
+                editor::loadGraphicsIni(player_graphics, renderer, editor::GraphicsIniSource::Player);
+            // Un ini del jugador de antes (sin version=2): Graphics.save() tambien
+            // guardaba lo heredado del proyecto (240 FPS, sombras de 6144...), asi
+            // que no manda a ciegas: se vuelve a adaptar (solo baja o pone topes).
+            if (player_version == 1) adapt();
+            const gfx::GraphicsSettings& g = renderer.graphicsSettings();
+            const auto size = [](std::int32_t value) { return value > 0 ? std::to_string(value) : std::string("auto"); };
+            std::cout << "[Rendimiento] Ajustes del juego: "
+                      << (graphics_lock ? "los del proyecto tal cual (graphics_lock=1)" : "adaptados a este PC")
+                      << " (gama " << gfx::tierName(tier) << ", pantalla "
+                      << (display_hz > 0.0f ? std::to_string(static_cast<int>(display_hz)) + " Hz" : std::string("? Hz"))
+                      << ", ini del jugador "
+                      << (player_version == 0 ? std::string("no") : "v" + std::to_string(player_version))
+                      << "): presupuesto " << (g.adaptive ? "activo" : "apagado") << ", objetivo " << g.target_fps
+                      << " FPS, sombras " << size(g.shadow_resolution) << ", texturas " << size(g.texture_max_size)
+                      << ", filtrado " << size(g.texture_filtering) << ", trazado de rayos "
+                      << (renderer.rayTracingEnabled() && renderer.rayTracingSupported() ? "encendido" : "apagado")
+                      << ", sonda " << (renderer.reflectionProbeEnabled() ? "encendida" : "apagada") << "\n";
+        }
         // Texturas ya comprimidas por la exportacion (BC1/BC7, TextureCache/
         // del paquete): se leen tal cual, sin decodificar los PNG, y ocupan
         // de 4 a 8 veces menos VRAM. El juego no comprime nada (solo lectura).
@@ -645,7 +708,8 @@ int runPlayer() {
             g.vsync = true;
             renderer.setGraphicsSettings(g);
         }
-        editor::loadGraphicsIni(player_graphics, renderer);
+        // adaptive=0 solo de un ini del jugador nuevo (version=2), como en Windows.
+        editor::loadGraphicsIni(player_graphics, renderer, editor::GraphicsIniSource::Player);
         std::cout << "[Juego] " << project->name << " en " << renderer.device().name() << " (" << window.width() << "x"
                   << window.height() << ", densidad " << window.density() << ")\n";
 #endif
@@ -1016,6 +1080,9 @@ int runPlayer() {
             load.models_done = 0;
             load.frames = 0;
             orbit.fitted = false;
+            // Hasta "Escena lista", frames de carga: fuera del resumen de la
+            // linea de rendimiento y sin capturas de tiron (prof::setLoading).
+            prof::setLoading(true);
         };
         const auto scene_loading = [&] { return load.stage != SceneLoad::Stage::Idle && load.stage != SceneLoad::Stage::Done; };
         ecs::RenderSync::Options sync_options;
@@ -1193,6 +1260,7 @@ int runPlayer() {
                     renderer.flushPendingRayTracingScene();
                     load.stage = Stage::Done;
                     std::cout << "[Juego] Escena lista\n";
+                    prof::setLoading(false);  // este frame aun cuenta como de carga
                     break;
                 }
             }
@@ -1341,8 +1409,18 @@ int runPlayer() {
         }();
         double last_slow_log = -10.0;
         double run_seconds = 0.0;
+        // Linea de rendimiento: CPU del hilo principal (el frame menos la
+        // espera a la GPU, como el componente Profiler) y GPU de todas las
+        // vistas del frame (Render Textures incluidas).
+        double perf_cpu_ms = 0.0;
+        double perf_wait_ms = 0.0;
+        double perf_gpu_ms = 0.0;
+        double last_fence_total = renderer.fenceWaitTotalMs();
+        double last_gpu_total = renderer.gpuTotalMs();
         cvar::CVarBase* upload_mb_cvar = nullptr;
         std::uint64_t upload_mb_version = ~0ull;
+        // Hasta la escena inicial todo es carga (banner, descomprimir, subir).
+        prof::setLoading(true);
         while (!quit) {
             const auto frame_start = std::chrono::steady_clock::now();
             float physics_ms = 0.0f, streaming_ms = 0.0f, sync_ms = 0.0f, render_ms = 0.0f;
@@ -1590,9 +1668,18 @@ int runPlayer() {
             // Cada 5 s una linea de rendimiento en el log (se vuelca ya: si el
             // juego se cierra mal, queda escrita). Sirve para ver en que se va
             // el frame en el PC de un jugador.
+            const double fence_total = renderer.fenceWaitTotalMs();
+            const double gpu_total = renderer.gpuTotalMs();
             if (loaded && !scene_loading()) {
                 perf_seconds += clock_dt;
                 ++perf_frames;
+                perf_cpu_ms += std::max(static_cast<double>(clock_dt) * 1000.0 - (fence_total - last_fence_total), 0.0);
+                perf_wait_ms += fence_total - last_fence_total;
+                perf_gpu_ms += gpu_total - last_gpu_total;
+            }
+            last_fence_total = fence_total;
+            last_gpu_total = gpu_total;
+            if (loaded && !scene_loading()) {
                 if (perf_seconds >= 5.0f) {
                     const gfx::FrameBudget& budget = renderer.frameBudget();
                     const vk::Extent2D internal = renderer.renderExtent();
@@ -1623,9 +1710,29 @@ int runPlayer() {
                     const prof::FrameSummary fs = prof::summary(300);
                     std::cout << " | frame p50 " << fs.p50_ms << " / p95 " << fs.p95_ms << " / p99 " << fs.p99_ms
                               << " ms, tirones " << fs.hitches;
+                    // Lo nuevo, al final (lo de antes no se mueve: lo leen el
+                    // editor, el MCP y las personas): la gama del PC, el
+                    // escalador que se usa de verdad, la CPU del hilo principal
+                    // por frame (sin la espera a la GPU, que va aparte: la zona
+                    // "Render (CPU)" la lleva dentro), la GPU de todas las
+                    // vistas por frame ("GPU" es la de una vista) y las zonas de
+                    // CPU con mas tiempo propio.
+                    const double frames = static_cast<double>(std::max(perf_frames, 1));
+                    std::cout << " | gama " << gfx::tierName(renderer.hardwareProfile().tier) << " | escalador "
+                              << upscalerName(renderer.activeUpscaler()) << " | CPU (hilo principal) "
+                              << perf_cpu_ms / frames << " ms, espera a la GPU " << perf_wait_ms / frames
+                              << " ms | GPU del frame " << perf_gpu_ms / frames << " ms";
+                    if (renderer.renderTextureDraws() > 0) {
+                        std::cout << " | Render Textures " << renderer.renderTextureDraws() << "/s";
+                    }
+                    std::cout << " | zonas:";
+                    for (const prof::ZoneCost& z : prof::topZones(300, 5)) std::cout << " " << z.name << " " << z.self_ms;
                     std::cout << std::endl;
                     perf_seconds = 0.0f;
                     perf_frames = 0;
+                    perf_cpu_ms = 0.0;
+                    perf_wait_ms = 0.0;
+                    perf_gpu_ms = 0.0;
                 }
             }
             prof::endFrame();

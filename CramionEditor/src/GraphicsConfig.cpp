@@ -11,8 +11,10 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <set>
+#include <utility>
 
 namespace cramion::editor {
 
@@ -137,23 +139,34 @@ bool asText(const GraphicsValue& v, std::string& out) {
 // Graphics.ini
 // -----------------------------------------------------------------------------
 
-void loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& renderer) {
+int loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& renderer, GraphicsIniSource source) {
     std::ifstream in(file);
-    if (!in) return;
-    gfx::GraphicsSettings g = renderer.graphicsSettings();
+    if (!in) return 0;
+    // Primero todo (la version puede ir en cualquier linea) y despues se aplica.
+    std::vector<std::pair<std::string, std::string>> entries;
+    int version = 1;
     std::string line;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();  // escrito en Windows (CRLF), leido en Android
         const std::size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
-        const std::string key = line.substr(0, eq);
-        const float value = std::strtof(line.c_str() + eq + 1, nullptr);
+        entries.emplace_back(line.substr(0, eq), line.substr(eq + 1));
+        if (entries.back().first == "version") version = std::max(std::atoi(entries.back().second.c_str()), 1);
+    }
+    gfx::GraphicsSettings g = renderer.graphicsSettings();
+    for (const auto& [key, text] : entries) {
+        const float value = std::strtof(text.c_str(), nullptr);
         if (key == "upscaler") g.upscaler = static_cast<gfx::Upscaler>(std::clamp(static_cast<int>(value), 0, 4));
         if (key == "quality") g.quality = static_cast<gfx::UpscaleQuality>(std::clamp(static_cast<int>(value), 0, 5));
         if (key == "custom_scale") g.custom_scale = std::clamp(value, 0.25f, 1.0f);
         if (key == "sharpness") g.sharpness = std::clamp(value, 0.0f, 1.0f);
         if (key == "vsync") g.vsync = value != 0.0f;
-        if (key == "adaptive") g.adaptive = value != 0.0f;
+        // Apagar el presupuesto desde el ini del jugador solo si es de los
+        // nuevos (version 2): en los de antes iba lo heredado del proyecto.
+        if (key == "adaptive" &&
+            (value != 0.0f || source == GraphicsIniSource::Project || version >= kGraphicsIniVersion)) {
+            g.adaptive = value != 0.0f;
+        }
         if (key == "target_fps") g.target_fps = std::clamp(value, 15.0f, 360.0f);
         if (key == "shadow_resolution") g.shadow_resolution = std::clamp(static_cast<int>(value), 0, 8192);
         if (key == "texture_max_size") g.texture_max_size = std::clamp(static_cast<int>(value), 0, 16384);
@@ -167,6 +180,7 @@ void loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& ren
         if (key == "occlusion_culling") renderer.setOcclusionCullingEnabled(value != 0.0f);
     }
     renderer.setGraphicsSettings(g);
+    return version;
 }
 
 bool saveGraphicsIni(const std::filesystem::path& file, const gfx::VulkanRenderer& renderer) {
@@ -175,6 +189,7 @@ bool saveGraphicsIni(const std::filesystem::path& file, const gfx::VulkanRendere
     std::ofstream out(file, std::ios::trunc);
     if (!out) return false;
     const gfx::GraphicsSettings& g = renderer.graphicsSettings();
+    out << "version=" << kGraphicsIniVersion << "\n";
     out << "upscaler=" << static_cast<int>(g.upscaler) << "\n";
     out << "quality=" << static_cast<int>(g.quality) << "\n";
     out << "custom_scale=" << g.custom_scale << "\n";

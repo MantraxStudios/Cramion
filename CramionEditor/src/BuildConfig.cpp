@@ -52,6 +52,7 @@ BuildConfigs loadBuildConfigs(const std::filesystem::path& file) {
                 b.vr = c.value("vr", b.vr);
                 b.dedicated_server = c.value("dedicated_server", b.dedicated_server);
                 b.allow_mods = c.value("allow_mods", b.allow_mods);
+                b.graphics_lock = c.value("graphics_lock", b.graphics_lock);
                 {
                     const std::string platform = c.value("platform", std::string("windows"));
                     b.platform = platform == "android" ? BuildPlatform::Android
@@ -116,6 +117,7 @@ bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& con
                         {"vr", b.vr},
                         {"dedicated_server", b.dedicated_server},
                         {"allow_mods", b.allow_mods},
+                        {"graphics_lock", b.graphics_lock},
                         {"platform", b.platform == BuildPlatform::Android ? "android"
                                      : b.platform == BuildPlatform::Linux ? "linux"
                                                                           : "windows"}});
@@ -165,6 +167,8 @@ std::string buildConfigIni(const BuildConfig& config, const std::string& game_na
     ini << "height=" << config.height << "\n";
     ini << "show_fps=" << (config.show_fps ? 1 : 0) << "\n";
     if (config.allow_mods) ini << "mods=1\n";
+    // Android tiene su propio perfil (android_quality); el bloqueo es del escritorio.
+    if (config.graphics_lock && config.platform != BuildPlatform::Android) ini << "graphics_lock=1\n";
     if (config.vr && config.platform == BuildPlatform::Windows) ini << "vr=1\n";
     if (config.steam.enabled && config.platform != BuildPlatform::Android) {
         ini << "steam_app_id=" << config.steam.app_id << "\n";

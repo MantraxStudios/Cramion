@@ -448,6 +448,12 @@ public:
     // componente Profiler resta la diferencia entre frames al tiempo del
     // frame para saber cuanto trabajo la CPU.
     double fenceWaitTotalMs() const { return fence_wait_total_ms_; }
+    // Milisegundos de GPU medidos desde el principio, de todas las vistas
+    // (Render Textures, ojos de la VR, segunda vista del editor; solo crece):
+    // la diferencia entre dos momentos dividida por los frames es lo que
+    // cuesta de verdad cada frame (gpuProfiler().totalMilliseconds() es la
+    // media de una vista).
+    double gpuTotalMs() const { return gpu_total_ms_; }
     FrameTimings takeFrameTimings() {
         FrameTimings t = frame_timings_;
         frame_timings_ = {};
@@ -1623,6 +1629,7 @@ private:
     GpuCulling gpu_culling_{};
     GpuProfiler gpu_profiler_{};
     double fence_wait_total_ms_ = 0.0;
+    double gpu_total_ms_ = 0.0;
     std::uint32_t shadow_draw_calls_ = 0;
     std::uint32_t last_shadow_draw_calls_ = 0;
     std::array<double, 3> world_origin_{0.0, 0.0, 0.0};

@@ -245,6 +245,20 @@ void EditorApp::drawBuildConfigsWindow() {
     ImGui::Dummy(ImVec2(label_w - ImGui::GetStyle().ItemSpacing.x, 0.0f));
     ImGui::SameLine(label_w);
     changed |= ImGui::Checkbox("Mostrar FPS (desarrollo)", &c.show_fps);
+    if (!android) {
+        // El Graphics.ini del proyecto es el del visor del editor en este PC:
+        // por defecto el juego lo adapta al PC de cada jugador.
+        ImGui::Dummy(ImVec2(label_w - ImGui::GetStyle().ItemSpacing.x, 0.0f));
+        ImGui::SameLine(label_w);
+        changed |= ImGui::Checkbox("Respetar los ajustes gráficos del proyecto (no adaptar a cada PC)", &c.graphics_lock);
+        ImGui::SetItemTooltip(
+            "Sin marcar (recomendado), el juego adapta a cada PC los ajustes gráficos del proyecto, que son los del\n"
+            "visor del editor en tu PC: optimización adaptativa siempre activa, objetivo de FPS hasta los Hz de la\n"
+            "pantalla (144 como mucho), sombras y texturas como tope de lo que aguanta su gama, sin trazado de rayos\n"
+            "por debajo de la gama Alta y sin sonda de reflexión en la Baja.\n"
+            "Marcada, el juego usa tal cual ProjectSettings/Graphics.ini en cualquier PC.\n"
+            "Lo que el jugador guarde desde el juego (Graphics.save() en un script) manda siempre.");
+    }
     changed |= ImGui::Checkbox("Servidor dedicado (<Juego>Server.exe)", &c.dedicated_server);
     changed |= ImGui::Checkbox("Permitir mods", &c.allow_mods);
     ImGui::SetItemTooltip("El juego carga los mods de <juego>/Mods y %%LOCALAPPDATA%%/Cramion/Mods/<juego>:\n"

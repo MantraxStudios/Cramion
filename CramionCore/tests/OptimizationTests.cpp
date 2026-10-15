@@ -1,6 +1,8 @@
 // Pruebas de las optimizaciones del roadmap (consola):
 //   - Insights: zonas anidadas, estadisticas, percentiles, contadores,
-//     capturas .crtrace (JSON valido) y captura automatica de tirones.
+//     capturas .crtrace (JSON valido) y captura automatica de tirones; en el
+//     juego, sin los frames de carga, tirones relativos y la captura escrita
+//     en otro hilo.
 //   - Presupuesto de particulas: emision escalada al pasarse, emisores lejanos
 //     sin emitir.
 //   - Perfilador de los scripts: zona por fase, contador y aviso al pasarse
@@ -9,6 +11,7 @@
 
 #include "CramionCore/cvar/CVar.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/jobs/JobSystem.h"
 #include "CramionCore/physics/Particles.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
@@ -122,6 +125,7 @@ void profiler() {
         busy(15.0);
     }
     prof::endFrame();
+    prof::flushCaptures();  // se escribe en un hilo de disco
     const std::filesystem::path hitch = prof::lastHitchCapture();
     std::printf("  (%s)\n", aviso.c_str());
     check(!hitch.empty() && std::filesystem::exists(hitch), "un frame de >8 ms guarda una captura del tiron");
@@ -140,6 +144,120 @@ void profiler() {
     prof::endFrame();
     check(prof::stats(10).empty() && prof::frameTimes().empty(), "con prof.Enabled = false no cuesta nada");
     prof::setEnabled(true);
+}
+
+// Insights en el juego exportado: la linea de rendimiento no cuenta la carga,
+// en un PC lento no todo frame es un tiron y la captura de un tiron no para el
+// frame (se escribe en un hilo de disco).
+void profilerInGame() {
+    std::printf("Insights en el juego (carga, tirones relativos, capturas sin parar el frame)\n");
+    prof::reset();
+    prof::setEnabled(true);
+    prof::setCaptureFolder(std::filesystem::temp_directory_path() / "cramion_tirones");
+    cvar::Registry::instance().set("prof.HitchMs", "8");
+    cvar::Registry::instance().set("prof.HitchCooldown", "0");
+    cvar::Registry::instance().set("prof.HitchRelative", "3");
+
+    const auto play = [](int frames) {
+        for (int f = 0; f < frames; ++f) {
+            prof::beginFrame();
+            {
+                CR_PROFILE_SCOPE("Juego");
+                busy(0.8);
+                {
+                    CR_PROFILE_SCOPE("Fisica");
+                    busy(0.4);
+                }
+            }
+            prof::endFrame();
+        }
+    };
+    play(40);
+    // Otra escena: frames de 12 ms marcados como carga (subir modelos: cientos
+    // de ms en un juego de verdad). Pasan de prof.HitchMs y de 3 veces lo
+    // normal, pero no son tirones del juego. El de "Escena lista"
+    // (setLoading(false) a mitad del frame) tambien es de carga.
+    prof::setLoading(true);
+    for (int f = 0; f < 20; ++f) {
+        prof::beginFrame();
+        {
+            CR_PROFILE_SCOPE("Subir modelos");
+            busy(12.0);
+        }
+        prof::endFrame();
+    }
+    prof::beginFrame();
+    busy(12.0);
+    prof::setLoading(false);
+    prof::endFrame();
+    prof::flushCaptures();
+    check(prof::lastHitchCapture().empty(), "los frames de carga no guardan capturas de tiron");
+    play(60);
+    const prof::FrameSummary s = prof::summary(300);
+    std::printf("  (sin la carga: p50 %.2f, p95 %.2f, media %.2f ms)\n", s.p50_ms, s.p95_ms, s.avg_ms);
+    check(s.p95_ms < 6.0 && s.avg_ms < 6.0, "el resumen deja fuera los frames de carga (y el de \"Escena lista\")");
+    const std::vector<prof::ZoneCost> zones = prof::topZones(300, 5);
+    for (const prof::ZoneCost& z : zones) std::printf("  (zona %s: %.2f ms propios)\n", z.name.c_str(), z.self_ms);
+    bool loading_zone = false;
+    for (const prof::ZoneCost& z : zones) loading_zone = loading_zone || z.name == "Subir modelos";
+    check(zones.size() == 2 && zones[0].name == "Juego" && zones[1].name == "Fisica" && zones[0].self_ms > 0.6 &&
+              zones[0].self_ms < 2.0 && !loading_zone,
+          "zonas mas caras del hilo principal: tiempo propio, sin las de la carga");
+
+    // PC lento: todos los frames a 10 ms con prof.HitchMs = 8. No son tirones
+    // (ni capturas cada pocos segundos); uno de 40 ms (4 veces lo normal) si.
+    prof::reset();
+    prof::setCaptureFolder(std::filesystem::temp_directory_path() / "cramion_tirones");
+    for (int f = 0; f < 40; ++f) {
+        prof::beginFrame();
+        // Muchas zonas por frame: la captura pesa (como la de un mundo grande).
+        for (int k = 0; k < 400; ++k) {
+            CR_PROFILE_SCOPE("Paso");
+        }
+        busy(10.0);
+        prof::endFrame();
+    }
+    prof::flushCaptures();
+    const prof::FrameSummary slow = prof::summary(300);
+    check(slow.hitches == 0 && prof::lastHitchCapture().empty(),
+          "PC lento: frames siempre por encima de prof.HitchMs no son tirones");
+    std::string aviso;
+    prof::setLog([&](const std::string& line) { aviso = line; });
+    jobs::ioWorkerCount();  // los hilos de disco ya en marcha (los crea la primera tarea)
+    prof::beginFrame();
+    {
+        CR_PROFILE_SCOPE("Shader nuevo");
+        busy(40.0);
+    }
+    const auto end_start = std::chrono::steady_clock::now();
+    prof::endFrame();
+    const double end_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - end_start).count();
+    const auto write_start = std::chrono::steady_clock::now();
+    prof::flushCaptures();
+    const double flush_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - write_start).count();
+    const std::filesystem::path hitch = prof::lastHitchCapture();
+    std::printf("  (endFrame con el tiron: %.3f ms; la escritura termino %.1f ms despues; %s)\n", end_ms, flush_ms,
+                aviso.c_str());
+    if (jobs::ioWorkerCount() > 0) {
+        check(end_ms < 1.0, "un tiron no bloquea endFrame mas de 1 ms (la captura se escribe en otro hilo)");
+    } else {
+        std::printf("  (sin hilos de disco: la captura se escribe en el hilo que llama)\n");
+    }
+    check(prof::summary(300).hitches == 1, "uno de 4 veces lo normal si es un tiron");
+    std::ifstream in(hitch);
+    const nlohmann::json j = nlohmann::json::parse(in, nullptr, false);
+    int frames = 0;
+    if (j.is_object() && j.contains("traceEvents")) {
+        for (const auto& e : j["traceEvents"]) frames += e.value("cat", "") == "frame" ? 1 : 0;
+    }
+    check(!hitch.empty() && frames == 41 && aviso.find("Shader nuevo") != std::string::npos,
+          "la captura se escribe entera (41 frames, JSON valido) y el aviso dice que zona fue");
+    prof::setLog({});
+    prof::setLoading(false);
+    cvar::Registry::instance().set("prof.HitchMs", "50");
+    cvar::Registry::instance().set("prof.HitchCooldown", "10");
 }
 
 void particles() {
@@ -282,6 +400,7 @@ void rayoDeLosPies() {
 
 int main() {
     profiler();
+    profilerInGame();
     particles();
     scriptsProfiler();
     sueloDelIK();

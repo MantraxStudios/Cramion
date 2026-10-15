@@ -13,9 +13,11 @@
 //     (ventana Insights del editor, MCP `profiler`, scripts `Profiler::`);
 //   - capturar los ultimos N frames a un .crtrace (formato Chrome Trace
 //     Event: se abre en ui.perfetto.dev o chrome://tracing);
-//   - capturar solos los tirones: si un frame pasa de prof.HitchMs, se
-//     guardan los frames de antes en la carpeta de capturas (una cada pocos
-//     segundos como mucho) y se avisa por el registro.
+//   - capturar solos los tirones: si un frame pasa de prof.HitchMs (y de
+//     prof.HitchRelative veces la mediana de los anteriores: en un PC lento
+//     no todo es un tiron), se guardan los frames de antes en la carpeta de
+//     capturas (una cada pocos segundos como mucho; se escribe en un hilo de
+//     disco, sin parar el frame) y se avisa por el registro.
 // Coste: unas decenas de nanosegundos por zona; con prof.Enabled = false
 // las zonas no hacen nada.
 
@@ -50,6 +52,11 @@ void endFrame();
 bool enabled();
 void setEnabled(bool on);
 std::uint64_t frameIndex();
+// El juego carga una escena (true desde que empieza hasta "Escena lista"):
+// esos frames (de cientos de ms, que no son tirones del juego) no cuentan en
+// summary() ni en topZones() y no guardan capturas de tiron. El frame en el
+// que se pasa a true, o en el que se vuelve a false, cuenta como de carga.
+void setLoading(bool loading);
 
 // Estadisticas de las zonas en los ultimos `frames` frames (arbol aplanado en
 // profundidad: cada nodo lleva su profundidad y la ruta de sus padres).
@@ -75,19 +82,36 @@ struct CounterStats {
     double max = 0.0;
 };
 std::vector<CounterStats> counters(int frames = 120);
-// Percentiles de la duracion del frame (p50, p95, p99) y el maximo.
+// Percentiles de la duracion del frame (p50, p95, p99) y el maximo, en los
+// ultimos `frames` frames sin los de carga (setLoading).
 struct FrameSummary {
     double avg_ms = 0.0, p50_ms = 0.0, p95_ms = 0.0, p99_ms = 0.0, max_ms = 0.0;
-    int hitches = 0;  // frames por encima de prof.HitchMs en la ventana
+    // Frames de la ventana por encima de prof.HitchMs y de prof.HitchRelative
+    // veces su mediana (como las capturas de tiron).
+    int hitches = 0;
 };
 FrameSummary summary(int frames = 300);
+// Las zonas del hilo principal con mas tiempo propio (sin sus zonas hijas):
+// media por frame en los ultimos `frames` frames sin los de carga, de mas a
+// menos y como mucho `count`. Agrupa por nombre, sin rutas: mucho mas barata
+// que stats() (la usa la linea de rendimiento del juego cada pocos segundos).
+struct ZoneCost {
+    std::string name;
+    double self_ms = 0.0;
+};
+std::vector<ZoneCost> topZones(int frames = 300, int count = 5);
 
 // Capturas (.crtrace = JSON de Chrome Trace Event).
 bool saveTrace(const std::filesystem::path& file, int frames = 300, std::string* error = nullptr);
 std::filesystem::path captureFolder();
 void setCaptureFolder(const std::filesystem::path& folder);
+// La ultima captura de tiron ya escrita (se escriben en un hilo de disco: la
+// del ultimo tiron puede tardar un poco; flushCaptures() la espera).
 std::filesystem::path lastHitchCapture();
-// Aviso al guardar una captura de tiron (para la consola / el registro).
+// Espera a que se terminen de escribir las capturas de tiron pendientes.
+void flushCaptures();
+// Aviso al guardar una captura de tiron (para la consola / el registro). Se
+// llama desde el hilo de disco que la escribio.
 void setLog(std::function<void(const std::string&)> log);
 
 // Pruebas: borra todo.
