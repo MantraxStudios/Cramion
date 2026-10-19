@@ -170,8 +170,8 @@ void readMaterial(Reader& in, MaterialData& m) {
 
 void writePayload(Writer& out, const ModelData& model) {
     out.string(model.name);
-    out.podVector(model.vertices);
-    out.podVector(model.indices);
+    out.podVector(model.vertices.get());
+    out.podVector(model.indices.get());
     out.podVector(model.submeshes);
 
     out.pod(static_cast<std::uint64_t>(model.materials.size()));
@@ -227,8 +227,8 @@ void writePayload(Writer& out, const ModelData& model) {
 
 void readPayload(Reader& in, ModelData& model, bool skip_texture_bytes = false) {
     in.string(model.name);
-    in.podVector(model.vertices);
-    in.podVector(model.indices);
+    in.podVector(model.vertices.mut());
+    in.podVector(model.indices.mut());
     in.podVector(model.submeshes);
 
     std::uint64_t count = 0;

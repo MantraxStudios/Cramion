@@ -103,13 +103,29 @@ public:
     void assign(Args&&... args) {
         mut().assign(std::forward<Args>(args)...);
     }
+    // Las posiciones van por indice: un iterador sacado mientras estaba
+    // compartido apunta a los datos de antes de separarse.
     template <typename... Args>
-    iterator insert(Args&&... args) {
-        return mut().insert(std::forward<Args>(args)...);
+    iterator insert(const_iterator pos, Args&&... args) {
+        const auto at = pos - get().begin();
+        std::vector<T>& own = mut();
+        return own.insert(own.cbegin() + at, std::forward<Args>(args)...);
     }
-    template <typename... Args>
-    iterator erase(Args&&... args) {
-        return mut().erase(std::forward<Args>(args)...);
+    iterator insert(const_iterator pos, std::initializer_list<T> values) {
+        const auto at = pos - get().begin();
+        std::vector<T>& own = mut();
+        return own.insert(own.cbegin() + at, values);
+    }
+    iterator erase(const_iterator pos) {
+        const auto at = pos - get().begin();
+        std::vector<T>& own = mut();
+        return own.erase(own.cbegin() + at);
+    }
+    iterator erase(const_iterator first, const_iterator last) {
+        const auto from = first - get().begin();
+        const auto to = last - get().begin();
+        std::vector<T>& own = mut();
+        return own.erase(own.cbegin() + from, own.cbegin() + to);
     }
     // Vaciar no copia: suelta su parte.
     void clear() { data_.reset(); }

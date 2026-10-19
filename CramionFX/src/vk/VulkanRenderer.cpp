@@ -6161,8 +6161,11 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
             cmd.drawIndexed(run_count, 1, run_first, 0, 0);
             run_count = 0;
         };
+        // `i` es del LOD elegido (forEachVisibleSubmesh): leer las de LOD0
+        // dibujaba otros tramos (o fuera del buffer) en modo compatible.
+        const std::vector<asset::SubMesh>& lod_submeshes = model.lodSubmeshes(draw.lod);
         visible_submeshes_ += forEachVisibleSubmesh(draw, frustum, [&](std::uint32_t i) {
-            const asset::SubMesh& submesh = model.submeshes()[i];
+            const asset::SubMesh& submesh = lod_submeshes[i];
             if (submesh.material != bound_material) {
                 flush();
                 const SkinnedModel::Material& material = model.materials()[submesh.material];
