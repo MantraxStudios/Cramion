@@ -141,11 +141,19 @@ private:
     // --- Huesos ------------------------------------------------------------
 
     // Los huesos se comparten entre mallas por nombre: el mismo "mixamorig:Hips"
-    // de la malla del cuerpo y de la de los ojos es un unico hueso.
+    // de la malla del cuerpo y de la de los ojos es un unico hueso. Pero cada
+    // malla trae su propia matriz de enlace (offset): en muchos FBX de 3ds Max
+    // (armaduras, armas y cuerpo exportados con poses de enlace distintas) el
+    // mismo hueso tiene offsets diferentes segun la malla. Compartir el primero
+    // deforma las demas, asi que un offset distinto crea otra entrada del hueso
+    // que apunta al mismo nodo (el Animator mueve nodos, no entradas).
     std::uint32_t boneFor(const aiBone& bone) {
-        const auto it = bone_index_.find(bone.mName.C_Str());
-        if (it != bone_index_.end()) {
-            return it->second;
+        const Mat4 offset = toMat4(bone.mOffsetMatrix);
+        const auto [first, last] = bone_index_.equal_range(bone.mName.C_Str());
+        for (auto it = first; it != last; ++it) {
+            if (sameMatrix(out_.bones[it->second].offset, offset)) {
+                return it->second;
+            }
         }
 
         const std::int32_t node = findNode(bone.mName);
@@ -154,9 +162,23 @@ private:
         }
 
         const auto index = static_cast<std::uint32_t>(out_.bones.size());
-        out_.bones.push_back(Bone{bone.mName.C_Str(), node, toMat4(bone.mOffsetMatrix)});
+        out_.bones.push_back(Bone{bone.mName.C_Str(), node, offset});
         bone_index_.emplace(bone.mName.C_Str(), index);
         return index;
+    }
+
+    // Igualdad con tolerancia relativa (los offsets vienen en cm en muchos FBX).
+    static bool sameMatrix(const Mat4& a, const Mat4& b) {
+        for (int c = 0; c < 4; ++c) {
+            for (int r = 0; r < 4; ++r) {
+                const float x = a.m[c][r];
+                const float y = b.m[c][r];
+                if (std::abs(x - y) > 1e-4f * std::max(1.0f, std::max(std::abs(x), std::abs(y)))) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     // Las mallas rigidas (sin huesos) se tratan como si tuvieran un unico
@@ -573,7 +595,7 @@ private:
 
     std::unordered_map<std::string, std::int32_t> node_index_;
     std::unordered_map<const aiNode*, std::int32_t> node_pointer_index_;
-    std::unordered_map<std::string, std::uint32_t> bone_index_;
+    std::unordered_multimap<std::string, std::uint32_t> bone_index_;  // nombre -> entradas (una por offset distinto)
     std::unordered_map<std::int32_t, std::uint32_t> node_bone_index_;
     std::unordered_map<std::string, std::int32_t> texture_index_;
     std::unordered_set<unsigned int> skinned_meshes_done_;

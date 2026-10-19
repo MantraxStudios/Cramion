@@ -142,6 +142,37 @@ std::shared_ptr<VulkanTexture> sharedTexture(std::uint64_t key, const std::funct
     return texture;
 }
 
+// --- Geometria compartida entre modelos ---
+// Igual que las texturas: misma clave de contenido = mismo buffer de la GPU.
+// Las variantes de material de RenderSync copian la malla del original tal
+// cual (salvo tiling en las UV), asi que comparten vertices e indices.
+std::shared_ptr<VulkanBuffer> sharedBuffer(std::uint64_t key, const std::function<VulkanBuffer()>& make) {
+    static std::mutex mutex;
+    static std::unordered_map<std::uint64_t, std::weak_ptr<VulkanBuffer>> cache;
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const auto it = cache.find(key);
+        if (it != cache.end()) {
+            if (std::shared_ptr<VulkanBuffer> alive = it->second.lock()) return alive;
+        }
+    }
+    auto buffer = std::make_shared<VulkanBuffer>(make());
+    const std::lock_guard<std::mutex> lock(mutex);
+    if (cache.size() > 4096) {
+        for (auto it = cache.begin(); it != cache.end();) it = it->second.expired() ? cache.erase(it) : std::next(it);
+    }
+    std::weak_ptr<VulkanBuffer>& slot = cache[key];
+    if (std::shared_ptr<VulkanBuffer> alive = slot.lock()) return alive;  // otro hilo lo subio a la vez
+    slot = buffer;
+    return buffer;
+}
+
+template <typename T>
+std::uint64_t vectorKey(const std::vector<T>& values, std::uint64_t seed) {
+    return mix64(murmur64(reinterpret_cast<const std::uint8_t*>(values.data()), values.size() * sizeof(T), seed),
+                 values.size());
+}
+
 // ¿Cada arista (con los vertices soldados por posicion) la comparten
 // exactamente dos triangulos? Entonces la malla es cerrada: lo que mira hacia
 // atras siempre queda detras de algo que mira hacia delante.
@@ -285,22 +316,28 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
     texture_lod_ = std::clamp(texture_lod, 0, 4);
 
     // (Tambien storage: los mesh shaders leen los vertices de los meshlets.)
-    vertices_ = VulkanBuffer::createDeviceLocal(
-        device, model.vertices.data(), sizeof(asset::SkinnedVertex) * model.vertices.size(),
-        vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer);
+    const std::uint64_t device_key = reinterpret_cast<std::uintptr_t>(&device);
+    vertices_ = sharedBuffer(mix64(vectorKey(model.vertices.get(), 0x7e47e4ULL), device_key), [&] {
+        return VulkanBuffer::createDeviceLocal(
+            device, model.vertices.data(), sizeof(asset::SkinnedVertex) * model.vertices.size(),
+            vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer);
+    });
     // Indices de LOD0 y detras los de los LODs (sus submallas se desplazan).
-    if (model.lod_indices.empty()) {
-        indices_ = VulkanBuffer::createDeviceLocal(device, model.indices.data(),
+    const std::uint64_t index_key =
+        mix64(mix64(vectorKey(model.indices.get(), 0x1d1ce5ULL), vectorKey(model.lod_indices.get(), 0x10d1ULL)), device_key);
+    indices_ = sharedBuffer(index_key, [&] {
+        if (model.lod_indices.empty()) {
+            return VulkanBuffer::createDeviceLocal(device, model.indices.data(),
                                                    sizeof(std::uint32_t) * model.indices.size(),
                                                    vk::BufferUsageFlagBits::eIndexBuffer);
-    } else {
+        }
         std::vector<std::uint32_t> all;
         all.reserve(model.indices.size() + model.lod_indices.size());
         all.insert(all.end(), model.indices.begin(), model.indices.end());
         all.insert(all.end(), model.lod_indices.begin(), model.lod_indices.end());
-        indices_ = VulkanBuffer::createDeviceLocal(device, all.data(), sizeof(std::uint32_t) * all.size(),
-                                                   vk::BufferUsageFlagBits::eIndexBuffer);
-    }
+        return VulkanBuffer::createDeviceLocal(device, all.data(), sizeof(std::uint32_t) * all.size(),
+                                               vk::BufferUsageFlagBits::eIndexBuffer);
+    });
     index_count_ = static_cast<std::uint32_t>(model.indices.size());
     submeshes_ = model.submeshes;
     lods_.clear();
@@ -621,7 +658,7 @@ void SkinnedModel::buildMeshlets(const VulkanDevice& device, const asset::ModelD
     alloc.setSetLayouts(layout);
     meshlet_sets_ = vk::raii::DescriptorSets(device.handle(), alloc);
     const std::array<vk::DescriptorBufferInfo, 4> infos = {
-        vk::DescriptorBufferInfo{*vertices_.handle(), 0, VK_WHOLE_SIZE},
+        vk::DescriptorBufferInfo{*vertices().handle(), 0, VK_WHOLE_SIZE},
         vk::DescriptorBufferInfo{*meshlets_.handle(), 0, VK_WHOLE_SIZE},
         vk::DescriptorBufferInfo{*meshlet_vertices_.handle(), 0, VK_WHOLE_SIZE},
         vk::DescriptorBufferInfo{*meshlet_triangles_.handle(), 0, VK_WHOLE_SIZE}};
@@ -695,9 +732,14 @@ void SkinnedModel::destroy() {
     materials_.clear();
     submeshes_.clear();
     lods_.clear();
-    indices_.destroy();
-    vertices_.destroy();
+    indices_.reset();
+    vertices_.reset();
     index_count_ = 0;
+}
+
+const VulkanBuffer& SkinnedModel::emptyBuffer() {
+    static const VulkanBuffer empty;
+    return empty;
 }
 
 }  // namespace cramion::gfx

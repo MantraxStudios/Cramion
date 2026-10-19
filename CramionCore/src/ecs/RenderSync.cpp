@@ -727,12 +727,21 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
     v.nodes = base.nodes;
     v.bones = base.bones;
     v.animations = base.animations;
+    // Sus LODs y UV de lightmap: sin ellos todo objeto con .crmat se dibujaba
+    // siempre con la malla completa. Ademas, con los mismos indices la GPU
+    // comparte vertices e indices con el original (SkinnedModel).
+    v.lod_indices = base.lod_indices;
+    v.lods = base.lods;
+    v.lightmap_uvs = base.lightmap_uvs;
+    // Solo el tiling separa los vertices de los del original (SharedVector):
+    // los indices se leen por const para seguir compartidos.
     std::vector<std::uint8_t> transformed(v.vertices.size(), 0);
+    const std::vector<std::uint32_t>& indices = v.indices;
     for (const Tiling& t : tiled) {
         for (const asset::SubMesh& submesh : v.submeshes) {
             if (submesh.material != t.material) continue;
             for (std::uint32_t i = 0; i < submesh.index_count; ++i) {
-                const std::uint32_t vertex = v.indices[submesh.first_index + i];
+                const std::uint32_t vertex = indices[submesh.first_index + i];
                 if (vertex >= v.vertices.size() || transformed[vertex]) continue;
                 transformed[vertex] = 1;
                 core::Vec2& uv = v.vertices[vertex].uv;

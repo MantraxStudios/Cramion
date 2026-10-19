@@ -2,6 +2,7 @@
 #define CRAMION_ASSET_MODEL_H
 
 #include "CramionFX/core/Math.h"
+#include "CramionFX/core/SharedVector.h"
 
 #include <array>
 #include <cstddef>
@@ -237,8 +238,10 @@ struct MeshLod {
 struct ModelData {
     std::string name;
 
-    std::vector<SkinnedVertex> vertices;
-    std::vector<std::uint32_t> indices;
+    // Geometria con copia al escribir (core::SharedVector): las copias del
+    // modelo (variantes de material) la comparten hasta que una la cambia.
+    core::SharedVector<SkinnedVertex> vertices;
+    core::SharedVector<std::uint32_t> indices;
     std::vector<SubMesh> submeshes;
 
     std::vector<MaterialData> materials;
@@ -250,7 +253,7 @@ struct ModelData {
 
     // LODs automaticos (generateLods): se crean al cargar, no se guardan en
     // la cache ni en el .crdata. LOD0 son `indices`/`submeshes`.
-    std::vector<std::uint32_t> lod_indices;
+    core::SharedVector<std::uint32_t> lod_indices;
     std::vector<MeshLod> lods;
 
     // UV de lightmap (UV2) por vertice, en [0, 1]: las pone la iluminacion

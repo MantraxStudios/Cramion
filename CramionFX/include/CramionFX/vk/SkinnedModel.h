@@ -75,8 +75,8 @@ public:
     static std::uint32_t shadingBits(const asset::MaterialData& material);
     void destroy();
 
-    const VulkanBuffer& vertices() const { return vertices_; }
-    const VulkanBuffer& indices() const { return indices_; }
+    const VulkanBuffer& vertices() const { return vertices_ ? *vertices_ : emptyBuffer(); }
+    const VulkanBuffer& indices() const { return indices_ ? *indices_ : emptyBuffer(); }
     std::uint32_t indexCount() const { return index_count_; }
 
     const std::vector<asset::SubMesh>& submeshes() const { return submeshes_; }
@@ -155,9 +155,14 @@ public:
 
 private:
     void buildMeshlets(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass);
+    static const VulkanBuffer& emptyBuffer();
 
-    VulkanBuffer vertices_;
-    VulkanBuffer indices_;
+    // Compartidos entre modelos con la misma geometria (cache por contenido en
+    // SkinnedModel.cpp): las variantes de material (.crmat) de un modelo usan
+    // los mismos vertices e indices que el original. Antes cada variante subia
+    // su copia y una escena con materiales propios ocupaba el doble de VRAM.
+    std::shared_ptr<VulkanBuffer> vertices_;
+    std::shared_ptr<VulkanBuffer> indices_;
     std::uint32_t index_count_ = 0;
     bool rigid_ = false;
 

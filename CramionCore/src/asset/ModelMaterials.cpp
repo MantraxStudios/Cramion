@@ -115,6 +115,18 @@ struct Candidate {
     bool external;         // fuera de Assets (junto al archivo original): se copia
 };
 
+// Quita prefijos de textura habituales ("T_Gear", "Tex_Wood", "TX_Rock"): sin
+// esto "T_Gear_BaseColor" quedaba en "tgear" y no casaba con el material
+// "M_OrcGear" ("orcgear").
+std::string withoutTexturePrefix(const std::string& name) {
+    const std::string l = lower(name);
+    for (const char* prefix : {"texture_", "tex_", "tx_", "t_"}) {
+        const std::string p(prefix);
+        if (l.size() > p.size() + 1 && l.compare(0, p.size(), p) == 0) return name.substr(p.size());
+    }
+    return name;
+}
+
 // Una imagen es candidata a color si su sufijo es de color o no es de otro
 // mapa ("madera.png").
 bool colorCandidate(const std::filesystem::path& file, std::string& base) {
@@ -123,12 +135,12 @@ bool colorCandidate(const std::filesystem::path& file, std::string& base) {
     const auto [head, suffix] = splitSuffix(stem);
     if (!suffix.empty()) {
         if (std::find(kColorSuffixes.begin(), kColorSuffixes.end(), suffix) != kColorSuffixes.end()) {
-            base = normalized(head);
+            base = normalized(withoutTexturePrefix(head));
             return !base.empty();
         }
         if (std::find(kOtherSuffixes.begin(), kOtherSuffixes.end(), suffix) != kOtherSuffixes.end()) return false;
     }
-    base = normalized(stem);
+    base = normalized(withoutTexturePrefix(stem));
     return !base.empty();
 }
 

@@ -13,7 +13,7 @@ namespace cramion::asset {
 namespace {
 
 // Cambiar si cambia cualquier estructura de asset/Model.h que se guarda.
-constexpr std::uint32_t kModelCacheVersion = 11;  // 11: clusteres sin escala fija
+constexpr std::uint32_t kModelCacheVersion = 12;  // 12: un hueso por offset de enlace distinto (FBX de 3ds Max)
 constexpr char kMagic[4] = {'C', 'R', 'M', 'C'};
 
 // Identidad del archivo original: si cambia, la cache no vale.
