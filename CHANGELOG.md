@@ -4,6 +4,9 @@
 
 **Novedad sobre la 2.4.13.** Memoria de la GPU con VMA y subidas por lotes en una cola de transferencia; mundos estáticos sin trabajo repetido por frame; trazado de rayos con una BLAS por geometría y tiling por material sin duplicar vértices; gama baja (GI horneada sin SVGF, sol horneado sin cascadas, ríos y ondas más baratos, distancia de sombras y LOD por gama); lightmaps UV2 (fases 0-2 del plan); vídeo en Android y FFmpeg opcional; World Partition con varias rejillas y Data Layers; red en coordenadas absolutas; Blueprints fase 2; y los parches de Keryan (39 de 44: render, mallas, texturas BC7, UI y ventana).
 
+### Nueva imagen
+- Nuevo logo (editor, iconos de los `.exe`, web y manual) y nuevo banner «Game powered by Cramion» de los juegos exportados.
+
 ### Memoria y subidas
 - **VMA 3.3.0** (`CramionFX/vendor/vma`): `VulkanBuffer` y `VulkanTexture` ya no hacen una asignación de Vulkan por recurso; anillo de staging persistente de 64 MB (16 MB en modo compatible).
 - **Un lote por modelo**: un command buffer y una fence; cola de transferencia dedicada si la GPU la tiene (`CRAMION_VK_NO_TRANSFER_QUEUE=1` la apaga); el modelo se instala cuando su fence acaba, sin bloquear.

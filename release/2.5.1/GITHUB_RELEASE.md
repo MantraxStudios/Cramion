@@ -5,9 +5,12 @@
 ## Descarga
 
 - `Cramion-win64.zip`: descomprime y abre `CramionEditor.exe`. Si ya tienes Cramion, el actualizador te avisa solo.
-- SHA-256: `b1bddb8f64de157efe071d0c9e52410e82b659f63deee37d9957522f0362cef1`
+- SHA-256: `9324fa6e47f46e8660a7d54cb48242e50b3d1b2a8097cbe1c581fb980732c2a3`
 
 ## Lo nuevo
+
+### Nueva imagen
+- **Nuevo logo de Cramion** en el editor, los ejecutables, la web y el manual, y nuevo banner «Game powered by Cramion» al arrancar los juegos exportados.
 
 ### Lightmaps UV2
 - UV de lightmap automáticas con **xatlas** (*Generar UV de lightmap*, vista **LM** de la Escena y la herramienta MCP `generate_lightmap_uvs`).

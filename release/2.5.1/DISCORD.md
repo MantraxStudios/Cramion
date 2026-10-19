@@ -2,6 +2,9 @@
 
 La versión más grande desde la 2.4: el render deja de repetir trabajo por frame, llegan los lightmaps y entran 39 parches de rendimiento de la comunidad (¡gracias, Keryan!).
 
+**✨ Nuevo logo**
+Nuevo emblema en el editor, la web y los ejecutables, y nuevo banner «Game powered by Cramion» al arrancar tus juegos.
+
 **💡 Lightmaps UV2**
 UV automáticas con xatlas y un lightmapper propio con rebote y luces Horneadas.
 
