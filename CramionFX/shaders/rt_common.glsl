@@ -88,6 +88,7 @@ struct RtMaterial {
     uint metallic_roughness_texture;
     uint emissive_texture;
     uint flags;      // 1 = recortado por alfa
+    vec4 uv_transform;  // tiling de las UV: xy = repeticion, zw = desplazamiento
 };
 
 layout(set = 1, binding = 0) uniform accelerationStructureEXT scene_tlas;
@@ -95,7 +96,9 @@ layout(std430, set = 1, binding = 1) readonly buffer RtVertices { RtVertex rt_ve
 layout(std430, set = 1, binding = 2) readonly buffer RtIndices { uint rt_indices[]; };
 layout(std430, set = 1, binding = 3) readonly buffer RtTriangleMaterials { uint rt_triangle_materials[]; };
 layout(std430, set = 1, binding = 4) readonly buffer RtMaterials { RtMaterial rt_materials[]; };
-// Por modelo: x = primer triangulo de la geometria 0, y = de la geometria 1.
+// Por modelo: x = primer triangulo de la geometria 0, y = de la geometria 1,
+// z = lo que se suma al material de cada triangulo: las variantes de material
+// usan los triangulos (y la BLAS) de su original con sus propios materiales.
 layout(std430, set = 1, binding = 5) readonly buffer RtModels { uvec4 rt_models[]; };
 layout(std430, set = 1, binding = 6) readonly buffer Irradiance { vec4 coefficients[9]; } irradiance_sh;
 layout(set = 1, binding = 7) uniform sampler2D rt_textures[];
@@ -163,7 +166,8 @@ vec3 decodeNormal(vec2 e) {
 // vecinos utiles.
 vec3 gbufferGeometricNormal(ivec2 pixel, vec3 position, vec3 fallback) {
     ivec2 size = textureSize(g_depth, 0);
-    float center_z = linearDepth(texelFetch(g_depth, pixel, 0).r);
+    float center_depth = texelFetch(g_depth, pixel, 0).r;
+    float center_z = linearDepth(center_depth);
     vec3 axes[2];
     for (int axis = 0; axis < 2; ++axis) {
         ivec2 step_offset = axis == 0 ? ivec2(1, 0) : ivec2(0, 1);
@@ -173,9 +177,20 @@ vec3 gbufferGeometricNormal(ivec2 pixel, vec3 position, vec3 fallback) {
         float depth_backward = texelFetch(g_depth, backward, 0).r;
         // En el borde de la imagen, el vecino que existe (el otro es el
         // propio pixel, recortado).
-        bool use_forward = forward != pixel &&
-                           (backward == pixel ||
-                            abs(linearDepth(depth_forward) - center_z) <= abs(linearDepth(depth_backward) - center_z));
+        // En una arista, el lado plano (como lighting.frag geometricNormal):
+        // el mas parecido en profundidad podia ser la otra cara.
+        ivec2 forward2 = clamp(pixel + 2 * step_offset, ivec2(0), size - 1);
+        ivec2 backward2 = clamp(pixel - 2 * step_offset, ivec2(0), size - 1);
+        bool use_forward;
+        if (forward == pixel || backward == pixel) {
+            use_forward = forward != pixel;
+        } else if (forward2 != forward && backward2 != backward) {
+            float error_forward = abs(2.0 * depth_forward - texelFetch(g_depth, forward2, 0).r - center_depth);
+            float error_backward = abs(2.0 * depth_backward - texelFetch(g_depth, backward2, 0).r - center_depth);
+            use_forward = error_forward <= error_backward;
+        } else {
+            use_forward = abs(linearDepth(depth_forward) - center_z) <= abs(linearDepth(depth_backward) - center_z);
+        }
         ivec2 neighbor = use_forward ? forward : backward;
         float neighbor_depth = use_forward ? depth_forward : depth_backward;
         if (neighbor_depth >= 1.0 || neighbor == pixel) {
@@ -232,6 +247,16 @@ uint rtTriangle(uint model, uint geometry, uint primitive) {
     return (geometry == 0u ? rt_models[model].x : rt_models[model].y) + primitive;
 }
 
+// Material de un triangulo visto desde una instancia de `model`.
+uint rtMaterial(uint model, uint triangle) {
+    return rt_triangle_materials[triangle] + rt_models[model].z;
+}
+
+// La UV con el tiling del material.
+vec2 rtTiledUv(vec2 uv, RtMaterial material) {
+    return uv * material.uv_transform.xy + material.uv_transform.zw;
+}
+
 vec2 rtTriangleUv(uint triangle, vec2 barycentrics) {
     RtVertex a = rt_vertices[rt_indices[triangle * 3u]];
     RtVertex b = rt_vertices[rt_indices[triangle * 3u + 1u]];
@@ -247,8 +272,8 @@ bool candidateIsOpaque(rayQueryEXT query) {
     uint geometry = rayQueryGetIntersectionGeometryIndexEXT(query, false);
     uint primitive = rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
     uint triangle = rtTriangle(model, geometry, primitive);
-    RtMaterial material = rt_materials[rt_triangle_materials[triangle]];
-    vec2 uv = rtTriangleUv(triangle, rayQueryGetIntersectionBarycentricsEXT(query, false));
+    RtMaterial material = rt_materials[rtMaterial(model, triangle)];
+    vec2 uv = rtTiledUv(rtTriangleUv(triangle, rayQueryGetIntersectionBarycentricsEXT(query, false)), material);
     float alpha = textureLod(rt_textures[nonuniformEXT(material.albedo_texture)], uv, 0.0).a *
                   material.base_color.a;
     return alpha >= 0.5;
@@ -328,8 +353,9 @@ void fillHit(uint model, uint geometry, uint primitive, vec2 barycentrics, float
     if (!hit.front_face) {
         hit.normal = -hit.normal;
     }
-    hit.uv = vec2(a.u, a.v) * w.x + vec2(b.u, b.v) * w.y + vec2(c.u, c.v) * w.z;
-    hit.material = rt_triangle_materials[triangle];
+    hit.material = rtMaterial(model, triangle);
+    hit.uv = rtTiledUv(vec2(a.u, a.v) * w.x + vec2(b.u, b.v) * w.y + vec2(c.u, c.v) * w.z,
+                       rt_materials[hit.material]);
 }
 
 // true si nada tapa el segmento (rayo de sombra: basta el primer impacto).

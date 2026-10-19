@@ -13,7 +13,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <string>
 #include <string_view>
+#include <unordered_map>
 
 namespace cramion::gfx {
 namespace {
@@ -30,8 +32,10 @@ struct RtMaterial {
     std::uint32_t metallic_roughness_texture = 0;
     std::uint32_t emissive_texture = 0;
     std::uint32_t flags = 0;
+    // Tiling de las UV: xy = repeticion, zw = desplazamiento.
+    core::Vec4 uv_transform{1.0f, 1.0f, 0.0f, 0.0f};
 };
-static_assert(sizeof(RtMaterial) == 64, "RtMaterial debe coincidir con rt_common.glsl");
+static_assert(sizeof(RtMaterial) == 80, "RtMaterial debe coincidir con rt_common.glsl");
 
 constexpr std::uint32_t kGroupSize = 8;
 
@@ -159,6 +163,9 @@ struct RayTracing::Resources {
     vk::raii::MicromapEXT micromap{nullptr};
     std::uint32_t micromap_level = 0;
     std::vector<AccelerationStructure> blas;  // uno por modelo (vacio si no tiene triangulos)
+    // Modelo cuya BLAS usa cada uno (el mismo, el primero de su grupo de
+    // geometria compartida o UINT32_MAX si no tiene).
+    std::vector<std::uint32_t> blas_owner;
     std::uint32_t texture_count = 0;
     vk::DeviceSize scratch_alignment = 0;
 
@@ -613,14 +620,17 @@ struct RayTracing::Resources {
     }
 
     // Vista 2D UNORM de una capa de la imagen de otro pase (la imagen debe
-    // tener formato mutable si es SRGB).
+    // tener formato mutable si es SRGB). BC7 (los arboles ya comprimidos):
+    // su UNORM.
     static OwnedTexture createLayerView(const VulkanDevice& device, const ExtraTexture& source) {
         OwnedTexture t;
         t.mips = source.mip_count;
         vk::ImageViewCreateInfo view{};
         view.image = source.image;
         view.viewType = vk::ImageViewType::e2D;
-        view.format = vk::Format::eR8G8B8A8Unorm;
+        view.format = source.format == vk::Format::eBc7SrgbBlock || source.format == vk::Format::eBc7UnormBlock
+                          ? vk::Format::eBc7UnormBlock
+                          : vk::Format::eR8G8B8A8Unorm;
         view.subresourceRange =
             vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, source.mip_count, source.layer, 1};
         t.view = vk::raii::ImageView(device.handle(), view);
@@ -657,6 +667,7 @@ struct RayTracing::Resources {
         scene_sets.clear();
         scene_pool = nullptr;
         blas.clear();
+        blas_owner.clear();
         extra_models.clear();
         micromap = nullptr;
         micromap_storage = DeviceBuffer{};
@@ -911,7 +922,8 @@ void RayTracing::destroy() {
 void RayTracing::build(const VulkanDevice& device,
                        const std::vector<const asset::ModelData*>& models,
                        const std::vector<SkinnedModel>& gpu_models,
-                       const VulkanBuffer& irradiance, const ExtraScene& extra) {
+                       const VulkanBuffer& irradiance, const ExtraScene& extra,
+                       const std::vector<bool>& used) {
     Resources& r = *resources_;
     // La cache de radiancia se queda (se rehace la escena del mismo nivel: un
     // modelo nuevo o cambiado). Vaciarla dejaba la GI y los reflejos sin luz
@@ -935,6 +947,10 @@ void RayTracing::build(const VulkanDevice& device,
         bool opaque = true;
     };
     std::vector<std::vector<GeometryRange>> model_geometries;
+    // rt_models (rt_common.glsl): x, y = primer triangulo de cada geometria;
+    // z = lo que se suma al material de cada triangulo (un modelo que usa los
+    // triangulos de otro tiene sus materiales en otro sitio; en uint, si resta
+    // da la vuelta y la suma del shader vuelve al sitio).
     const auto add_model = [&](std::vector<GeometryRange> geometries) {
         model_info.push_back(geometries.size() > 0 ? geometries[0].first_triangle : 0);
         model_info.push_back(geometries.size() > 1 ? geometries[1].first_triangle : 0);
@@ -942,37 +958,130 @@ void RayTracing::build(const VulkanDevice& device,
         model_info.push_back(0);
         model_geometries.push_back(std::move(geometries));
     };
+    // De que modelo es la BLAS de cada uno (UINT32_MAX: sin BLAS).
+    r.blas_owner.assign(models.size(), UINT32_MAX);
+
+    // Cada textura una vez: las variantes de un modelo y los de un mismo
+    // pueblo comparten muchas (y las tres de por defecto todos). Antes cada
+    // modelo ponia las suyas y el array se llenaba de repetidas.
+    std::unordered_map<VkImageView, std::uint32_t> texture_slots;
+    // Geometria compartida: las variantes de material (.crmat) usan los mismos
+    // vertices e indices que su original (SkinnedModel los comparte en la GPU
+    // por contenido; en la RAM, core::SharedVector). Una sola copia y una sola
+    // BLAS por grupo: cada modelo pone sus materiales (rt_models[modelo].z) y
+    // la instancia dice de que modelo es (instanceCustomIndex).
+    struct SharedGeometry {
+        std::uint32_t owner = 0;          // el modelo con los triangulos y la BLAS
+        std::uint32_t material_base = 0;  // donde empiezan sus materiales
+    };
+    std::unordered_map<std::string, SharedGeometry> shared_geometry;
+    std::unordered_map<const void*, std::uint32_t> vertex_bases;  // vertices ya copiados (por buffer)
+    std::uint32_t skipped_models = 0;
+    std::uint32_t shared_models = 0;
+    std::string key;
+    const auto append = [&key](const auto& value) {
+        key.append(reinterpret_cast<const char*>(&value), sizeof(value));
+    };
 
     for (std::size_t m = 0; m < models.size(); ++m) {
         const asset::ModelData& model = *models[m];
         const SkinnedModel& gpu = gpu_models[m];
-        const auto vertex_base = static_cast<std::uint32_t>(vertices.size());
+        // Sin instancias (el original de una variante que nadie dibuja, lo
+        // que no esta en la escena): ni triangulos, ni materiales, ni BLAS.
+        // Si despues aparece, el renderizador rehace la escena.
+        const bool wanted = used.empty() || (m < used.size() && used[m]);
+        // (Ni un modelo sin nada en la GPU: el hueco vacio de una subida que
+        // fallo o de un "solo base de variantes" no tiene materiales.)
+        if (!wanted || model.indices.empty() || model.vertices.empty() || gpu.materials().empty()) {
+            if (!wanted) ++skipped_models;
+            add_model({});
+            continue;
+        }
         const auto material_base = static_cast<std::uint32_t>(materials.size());
-        const auto texture_base = static_cast<std::uint32_t>(textures.size());
 
-        for (const asset::SkinnedVertex& v : model.vertices) {
-            vertices.push_back(RtVertex{v.position.x, v.position.y, v.position.z, v.normal.x,
-                                        v.normal.y, v.normal.z, v.uv.x, v.uv.y});
+        std::vector<std::uint32_t> texture_map(gpu.textures().size(), 0);
+        for (std::size_t t = 0; t < gpu.textures().size(); ++t) {
+            const vk::ImageView view = *gpu.textures()[t]->view();
+            const auto [it, inserted] =
+                texture_slots.try_emplace(static_cast<VkImageView>(view), static_cast<std::uint32_t>(textures.size()));
+            if (inserted) {
+                textures.push_back(
+                    vk::DescriptorImageInfo{*r.texture_sampler, view, vk::ImageLayout::eShaderReadOnlyOptimal});
+            }
+            texture_map[t] = it->second;
         }
-
-        for (const std::shared_ptr<VulkanTexture>& texture : gpu.textures()) {
-            vk::DescriptorImageInfo info{};
-            info.sampler = *r.texture_sampler;
-            info.imageView = *texture->view();
-            info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-            textures.push_back(info);
-        }
+        const auto texture_slot = [&](std::uint32_t local) {
+            return local < texture_map.size() ? texture_map[local] : 0u;
+        };
 
         for (const SkinnedModel::Material& material : gpu.materials()) {
             RtMaterial rt{};
             rt.base_color = material.base_color;
             rt.emissive = material.emissive;
             rt.params = core::Vec4{material.params.x, material.params.y, 0.0f, 0.0f};
-            rt.albedo_texture = texture_base + material.albedo_texture;
-            rt.metallic_roughness_texture = texture_base + material.metallic_roughness_texture;
-            rt.emissive_texture = texture_base + material.emissive_texture;
+            rt.albedo_texture = texture_slot(material.albedo_texture);
+            rt.metallic_roughness_texture = texture_slot(material.metallic_roughness_texture);
+            rt.emissive_texture = texture_slot(material.emissive_texture);
             rt.flags = material.alpha_masked ? 1u : 0u;
+            rt.uv_transform = material.uv_transform;
             materials.push_back(rt);
+        }
+
+        // Clave de la geometria: los buffers de la GPU (compartidos por
+        // contenido) o, sin ellos, los datos de la RAM (SharedVector), las
+        // submallas y que es cada una para los rayos (opaca, recortada o
+        // fuera). Las recortadas, ademas, con lo que decide su alfa: el
+        // micromapa de opacidad se hornea con el material del primero del grupo.
+        const void* vertex_identity = gpu.vertices().isValid() ? static_cast<const void*>(&gpu.vertices())
+                                                               : static_cast<const void*>(model.vertices.data());
+        const void* index_identity = gpu.indices().isValid() ? static_cast<const void*>(&gpu.indices())
+                                                             : static_cast<const void*>(model.indices.data());
+        key.clear();
+        append(vertex_identity);
+        append(index_identity);
+        append(model.vertices.size());
+        append(model.indices.size());
+        for (const asset::SubMesh& submesh : model.submeshes) {
+            const SkinnedModel::Material& material = gpu.materials()[submesh.material];
+            const std::uint8_t kind = material.transparent ? 0 : material.alpha_masked ? 2 : 1;
+            append(submesh.first_index);
+            append(submesh.index_count);
+            append(submesh.material);
+            append(kind);
+            if (kind == 2) {
+                append(texture_slot(material.albedo_texture));
+                append(material.base_color.w);
+                append(material.uv_transform);
+            }
+        }
+        if (const auto group = shared_geometry.find(key); group != shared_geometry.end()) {
+            const std::uint32_t owner = group->second.owner;
+            const std::uint32_t first_opaque = model_info[static_cast<std::size_t>(owner) * 4];
+            const std::uint32_t first_masked = model_info[static_cast<std::size_t>(owner) * 4 + 1];
+            model_info.push_back(first_opaque);
+            model_info.push_back(first_masked);
+            model_info.push_back(material_base - group->second.material_base);
+            model_info.push_back(0);
+            model_geometries.emplace_back();
+            r.blas_owner[m] = owner;
+            ++shared_models;
+            continue;
+        }
+        shared_geometry.emplace(key, SharedGeometry{static_cast<std::uint32_t>(m), material_base});
+        r.blas_owner[m] = static_cast<std::uint32_t>(m);
+
+        // Los vertices, una vez por buffer (otra clave con los mismos
+        // vertices: una variante que cambia que submallas son recortadas).
+        std::uint32_t vertex_base = 0;
+        if (const auto it = vertex_bases.find(vertex_identity); it != vertex_bases.end()) {
+            vertex_base = it->second;
+        } else {
+            vertex_base = static_cast<std::uint32_t>(vertices.size());
+            vertex_bases.emplace(vertex_identity, vertex_base);
+            for (const asset::SkinnedVertex& v : model.vertices) {
+                vertices.push_back(RtVertex{v.position.x, v.position.y, v.position.z, v.normal.x,
+                                            v.normal.y, v.normal.z, v.uv.x, v.uv.y});
+            }
         }
 
         // Triangulos: primero los opacos, luego los recortados por alfa.
@@ -1056,6 +1165,7 @@ void RayTracing::build(const VulkanDevice& device,
             }
         }
         add_model(std::move(geometries));
+        r.blas_owner.push_back(info.model);
         r.extra_models.push_back(std::move(info));
     }
 
@@ -1245,7 +1355,8 @@ void RayTracing::build(const VulkanDevice& device,
 
     std::cout << "[Vulkan] Trazado de rayos listo: " << indices.size() / 3 << " triangulos, "
               << materials.size() << " materiales, " << r.texture_count << " texturas ("
-              << extra.meshes.size() << " mallas extra)\n";
+              << extra.meshes.size() << " mallas extra; " << builds.size() << " BLAS, " << shared_models
+              << " modelos con la geometria de otro, " << skipped_models << " sin instancias)\n";
 }
 
 void RayTracing::releaseScene() {
@@ -1294,11 +1405,14 @@ void RayTracing::setInstances(const VulkanDevice& device, const std::vector<Inst
     if (!sceneBuilt()) return;
     Resources& r = *resources_;
 
-    // Solo los modelos que tienen BLAS.
+    // Solo los modelos que tienen BLAS (la suya o la del grupo con su misma
+    // geometria: las variantes de material). El indice propio de la instancia
+    // sigue siendo el modelo: sus materiales.
     std::vector<vk::AccelerationStructureInstanceKHR> gpu_instances;
     gpu_instances.reserve(instances.size());
     for (const Instance& instance : instances) {
-        if (instance.model >= r.blas.size() || r.blas[instance.model].address == 0) continue;
+        const std::uint32_t owner = instance.model < r.blas_owner.size() ? r.blas_owner[instance.model] : UINT32_MAX;
+        if (owner >= r.blas.size() || r.blas[owner].address == 0) continue;
         // 3x4 por filas; core::Mat4 esta por columnas (m[columna][fila]).
         vk::TransformMatrixKHR transform{};
         for (std::uint32_t row = 0; row < 3; ++row) {
@@ -1311,7 +1425,7 @@ void RayTracing::setInstances(const VulkanDevice& device, const std::vector<Inst
         gpu.setInstanceCustomIndex(instance.model);
         gpu.setMask(instance.mask);
         gpu.setFlags(vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable);
-        gpu.setAccelerationStructureReference(r.blas[instance.model].address);
+        gpu.setAccelerationStructureReference(r.blas[owner].address);
         gpu_instances.push_back(gpu);
     }
 

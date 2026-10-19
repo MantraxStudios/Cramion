@@ -384,7 +384,7 @@ void VulkanRenderer::buildRayTracingScene(const scene::Scene& scene) {
         for (std::uint32_t layer = 0; layer < foliage_pass_.albedoLayers(); ++layer) {
             RayTracing::ExtraTexture texture;
             texture.image = foliage_pass_.albedoImage();
-            texture.format = vk::Format::eR8G8B8A8Srgb;
+            texture.format = foliage_pass_.albedoFormat();
             texture.layer = layer;
             texture.mip_count = foliage_pass_.albedoMips();
             extra.textures.push_back(texture);
@@ -398,7 +398,15 @@ void VulkanRenderer::buildRayTracingScene(const scene::Scene& scene) {
     }
     rt_species_revision_ = foliage_pass_.speciesRevision();
 
-    ray_tracing_.build(device_, models, skinned_models_, ibl_probe_.irradianceBuffer(), extra);
+    // Solo los modelos con instancias (las mismas que pasan a la TLAS en
+    // updateActors: rigidos de un hueso). El original de las variantes de
+    // material, que nadie dibuja, no ocupa BLAS ni materiales.
+    std::vector<bool> used(models.size(), false);
+    for (const ActorDraw& draw : actor_draws_) {
+        if (draw.per_submesh && draw.model < used.size()) used[draw.model] = true;
+    }
+    ray_tracing_.build(device_, models, skinned_models_, ibl_probe_.irradianceBuffer(), extra, used);
+    rt_scene_used_ = std::move(used);
     rt_scene_evicted_ = model_evicted_;
     rt_scene_evicted_.resize(models.size(), false);
     rt_extra_base_ = static_cast<std::uint32_t>(models.size());

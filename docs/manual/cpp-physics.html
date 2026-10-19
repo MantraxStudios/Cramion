@@ -26,7 +26,7 @@
   <header class="site-header">
     <div class="header-inner">
       <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.4.13</span></a>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.5.1</span></a>
       <nav class="main-nav" aria-label="Secciones">
         <a href="index.html" data-nav="index">Documentación</a>
         <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
@@ -93,7 +93,14 @@
 <table>
   <tbody>
     <tr><td><code>bool raycast(const Vec3&amp; origin, const Vec3&amp; direction, float max_distance, RaycastHit* hit, Entity ignore = {})</code></td><td>Lanza un rayo; true si choca (hit: punto, normal, distancia y objeto).</td></tr>
+    <tr><td><code>std::uint32_t kDefaultLayers = ~(1u &lt;&lt; 2)</code></td><td>Mascara de capas por defecto de las consultas: todas menos &quot;Ignore Raycast&quot; (capa 2).</td></tr>
+    <tr><td><code>std::uint32_t kAllLayers = 0xFFFFFFFFu</code></td><td>Todas las capas.</td></tr>
+    <tr><td><code>bool hitFromValue(const Value&amp; r, RaycastHit* hit)</code></td><td>(interno) Un resultado de la API {entity, point, normal, distance} a RaycastHit.</td></tr>
+    <tr><td><code>bool raycast(const Vec3&amp; origin, const Vec3&amp; direction, float max_distance, RaycastHit* hit, std::uint32_t layer_mask, Entity ignore = {})</code></td><td>Rayo solo contra las capas de layer_mask (bit i = capa i; Physics::layerMask(&quot;Default&quot;, &quot;Terreno&quot;)).</td></tr>
+    <tr><td><code>bool sphereCast(const Vec3&amp; origin, float radius, const Vec3&amp; direction, float max_distance, RaycastHit* hit, std::uint32_t layer_mask = kDefaultLayers, Entity ignore = {})</code></td><td>Esfera de `radius` que avanza desde origin (colision de camara con grosor, ataques); true si choca.</td></tr>
     <tr><td><code>Value ignoreCollision(a, b, activar)</code></td><td>a y b no chocan entre si (false lo deshace)</td></tr>
+    <tr><td><code>Value layerMask(texto, texto2, ...)</code></td><td>mascara (bit i = capa i) de esas capas Devuelve: numero</td></tr>
+    <tr><td><code>Value overlapSphere(centro, radio, mascara, ignorar)</code></td><td>los objetos que tocan la esfera Devuelve: lista de Entity</td></tr>
     <tr><td><code>Value simulatedTime(...)</code></td><td>Segundos de fisica simulados desde el Play (pasos fijos dados) Devuelve: numero</td></tr>
     <tr><td><code>Entity entity</code></td><td></td></tr>
     <tr><td><code>Vec3 point</code></td><td></td></tr>
@@ -124,7 +131,7 @@
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.4.13. Gratis para hacer y vender tus juegos.</span>
+      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.5.1. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="../store/index.html">Assets</a>

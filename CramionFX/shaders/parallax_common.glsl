@@ -12,10 +12,16 @@
 vec2 parallaxMarch(sampler2D heights, vec4 mask, vec2 uv, vec2 dx, vec2 dy, vec3 view_ts, float scale) {
     // Mas capas mirando de refilon (donde el desplazamiento es mayor).
     float layers = mix(32.0, 8.0, clamp(view_ts.z, 0.0, 1.0));
-    float layer_depth = 1.0 / layers;
     // Desplazamiento limitado: xy / z se dispara de refilon y la textura se
     // estiraba en rayas ("offset limiting", Welsh 2004, suavizado).
-    vec2 step_uv = view_ts.xy / (view_ts.z + 0.42) * scale / layers;
+    vec2 max_offset = view_ts.xy / (view_ts.z + 0.42) * scale;
+    // Ni mas capas que pixeles se desplaza el relieve en pantalla (con 4 de
+    // minimo): un paso de menos de un pixel no se ve. De lejos o con relieve
+    // fino eran 8-32 lecturas por pixel para mover la textura uno o dos.
+    float uv_per_pixel = max(max(length(dx), length(dy)), 1e-8);
+    layers = min(layers, max(ceil(length(max_offset) / uv_per_pixel * 1.5), 4.0));
+    float layer_depth = 1.0 / layers;
+    vec2 step_uv = max_offset / layers;
 
     vec2 current_uv = uv;
     float current_depth = 0.0;
@@ -41,6 +47,10 @@ float parallaxShadowMarch(sampler2D heights, vec4 mask, vec2 uv, vec2 dx, vec2 d
     if (light_ts.z <= 0.0) return 1.0;  // de espaldas al sol: ya lo apaga N.L
     float start = dot(textureGrad(heights, uv, dx, dy), mask);
     float layers = mix(16.0, 6.0, clamp(light_ts.z, 0.0, 1.0));
+    // Igual que el parallax: no mas pasos que pixeles recorre el rayo (3 de minimo).
+    float uv_per_pixel = max(max(length(dx), length(dy)), 1e-8);
+    float reach_uv = length(light_ts.xy / (light_ts.z + 0.42) * scale * (1.0 - start));
+    layers = min(layers, max(ceil(reach_uv / uv_per_pixel * 1.5), 3.0));
     float layer_height = (1.0 - start) / layers;
     if (layer_height <= 1e-4) return 1.0;  // en lo mas alto: nada lo tapa
     vec2 step_uv = light_ts.xy / (light_ts.z + 0.42) * scale * layer_height;

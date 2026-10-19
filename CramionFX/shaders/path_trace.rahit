@@ -21,6 +21,7 @@ struct RtMaterial {
     uint metallic_roughness_texture;
     uint emissive_texture;
     uint flags;
+    vec4 uv_transform;  // tiling de las UV: xy = repeticion, zw = desplazamiento
 };
 
 layout(std430, set = 1, binding = 1) readonly buffer RtVertices { RtVertex rt_vertices[]; };
@@ -36,12 +37,14 @@ void main() {
     uint model = gl_InstanceCustomIndexEXT;
     uint geometry = gl_GeometryIndexEXT;
     uint triangle = (geometry == 0u ? rt_models[model].x : rt_models[model].y) + uint(gl_PrimitiveID);
-    RtMaterial material = rt_materials[rt_triangle_materials[triangle]];
+    // Los materiales de este modelo (rt_models.z: variantes con la geometria de otro).
+    RtMaterial material = rt_materials[rt_triangle_materials[triangle] + rt_models[model].z];
     RtVertex a = rt_vertices[rt_indices[triangle * 3u]];
     RtVertex b = rt_vertices[rt_indices[triangle * 3u + 1u]];
     RtVertex c = rt_vertices[rt_indices[triangle * 3u + 2u]];
     vec3 w = vec3(1.0 - barycentrics.x - barycentrics.y, barycentrics);
-    vec2 uv = vec2(a.u, a.v) * w.x + vec2(b.u, b.v) * w.y + vec2(c.u, c.v) * w.z;
+    vec2 uv = (vec2(a.u, a.v) * w.x + vec2(b.u, b.v) * w.y + vec2(c.u, c.v) * w.z) * material.uv_transform.xy +
+              material.uv_transform.zw;
     float alpha = textureLod(rt_textures[nonuniformEXT(material.albedo_texture)], uv, 0.0).a * material.base_color.a;
     if (alpha < 0.5) {
         ignoreIntersectionEXT;

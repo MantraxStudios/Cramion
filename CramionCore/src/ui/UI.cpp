@@ -5,6 +5,8 @@
 #include "CramionCore/gameplay/DialogueUi.h"
 #include "CramionCore/gameplay/Localization.h"
 
+#include <CramionDM/Input.h>
+
 #include <algorithm>
 #include <cctype>
 #include <string>
@@ -29,6 +31,160 @@ void targetFields(ecs::PropertyVisitor& v, Uuid& target, std::string& method, co
 }
 
 Vec4 rgba(const Vec3& c, float a) { return Vec4{c.x, c.y, c.z, a}; }
+
+// Posicion de una entidad en la jerarquia (indice entre sus hermanos desde la
+// raiz): ordena como el recorrido en profundidad de la Jerarquia.
+std::vector<int> hierarchyPath(const ecs::Entity& e) {
+    std::vector<int> path;
+    for (ecs::Entity p = e; p.valid(); p = p.parent()) path.push_back(p.siblingIndex());
+    std::reverse(path.begin(), path.end());
+    return path;
+}
+
+// Los Canvas raiz (sin Canvas por encima), activos, de la pantalla o del mundo,
+// por sort_order y, a igualdad, en el orden de la Jerarquia (el de antes). Con
+// la vista de EnTT de los Canvas: no se recorre todo el mundo cada frame (en
+// una escena de 15.000 entidades eran 15.000 comprobaciones por frame).
+std::vector<ecs::Entity> rootCanvases(ecs::World& world, bool world_space) {
+    std::vector<ecs::Entity> out;
+    for (const entt::entity h : world.registry().view<Canvas>()) {
+        const ecs::Entity e = world.wrap(h);
+        if ((e.get<Canvas>().render_mode == RenderMode::WorldSpace) != world_space || !e.activeInHierarchy()) continue;
+        bool nested = false;
+        for (ecs::Entity p = e.parent(); p.valid() && !nested; p = p.parent()) nested = p.has<Canvas>();
+        if (!nested) out.push_back(e);
+    }
+    const auto order = [](const ecs::Entity& a, const ecs::Entity& b) { return a.get<Canvas>().sort_order < b.get<Canvas>().sort_order; };
+    std::sort(out.begin(), out.end(), order);
+    // El orden de la Jerarquia solo hace falta si hay empates.
+    bool ties = false;
+    for (std::size_t i = 1; i < out.size() && !ties; ++i) ties = !order(out[i - 1], out[i]);
+    if (ties) {
+        std::vector<std::pair<std::vector<int>, ecs::Entity>> keyed;
+        keyed.reserve(out.size());
+        for (const ecs::Entity& e : out) keyed.emplace_back(hierarchyPath(e), e);
+        std::sort(keyed.begin(), keyed.end(), [&](const auto& a, const auto& b) {
+            const int sa = a.second.template get<Canvas>().sort_order;
+            const int sb = b.second.template get<Canvas>().sort_order;
+            return sa != sb ? sa < sb : a.first < b.first;
+        });
+        for (std::size_t i = 0; i < out.size(); ++i) out[i] = keyed[i].second;
+    }
+    return out;
+}
+
+// --- Campo de texto: UTF-8, cursor y medidas ---
+bool utf8Continuation(char c) { return (static_cast<unsigned char>(c) & 0xC0) == 0x80; }
+
+int utf8Length(const std::string& s) {
+    int n = 0;
+    for (const char c : s) n += utf8Continuation(c) ? 0 : 1;
+    return n;
+}
+
+// Los primeros `count` caracteres de s.
+std::string utf8Prefix(const std::string& s, int count) {
+    if (count <= 0) return {};
+    std::size_t i = 0;
+    int n = 0;
+    while (i < s.size()) {
+        if (!utf8Continuation(s[i])) {
+            if (n == count) break;
+            ++n;
+        }
+        ++i;
+    }
+    return s.substr(0, i);
+}
+
+int prevChar(const std::string& s, int i) {
+    if (i <= 0) return 0;
+    --i;
+    while (i > 0 && utf8Continuation(s[static_cast<std::size_t>(i)])) --i;
+    return i;
+}
+
+int nextChar(const std::string& s, int i) {
+    const int n = static_cast<int>(s.size());
+    if (i >= n) return n;
+    ++i;
+    while (i < n && utf8Continuation(s[static_cast<std::size_t>(i)])) ++i;
+    return i;
+}
+
+// Un cursor valido: dentro del texto y al principio de un caracter (-1 = al final).
+int clampCaret(const std::string& s, int i) {
+    const int n = static_cast<int>(s.size());
+    if (i < 0 || i > n) return n;
+    while (i > 0 && i < n && utf8Continuation(s[static_cast<std::size_t>(i)])) --i;
+    return i;
+}
+
+// Texto de una linea: sin caracteres de control (al pegar, los saltos de
+// linea y los tabuladores pasan a ser espacios).
+std::string singleLine(const std::string& s, bool spaces) {
+    std::string out;
+    out.reserve(s.size());
+    for (const char c : s) {
+        if (static_cast<unsigned char>(c) < 32) {
+            if (spaces && (c == '\n' || c == '\t')) out += ' ';
+            continue;
+        }
+        out += c;
+    }
+    return out;
+}
+
+// Lo que se ve de un campo (el texto o un * por caracter) y donde empieza cada
+// caracter en el texto y en lo que se ve (n + 1 posiciones).
+struct FieldGlyphs {
+    std::string display;
+    std::vector<int> text_at;
+    std::vector<int> display_at;
+};
+
+FieldGlyphs fieldGlyphs(const InputField& f) {
+    FieldGlyphs g;
+    const std::string& t = f.text;
+    for (std::size_t i = 0; i <= t.size(); ++i) {
+        if (i < t.size() && utf8Continuation(t[i])) continue;
+        g.text_at.push_back(static_cast<int>(i));
+        g.display_at.push_back(f.password ? static_cast<int>(g.text_at.size() - 1) : static_cast<int>(i));
+    }
+    g.display = f.password ? std::string(g.text_at.size() - 1, '*') : t;
+    return g;
+}
+
+float measureText(const UiInput& in, const std::string& s, float px) {
+    if (s.empty()) return 0.0f;
+    return in.measure_text ? in.measure_text(s, px) : 0.5f * px * static_cast<float>(utf8Length(s));
+}
+
+// Ancho de lo que se ve hasta el cursor `caret` (bytes del texto).
+float caretOffset(const FieldGlyphs& g, const UiInput& in, int caret, float px) {
+    for (std::size_t i = 0; i < g.text_at.size(); ++i) {
+        if (g.text_at[i] == caret) return measureText(in, g.display.substr(0, static_cast<std::size_t>(g.display_at[i])), px);
+    }
+    return measureText(in, g.display, px);
+}
+
+// El cursor mas cercano a `x` pixeles desde el principio del texto.
+int caretAtX(const InputField& f, const UiInput& in, float px, float x) {
+    const FieldGlyphs g = fieldGlyphs(f);
+    int best = 0;
+    float best_distance = std::numeric_limits<float>::max();
+    for (std::size_t i = 0; i < g.text_at.size(); ++i) {
+        const float w = measureText(in, g.display.substr(0, static_cast<std::size_t>(g.display_at[i])), px);
+        const float d = std::abs(w - x);
+        if (d < best_distance) {
+            best_distance = d;
+            best = g.text_at[i];
+        } else if (w > x) {
+            break;
+        }
+    }
+    return best;
+}
 
 }  // namespace
 
@@ -65,6 +221,20 @@ void Image::reflect(ecs::PropertyVisitor& v) {
     v.field({"texture", "Imagen", "Archivo en Assets (vacio = color liso)"}, texture);
     v.field({"corner_radius", "Esquinas"}, corner_radius, FloatRange{0.0f, 200.0f, 0.5f, "%.1f"});
     v.field({"preserve_aspect", "Mantener proporcion"}, preserve_aspect);
+    v.field({"raycast_target", "Recibe el raton",
+             "Tapa los clics al juego y a lo de debajo (desactivalo en imagenes decorativas o en la que se arrastra)"},
+            raycast_target);
+    v.field({"uv_rect_pos", "UV: inicio", "Atlas: esquina de arriba a la izquierda de la parte que se ve (0..1)"}, uv_rect_pos,
+            0.001f);
+    v.field({"uv_rect_size", "UV: tamano", "Atlas: tamano de la parte que se ve (0..1; 1, 1 = toda la imagen)"}, uv_rect_size,
+            0.001f);
+    v.field({"slice_left_top", "9-slice: izquierda, arriba",
+             "Bordes que no se estiran, en pixeles de la imagen (0 = sin 9-slice)"},
+            slice_left_top, 0.5f);
+    v.field({"slice_right_bottom", "9-slice: derecha, abajo"}, slice_right_bottom, 0.5f);
+    v.field({"slice_scale", "9-slice: escala de los bordes", "Unidades del Canvas por pixel de la imagen"}, slice_scale,
+            FloatRange{0.01f, 20.0f, 0.01f, "%.2f"});
+    v.field({"slice_fill_center", "9-slice: rellenar el centro"}, slice_fill_center);
 }
 
 void Text::reflect(ecs::PropertyVisitor& v) {
@@ -138,6 +308,20 @@ void LayoutGroup::reflect(ecs::PropertyVisitor& v) {
 
 void Mask::reflect(ecs::PropertyVisitor& v) { v.field({"enabled", "Recortar a los hijos"}, enabled); }
 
+void EventTrigger::reflect(ecs::PropertyVisitor& v) {
+    v.entity({"target", "Objeto del script", "Quien recibe los eventos (vacio = este objeto)"}, target);
+    v.field({"on_hover", "Al entrar el raton", "Script::on(\"Metodo\", fn): {entity, position, button, other}"}, on_hover);
+    v.field({"on_exit", "Al salir el raton"}, on_exit);
+    v.field({"on_right_click", "Clic derecho"}, on_right_click);
+    v.field({"on_double_click", "Doble clic"}, on_double_click);
+    v.field({"on_drag_begin", "Empieza a arrastrarse"}, on_drag_begin);
+    v.field({"on_drag", "Mientras se arrastra"}, on_drag);
+    v.field({"on_drag_end", "Se suelta (other = donde)"}, on_drag_end);
+    v.field({"on_drop", "Le sueltan algo encima (other = lo que se arrastraba)"}, on_drop);
+    v.field({"drag_threshold", "Umbral de arrastre", "Pixeles que se mueve el raton antes de empezar a arrastrar"},
+            drag_threshold, FloatRange{0.0f, 100.0f, 0.5f, "%.1f"});
+}
+
 void Button::reflect(ecs::PropertyVisitor& v) {
     v.field({"interactable", "Interactivo"}, interactable);
     v.field({"normal", "Normal"}, normal, Vec3Kind::Color);
@@ -165,7 +349,7 @@ void InputField::reflect(ecs::PropertyVisitor& v) {
     v.field({"text", "Texto"}, text);
     v.field({"placeholder", "Indicacion"}, placeholder);
     v.field({"font_size", "Tamano"}, font_size, FloatRange{4.0f, 200.0f, 0.5f, "%.0f"});
-    v.field({"max_length", "Longitud maxima", "0 = sin limite"}, max_length, 0, 10000);
+    v.field({"max_length", "Longitud maxima", "Caracteres (una letra con tilde cuenta 1). 0 = sin limite"}, max_length, 0, 10000);
     v.field({"password", "Contrasena"}, password);
     v.field({"background", "Fondo"}, background, Vec3Kind::Color);
     v.field({"text_color", "Color del texto"}, text_color, Vec3Kind::Color);
@@ -206,6 +390,24 @@ void UiSystem::reset() {
     open_dropdown_ = scroll_drag_ = entt::null;
     last_time_ = -1.0f;
     capturing_mouse_ = false;
+    ui_buttons_ = {false, false, false};
+    hover_trigger_ = right_target_ = drag_source_ = entt::null;
+    drag_active_ = false;
+    ignore_enter_ = false;
+}
+
+void UiSystem::filterGameInput(dm::Input& input) {
+    static constexpr std::array<dm::MouseButton, 3> kButtons = {dm::MouseButton::Left, dm::MouseButton::Right,
+                                                                dm::MouseButton::Middle};
+    for (std::size_t i = 0; i < kButtons.size(); ++i) {
+        const dm::MouseButton b = kButtons[i];
+        // Se decide al pulsar (con el raton donde estaba en el ultimo update).
+        if (input.isMouseButtonPressed(b)) ui_buttons_[i] = capturing_mouse_;
+        const bool down = input.isMouseButtonDown(b);
+        if (ui_buttons_[i]) input.suppressMouseButton(b);
+        if (!down) ui_buttons_[i] = false;  // soltado (este frame tampoco llega el soltar)
+    }
+    if (capturing_mouse_) input.suppressScroll();
 }
 
 std::vector<UiEvent> UiSystem::takeEvents() {
@@ -240,7 +442,7 @@ bool UiSystem::interactiveAt(const ecs::World& world, float x, float y) const {
         if (const Toggle* t = r.try_get<Toggle>(it->entity); t != nullptr && t->interactable) return true;
         if (const InputField* f = r.try_get<InputField>(it->entity); f != nullptr && f->interactable) return true;
         if (const Dropdown* d = r.try_get<Dropdown>(it->entity); d != nullptr && d->interactable) return true;
-        if (r.all_of<ScrollView>(it->entity)) return true;
+        if (r.all_of<ScrollView>(it->entity) || r.all_of<EventTrigger>(it->entity)) return true;
     }
     return open_dropdown_ != entt::null;
 }
@@ -261,19 +463,8 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
     last_time_ = time;
 
     // Canvas raiz (sin Canvas por encima) de la pantalla, por orden.
-    std::vector<ecs::Entity> canvases;
-    world.forEachDepthFirst([&](ecs::Entity e) {
-        if (!e.has<Canvas>() || !e.activeInHierarchy()) return;
-        if (e.get<Canvas>().render_mode == RenderMode::WorldSpace) return;
-        for (ecs::Entity p = e.parent(); p.valid(); p = p.parent()) {
-            if (p.has<Canvas>()) return;
-        }
-        canvases.push_back(e);
-    });
-    std::stable_sort(canvases.begin(), canvases.end(),
-                     [](const ecs::Entity& a, const ecs::Entity& b) { return a.get<Canvas>().sort_order < b.get<Canvas>().sort_order; });
+    const std::vector<ecs::Entity> canvases = rootCanvases(world, false);
 
-    const auto target_of = [&](ecs::Entity source, const Uuid& target) { return targetOf(world, source, target); };
 
     for (const ecs::Entity& canvas_entity : canvases) {
         const Canvas& canvas = canvas_entity.get<Canvas>();
@@ -294,6 +485,7 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
     if (interactive) {
         // Lista abierta de un Dropdown: va por encima de todo.
         bool consumed = false;
+        bool over_dropdown_list = false;
         if (open_dropdown_ != entt::null) {
             Dropdown* d = world.registry().valid(open_dropdown_) ? world.registry().try_get<Dropdown>(open_dropdown_) : nullptr;
             UiRect box;
@@ -306,6 +498,7 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
                 const UiRect list{box.x, dropdownItemRect(box, *d, 0).y + d->list_scroll * box.h, box.w,
                                   box.h * static_cast<float>(visible)};
                 const bool over_list = list.contains(input.mouse_x, input.mouse_y);
+                over_dropdown_list = over_list;
                 if (over_list) {
                     capturing_mouse_ = true;
                     if (input.wheel != 0.0f) {
@@ -343,13 +536,23 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             const bool control = e.has<Button>() || e.has<Slider>() || e.has<InputField>() || e.has<Toggle>() ||
                                  e.has<Dropdown>();
             if (visibleAt(*it, input.mouse_x, input.mouse_y)) {
-                capturing_mouse_ = capturing_mouse_ || control || e.has<Image>() || e.has<ScrollView>();
+                const Image* image = e.tryGet<Image>();
+                const bool blocks_image = image != nullptr && image->raycast_target && image->alpha > 0.0f;
+                capturing_mouse_ = capturing_mouse_ || control || blocks_image || e.has<ScrollView>() || e.has<EventTrigger>();
                 if (control) {
                     hovered = it->entity;
                     break;
                 }
             }
         }
+        // UIEventTrigger bajo el raton (o el padre que lo tiene).
+        const entt::entity trigger = over_dropdown_list ? entt::entity{entt::null}
+                                                        : triggerAt(world, input.mouse_x, input.mouse_y, entt::null);
+        const EventTrigger* trigger_events = trigger != entt::null ? world.registry().try_get<EventTrigger>(trigger) : nullptr;
+        const bool trigger_drags = trigger_events != nullptr &&
+                                   (!trigger_events->on_drag_begin.empty() || !trigger_events->on_drag.empty() ||
+                                    !trigger_events->on_drag_end.empty());
+        if (drag_active_) capturing_mouse_ = true;
         // ScrollView bajo el raton: rueda y arrastre (con inercia al soltar).
         ScrollView* wheel_target = nullptr;
         entt::entity scroll_under = entt::null;
@@ -366,7 +569,7 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             else if (wheel_target->horizontal) wheel_target->scroll.x -= input.wheel * wheel_target->wheel_speed;
             wheel_target->velocity = Vec2{};
         }
-        if (input.mouse_pressed && !consumed && scroll_under != entt::null &&
+        if (input.mouse_pressed && !consumed && scroll_under != entt::null && !trigger_drags &&
             (hovered == entt::null || !world.wrap(hovered).has<Slider>())) {
             scroll_drag_ = scroll_under;
             scroll_drag_last_ = Vec2{input.mouse_x, input.mouse_y};
@@ -393,9 +596,19 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             if (hovered == entt::null || !world.wrap(hovered).has<InputField>()) focused_ = entt::null;
             if (hovered != entt::null) {
                 ecs::Entity e = world.wrap(hovered);
-                if (InputField* field = e.tryGet<InputField>(); field != nullptr && field->interactable) focused_ = hovered;
+                if (InputField* field = e.tryGet<InputField>(); field != nullptr && field->interactable) {
+                    // El cursor donde se hizo clic (con Mayus, amplia la seleccion).
+                    const bool was_focused = focused_ == hovered;
+                    focused_ = hovered;
+                    placeCaret(hovered, *field, input, input.shift && was_focused);
+                }
                 if (Slider* slider = e.tryGet<Slider>(); slider != nullptr && slider->interactable) dragging_ = hovered;
             }
+        }
+        // Arrastrar dentro del campo con el foco: seleccionar.
+        if (input.mouse_down && !input.mouse_pressed && pressed_ != entt::null && pressed_ == focused_ &&
+            world.registry().valid(pressed_)) {
+            if (InputField* field = world.registry().try_get<InputField>(pressed_)) placeCaret(pressed_, *field, input, true);
         }
         // Soltar sobre el mismo control: clic.
         if (input.mouse_released) {
@@ -412,45 +625,14 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
                 setSlider(world, world.wrap(dragging_), std::clamp((input.mouse_x - r.x) / r.w, 0.0f, 1.0f));
             }
         }
+        // UIEventTrigger: entrar/salir, clic derecho, doble clic, arrastrar y soltar.
+        updatePointerEvents(world, input, trigger, consumed);
         // Escribir en el campo con el foco.
         if (focused_ != entt::null && world.registry().valid(focused_)) {
             ecs::Entity e = world.wrap(focused_);
             if (InputField* field = e.tryGet<InputField>()) {
-                bool changed = false;
-                for (const char c : input.typed) {
-                    if (static_cast<unsigned char>(c) < 32) continue;
-                    if (field->max_length > 0 && static_cast<int>(field->text.size()) >= field->max_length) break;
-                    field->text += c;
-                    changed = true;
-                }
-                if (input.backspace && !field->text.empty()) {
-                    // Borra un caracter UTF-8 entero.
-                    std::size_t cut = field->text.size() - 1;
-                    while (cut > 0 && (static_cast<unsigned char>(field->text[cut]) & 0xC0) == 0x80) --cut;
-                    field->text.erase(cut);
-                    changed = true;
-                }
-                if (changed && !field->on_change.empty()) {
-                    UiEvent ev;
-                    ev.source = e;
-                    ev.target = target_of(e, field->target);
-                    ev.method = field->on_change;
-                    ev.kind = UiEvent::Kind::Text;
-                    ev.text = field->text;
-                    events_.push_back(ev);
-                }
-                if (input.enter) {
-                    if (!field->on_submit.empty()) {
-                        UiEvent ev;
-                        ev.source = e;
-                        ev.target = target_of(e, field->target);
-                        ev.method = field->on_submit;
-                        ev.kind = UiEvent::Kind::Text;
-                        ev.text = field->text;
-                        events_.push_back(ev);
-                    }
-                    focused_ = entt::null;
-                }
+                editField(world, e, *field, input, hovered);
+                ignore_enter_ = false;
             } else {
                 focused_ = entt::null;
             }
@@ -458,6 +640,8 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
     } else {
         pressed_ = dragging_ = focused_ = entt::null;
         scroll_drag_ = entt::null;
+        hover_trigger_ = right_target_ = drag_source_ = entt::null;
+        drag_active_ = false;
     }
     // Inercia de los ScrollView que no se arrastran.
     if (dt > 0.0f) {
@@ -732,23 +916,230 @@ void UiSystem::setSlider(ecs::World& world, ecs::Entity e, float t) {
     }
 }
 
+bool UiSystem::focus(ecs::World& world, entt::entity field) {
+    if (field == entt::null) {
+        focused_ = entt::null;
+        return true;
+    }
+    InputField* f = world.registry().valid(field) ? world.registry().try_get<InputField>(field) : nullptr;
+    if (f == nullptr || !f->interactable) return false;
+    focused_ = field;
+    f->caret = f->anchor = static_cast<int>(f->text.size());
+    // El Enter que abrio el chat (el script lo vio antes que la interfaz) no lo envia.
+    ignore_enter_ = true;
+    return true;
+}
+
+void UiSystem::placeCaret(entt::entity entity, InputField& field, const UiInput& input, bool keep_anchor) const {
+    UiRect r;
+    if (!rectOf(entity, r)) return;
+    const float s = scaleOf(entity);
+    const float px = field.font_size * s * gameplay::accessibility().text_scale;
+    const float x = input.mouse_x - (r.x + 10.0f * s) + field.scroll;
+    const int previous = clampCaret(field.text, field.caret);
+    field.caret = caretAtX(field, input, px, x);
+    if (!keep_anchor) field.anchor = field.caret;
+    else if (field.anchor < 0) field.anchor = previous;
+}
+
+void UiSystem::editField(ecs::World& world, ecs::Entity e, InputField& field, const UiInput& input, entt::entity hovered) {
+    std::string& text = field.text;
+    int caret = clampCaret(text, field.caret);
+    int anchor = field.anchor < 0 ? caret : clampCaret(text, field.anchor);
+    bool changed = false;
+    const auto lo = [&] { return std::min(caret, anchor); };
+    const auto hi = [&] { return std::max(caret, anchor); };
+    const auto eraseSelection = [&] {
+        if (caret == anchor) return false;
+        const int a = lo();
+        text.erase(static_cast<std::size_t>(a), static_cast<std::size_t>(hi() - a));
+        caret = anchor = a;
+        changed = true;
+        return true;
+    };
+    const auto insert = [&](const std::string& raw, bool spaces) {
+        std::string s = singleLine(raw, spaces);
+        if (s.empty()) return;
+        eraseSelection();
+        // max_length en caracteres, no en bytes.
+        if (field.max_length > 0) s = utf8Prefix(s, std::max(field.max_length - utf8Length(text), 0));
+        if (s.empty()) return;
+        text.insert(static_cast<std::size_t>(caret), s);
+        caret += static_cast<int>(s.size());
+        anchor = caret;
+        changed = true;
+    };
+    const auto moveTo = [&](int to) {
+        caret = to;
+        if (!input.shift) anchor = caret;
+    };
+    if ((input.double_click && hovered == e.handle()) || input.select_all) {
+        anchor = 0;
+        caret = static_cast<int>(text.size());
+    }
+    // Portapapeles (nunca el de una contrasena).
+    if ((input.copy || input.cut) && !field.password && caret != anchor && input.set_clipboard) {
+        input.set_clipboard(text.substr(static_cast<std::size_t>(lo()), static_cast<std::size_t>(hi() - lo())));
+    }
+    if (input.cut && !field.password) eraseSelection();
+    if (input.paste) insert(input.clipboard, true);
+    if (!input.typed.empty()) insert(input.typed, false);
+    if (input.backspace && !eraseSelection() && caret > 0) {
+        const int p = prevChar(text, caret);  // un caracter UTF-8 entero
+        text.erase(static_cast<std::size_t>(p), static_cast<std::size_t>(caret - p));
+        caret = anchor = p;
+        changed = true;
+    }
+    if (input.key_delete && !eraseSelection() && caret < static_cast<int>(text.size())) {
+        const int n = nextChar(text, caret);
+        text.erase(static_cast<std::size_t>(caret), static_cast<std::size_t>(n - caret));
+        anchor = caret;
+        changed = true;
+    }
+    if (input.key_left) moveTo(!input.shift && caret != anchor ? lo() : prevChar(text, caret));
+    if (input.key_right) moveTo(!input.shift && caret != anchor ? hi() : nextChar(text, caret));
+    if (input.key_home) moveTo(0);
+    if (input.key_end) moveTo(static_cast<int>(text.size()));
+    field.caret = caret;
+    field.anchor = anchor;
+
+    if (changed && !field.on_change.empty()) {
+        UiEvent ev;
+        ev.source = e;
+        ev.target = targetOf(world, e, field.target);
+        ev.method = field.on_change;
+        ev.kind = UiEvent::Kind::Text;
+        ev.text = field.text;
+        events_.push_back(ev);
+    }
+    if (input.enter && !ignore_enter_) {
+        if (!field.on_submit.empty()) {
+            UiEvent ev;
+            ev.source = e;
+            ev.target = targetOf(world, e, field.target);
+            ev.method = field.on_submit;
+            ev.kind = UiEvent::Kind::Text;
+            ev.text = field.text;
+            events_.push_back(ev);
+        }
+        field.anchor = field.caret;
+        focused_ = entt::null;
+    }
+}
+
+entt::entity UiSystem::triggerAt(ecs::World& world, float x, float y, entt::entity exclude) const {
+    const ecs::Entity excluded = exclude != entt::null && world.registry().valid(exclude) ? world.wrap(exclude) : ecs::Entity{};
+    for (auto it = laid_.rbegin(); it != laid_.rend(); ++it) {
+        if (!visibleAt(*it, x, y) || !world.registry().valid(it->entity)) continue;
+        const ecs::Entity e = world.wrap(it->entity);
+        if (excluded.valid() && (e == excluded || excluded.isAncestorOf(e))) continue;
+        // Lo que recibe el raton: un control, una imagen que lo recibe, un
+        // ScrollView o un elemento con eventos (los textos no tapan).
+        const Image* image = e.tryGet<Image>();
+        const bool blocks = e.has<Button>() || e.has<Slider>() || e.has<InputField>() || e.has<Toggle>() ||
+                            e.has<Dropdown>() || e.has<ScrollView>() || e.has<EventTrigger>() ||
+                            (image != nullptr && image->raycast_target && image->alpha > 0.0f);
+        if (!blocks) continue;
+        // Ese elemento o su padre mas cercano con eventos (dentro de su Canvas).
+        for (ecs::Entity p = e; p.valid(); p = p.parent()) {
+            if (p.has<EventTrigger>()) return p.handle();
+            if (p.has<Canvas>()) break;
+        }
+        return entt::null;  // lo tapa algo sin eventos
+    }
+    return entt::null;
+}
+
+void UiSystem::pointerEvent(ecs::World& world, entt::entity source, std::string EventTrigger::*method, const UiInput& input,
+                            int button, entt::entity other) {
+    if (source == entt::null || !world.registry().valid(source)) return;
+    const EventTrigger* t = world.registry().try_get<EventTrigger>(source);
+    if (t == nullptr || (t->*method).empty()) return;
+    const ecs::Entity src = world.wrap(source);
+    UiEvent ev;
+    ev.source = src;
+    ev.target = targetOf(world, src, t->target);
+    ev.method = t->*method;
+    ev.kind = UiEvent::Kind::Pointer;
+    ev.position = Vec2{input.mouse_x, input.mouse_y};
+    ev.button = button;
+    if (other != entt::null && world.registry().valid(other)) ev.other = world.wrap(other);
+    events_.push_back(std::move(ev));
+}
+
+void UiSystem::updatePointerEvents(ecs::World& world, const UiInput& input, entt::entity trigger, bool consumed) {
+    entt::registry& r = world.registry();
+    if (hover_trigger_ != entt::null && !r.valid(hover_trigger_)) hover_trigger_ = entt::null;
+    // Entrar y salir.
+    if (trigger != hover_trigger_) {
+        pointerEvent(world, hover_trigger_, &EventTrigger::on_exit, input, 0, entt::null);
+        hover_trigger_ = trigger;
+        pointerEvent(world, trigger, &EventTrigger::on_hover, input, 0, entt::null);
+    }
+    // Clic derecho: pulsar y soltar sobre el mismo.
+    if (input.right_pressed) right_target_ = consumed ? entt::entity{entt::null} : trigger;
+    if (input.right_released) {
+        if (right_target_ != entt::null && right_target_ == trigger) {
+            pointerEvent(world, trigger, &EventTrigger::on_right_click, input, 1, entt::null);
+        }
+        right_target_ = entt::null;
+    }
+    if (input.double_click && !consumed) pointerEvent(world, trigger, &EventTrigger::on_double_click, input, 0, entt::null);
+
+    // Arrastrar: se pulsa encima y el raton se mueve drag_threshold pixeles.
+    if (input.mouse_pressed && !consumed && trigger != entt::null) {
+        const EventTrigger& t = r.get<EventTrigger>(trigger);
+        if (!t.on_drag_begin.empty() || !t.on_drag.empty() || !t.on_drag_end.empty()) {
+            drag_source_ = trigger;
+            drag_active_ = false;
+            drag_start_ = drag_last_ = Vec2{input.mouse_x, input.mouse_y};
+        }
+    }
+    if (drag_source_ == entt::null) return;
+    if (!r.valid(drag_source_) || !r.all_of<EventTrigger>(drag_source_)) {
+        drag_source_ = entt::null;
+        drag_active_ = false;
+        return;
+    }
+    const Vec2 mouse{input.mouse_x, input.mouse_y};
+    if (input.mouse_down) {
+        if (!drag_active_) {
+            const float threshold = std::max(r.get<EventTrigger>(drag_source_).drag_threshold, 0.0f);
+            const float dx = mouse.x - drag_start_.x;
+            const float dy = mouse.y - drag_start_.y;
+            if (dx * dx + dy * dy >= threshold * threshold && (dx != 0.0f || dy != 0.0f)) {
+                drag_active_ = true;
+                capturing_mouse_ = true;
+                // Ya no es un clic ni mueve un ScrollView.
+                pressed_ = entt::null;
+                scroll_drag_ = entt::null;
+                pointerEvent(world, drag_source_, &EventTrigger::on_drag_begin, input, 0, entt::null);
+                drag_last_ = mouse;
+            }
+        } else if (mouse.x != drag_last_.x || mouse.y != drag_last_.y) {
+            pointerEvent(world, drag_source_, &EventTrigger::on_drag, input, 0, entt::null);
+            drag_last_ = mouse;
+        }
+        return;
+    }
+    // Soltar.
+    if (drag_active_) {
+        entt::entity drop = triggerAt(world, mouse.x, mouse.y, drag_source_);
+        if (drop != entt::null && r.get<EventTrigger>(drop).on_drop.empty()) drop = entt::null;
+        pointerEvent(world, drop, &EventTrigger::on_drop, input, 0, drag_source_);
+        pointerEvent(world, drag_source_, &EventTrigger::on_drag_end, input, 0, drop);
+    }
+    drag_source_ = entt::null;
+    drag_active_ = false;
+}
+
 void UiSystem::updateWorld(ecs::World& world, const std::array<UiPointer, kMaxPointers>& pointers, bool interactive,
                            float time) {
     world_canvases_.clear();
     for (UiPointerHit& h : pointer_hits_) h = UiPointerHit{};
 
     // Canvas raiz en modo Mundo.
-    std::vector<ecs::Entity> canvases;
-    world.forEachDepthFirst([&](ecs::Entity e) {
-        if (!e.has<Canvas>() || !e.activeInHierarchy()) return;
-        if (e.get<Canvas>().render_mode != RenderMode::WorldSpace) return;
-        for (ecs::Entity p = e.parent(); p.valid(); p = p.parent()) {
-            if (p.has<Canvas>()) return;
-        }
-        canvases.push_back(e);
-    });
-    std::stable_sort(canvases.begin(), canvases.end(),
-                     [](const ecs::Entity& a, const ecs::Entity& b) { return a.get<Canvas>().sort_order < b.get<Canvas>().sort_order; });
+    const std::vector<ecs::Entity> canvases = rootCanvases(world, true);
 
     std::vector<std::vector<Laid>> laid(canvases.size());
     std::vector<core::Quat> rotations(canvases.size());
@@ -988,6 +1379,12 @@ void UiSystem::buildDraw(ecs::World& world, const std::vector<Laid>& laid, const
             c.color = rgba(image->color, image->alpha);
             c.radius = image->corner_radius * s;
             c.preserve_aspect = image->preserve_aspect;
+            c.uv0 = image->uv_rect_pos;
+            c.uv1 = Vec2{image->uv_rect_pos.x + image->uv_rect_size.x, image->uv_rect_pos.y + image->uv_rect_size.y};
+            c.slice = Vec4{std::max(image->slice_left_top.x, 0.0f), std::max(image->slice_left_top.y, 0.0f),
+                           std::max(image->slice_right_bottom.x, 0.0f), std::max(image->slice_right_bottom.y, 0.0f)};
+            c.slice_scale = std::max(image->slice_scale, 0.0f) * s;
+            c.slice_fill = image->slice_fill_center;
             // Con Button, la imagen se tine con el color del estado.
             if (e.has<Button>() && !out.empty() && out.back().entity == l.entity && out.back().type == UiDrawCommand::Type::Rect) {
                 c.color = Vec4{c.color.x * out.back().color.x * 1.6f, c.color.y * out.back().color.y * 1.6f,
@@ -1015,7 +1412,7 @@ void UiSystem::buildDraw(ecs::World& world, const std::vector<Laid>& laid, const
             handle.color = rgba(slider->handle, slider->interactable ? 1.0f : 0.5f);
             out.push_back(handle);
         }
-        if (const InputField* field = e.tryGet<InputField>()) {
+        if (InputField* field = e.tryGet<InputField>()) {
             UiDrawCommand bg = base;
             bg.color = rgba(field->background, 1.0f);
             bg.radius = 6.0f * s;
@@ -1027,17 +1424,73 @@ void UiSystem::buildDraw(ecs::World& world, const std::vector<Laid>& laid, const
                 outline.color = Vec4{0.25f, 0.55f, 1.0f, 1.0f};
                 out.push_back(outline);
             }
-            UiDrawCommand text = base;
-            text.type = UiDrawCommand::Type::Text;
-            text.rect = UiRect{r.x + 10.0f * s, r.y, r.w - 20.0f * s, r.h};
-            text.font_size = field->font_size * s * gameplay::accessibility().text_scale;
-            text.h_align = 0;
+            // El texto (desplazado para que el cursor se vea y recortado al
+            // campo), la seleccion y el cursor.
+            const float px = field->font_size * s * gameplay::accessibility().text_scale;
+            const float pad = 10.0f * s;
+            const UiRect inner{r.x + pad, r.y, std::max(r.w - 2.0f * pad, 0.0f), r.h};
+            const UiRect field_clip = l.clipped ? intersect(l.clip, r) : r;
+            const UiRect text_clip = l.clipped ? intersect(l.clip, inner) : inner;
             const bool empty = field->text.empty();
-            text.text = empty ? field->placeholder : (field->password ? std::string(field->text.size(), '*') : field->text);
-            if (focused && std::fmod(time, 1.0f) < 0.55f) text.text += "|";
-            text.color = empty ? Vec4{0.55f, 0.55f, 0.6f, 1.0f} : rgba(field->text_color, 1.0f);
-            if (empty && focused) text.text = std::fmod(time, 1.0f) < 0.55f ? "|" : "";
-            out.push_back(text);
+            const bool blink = std::fmod(time, 1.0f) < 0.55f;
+            float caret_x = 0.0f;
+            if (empty) {
+                field->scroll = 0.0f;
+                if (!focused) {
+                    UiDrawCommand text = base;
+                    text.type = UiDrawCommand::Type::Text;
+                    text.rect = inner;
+                    text.font_size = px;
+                    text.h_align = 0;
+                    text.text = field->placeholder;
+                    text.color = Vec4{0.55f, 0.55f, 0.6f, 1.0f};
+                    text.clipped = true;
+                    text.clip = text_clip;
+                    out.push_back(text);
+                }
+            } else {
+                const FieldGlyphs g = fieldGlyphs(*field);
+                const int caret = clampCaret(field->text, field->caret);
+                const int anchor = field->anchor < 0 ? caret : clampCaret(field->text, field->anchor);
+                const float total = measureText(input, g.display, px);
+                caret_x = caretOffset(g, input, caret, px);
+                if (focused) {
+                    if (caret_x - field->scroll > inner.w) field->scroll = caret_x - inner.w;
+                    if (caret_x - field->scroll < 0.0f) field->scroll = caret_x;
+                    field->scroll = std::clamp(field->scroll, 0.0f, std::max(total - inner.w, 0.0f) + 2.0f * s);
+                } else {
+                    field->scroll = 0.0f;
+                }
+                if (focused && anchor != caret) {
+                    const float a = caretOffset(g, input, std::min(caret, anchor), px);
+                    const float b = caretOffset(g, input, std::max(caret, anchor), px);
+                    UiDrawCommand sel = base;
+                    sel.rect = UiRect{inner.x + a - field->scroll, r.y + (r.h - px * 1.2f) * 0.5f, b - a, px * 1.2f};
+                    sel.color = Vec4{0.25f, 0.5f, 1.0f, 0.45f};
+                    sel.clipped = true;
+                    sel.clip = text_clip;
+                    out.push_back(sel);
+                }
+                UiDrawCommand text = base;
+                text.type = UiDrawCommand::Type::Text;
+                text.rect = UiRect{inner.x - field->scroll, r.y, std::max(total, inner.w) + field->scroll + px, r.h};
+                text.font_size = px;
+                text.h_align = 0;
+                text.text = g.display;
+                text.color = rgba(field->text_color, 1.0f);
+                text.clipped = true;
+                text.clip = text_clip;
+                out.push_back(text);
+            }
+            if (focused && blink) {
+                UiDrawCommand cursor = base;
+                const float w = std::max(1.5f * s, 1.0f);
+                cursor.rect = UiRect{inner.x + caret_x - field->scroll, r.y + (r.h - px * 1.1f) * 0.5f, w, px * 1.1f};
+                cursor.color = rgba(field->text_color, 1.0f);
+                cursor.clipped = true;
+                cursor.clip = field_clip;
+                out.push_back(cursor);
+            }
         }
         if (const Toggle* toggle = e.tryGet<Toggle>()) {
             const float side = std::min(r.w, r.h);
@@ -1255,6 +1708,7 @@ void registerUiComponents() {
     registry.registerComponent<ScrollView>("UIScrollView", "Scroll View", "UI");
     registry.registerComponent<LayoutGroup>("UILayoutGroup", "Layout Group", "UI");
     registry.registerComponent<Mask>("UIMask", "Mascara (recorte)", "UI");
+    registry.registerComponent<EventTrigger>("UIEventTrigger", "Eventos del puntero", "UI");
 }
 
 }  // namespace cramion::ui

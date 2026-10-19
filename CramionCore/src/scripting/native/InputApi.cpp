@@ -2,6 +2,7 @@
 
 #include "Modules.h"
 
+#include "CramionCore/ui/UI.h"
 #include "CramionCore/xr/XrRig.h"
 
 #include <CramionDM/Input.h>
@@ -179,6 +180,30 @@ void registerDevices(Runtime& rt) {
         {"true", "captura el raton (primera persona); false lo suelta"});
     n.function("Input.isCursorLocked", [&rt](api::Call&) { return api::Value(rt.cursor_locked); },
                {"", "esta capturado?", "bool"});
+
+    // La interfaz del juego y el raton: un clic que empieza sobre la UI ya no
+    // llega a Input.getMouseButton* ni a las acciones (UiSystem::filterGameInput);
+    // con esto un script decide lo demas (girar la camara, apuntar...).
+    n.function("UI.pointerOverUi", [&rt](api::Call&) { return api::Value(rt.ui != nullptr && rt.ui->pointerOverUi()); },
+               {"", "el raton esta sobre la interfaz (un control, una imagen que recibe el raton, un ScrollView)", "bool"});
+    n.function("UI.isTyping", [&rt](api::Call&) { return api::Value(rt.ui != nullptr && rt.ui->typing()); },
+               {"", "hay un campo de texto con el foco (el teclado es suyo)", "bool"});
+    n.function(
+        "UI.focus",
+        [&rt](api::Call& c) -> api::Value {
+            if (rt.ui == nullptr || rt.world == nullptr) return false;
+            const ecs::Entity e = c.has(0) ? rt.entityArg(c, 0) : ecs::Entity{};
+            return rt.ui->focus(*rt.world, e.valid() ? e.handle() : entt::entity{entt::null});
+        },
+        {"campo", "da el foco a un UIInputField (el cursor al final; ese Enter no lo envia); nil se lo quita", "bool"});
+    n.function(
+        "UI.draggedElement",
+        [&rt](api::Call&) -> api::Value {
+            const entt::entity e = rt.ui != nullptr ? rt.ui->draggedElement() : entt::entity{entt::null};
+            if (e == entt::null || !rt.entity(e).valid()) return {};
+            return rt.entityValue(e);
+        },
+        {"", "el elemento con UIEventTrigger que se esta arrastrando (on_drag_begin..on_drag_end) o nil", "Entity o nil"});
 
     // Pantalla tactil: los dedos de este frame (1..touchCount).
     n.function(

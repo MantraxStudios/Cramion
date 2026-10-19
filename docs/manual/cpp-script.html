@@ -26,7 +26,7 @@
   <header class="site-header">
     <div class="header-inner">
       <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.4.13</span></a>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.5.1</span></a>
       <nav class="main-nav" aria-label="Secciones">
         <a href="index.html" data-nav="index">Documentación</a>
         <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
@@ -185,6 +185,7 @@
     <tr><td><code>using SourceFile = FileRef&lt;FileKind::Source&gt;</code></td><td></td></tr>
     <tr><td><code>using ShaderFile = FileRef&lt;FileKind::Shader&gt;</code></td><td></td></tr>
     <tr><td><code>using AnyFile = FileRef&lt;FileKind::Any&gt;</code></td><td></td></tr>
+    <tr><td><code>struct UiPointerEvent</code></td><td>Lo que llega en on(&quot;Metodo&quot;, fn) por on_hover, on_exit, on_right_click, on_double_click, on_drag_begin, on_drag, on_drag_end y on_drop de un UIEventTrigger: on(&quot;OnSoltar&quot;, [this](const Value&amp; v) { UiPointerEvent e(v); mover(e.other, e.entity); });</td></tr>
     <tr><td><code>enum CVarFlags : std::uint32_t { CVarNone, CVarReadOnly, CVarSaved, CVarCheat }</code></td><td></td></tr>
     <tr><td><code>T* Entity::script() const</code></td><td></td></tr>
     <tr><td><code>detail::PropertyBase::PropertyBase(Script* owner, const char* name) : name_(name)</code></td><td></td></tr>
@@ -231,7 +232,7 @@
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.4.13. Gratis para hacer y vender tus juegos.</span>
+      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.5.1. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="../store/index.html">Assets</a>

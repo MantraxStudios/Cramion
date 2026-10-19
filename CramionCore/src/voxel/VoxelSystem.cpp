@@ -10,6 +10,7 @@
 
 #include "CramionCore/voxel/Voxel.h"
 
+#include "CramionCore/jobs/JobSystem.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/water/Water.h"
 #include "VoxelInternal.h"
@@ -1102,21 +1103,35 @@ void VoxelSystem::syncRenderer(gfx::VulkanRenderer& renderer) {
     const std::string signature = folder.string() + "|" + std::to_string(size);
     if (signature != d.textures_signature && !d.textures_future.valid()) {
         d.textures_signature = signature;
-        d.textures_future = std::async(std::launch::async, [folder, size]() {
-            const auto& names = textureNames();
-            std::vector<gfx::VoxelTextureLayer> layers(names.size());
-            std::vector<std::future<void>> parts;
-            for (std::size_t i = 0; i < names.size(); ++i) {
-                parts.push_back(std::async(std::launch::async, [&, i]() { buildTexture(names[i], size, folder, layers[i]); }));
-            }
-            for (auto& p : parts) p.wait();
-            return layers;
-        });
+        // En el sistema de jobs (antes un std::async por textura: un hilo del
+        // sistema nuevo cada una). La promesa lleva el resultado al futuro.
+        auto promise = std::make_shared<std::promise<std::vector<gfx::VoxelTextureLayer>>>();
+        d.textures_future = promise->get_future();
+        jobs::schedule(
+            [promise, folder, size]() {
+                try {
+                    const auto& names = textureNames();
+                    std::vector<gfx::VoxelTextureLayer> layers(names.size());
+                    // Una textura por trozo; quien espera ayuda (parallelFor).
+                    jobs::parallelFor(names.size(), 1, [&](std::size_t begin, std::size_t end) {
+                        for (std::size_t i = begin; i < end; ++i) buildTexture(names[i], size, folder, layers[i]);
+                    });
+                    promise->set_value(std::move(layers));
+                } catch (...) {
+                    promise->set_exception(std::current_exception());
+                }
+            },
+            nullptr, jobs::Priority::Background);
         d.textures_uploaded = false;
     }
     if (d.textures_future.valid() && d.textures_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        const std::vector<gfx::VoxelTextureLayer> layers = d.textures_future.get();
-        renderer.setVoxelTextures(size, layers);
+        std::vector<gfx::VoxelTextureLayer> layers;
+        try {
+            layers = d.textures_future.get();
+        } catch (const std::exception& e) {
+            std::cerr << "[Voxel] No se pudieron generar las texturas: " << e.what() << "\n";
+        }
+        if (!layers.empty()) renderer.setVoxelTextures(size, layers);
         d.textures_uploaded = true;
     }
     for (Impl::SectionUpdate& u : d.section_updates) {

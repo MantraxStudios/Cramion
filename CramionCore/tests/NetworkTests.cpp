@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <chrono>
 #include <cstdio>
@@ -303,6 +304,81 @@ void testScripts() {
     client.scripts.stop();
     std::filesystem::remove_all(root);
 }
+
+// Cada juego con su origen flotante (el cliente a 100 km del servidor y
+// luego desplazandose): los objetos de red estan en el mismo sitio real.
+void testFarOrigin() {
+    std::printf("\nScripts: lejos del origen (cada uno con su origen flotante)\n");
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_net_far";
+    std::filesystem::remove_all(root);
+    scripting::registerScriptComponents();
+    {
+        ecs::World maker;
+        ecs::Entity bola = maker.create("Bola");
+        net::NetworkObject& n = bola.add<net::NetworkObject>();
+        n.send_rate = 60.0f;
+        std::string error;
+        check(ecs::createPrefab(maker, bola, root / "Prefabs" / "Bola.crprefab", &error), "crear el prefab de red");
+    }
+    Game server(root), client(root);
+    server.world.create("Servidor");
+    client.world.create("Cliente");
+    client.world.setOrigin(ecs::DVec3{100000.0, 0.0, -50000.0});  // su (0,0,0) local, a 100 km
+    server.scripts.start(server.world);
+    client.scripts.start(client.world);
+    server.call("Network.host", {Value(27783), Value(4)});
+    client.call("Network.connect", {Value("127.0.0.1"), Value(27783)});
+    const auto step = [&] {
+        server.frame();
+        client.frame();
+        server.take();
+        client.take();
+        server.updateBall(0.016f);  // la bola es del servidor: la mueve el
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    };
+    bool spawned = false;
+    ecs::Entity client_ball;
+    for (int i = 0; i < 300 && !client_ball.valid(); ++i) {
+        step();
+        if (!spawned && server.call("Network.playerCount").asNumber() >= 2.0) {
+            server.call("Network.spawn", {Value("Prefabs/Bola"), Value(core::Vec3{3.0f, 1.0f, 0.0f})});
+            spawned = true;
+        }
+        client_ball = client.ball();
+    }
+    check(client_ball.valid(), "el cliente recibe el objeto del servidor");
+    if (client_ball.valid()) {
+        const ecs::DVec3 real = client.world.absolute(client_ball.worldPosition());
+        check(std::abs(real.x - 3.0) < 0.05 && std::abs(real.y - 1.0) < 0.05 && std::abs(real.z) < 0.05,
+              "en el mismo sitio real que en el servidor");
+        check(client_ball.worldPosition().x < -99000.0f && client_ball.worldPosition().z > 49000.0f,
+              "que en el cliente es otro punto local");
+    }
+    // El servidor la mueve; el cliente la sigue en coordenadas reales.
+    for (int i = 0; i < 60; ++i) step();
+    const ecs::Entity server_ball = server.ball();
+    const auto gap = [&] {
+        if (!server_ball.valid() || !client_ball.valid()) return 1.0e9;
+        return std::abs(client.world.absolute(client_ball.worldPosition()).x - server.world.absolute(server_ball.worldPosition()).x);
+    };
+    check(server_ball.valid() && server_ball.worldPosition().x > 3.5f && gap() < 1.5,
+          "se mueve en el servidor y el cliente la sigue (mismo sitio real)");
+    // El origen del cliente se desplaza (como hace FloatingOrigin): lo que
+    // tiene en el bufer de interpolacion se mueve con el mundo.
+    const core::Vec3 shift{1024.0f, 0.0f, 0.0f};
+    client.world.shiftOrigin(shift);
+    client.scripts.shiftOrigin(shift);
+    step();
+    step();
+    check(gap() < 1.5, "tras desplazar el origen del cliente no salta (1 km)");
+    for (int i = 0; i < 30; ++i) step();
+    check(gap() < 1.5, "y la sigue despues");
+    client.scripts.shutdownNetwork();
+    server.scripts.shutdownNetwork();
+    server.scripts.stop();
+    client.scripts.stop();
+    std::filesystem::remove_all(root);
+}
 }  // namespace
 
 int main() {
@@ -331,6 +407,34 @@ int main() {
         check(!net::decodeValue(huge, at, back), "una tabla con 2.000 millones de entradas falsas se rechaza");
     }
 
+    std::printf("\nPosiciones absolutas (protocolo %u)\n", static_cast<unsigned>(net::kProtocolVersion));
+    {
+        const auto roundTrip = [](const net::NetPosition& p, net::NetPosition& out) {
+            std::string bytes;
+            net::encodePosition(bytes, p);
+            std::size_t at = 0;
+            return net::decodePosition(bytes, at, out) && at == bytes.size() && bytes.size() == 18;
+        };
+        net::NetPosition back;
+        check(roundTrip(net::NetPosition{1.0, 2.0, 3.0}, back) && back == net::NetPosition(1.0, 2.0, 3.0),
+              "cerca del origen, exacta (18 bytes)");
+        check(roundTrip(net::NetPosition{-1.0, -0.5, -1024.0}, back) && back == net::NetPosition(-1.0, -0.5, -1024.0),
+              "negativas y en el borde de un sector");
+        check(roundTrip(net::NetPosition{5000000.25, 12.5, -3000000.75}, back) &&
+                  back == net::NetPosition(5000000.25, 12.5, -3000000.75),
+              "a 5.000 km, exacta");
+        check(roundTrip(net::NetPosition{2500000.123, 0.001, -987654.321}, back) && std::abs(back.x - 2500000.123) < 1e-4 &&
+                  std::abs(back.y - 0.001) < 1e-6 && std::abs(back.z + 987654.321) < 1e-4,
+              "a 2.500 km, menos de 0,1 mm de error (un float a esa distancia: 25 cm)");
+        check(net::distanceBetween(net::NetPosition{1e6, 0.0, 0.0}, net::NetPosition{1e6 + 3.0, 4.0, 0.0}) == 5.0,
+              "distancia en doble precision");
+        std::string bytes;
+        net::encodePosition(bytes, net::NetPosition{1.0, 2.0, 3.0});
+        bytes.pop_back();
+        std::size_t at = 0;
+        check(!net::decodePosition(bytes, at, back), "una posicion cortada se rechaza");
+    }
+
     const std::uint16_t port = 27777;
     Peer server, a, b;
     std::string error;
@@ -341,6 +445,24 @@ int main() {
     check(until({&server, &a}, [&] { return a.session.connected(); }), "A recibe su id");
     check(a.session.localId() == 2 && a.find(NetEvent::Type::Connected) != nullptr, "A es el jugador 2 (evento Connected)");
     check(server.find(NetEvent::Type::PlayerJoined) != nullptr && server.session.players().size() == 2, "el servidor ve entrar a A");
+
+    std::printf("\nVersion del protocolo\n");
+    {
+        Peer old;
+        old.session.overrideProtocol(1);  // un juego de antes (posiciones en float locales)
+        check(old.session.connect("127.0.0.1", port, &error), "un cliente de otra version intenta entrar...");
+        const NetEvent* out = nullptr;
+        until({&server, &a, &old}, [&] {
+            out = old.find(NetEvent::Type::Disconnected);
+            return out != nullptr;
+        });
+        check(out != nullptr && out->text.find("version") != std::string::npos, "...y el servidor lo rechaza con el motivo");
+        check(!old.session.connected() && server.session.players().size() == 2, "no cuenta como jugador");
+        for (int i = 0; i < 10; ++i) server.pump();
+        int left = 0;
+        for (const NetEvent& e : server.events) left += e.type == NetEvent::Type::PlayerLeft ? 1 : 0;
+        check(left == 0, "y su desconexion no avisa de ninguna salida");
+    }
 
     std::printf("\nObjetos\n");
     const std::uint32_t box = server.session.spawn("Prefabs/Caja", core::Vec3{1, 2, 3}, core::Quat{}, net::kServerId);
@@ -392,6 +514,19 @@ int main() {
     a.session.setVar(avatar_a, "vida", NetValue::num(50));
     check(until({&server, &a, &b}, [&] { return b.find(NetEvent::Type::Var, "vida") != nullptr; }), "la variable de A llega a B por el servidor");
 
+    // Lejos del origen: la posicion absoluta llega entera (antes, un float
+    // local: a 2.500 km, pasos de 25 cm; y cada equipo con su origen).
+    a.session.sendTransform(avatar_a, net::NetPosition{2500000.125, 10.0, -1500000.5}, core::Quat{});
+    check(until({&server, &a, &b}, [&] {
+              const net::NetObject* o = b.session.object(avatar_a);
+              return o != nullptr && o->position.x > 1.0e6;
+          }),
+          "una posicion a 2.500 km llega a B por el servidor");
+    const net::NetObject* far = b.session.object(avatar_a);
+    check(far != nullptr && far->position == net::NetPosition(2500000.125, 10.0, -1500000.5) &&
+              server.session.object(avatar_a)->position == far->position,
+          "exacta en el servidor y en B");
+
     std::printf("\nSalidas y escena\n");
     b.events.clear();
     a.session.close();
@@ -416,6 +551,7 @@ int main() {
     check(gave_up, "...acaba en Disconnected (no se queda colgado)");
 
     testScripts();
+    testFarOrigin();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

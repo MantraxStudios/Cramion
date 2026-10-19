@@ -19,6 +19,7 @@ enum class GpuMemoryKind : std::uint8_t {
     Image,    // VulkanImage: destinos de render, sombras, G-buffer...
     Buffer,   // VulkanBuffer en la GPU: mallas, BLAS, culling...
     Staging,  // VulkanBuffer visible desde la CPU (uniformes, copias)
+    Lightmap, // LightmapAtlas: paginas de los lightmaps horneados
     Count,
 };
 

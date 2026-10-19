@@ -47,6 +47,10 @@ namespace cramion::gfx {
 struct PreparedTerrain;  // VulkanRenderer.h: un terreno preparado en otro hilo
 }
 
+namespace cramion::foliage {
+struct FoliageWater;  // Foliage.h: agua donde no crecen arboles
+}
+
 namespace cramion::physics {
 struct Cloth;
 struct SoftBody;
@@ -83,6 +87,14 @@ public:
     std::int32_t renderTextureId(const Uuid& uuid) { return renderTextureFor(uuid); }
     // Por su ruta dentro de Assets (el hueco de un material).
     std::int32_t renderTextureIdForAsset(const std::string& relative);
+
+    // La variante de `base` con los .crmat de `overrides` (uno por hueco; Uuid
+    // vacio = el material del modelo), sin anadirla a la escena: la que haria
+    // un MeshRenderer con esos materiales. Para las pruebas (comparte la malla
+    // con `base`, tambien con tiling).
+    asset::ModelData buildMaterialVariant(const asset::ModelData& base, const std::vector<Uuid>& overrides) {
+        return buildVariant(base, overrides);
+    }
 
     // --- Video (VideoPlayer en modo Material Override) ---
     // La textura de video `texture` (id de Render Texture del renderizador)
@@ -152,6 +164,13 @@ public:
     void setSupportQuery(SupportQuery query) { support_query_ = std::move(query); }
 
     const asset::ModelData* actorModelData(Entity entity, const scene::Scene& scene) const;
+
+    // --- Lightmaps (.crbake v4; RenderSyncLightmaps.cpp) ---
+    // Objetos con lightmap que se movieron desde el horneado (mas de 1 mm o
+    // 0.1 grados): el lightmap se sigue usando, con un aviso (como Unity).
+    std::size_t staleLightmaps() const { return stale_lightmaps_; }
+    // Objetos que se dibujan con su lightmap (el ultimo frame).
+    std::size_t lightmappedActors() const { return lightmapped_actors_; }
 
     // --- Mallas de los modelos que ya se dibujan ---
     // La primera vez que se dibuja una pieza, resolveModel la MUEVE del
@@ -301,7 +320,48 @@ private:
         anim::Inertializer inertial;
         // LOD de animacion (anim.lod.*): tiempo de los frames que no se evaluaron.
         float lod_dt = 0.0f;
+        // Sin nada que lo anime (rigido, sin Animator con clips ni controlador,
+        // sin tela ni Motion Matching): no se crea su Animator (un edificio no
+        // lo necesita). Sus huesos son la pose de reposo del modelo
+        // (restPose) y stateAnimator() lo crea si alguien pregunta por ellos
+        // (sockets, consultas de huesos).
+        bool rest_only = false;
+        const asset::ModelData* rest_data = nullptr;
+        // Cache del modelo resuelto (resolveModel + resolveVariant): con las
+        // mismas entradas del MeshRenderer (modelo, pieza y materiales) y la
+        // misma resolve_epoch_, el resultado es el mismo y no se busca otra vez
+        // (eran varias tablas hash y un material() por hueco, por objeto y
+        // frame). 0 = sin cache.
+        std::uint64_t resolve_epoch = 0;
+        Uuid resolve_model{};
+        int resolve_part = -1;
+        std::vector<Uuid> resolve_materials;
+        std::uint32_t resolved = 0;
+        // Esfera en el mundo (centro y radio) con la version de su Transform:
+        // si no cambio, no se recalcula.
+        std::uint64_t bounds_version = ~0ull;
+        core::Vec3 bounds_center{};
+        float bounds_radius = 0.0f;
     };
+    // El Animator del estado (lo crea si era solo la pose de reposo) y su
+    // modelo (sin crearlo).
+    anim::Animator& stateAnimator(AnimationState& state);
+    static const asset::ModelData* stateModel(const AnimationState& state) {
+        return state.animator.model() != nullptr ? state.animator.model() : state.rest_data;
+    }
+    // Pose de reposo de un modelo, compartida por todo lo que no se anima.
+    const anim::Animator& restPose(std::uint32_t model, const asset::ModelData& data);
+    std::unordered_map<std::uint32_t, anim::Animator> rest_poses_;
+    // Sube cuando algo puede cambiar el modelo resuelto de una entidad (otro
+    // material, variantes olvidadas, escena nueva): invalida las caches.
+    std::uint64_t resolve_epoch_ = 1;
+    // Por hueco de scene.actors(): sus huesos son la pose de reposo de su
+    // modelo (no hace falta copiarlos otra vez).
+    std::vector<std::uint8_t> actor_rest_;
+    // Por modelo de la escena: alguna entidad lo dibuja tal cual (sin
+    // variante). Si no, y tiene variantes, es "solo base de variantes"
+    // (Scene::setVariantBaseOnly): el renderizador no lo sube.
+    std::vector<std::uint8_t> model_direct_use_;
     // Cada cuantos frames se anima un objeto segun su distancia a la camara y
     // si esta delante (1 = todos).
     int animationLodInterval(const Entity& e, const scene::Scene& scene) const;
@@ -382,8 +442,13 @@ private:
     struct RiverMesh {
         std::uint64_t hash = 0;
         std::uint64_t version = 0;
-        std::vector<gfx::WaterVertex> vertices;
-        std::vector<std::uint32_t> indices;
+        // Compartidas con gfx::WaterBodyDesc y WaterPass: la cinta no se copia
+        // cada frame (eran ~8 MB por frame en Keryan).
+        std::shared_ptr<const std::vector<gfx::WaterVertex>> vertices;
+        std::shared_ptr<const std::vector<std::uint32_t>> indices;
+        // Linea central (paso 1 m) y su caja: la camara bajo el agua y las
+        // ondas la consultan sin rehacerla en cada llamada.
+        std::shared_ptr<const water::RiverLine> line;
     };
     std::unordered_map<entt::entity, RiverMesh> rivers_;
     // Cinematica inversa: humanoide de cada modelo (sus huesos y ejes).
@@ -481,9 +546,21 @@ private:
     // anterior (su velocidad).
     water::RippleSimulation ripples_;
     std::unordered_map<entt::entity, core::Vec3> ripple_previous_;
+    // Agua de este frame para las ondas (rio: con su linea en cache).
+    struct RippleWater {
+        const water::WaterBody* body = nullptr;
+        core::Mat4 matrix = core::Mat4::identity();
+        std::shared_ptr<const water::RiverLine> line;
+    };
     void updateRipples(World& world, gfx::VulkanRenderer& renderer, float delta_seconds,
-                       const core::Vec3& camera_position,
-                       const std::vector<std::pair<const water::WaterBody*, core::Mat4>>& bodies);
+                       const core::Vec3& camera_position, const std::vector<RippleWater>& bodies);
+    // Contenedores de updateRipples: se vacian y se reutilizan (antes se
+    // creaban en cada frame).
+    std::vector<water::RippleSource> ripple_sources_;
+    std::vector<water::RippleObstacle> ripple_obstacles_;
+    std::unordered_map<entt::entity, core::Vec3> ripple_positions_;
+    // Entidades candidatas (de varias vistas, ordenadas y sin repetidos).
+    std::vector<entt::entity> ripple_candidates_;
     std::uint64_t river_version_ = 0;
     void destroyTerrains();
 
@@ -519,6 +596,12 @@ private:
     bool foliage_uploaded_ = false;
     std::uint64_t foliage_count_ = 0;
     std::uint64_t foliage_job_generation_ = 0;  // World::sceneGeneration de la siembra en marcha
+    // Agua de la escena para la siembra (rios y lagos): se rehace solo si
+    // cambia su firma y la comparten todos los bosques (antes, la linea de
+    // cada rio y una copia por bosque en cada frame: ~7 MB por frame).
+    std::uint64_t foliage_water_key_ = 0;
+    std::uint64_t foliage_water_signature_ = 0;  // lo que aporta a la firma de la siembra
+    std::shared_ptr<const std::vector<foliage::FoliageWater>> foliage_water_;
     // World::sceneGeneration de lo que hay en la GPU (0 = aun nada).
     std::uint64_t scene_generation_ = 0;
 
@@ -650,6 +733,16 @@ private:
 
     Uuid loaded_environment_{};
     Uuid failed_environment_{};
+
+    // Lightmaps: UUID de la entidad -> registro del horneado (se rehace al
+    // cambiar la generacion del renderizador) y lo que se conto este frame.
+    void assignLightmap(scene::Actor& actor, Entity e, const MeshRenderer& renderer_component,
+                        const asset::ModelData& data, gfx::VulkanRenderer& renderer);
+    std::unordered_map<Uuid, std::uint32_t> lightmap_index_;
+    std::uint64_t lightmap_generation_ = ~0ull;
+    std::uint64_t lightmap_frame_ = ~0ull;
+    std::size_t stale_lightmaps_ = 0, stale_counting_ = 0;
+    std::size_t lightmapped_actors_ = 0, lightmapped_counting_ = 0;
 };
 
 }  // namespace cramion::ecs

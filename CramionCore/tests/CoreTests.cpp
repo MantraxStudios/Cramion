@@ -7,6 +7,7 @@
 #include "CramionCore/ecs/ModelInstantiation.h"
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionFX/core/SharedVector.h"
 #include "CramionFX/vk/AutoExposureMath.h"
 
 #include <array>
@@ -365,6 +366,63 @@ void testAutoExposureMetering() {
     check(up > 0.0f && up < 2.0f, "hacia una escena mas oscura: gradual");
 }
 
+// core::SharedVector (la geometria de asset::ModelData): copiar comparte, y
+// la primera escritura de cualquiera de los dos copia solo el suyo.
+void testSharedVector() {
+    std::printf("SharedVector (copia al escribir)\n");
+    using Ints = core::SharedVector<int>;
+    Ints a = std::vector<int>{1, 2, 3};
+    Ints b = a;
+    check(b.sharesWith(a) && a.sharesWith(b), "copiar comparte los datos");
+    check(b.size() == 3 && b.get().data() == a.get().data(), "sin copiar los elementos");
+
+    // Leer por const no separa.
+    const Ints& read = b;
+    int sum = 0;
+    for (const int v : read) sum += v;
+    check(sum == 6 && read[1] == 2 && b.sharesWith(a), "leer por const no separa");
+    // (Por una referencia const: en uno no const la conversion es la de
+    // escritura y separa.)
+    const std::vector<int>& as_vector = read;
+    check(as_vector.size() == 3 && b.sharesWith(a), "convertir a const std::vector& no separa");
+
+    // Escribir separa el que escribe; el otro queda como estaba.
+    b[0] = 10;
+    check(!b.sharesWith(a), "escribir separa");
+    check(a[0] == 1 && b[0] == 10 && a.size() == 3 && b.size() == 3, "el original no cambia");
+    Ints c = a;
+    c.push_back(4);
+    check(!c.sharesWith(a) && a.size() == 3 && c.size() == 4, "push_back tambien separa");
+
+    // Con un solo dueno no se copia.
+    Ints d = std::vector<int>{5, 6};
+    const int* before = d.get().data();
+    d[1] = 7;
+    check(d.get().data() == before && d[1] == 7, "sin compartir escribe en el sitio");
+
+    // Vacio y vaciar: clear suelta su parte sin tocar al otro.
+    Ints empty;
+    Ints other_empty;
+    check(empty.empty() && !empty.sharesWith(other_empty), "dos vacios no comparten");
+    Ints e = a;
+    e.clear();
+    check(e.empty() && a.size() == 3 && !e.sharesWith(a), "clear suelta su parte");
+
+    // insert/erase por posicion sacada mientras estaba compartido.
+    Ints f = a;
+    f.insert(f.get().begin() + 1, 9);
+    check(f.size() == 4 && f[1] == 9 && f[2] == 2 && a.size() == 3 && a[1] == 2, "insert separa y respeta la posicion");
+    Ints g = a;
+    g.erase(g.get().begin());
+    check(g.size() == 2 && g[0] == 2 && a[0] == 1, "erase separa y respeta la posicion");
+
+    // release: saca el vector (copia solo si estaba compartido).
+    Ints h = a;
+    std::vector<int> out = h.release();
+    check(out.size() == 3 && h.empty() && a.size() == 3 && a[2] == 3, "release con datos compartidos copia");
+    check(a == std::vector<int>{1, 2, 3} && Ints(std::vector<int>{1, 2, 3}) == a, "comparar por contenido");
+}
+
 }  // namespace
 
 int main() {
@@ -375,6 +433,7 @@ int main() {
     testPostVolumes();
     testUltraRealisticPreset();
     testAutoExposureMetering();
+    testSharedVector();
     std::printf("%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

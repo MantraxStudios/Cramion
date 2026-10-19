@@ -3,19 +3,24 @@
 // sombras del MeshRenderer en la escena. Devuelve 0 si todo va.
 
 #include "CramionCore/asset/AssetDatabase.h"
+#include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/asset/Importer.h"
 #include "CramionCore/asset/MaterialAsset.h"
 #include "CramionCore/asset/ModelMaterials.h"
 #include "CramionCore/asset/RenderTextureAsset.h"
 #include "CramionCore/ecs/Components.h"
+#include "CramionCore/ecs/RenderSync.h"
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
 
 #include <CramionFX/asset/ImageFile.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <utility>
+#include <vector>
 
 using namespace cramion;
 
@@ -283,6 +288,68 @@ void testCompanionNames() {
     std::filesystem::remove_all(dir);
 }
 
+// Variantes de material (.crmat en un MeshRenderer): comparten vertices e
+// indices con el modelo original (core::SharedVector), tambien con tiling,
+// que va en el material (uv_scale / uv_offset) y no en las UV.
+void testVariantSharesMesh() {
+    std::printf("Variantes de material: malla compartida\n");
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_variant_mesh";
+    std::filesystem::remove_all(root);
+
+    assets::MaterialAsset plain;
+    plain.base_color = core::Vec4{0.8f, 0.2f, 0.2f, 1.0f};
+    const std::filesystem::path plain_file = root / "Materials" / "Liso.crmat";
+    assets::MaterialAsset tiled;
+    tiled.tiling = core::Vec2{4.0f, 2.0f};
+    tiled.offset = core::Vec2{0.5f, 0.25f};
+    const std::filesystem::path tiled_file = root / "Materials" / "Repetido.crmat";
+    check(assets::saveMaterial(plain, plain_file) && assets::saveMaterial(tiled, tiled_file), "guardar los dos .crmat");
+
+    assets::AssetDatabase database;
+    database.open(root);
+    assets::AssetManager manager(database);
+    ecs::RenderSync sync(manager);
+
+    asset::ModelData base;
+    base.name = "Triangulo";
+    std::vector<asset::SkinnedVertex> vertices(3);
+    vertices[0].position = core::Vec3{0.0f, 0.0f, 0.0f};
+    vertices[1].position = core::Vec3{1.0f, 0.0f, 0.0f};
+    vertices[2].position = core::Vec3{0.0f, 1.0f, 0.0f};
+    vertices[1].uv = core::Vec2{1.0f, 0.0f};
+    vertices[2].uv = core::Vec2{0.0f, 1.0f};
+    base.vertices = std::move(vertices);
+    base.indices = std::vector<std::uint32_t>{0, 1, 2};
+    asset::SubMesh submesh;
+    submesh.first_index = 0;
+    submesh.index_count = 3;
+    submesh.material = 0;
+    base.submeshes.push_back(submesh);
+    asset::MaterialData material;
+    material.name = "Original";
+    base.materials.push_back(material);
+
+    const asset::ModelData plain_variant = sync.buildMaterialVariant(base, {plain.uuid});
+    check(plain_variant.materials.size() == 1 && plain_variant.materials[0].base_color.x == 0.8f,
+          "la variante sin tiling lleva el material del .crmat");
+    check(plain_variant.vertices.sharesWith(base.vertices) && plain_variant.indices.sharesWith(base.indices),
+          "la variante sin tiling comparte vertices e indices con su original");
+    check(plain_variant.materials[0].uv_scale.x == 1.0f && plain_variant.materials[0].uv_scale.y == 1.0f &&
+              plain_variant.materials[0].uv_offset.x == 0.0f && plain_variant.materials[0].uv_offset.y == 0.0f,
+          "sin tiling: UV del material sin cambiar");
+
+    const asset::ModelData tiled_variant = sync.buildMaterialVariant(base, {tiled.uuid});
+    check(tiled_variant.vertices.sharesWith(base.vertices) && tiled_variant.indices.sharesWith(base.indices),
+          "con tiling tambien la comparte (va en el material, no en las UV)");
+    check(tiled_variant.materials.size() == 1 && tiled_variant.materials[0].uv_scale.x == 4.0f &&
+              tiled_variant.materials[0].uv_scale.y == 2.0f && tiled_variant.materials[0].uv_offset.x == 0.5f &&
+              tiled_variant.materials[0].uv_offset.y == 0.25f,
+          "el tiling y el desplazamiento quedan en el material");
+    check(tiled_variant.vertices[1].uv.x == 1.0f && tiled_variant.vertices[2].uv.y == 1.0f,
+          "las UV de los vertices no cambian");
+    check(base.materials[0].uv_scale.x == 1.0f, "el original no se toca");
+}
+
 }  // namespace
 
 int main() {
@@ -292,6 +359,7 @@ int main() {
     testModelMaterialsSearch();
     testModelMaterialsEmbedded();
     testCompanionNames();
+    testVariantSharesMesh();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

@@ -1,7 +1,7 @@
 // VulkanRenderer: GI horneada en volumenes de sondas (BakedGi.h). Aparte para
 // no engordar VulkanRenderer.cpp. El pase (baked_gi.frag) escribe la imagen
-// de GI a media resolucion en lugar del SSGI o los rayos; el filtro y la
-// iluminacion no cambian.
+// de GI a media resolucion en lugar del SSGI o los rayos; la iluminacion no
+// cambia. Sin sondas dinamicas se salta el filtro SVGF (recordSsgiPass).
 
 #include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanRenderer.h"
@@ -92,9 +92,14 @@ void VulkanRenderer::createBakedGi() {
     probe_alloc.descriptorPool = *probe_update_pool_;
     probe_alloc.setSetLayouts(probe_layout);
     probe_update_sets_ = vk::raii::DescriptorSets(device_.handle(), probe_alloc);
+
+    // Lightmaps (VulkanRendererLightmaps.cpp): el atlas ficticio y los
+    // registros, antes de crear los sets de la geometria.
+    createLightmapResources();
 }
 
 void VulkanRenderer::destroyBakedGi() {
+    destroyLightmapResources();
     baked_gi_sets_.clear();
     baked_gi_pool_ = nullptr;
     probe_update_sets_.clear();
@@ -164,6 +169,8 @@ void VulkanRenderer::setBakedLighting(BakedLighting data) {
     device_.waitIdle();
     baked_ = std::move(data);
     if (baked_.volumes.size() > kMaxBakedVolumes) baked_.volumes.resize(kMaxBakedVolumes);
+    // Las paginas de los lightmaps al atlas (y fuera de la RAM).
+    uploadLightmaps();
     if (static_cast<VkPipeline>(*baked_gi_pass_.pipeline()) == VK_NULL_HANDLE) return;
     const std::size_t probe_bytes = std::max<std::size_t>(baked_.probes.size(), kBakedProbeVec4) * sizeof(core::Vec4);
     baked_probe_buffer_.destroy();
@@ -230,7 +237,53 @@ bool VulkanRenderer::bakedGiActive() const {
 }
 
 bool VulkanRenderer::bakedSunActive(const core::Vec3& sun_direction) const {
-    return bakedGiActive() && bakedSunMatches(baked_, sun_direction);
+    // Solo los .crbake v1-3: en la v4 la luz directa del sol nunca va horneada.
+    return sunShadowSource(sun_direction) == SunShadowSource::LegacyBaked;
+}
+
+// Algun objeto de la escena con material transparente (lo dibuja el vidrio,
+// glass.frag, que lee las cascadas). Toda la escena, no solo lo que se ve: la
+// camara puede girarse hacia el y las cascadas tardan en rehacerse.
+bool VulkanRenderer::sceneHasGlass() const {
+    // Una vez por modelo (casi ninguno tiene vidrio), no por objeto.
+    std::vector<std::uint8_t> glass(skinned_models_.size(), 2);  // 2 = sin mirar
+    for (const ActorDraw& draw : actor_draws_) {
+        if (draw.shadows_only) continue;
+        if (draw.model >= glass.size()) return true;  // por si acaso: mejor dibujarlas
+        std::uint8_t& known = glass[draw.model];
+        if (known == 2) {
+            known = 0;
+            const SkinnedModel& model = skinned_models_[draw.model];
+            for (const asset::SubMesh& submesh : model.submeshes()) {
+                if (submesh.material < model.materials().size() && model.materials()[submesh.material].transparent) {
+                    known = 1;
+                    break;
+                }
+            }
+        }
+        if (known == 1) return true;
+    }
+    return false;
+}
+
+// F1-8: con el sol horneado entero, lighting.frag no suma el sol (ni mira las
+// cascadas ni la mascara de sombras por rayos del sol). Los demas lectores de
+// las cascadas no saben del horneado y siguen sumando el sol con su sombra:
+// el agua (water.frag y water_under.frag), el vidrio (glass.frag), la luz
+// volumetrica (volumetric.frag) y los fluidos (fluid_shade.frag). Con alguno
+// en la escena las cascadas siguen (si no, el sol los atravesaria todo).
+bool VulkanRenderer::sunCascadesNeeded(const core::Vec3& sun_direction) const {
+    if (!sunShadows()) return false;
+    if (!bakedSunActive(sun_direction)) return true;
+    // La volumetrica solo lee las cascadas si tiene algo que dibujar (polvo o
+    // algun volumen de niebla); como volumetricActive() pero tambien durante
+    // la captura de la sonda.
+    const bool volumetric =
+        post_.volumetric_light &&
+        (post_.volumetric_density > 0.0f ||
+         std::any_of(fog_volumes_.begin(), fog_volumes_.end(), [](const FogVolume& v) { return v.density > 0.0f; }));
+    if (volumetric || !water_pass_.empty() || fluid_pass_.active()) return true;
+    return sceneHasGlass();
 }
 
 }  // namespace cramion::gfx

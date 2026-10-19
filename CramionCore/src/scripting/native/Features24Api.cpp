@@ -385,6 +385,33 @@ void registerWorldPartition(Runtime& rt) {
                    return t;
                },
                {"", "{cells, loadedCells, objects, unloadedObjects, storedBytes}", "objeto"});
+    // Data Layers: activar o apagar una capa entera en el juego (sus celdas se
+    // cargan o se descargan en los siguientes frames).
+    n.function("WorldPartition.setDataLayer",
+               [](api::Call& c) {
+                   const std::string name = c.string(0);
+                   const bool active = c.has(1) ? c.arg(1).truthy() : true;
+                   worldpart::WorldPartitionSystem* p = worldpart::activePartition();
+                   if (p != nullptr && !name.empty()) p->setDataLayerActive(name, active);
+                   return api::Value{};
+               },
+               {"\"Ruinas\", true", "activa o apaga una Data Layer (sus objetos se cargan o se descargan)"});
+    n.function("WorldPartition.isDataLayerActive",
+               [](api::Call& c) {
+                   const std::string name = c.string(0);
+                   const worldpart::WorldPartitionSystem* p = worldpart::activePartition();
+                   return api::Value(p == nullptr || p->dataLayerActive(name));
+               },
+               {"\"Ruinas\"", "la Data Layer esta activa? (sin declarar = si)", "bool"});
+    n.function("WorldPartition.dataLayers",
+               [](api::Call&) {
+                   api::Value t = api::Value::object();
+                   if (const worldpart::WorldPartitionSystem* p = worldpart::activePartition()) {
+                       for (const auto& [name, active] : p->dataLayers()) t.set(name, active);
+                   }
+                   return t;
+               },
+               {"", "las Data Layers y si estan activas ({Ruinas = true, ...})", "objeto"});
 }
 
 void registerAccessibility(Runtime& rt) {

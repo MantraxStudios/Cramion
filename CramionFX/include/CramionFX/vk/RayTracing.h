@@ -23,9 +23,11 @@ class VulkanDevice;
 // reflejos y las sombras: rayos contra la escena real en cada frame, sin
 // depender de la pantalla ni de capturas.
 //
-//   - Una BLAS por modelo con sus triangulos en dos geometrias: los opacos
+//   - Una BLAS por geometria con sus triangulos en dos geometrias: los opacos
 //     (el hardware no para en ellos) y los recortados por alfa (follaje: el
-//     shader prueba el alfa de cada candidato).
+//     shader prueba el alfa de cada candidato). Las variantes de material de
+//     un modelo comparten la del original; los materiales van por instancia
+//     (instanceCustomIndex = el modelo, rt_models[modelo].z).
 //   - Mallas extra que no son modelos (el terreno y las especies de arboles):
 //     las da el renderizador; el terreno se puede reescribir al esculpir
 //     (misma cantidad de vertices: se rehace solo su BLAS, en la GPU).
@@ -143,9 +145,13 @@ public:
     // Sube la escena: buffers, BLAS, materiales, texturas y los pipelines.
     // Los modelos van con los indices 0..models.size()-1; la malla extra i,
     // con el indice models.size() + i. Hay que haber parado la GPU.
+    // `used`: los modelos que tienen instancias (vacio = todos); los demas no
+    // entran (ni BLAS ni materiales) y sus instancias se ignoran hasta otra
+    // construccion. Los modelos con la misma geometria (variantes de
+    // material) comparten triangulos y BLAS; cada uno con sus materiales.
     void build(const VulkanDevice& device, const std::vector<const asset::ModelData*>& models,
                const std::vector<SkinnedModel>& gpu_models, const VulkanBuffer& irradiance,
-               const ExtraScene& extra);
+               const ExtraScene& extra, const std::vector<bool>& used = {});
     // Libera la escena (BLAS, TLAS, buffers, texturas, cache). Hay que haber
     // parado la GPU.
     void releaseScene();

@@ -48,6 +48,7 @@
 #include <CramionCore/fluid/Fluid.h>
 #include <CramionCore/platform/Steam.h>
 #include <CramionCore/replay/Replay.h>
+#include <CramionCore/asset/LightmapUv.h>
 #include <CramionCore/lighting/ProbeBaker.h>
 #include <CramionCore/twod/System2D.h>
 #include <CramionCore/vfx/VisualEffect.h>
@@ -93,6 +94,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -103,6 +105,64 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg
 namespace {
 
 using namespace cramion;
+
+// Tope de FPS del juego (Graphics "fps_limit"). Cada frame tiene su hora de
+// salida (la anterior + 1/tope): si va por delante, espera; si se retrasa mas
+// de un frame, la cuenta empieza de nuevo (sin rafagas para recuperar). La
+// espera es un temporizador de alta resolucion de Windows (sin el, Sleep
+// redondea a 15,6 ms) y el ultimo medio milisegundo, activa.
+class FrameLimiter {
+public:
+    void wait(int fps) {
+        using Clock = std::chrono::steady_clock;
+        if (fps <= 0) {
+            fps_ = 0;
+            return;
+        }
+        const Clock::duration period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / fps));
+        Clock::time_point now = Clock::now();
+        if (fps != fps_ || now - next_ > period) next_ = now;  // tope nuevo o frame lento: sin deuda
+        fps_ = fps;
+        next_ += period;
+        const auto spin = std::chrono::microseconds(500);
+        if (next_ - now > spin) sleepFor(next_ - now - spin);
+        while (Clock::now() < next_) std::this_thread::yield();
+    }
+    ~FrameLimiter() {
+#if defined(_WIN32)
+        if (timer_ != nullptr) CloseHandle(timer_);
+#endif
+    }
+
+private:
+    void sleepFor(std::chrono::steady_clock::duration d) {
+#if defined(_WIN32)
+        if (timer_ == nullptr && !timer_failed_) {
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+            timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+            timer_failed_ = timer_ == nullptr;  // Windows anterior a 10 1803: sleep_for
+        }
+        if (timer_ != nullptr) {
+            LARGE_INTEGER due{};
+            due.QuadPart = -static_cast<LONGLONG>(std::chrono::duration_cast<std::chrono::nanoseconds>(d).count() / 100);
+            if (due.QuadPart < 0 && SetWaitableTimer(timer_, &due, 0, nullptr, nullptr, FALSE)) {
+                WaitForSingleObject(timer_, INFINITE);
+                return;
+            }
+        }
+#endif
+        std::this_thread::sleep_for(d);
+    }
+
+    std::chrono::steady_clock::time_point next_{};
+    int fps_ = 0;
+#if defined(_WIN32)
+    HANDLE timer_ = nullptr;
+    bool timer_failed_ = false;
+#endif
+};
 
 #if defined(_WIN32)
 std::filesystem::path exeFolder() {
@@ -132,9 +192,55 @@ std::wstring widen(const std::string& text) {
     return out;
 }
 
-void showError(const std::string& message) { MessageBoxA(nullptr, message.c_str(), "Cramion", MB_ICONERROR); }
+// <Juego>.exe --run-tests [--junit resultados.xml] (solo Windows: en Android
+// la NativeActivity no recibe argumentos). Ver main() y test_step en runPlayer.
+struct TestCli {
+    bool enabled = false;
+    std::filesystem::path junit;
+};
+TestCli g_test_cli;
+// Codigo de salida de las pruebas (-1 = no terminaron): 0 todas bien, 1 alguna
+// fallo, 2 no hay pruebas, 3 el juego no llego a ejecutarlas. Atomico: lo lee
+// el vigilante del cierre desde su hilo.
+std::atomic<int> g_test_exit{-1};
+
+// Sin cuadros de dialogo con --run-tests: en integracion continua nadie los cierra.
+void showError(const std::string& message) {
+    if (g_test_cli.enabled) {
+        std::cerr << "[Juego] Error: " << message << std::endl;
+        return;
+    }
+    MessageBoxA(nullptr, message.c_str(), "Cramion", MB_ICONERROR);
+}
+
+// Una linea de las pruebas: al log y a la consola de quien lanzo el juego (o
+// al archivo al que redirige la salida). El juego es de ventana (sin consola
+// propia) y su log va a %LOCALAPPDATA%, que en integracion continua no se ve.
+void testPrint(const std::string& line) {
+    std::cout << line << std::endl;
+    static const HANDLE out = [] {
+        HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+        if ((h == nullptr || h == INVALID_HANDLE_VALUE) && AttachConsole(ATTACH_PARENT_PROCESS)) {
+            h = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        }
+        return h;
+    }();
+    if (out == nullptr || out == INVALID_HANDLE_VALUE) return;
+    const std::string text = line + "\r\n";
+    DWORD written = 0;
+    WriteFile(out, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
+}
 #else
 std::wstring widen(const std::string& text) { return std::wstring(text.begin(), text.end()); }
+
+struct TestCli {
+    bool enabled = false;
+    std::filesystem::path junit;
+};
+TestCli g_test_cli;  // en Android siempre apagado (no hay linea de comandos)
+std::atomic<int> g_test_exit{-1};
+
+void testPrint(const std::string& line) { std::cout << line << std::endl; }
 
 void showError(const std::string& message) { std::cerr << "[Juego] Error: " << message << std::endl; }
 
@@ -202,6 +308,20 @@ float displayRefreshRate(HWND hwnd) {
 }
 #endif
 
+std::string xmlEscape(const std::string& text) {
+    std::string out;
+    for (const char c : text) {
+        switch (c) {
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '&': out += "&amp;"; break;
+            case '"': out += "&quot;"; break;
+            default: out += c;
+        }
+    }
+    return out;
+}
+
 // El escalador que se usa de verdad (DLSS sin una RTX acaba en TAA).
 const char* upscalerName(gfx::Upscaler upscaler) {
     switch (upscaler) {
@@ -260,7 +380,8 @@ int runPlayer() {
         std::string title = readIniValue(ini, "title");
         if (title.empty()) title = game_name;
         const std::string window_setting = readIniValue(ini, "window");
-        int window_mode = window_setting.empty() ? 0 : std::clamp(std::atoi(window_setting.c_str()), 0, 2);
+        int window_mode =
+            window_setting.empty() ? 0 : std::clamp(std::atoi(window_setting.c_str()), 0, editor::kWindowModeCount - 1);
         int window_width = std::clamp(std::atoi(readIniValue(ini, "width").c_str()), 0, 16384);
         int window_height = std::clamp(std::atoi(readIniValue(ini, "height").c_str()), 0, 16384);
         // Lo que el jugador eligio y guardo desde el juego (Graphics::save()
@@ -273,6 +394,9 @@ int runPlayer() {
                 window_mode = static_cast<int>(saved_mode);
             }
         }
+        // Sin tamano (o menor que 320x240): el de siempre, 1600x900.
+        if (window_width < 320) window_width = 1600;
+        if (window_height < 240) window_height = 900;
         const bool show_fps = readIniValue(ini, "show_fps") == "1";
         // Realidad virtual (OpenXR): si hay casco, el juego se ve en el; la
         // ventana queda de espejo. Sin runtime o sin casco, sigue sin VR.
@@ -286,8 +410,8 @@ int runPlayer() {
 
         dm::Window window;
         if (!window.create({.title = widen(title),
-                            .width = static_cast<std::uint32_t>(window_width >= 320 ? window_width : 1600),
-                            .height = static_cast<std::uint32_t>(window_height >= 240 ? window_height : 900),
+                            .width = static_cast<std::uint32_t>(window_width),
+                            .height = static_cast<std::uint32_t>(window_height),
                             .maximized = window_mode == 0})) {
             showError("No se pudo crear la ventana.");
             return EXIT_FAILURE;
@@ -307,15 +431,12 @@ int runPlayer() {
         }
 #endif
 #if defined(_WIN32)
-        if (window_mode == 1) {
-            // Pantalla completa sin bordes: la ventana ocupa todo el monitor.
-            HWND hwnd = window.handle();
-            MONITORINFO monitor{};
-            monitor.cbSize = sizeof(monitor);
-            GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor);
-            SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
-            const RECT& r = monitor.rcMonitor;
-            SetWindowPos(hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        if (window_mode != static_cast<int>(editor::WindowMode::Maximized)) {
+            // Pantalla completa, sin bordes o ventana: lo mismo que al cambiarlo
+            // desde el juego (Graphics.set): la ventana centrada en el monitor y
+            // con el tamano de dentro pedido (sin marco si con el no cabe).
+            editor::applyWindowMode(window.handle(), static_cast<editor::WindowMode>(window_mode), window_width,
+                                    window_height);
             window.pumpEvents();
         }
 #endif
@@ -615,6 +736,12 @@ int runPlayer() {
                 case dm::EventType::KeyReleased:
                     if (e.key == dm::Key::Backspace) io.AddKeyEvent(ImGuiKey_Backspace, e.type == dm::EventType::KeyPressed);
                     if (e.key == dm::Key::Enter) io.AddKeyEvent(ImGuiKey_Enter, e.type == dm::EventType::KeyPressed);
+                    // Mover el cursor del campo de texto (UIInputField).
+                    if (e.key == dm::Key::Left) io.AddKeyEvent(ImGuiKey_LeftArrow, e.type == dm::EventType::KeyPressed);
+                    if (e.key == dm::Key::Right) io.AddKeyEvent(ImGuiKey_RightArrow, e.type == dm::EventType::KeyPressed);
+                    if (e.key == dm::Key::Home) io.AddKeyEvent(ImGuiKey_Home, e.type == dm::EventType::KeyPressed);
+                    if (e.key == dm::Key::End) io.AddKeyEvent(ImGuiKey_End, e.type == dm::EventType::KeyPressed);
+                    if (e.key == dm::Key::Delete) io.AddKeyEvent(ImGuiKey_Delete, e.type == dm::EventType::KeyPressed);
                     break;
                 default: break;
             }
@@ -940,6 +1067,7 @@ int runPlayer() {
         // guarda para el jugador (se lee al volver a abrir el juego).
         editor::RendererGraphicsHost graphics_host(renderer, window.handle(), nullptr);
         graphics_host.setWindowState(static_cast<editor::WindowMode>(window_mode), window_width, window_height);
+        graphics_host.setFpsLimit(editor::readFpsLimit(player_graphics));  // tope de FPS del jugador (0 = sin tope)
         graphics_host.setSaver([&](std::string& error) {
             if (!editor::saveGraphicsIni(player_graphics, renderer)) {
                 error = "no se pudo escribir " + player_graphics.string();
@@ -949,6 +1077,7 @@ int runPlayer() {
             out << "window_mode=" << static_cast<int>(graphics_host.windowMode()) << "\n";
             out << "window_width=" << graphics_host.windowWidth() << "\n";
             out << "window_height=" << graphics_host.windowHeight() << "\n";
+            out << "fps_limit=" << graphics_host.fpsLimit() << "\n";
             return static_cast<bool>(out);
         });
         scripts.setGraphics(&graphics_host);
@@ -1000,6 +1129,10 @@ int runPlayer() {
             }
         }
         ui::UiSystem game_ui;
+        scripts.setUi(&game_ui);  // UI.pointerOverUi, Entity:uiScreenRect...
+        // La entrada de los scripts: la de la ventana sin los clics de la
+        // interfaz (UiSystem::filterGameInput). Vive tanto como el bucle.
+        dm::Input script_input;
         ecs::World world;
         // Un dedo sobre un boton de la interfaz la pulsa aunque caiga en el joystick.
         touch.setUiHitTest([&](float x, float y) { return game_ui.interactiveAt(world, x, y); });
@@ -1150,9 +1283,25 @@ int runPlayer() {
                         gfx::BakedLighting baked;
                         gfx::LightingMode mode = gfx::LightingMode::Realtime;
                         const std::filesystem::path bake_file = lighting::bakedLightingFile(load.file);
+                        auto uvs = std::make_shared<lighting::LightmapUvSet>();
                         if (!load.file.empty() && std::filesystem::exists(bake_file)) {
                             std::string bake_error;
-                            if (!lighting::loadBakedLighting(bake_file, baked, mode, &bake_error)) std::cerr << "[Juego] " << bake_error << "\n";
+                            if (!lighting::loadBakedLighting(bake_file, baked, mode, &bake_error, uvs.get())) {
+                                std::cerr << "[Juego] " << bake_error << "\n";
+                                uvs->parts.clear();
+                            }
+                        }
+                        // Las UV de lightmap de esta escena (.crbake v4): los modelos
+                        // se leen con ellas (antes del hilo de modelos). Los que ya
+                        // estaban en memoria con las de otra escena, fuera.
+                        {
+                            std::unordered_set<Uuid> models;
+                            if (const auto& before = asset_manager.lightmapUvs()) {
+                                for (const auto& [key, source] : before->parts) models.insert(key.model);
+                            }
+                            for (const auto& [key, source] : uvs->parts) models.insert(key.model);
+                            asset_manager.setLightmapUvs(uvs->empty() ? nullptr : std::shared_ptr<const lighting::LightmapUvSet>(uvs));
+                            for (const Uuid& model : models) asset_manager.unload(model);
                         }
                         renderer.setBakedLighting(std::move(baked));
                         renderer.setLightingMode(mode);
@@ -1419,6 +1568,186 @@ int runPlayer() {
         double last_gpu_total = renderer.gpuTotalMs();
         cvar::CVarBase* upload_mb_cvar = nullptr;
         std::uint64_t upload_mb_version = ~0ull;
+        // --- Pruebas automaticas (--run-tests, como el del editor) ---
+        // Con la escena inicial ya jugando pone un objeto "Pruebas" con el
+        // script CramionTests (sdk/cramion/Test.h; las pruebas CRAMION_TEST van
+        // compiladas en los scripts de C++ del juego), las sigue con
+        // ScriptSystem::testStep, escribe el resultado (consola, log y JUnit)
+        // y cierra el juego con su codigo de salida (g_test_exit).
+        struct TestRun {
+            enum class Phase { Waiting, Play, Done };
+            Phase phase = Phase::Waiting;
+            int frames = 0;
+            std::string cls;
+            entt::entity entity = entt::null;
+            float stall = 0.0f;
+            std::pair<int, int> progress{-1, -1};
+            nlohmann::json cases = nlohmann::json::array();
+            std::string last_failure;  // el ultimo caso se quedo a medias (tiempo agotado)
+            std::string run_failure;   // la ejecucion entera fallo (no empezo, no responde...)
+            std::chrono::steady_clock::time_point started{};
+        };
+        TestRun test_run;
+        // Mismos plazos que el editor (EditorPlatform.cpp): sin ningun caso en
+        // 30 s o sin avanzar en 10 min, se da por colgada. La escena inicial
+        // tiene 3 min para cargar.
+        constexpr float kTestStartSeconds = 30.0f;
+        constexpr float kTestStallSeconds = 600.0f;
+        constexpr float kTestLoadSeconds = 180.0f;
+        const auto test_finish = [&] {
+            TestRun& t = test_run;
+            t.phase = TestRun::Phase::Done;
+            struct Result {
+                std::string file, name, message;
+                bool passed = false;
+                double seconds = 0.0;
+            };
+            std::vector<Result> results;
+            for (std::size_t i = 0; i < t.cases.size(); ++i) {
+                const nlohmann::json& c = t.cases[i];
+                if (!c.is_object()) continue;
+                Result r;
+                r.file = c.value("file", std::string());
+                if (r.file.empty()) r.file = t.cls.empty() ? std::string("CramionTests") : t.cls;
+                r.name = c.value("name", std::string("?"));
+                r.passed = c.value("passed", false);
+                r.message = c.value("failure", std::string());
+                r.seconds = c.value("seconds", 0.0);
+                if (i + 1 == t.cases.size() && !t.last_failure.empty()) {
+                    r.passed = false;
+                    r.message = t.last_failure;
+                }
+                results.push_back(std::move(r));
+            }
+            if (!t.run_failure.empty()) {
+                Result r;
+                r.file = t.cls.empty() ? std::string("CramionTests") : t.cls;
+                r.name = "Pruebas";
+                r.message = t.run_failure;
+                results.push_back(std::move(r));
+            }
+            int passed = 0, failed = 0;
+            for (const Result& r : results) (r.passed ? passed : failed) += 1;
+            for (const Result& r : results) {
+                testPrint(std::string("[Pruebas] ") + (r.passed ? "OK" : "FALLO") + "  " + r.file + " :: " + r.name +
+                          (r.message.empty() ? "" : "  -- " + r.message));
+            }
+            testPrint("[Pruebas] " + std::to_string(passed) + " bien, " + std::to_string(failed) + " mal");
+            if (!g_test_cli.junit.empty()) {
+                std::ofstream x(g_test_cli.junit, std::ios::binary | std::ios::trunc);
+                const double total =
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - t.started).count();
+                x << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites name=\"Cramion\" tests=\"" << results.size()
+                  << "\" failures=\"" << failed << "\" skipped=\"0\" time=\"" << total << "\">\n";
+                x << "  <testsuite name=\"" << xmlEscape(title) << "\" tests=\"" << results.size() << "\" failures=\""
+                  << failed << "\">\n";
+                for (const Result& r : results) {
+                    x << "    <testcase classname=\"" << xmlEscape(r.file) << "\" name=\"" << xmlEscape(r.name) << "\" time=\""
+                      << r.seconds << "\">";
+                    if (!r.passed) x << "<failure message=\"" << xmlEscape(r.message) << "\"/>";
+                    x << "</testcase>\n";
+                }
+                x << "  </testsuite>\n</testsuites>\n";
+                if (!x) testPrint("[Pruebas] No se pudo escribir el informe JUnit");
+            }
+            // Ningun caso (CramionTests sin CRAMION_TEST): como "no hay pruebas".
+            g_test_exit = failed > 0 ? 1 : results.empty() ? 2 : 0;
+            quit = true;
+        };
+        // Sin pruebas que ejecutar (codigo 2) o el juego no llego a ellas (3).
+        const auto test_abandon = [&](int code, const std::string& why) {
+            testPrint("[Pruebas] " + why);
+            test_run.phase = TestRun::Phase::Done;
+            g_test_exit = code;
+            quit = true;
+        };
+        const auto test_step = [&](float delta, bool game_running) {
+            TestRun& t = test_run;
+            if (!g_test_cli.enabled || t.phase == TestRun::Phase::Done) return;
+            if (t.phase == TestRun::Phase::Waiting) {
+                const float since_launch =
+                    std::chrono::duration<float>(std::chrono::steady_clock::now() - launch_time).count();
+                if (!game_running || load.stage != SceneLoad::Stage::Done || !scripts.running()) {
+                    t.frames = 0;
+                    if (since_launch > kTestLoadSeconds) {
+                        test_abandon(3, "La escena inicial no termino de cargar en " +
+                                            std::to_string(static_cast<int>(kTestLoadSeconds)) + " s");
+                    }
+                    return;
+                }
+                if (++t.frames < 3) return;  // como el editor: un par de frames de juego antes
+                t.started = std::chrono::steady_clock::now();
+                if (cpp_scripts.dll().empty()) {
+                    test_abandon(2, "No hay pruebas: el juego no tiene scripts de C++ (las pruebas son CRAMION_TEST)");
+                    return;
+                }
+                std::string error;
+                if (!scripts.loadTestFile("", &error)) {
+                    t.run_failure = "No se pudieron preparar: " + error;
+                    test_finish();
+                    return;
+                }
+                t.cls = scripts.testCall("class");
+                if (t.cls.empty()) t.cls = "CramionTests";
+                // Con el .dll ya compilado no siempre se sabe que clases lleva
+                // (sin schema.json): si se sabe y falta, no hay pruebas.
+                const std::vector<std::string> classes = cpp_scripts.classes();
+                if (!classes.empty() && std::find(classes.begin(), classes.end(), t.cls) == classes.end()) {
+                    test_abandon(2, "No hay pruebas: los scripts de C++ del juego no tienen la clase " + t.cls +
+                                        " (ninguna prueba incluye <cramion/Test.h>)");
+                    return;
+                }
+                bool in_scene = false;
+                for (const entt::entity h : world.registry().view<scripting::CppScript>()) {
+                    const scripting::CppScript& s = world.registry().get<scripting::CppScript>(h);
+                    in_scene = in_scene || (s.enabled && s.class_name == t.cls);
+                }
+                if (!in_scene) {
+                    scripts.testCall("begin");  // sin resultados de antes
+                    ecs::Entity e = world.create("Pruebas");
+                    e.add<scripting::CppScript>().class_name = t.cls;
+                    t.entity = e.handle();
+                }
+                testPrint("[Pruebas] Ejecutando " + t.cls + "...");
+                t.stall = 0.0f;
+                t.progress = {-1, -1};
+                t.phase = TestRun::Phase::Play;
+                return;
+            }
+            // Play: el estado que cuenta Test.results (native/TestApi.cpp).
+            const nlohmann::json status = nlohmann::json::parse(scripts.testStep(delta), nullptr, false);
+            if (!status.is_object()) {
+                t.run_failure = "Las pruebas no responden (se cambio de escena o se pararon los scripts?)";
+                test_finish();
+                return;
+            }
+            const std::string state = status.value("state", std::string("failed"));
+            if (status.contains("cases") && status["cases"].is_array()) t.cases = status["cases"];
+            const std::pair<int, int> progress{static_cast<int>(t.cases.size()), status.value("assertions", 0)};
+            if (progress != t.progress) {
+                t.progress = progress;
+                t.stall = 0.0f;
+            } else {
+                t.stall += delta;
+            }
+            const float limit = t.cases.empty() ? kTestStartSeconds : kTestStallSeconds;
+            if (state == "running" && t.stall < limit) return;
+            if (state == "running") {
+                scripts.testCall("abort");
+                const std::string why = "tiempo agotado (" + std::to_string(static_cast<int>(limit)) + " s sin avanzar)";
+                if (!t.cases.empty()) {
+                    t.last_failure = why;
+                } else {
+                    t.run_failure = why + ": ninguna prueba empezo (el juego lleva la clase " + t.cls + "?)";
+                }
+            } else if (t.cases.empty() && state == "failed") {
+                t.run_failure = status.value("message", std::string("fallo"));
+            }
+            test_finish();
+        };
+
+        FrameLimiter frame_limiter;  // Graphics "fps_limit"
+        if (graphics_host.fpsLimit() > 0) std::cout << "[Juego] Tope de FPS: " << graphics_host.fpsLimit() << std::endl;
         // Hasta la escena inicial todo es carga (banner, descomprimir, subir).
         prof::setLoading(true);
         while (!quit) {
@@ -1484,6 +1813,8 @@ int runPlayer() {
             }
             // El juego corre en cuanto el banner empieza a fundirse.
             const bool running = loaded && !scene_loading() && (banner_done || banner_fade > 0.0f);
+            // --run-tests: con los segundos reales (clock_dt; dt va recortado a 0.1).
+            test_step(clock_dt, running);
             if (running && vr) {
                 xr_rig.update(world, renderer.xr());  // camara y mandos antes de la logica
             } else {
@@ -1519,7 +1850,10 @@ int runPlayer() {
                     CR_PROFILE_SCOPE("Navegacion");
                     nav.update(world, dt, true, nav_settings.runtime_generation);
                 }
-                scripts.setInput(game_ui.typing() ? nullptr : &input);
+                // Un clic sobre la interfaz no llega al juego.
+                script_input = input;
+                game_ui.filterGameInput(script_input);
+                scripts.setInput(game_ui.typing() ? nullptr : &script_input);
                 if (!game_ui.typing()) {
                     const auto down = [&](dm::Key a, dm::Key b) { return input.isKeyDown(a) || input.isKeyDown(b); };
                     physics.driveVehiclesWithKeyboard(world, down(dm::Key::W, dm::Key::Up), down(dm::Key::S, dm::Key::Down),
@@ -1540,7 +1874,7 @@ int runPlayer() {
                     scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
                     scripts.update(world, dt);
                 }
-                cpp_scripts.setInput(game_ui.typing() ? nullptr : &input);
+                cpp_scripts.setInput(game_ui.typing() ? nullptr : &script_input);
                 {
                     CR_PROFILE_SCOPE("Scripts C++");
                     cpp_scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
@@ -1581,7 +1915,11 @@ int runPlayer() {
                 voxels.update(dt, position);
                 // Interfaz: toda la ventana.
                 const ui::UiInput ui_input = editor::uiInputFromImGui(ImVec2(0, 0), display, true, game_ui.typing());
-                game_ui.update(world, display.x, display.y, ui_input, true, static_cast<float>(ImGui::GetTime()));
+                {
+                    // Zonas propias de la interfaz en el perfil ([Rendimiento] zonas).
+                    prof::Scope ui_zone("Interfaz (UiSystem)");
+                    game_ui.update(world, display.x, display.y, ui_input, true, static_cast<float>(ImGui::GetTime()));
+                }
                 // UI en el mundo (Canvas en modo Mundo): con los rayos de las
                 // manos en VR; sus paneles los dibuja el render.
                 game_ui.updateWorld(world, xr_rig.uiPointers(), true, static_cast<float>(ImGui::GetTime()));
@@ -1592,6 +1930,7 @@ int runPlayer() {
                         case ui::UiEvent::Kind::Number: scripts.callMethod(e.target, e.method, e.number); break;
                         case ui::UiEvent::Kind::Text: scripts.callMethod(e.target, e.method, e.text); break;
                         case ui::UiEvent::Kind::Bool: scripts.callMethod(e.target, e.method, e.flag); break;
+                        case ui::UiEvent::Kind::Pointer: scripts.callMethod(e.target, e.method, e.source); break;
                     }
                     // Y al script de C++ del objeto (Script::on("OnJugar", ...) / onMessage).
                     switch (e.kind) {
@@ -1599,10 +1938,24 @@ int runPlayer() {
                         case ui::UiEvent::Kind::Number: cpp_scripts.sendMessage(e.target, e.method, nlohmann::json(e.number).dump()); break;
                         case ui::UiEvent::Kind::Text: cpp_scripts.sendMessage(e.target, e.method, nlohmann::json(e.text).dump()); break;
                         case ui::UiEvent::Kind::Bool: cpp_scripts.sendMessage(e.target, e.method, e.flag ? "true" : "false"); break;
+                        case ui::UiEvent::Kind::Pointer: {
+                            // UIEventTrigger: {entity, position, button, other}.
+                            const nlohmann::json v{
+                                {"entity", nlohmann::json::parse(cpp_scripts.entityJson(e.source))},
+                                {"position", {{"$v", {e.position.x, e.position.y, 0.0f}}}},
+                                {"button", e.button},
+                                {"other", e.other.valid() ? nlohmann::json::parse(cpp_scripts.entityJson(e.other)) : nlohmann::json()}};
+                            cpp_scripts.sendMessage(e.target, e.method, v.dump());
+                            break;
+                        }
                     }
                 }
                 renderer.setWorldUi(editor::buildWorldUi(game_ui.worldCanvases(), imgui, project->assetsFolder()));
-                editor::drawUiList(ImGui::GetBackgroundDrawList(), ImVec2(0, 0), game_ui.drawList(), imgui, project->assetsFolder());
+                {
+                    prof::Scope ui_zone("Interfaz (dibujo)");
+                    editor::drawUiList(ImGui::GetBackgroundDrawList(), ImVec2(0, 0), game_ui.drawList(), imgui,
+                                       project->assetsFolder());
+                }
                 // Sin Camera en la escena: vista orbital por defecto.
                 if (!has_camera()) update_orbit(dt, display);
                 draw_touch();
@@ -1639,6 +1992,7 @@ int runPlayer() {
             {
                 CR_PROFILE_SCOPE("Render (CPU)");
                 const auto t = std::chrono::steady_clock::now();
+                renderer.setFrameRateCap(vr ? 0.0f : static_cast<float>(graphics_host.fpsLimit()));
                 renderer.drawFrame(scene);
                 render_ms = ms_since(t);
             }
@@ -1726,7 +2080,7 @@ int runPlayer() {
                         std::cout << " | Render Textures " << renderer.renderTextureDraws() << "/s";
                     }
                     std::cout << " | zonas:";
-                    for (const prof::ZoneCost& z : prof::topZones(300, 5)) std::cout << " " << z.name << " " << z.self_ms;
+                    for (const prof::ZoneCost& z : prof::topZones(300, 8)) std::cout << " " << z.name << " " << z.self_ms;
                     std::cout << std::endl;
                     perf_seconds = 0.0f;
                     perf_frames = 0;
@@ -1736,6 +2090,10 @@ int runPlayer() {
                 }
             }
             prof::endFrame();
+            // Tope de FPS (Graphics "fps_limit"): espera fuera del frame medido
+            // (el Profiler y la CPU del frame no la cuentan; los FPS del log si).
+            // Sin tope o en VR (manda el casco), nada.
+            if (!vr) frame_limiter.wait(graphics_host.fpsLimit());
         }
         // Cierre: cada paso queda en el log con lo que tardo y, si algo se
         // atasca, un vigilante cierra el proceso (un juego siempre debe cerrarse).
@@ -1745,7 +2103,9 @@ int runPlayer() {
             std::cout << "[Juego] El cierre tardo mas de 8 s: se termina el proceso" << std::endl;
             std::cerr.flush();
 #ifdef _WIN32
-            TerminateProcess(GetCurrentProcess(), 0);
+            // Con --run-tests, su codigo (un cierre colgado no tapa un fallo).
+            const int code = g_test_exit.load();
+            TerminateProcess(GetCurrentProcess(), static_cast<UINT>(code >= 0 ? code : g_test_cli.enabled ? 3 : 0));
 #else
             std::_Exit(0);
 #endif
@@ -1799,7 +2159,29 @@ int runPlayer() {
 }
 
 #if defined(_WIN32)
-int main() { return runPlayer(); }
+// <Juego>.exe [--run-tests [--junit resultados.xml]]
+// --run-tests: ejecuta las pruebas automaticas (CRAMION_TEST) en el juego
+// exportado, tal cual se publica (.crpack, scripts ya compilados, shaders del
+// paquete), y cierra. Codigo de salida: 0 todas bien, 1 alguna fallo, 2 no hay
+// pruebas, 3 el juego no llego a ejecutarlas. El juego es de ventana: desde
+// cmd, `start /wait <Juego>.exe --run-tests` para esperar y leer %ERRORLEVEL%.
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg(argv[i]);
+        if (arg == "--run-tests") {
+            g_test_cli.enabled = true;
+        } else if (arg == "--junit" && i + 1 < argc) {
+            std::error_code e;
+            const std::filesystem::path junit(argv[++i]);
+            const std::filesystem::path absolute = std::filesystem::absolute(junit, e);
+            g_test_cli.junit = e ? junit : absolute;
+        }
+    }
+    const int code = runPlayer();
+    if (!g_test_cli.enabled) return code;
+    const int tests = g_test_exit.load();
+    return tests >= 0 ? tests : 3;  // cerrado o fallo antes de terminar las pruebas
+}
 #else
 // NativeActivity: la glue llama aqui en su propio hilo.
 void android_main(android_app* app) {

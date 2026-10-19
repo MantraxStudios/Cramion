@@ -1,5 +1,77 @@
 # Cambios
 
+## 2.5.1
+
+**Novedad sobre la 2.4.13.** Memoria de la GPU con VMA y subidas por lotes en una cola de transferencia; mundos estáticos sin trabajo repetido por frame; trazado de rayos con una BLAS por geometría y tiling por material sin duplicar vértices; gama baja (GI horneada sin SVGF, sol horneado sin cascadas, ríos y ondas más baratos, distancia de sombras y LOD por gama); lightmaps UV2 (fases 0-2 del plan); vídeo en Android y FFmpeg opcional; World Partition con varias rejillas y Data Layers; red en coordenadas absolutas; Blueprints fase 2; y los parches de Keryan (39 de 44: render, mallas, texturas BC7, UI y ventana).
+
+### Memoria y subidas
+- **VMA 3.3.0** (`CramionFX/vendor/vma`): `VulkanBuffer` y `VulkanTexture` ya no hacen una asignación de Vulkan por recurso; anillo de staging persistente de 64 MB (16 MB en modo compatible).
+- **Un lote por modelo**: un command buffer y una fence; cola de transferencia dedicada si la GPU la tiene (`CRAMION_VK_NO_TRANSFER_QUEUE=1` la apaga); el modelo se instala cuando su fence acaba, sin bloquear.
+- **Hilos**: los modelos van por un grupo propio de 3 hilos (`CRAMION_STREAM_THREADS`), los clips y los vóxeles por el `JobSystem`; fuera `std::async`.
+- **Logs**: las líneas por modelo subido solo salen con `CRAMION_LOG_LEVEL=debug` o `CRAMION_VK_VERBOSE=1`.
+
+### Mundos grandes y sombras
+- **Identidad estable de los actores**: un objeto que entra o sale ya no redibuja las 4 cascadas ni hace copiar el `Animator` a todos los de detrás; los vectores de movimiento de los huesos también van por identidad.
+- **Caché por entidad** del modelo resuelto y su variante, esfera por versión del Transform, sin `Animator` para lo que no se anima y cajas reutilizadas si nada cambia.
+- **Modelo base de una variante**: no se sube ni se queda en la GPU si nadie lo dibuja tal cual.
+- **Sombras**: rejilla de actores para las luces locales, proyectores fuera de la vista descartados (barrido hacia el sol), recorte por clúster en las cascadas, cada cascada solo con sus trozos de terreno y el terreno solo las redibuja si cambian sus trozos o alturas.
+
+### Trazado de rayos y tiling
+- **Una BLAS por geometría**: las variantes `.crmat` comparten triángulos y BLAS; cada textura entra una vez; los modelos sin instancias se saltan.
+- **Tiling por material**: escala y desplazamiento de UV en un uniform (set 1, binding 9) en vez de reescribir los vértices; la variante comparte vértices e índices con su modelo.
+
+### Gama baja
+- **GI horneada sin SVGF** cuando no hay sondas dinámicas, y la palanca Gi a 0 mientras está horneada.
+- **Sol horneado sin cascadas** si no las lee nadie (volumétrica, agua, fluidos o vidrio).
+- **Ríos, vegetación, ondas y flotación**: la línea del río en caché, la lista de agua compartida y rehecha solo si cambia, ondas sin trabajo si no hay agua cerca (el océano por altura).
+- **Distancia de sombras y LOD por gama** (escritorio con presupuesto adaptativo): 60 / 80 / 100 m y LOD ×2 en Bajo, ×1,5 en Medio. Bajo y Medio ya no arrancan en Lod 1.
+- **Agua**: SSR de 12 pasos con la iluminación ligera; nueva opción `lighting_quality` (auto, full, lite).
+- **VR y presupuesto adaptativo**: el sesgo de mips ya no depende de la resolución que cambia el presupuesto, así que no hay tirón al cambiar de escala.
+
+### Lightmaps UV2 (fases 0-2 de `PLAN-LIGHTMAPS.md`)
+- UV2 automáticas con xatlas («Generar UV de lightmap», vista LM de la Escena, MCP `generate_lightmap_uvs`), lightmapper propio (luz directa, rebote con su filtro y luces Horneadas), `.crbake` v4, atlas en el render (binding 10 del set 1), lote estático al exportar y el player. Fases 3 y 4 a medias.
+
+### Render
+- **Vidrio** recortado con la pirámide Hi-Z; **luces puntuales por teselas** de pantalla.
+- **Early-Z**: los opacos sin alfa van por una pipeline del G-buffer sin `discard`.
+- **Sin trabajo apagado**: sin bloom ni auto-exposición si están apagados, océano sin FFT si no se ve, FSR 1 con cadena LDR corta, sin FXAA encima de TAA, FSR 3 o DLSS, y la copia de vista solo si alguien la pide.
+- **Otros**: el G-buffer dibuja el escenario antes que el terreno; parallax con capas limitadas por píxel; LOD de personajes con esqueleto (con atributos y tope de 0,5 px); orden de triángulos para la caché de vértices.
+- **Fallos**: el recorte de sombras usa el alfa del color base; las partículas con mezcla alfa del VFX Graph se ordenan; la corteza de la lava ya no pasa a las otras lavas; menos líneas oscuras finas en las aristas de las paredes.
+
+### Texturas
+- **BC7** para las imágenes de la UI (si el PSNR ≥ 40 dB), los árboles y las capas del terreno, con caché en `%LOCALAPPDATA%/Cramion/Cache`.
+
+### UI, física y ventana
+- **UI**: el clic que cae sobre la UI ya no llega al juego (`UI.pointerOverUi`); `UIEventTrigger`, `Entity:uiScreenRect`, `UIInputField` con cursor, selección y portapapeles, y `UIImage` con `uv_rect` y 9-slice.
+- **Física para scripts**: `layerMask`, `sphereCast` y `overlapSphere`. Los MeshCollider grandes se construyen en segundo plano.
+- **Ventana**: tamaño exacto y modo «sin bordes» (`borderless`, `window_size`, `monitor_*`, `windowed_max_*`), tope de FPS (`fps_limit`, y el presupuesto adaptativo apunta al menor de `target_fps` y el tope) y Immediate sin vsync cuando no hay Mailbox. El cursor vuelve a su sitio al soltarlo.
+- **Editor**: en segundo plano no dibuja la escena; el Bone Socket ya no encoge bajo un padre escalado; la navegación sin Nav Mesh Bounds no escanea las fuentes.
+
+### Vídeo
+- **Android** con MediaCodec (archivos y `https://` en Android 9+).
+- **FFmpeg opcional** (`CRAMION_WITH_FFMPEG`, apagado por defecto): RTSP, RTMP y DASH; HLS en Android y Linux.
+
+### World Partition y red
+- **World Partition**: varias rejillas, Data Layers (también desde scripts: `WorldPartition.setDataLayer`) y dependencias entre celdas, con su UI en el editor. Las escenas y celdas antiguas se siguen leyendo.
+- **Red a más de 2 km**: las posiciones viajan absolutas (sector de 1024 m + resto); protocolo versionado a 2.
+
+### Blueprints fase 2
+- Construction Script, funciones, macros, Timeline y depuración en vivo (cables, valores y «Vigilar este valor»). Renombrar o mover un Blueprint lleva su `.crgraph` y actualiza las referencias.
+
+### Reproductor
+- `<Juego>.exe --run-tests [--junit x.xml]` ejecuta las pruebas `CRAMION_TEST` del juego exportado (solo Windows; código de salida 0-3).
+
+### Cambios a tener en cuenta
+- **Red**: el protocolo 2 no es compatible con juegos ni `CramionServer` anteriores (se desconecta con el motivo).
+- **UI**: los scripts ya no reciben el clic que cae sobre la UI.
+- **Sin vsync** en GPUs sin Mailbox, el juego va sin tope y con tearing salvo que se ponga `fps_limit`.
+- **Gama Baja y Media**: las sombras acaban antes (60 y 80 m).
+- **Formatos**: `.crgraph` versión 2 si usa algo nuevo; celdas de World Partition v3; `.crbake` v4 con lightmaps.
+
+### Pruebas
+- Las 60 suites de pruebas pasan, con las nuevas: `testSharedVector`, `testVariantSharesMesh`, WaterTests (muestreo con y sin caché), MeshTests (gama y LOD, BC7), 19 de lightmaps en Features21Tests, WorldPartitionTests, NetworkTests, Features24ApiTests, VisualScriptRuntimeTests, BlueprintTests, VideoTests y los arreglos de CramionTemplateTests («bloques» y «coches»).
+- Arreglado: los argumentos de clang++ de los scripts de C++ en Android mezclaban `/` y `\` en la ruta de `ScriptMain.cpp`.
+
 ## 2.4.13
 
 **Novedad sobre la 2.4.11: la Cramion Store (cuentas, assets gratis y un Package Manager en el editor, como el de Unity, con versiones para actualizar o volver atrás, sobre el formato propio `.crwpack`), y el horneado de luz vuelve a ver los objetos Static de los modelos importados.** Con el editor abierto, el renderizador se queda con la malla de cada pieza que dibuja (para no tenerla dos veces en memoria) y en el AssetManager queda una copia vacía; el horneado leía esa copia, así que una ciudad entera marcada Static daba «Nada que hornear… Marca los objetos como Static». Ahora toma la malla de la escena del renderizador: en una casa de 101 piezas Static se pasa de 0 a 2.877.697 triángulos. El horneado también aguanta ciudades enteras (volumen automático que cabe en el tope de sondas, lightmap que crece en vez de fallar, sin cierres por falta de memoria), y las demás herramientas que leían la misma copia vacía (Fracturar, Blueprints, materiales del modelo, reimportar, VFX y colisiones ocultas) vuelven a funcionar.

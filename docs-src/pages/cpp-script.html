@@ -96,6 +96,7 @@
     <tr><td><code>using SourceFile = FileRef&lt;FileKind::Source&gt;</code></td><td></td></tr>
     <tr><td><code>using ShaderFile = FileRef&lt;FileKind::Shader&gt;</code></td><td></td></tr>
     <tr><td><code>using AnyFile = FileRef&lt;FileKind::Any&gt;</code></td><td></td></tr>
+    <tr><td><code>struct UiPointerEvent</code></td><td>Lo que llega en on(&quot;Metodo&quot;, fn) por on_hover, on_exit, on_right_click, on_double_click, on_drag_begin, on_drag, on_drag_end y on_drop de un UIEventTrigger: on(&quot;OnSoltar&quot;, [this](const Value&amp; v) { UiPointerEvent e(v); mover(e.other, e.entity); });</td></tr>
     <tr><td><code>enum CVarFlags : std::uint32_t { CVarNone, CVarReadOnly, CVarSaved, CVarCheat }</code></td><td></td></tr>
     <tr><td><code>T* Entity::script() const</code></td><td></td></tr>
     <tr><td><code>detail::PropertyBase::PropertyBase(Script* owner, const char* name) : name_(name)</code></td><td></td></tr>

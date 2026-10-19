@@ -286,6 +286,48 @@ WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const Ve
     return sampleWaterWith(body, world, position, time, &river_line);
 }
 
+std::uint64_t riverHash(const WaterBody& body, const core::Mat4& world) {
+    std::uint64_t hash = 1469598103934665603ull;
+    const auto mix = [&](float f) {
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &f, sizeof(bits));
+        hash = (hash ^ bits) * 1099511628211ull;
+    };
+    for (const RiverPoint& point : body.points) {
+        mix(point.position.x);
+        mix(point.position.y);
+        mix(point.position.z);
+        mix(point.width);
+    }
+    for (int c = 0; c < 4; ++c) {
+        for (int r = 0; r < 4; ++r) mix(world.m[c][r]);
+    }
+    return hash;
+}
+
+RiverLine riverLine(const WaterBody& body, const core::Mat4& world) {
+    RiverLine line;
+    line.hash = riverHash(body, world);
+    line.samples = riverCenterline(body, world, 1.0f);
+    for (const RiverSample& s : line.samples) {
+        // sampleWater solo acepta hasta medio ancho de la muestra mas cercana.
+        const float half = s.width * 0.5f;
+        line.min.x = std::min(line.min.x, s.position.x - half);
+        line.min.y = std::min(line.min.y, s.position.z - half);
+        line.max.x = std::max(line.max.x, s.position.x + half);
+        line.max.y = std::max(line.max.y, s.position.z + half);
+    }
+    return line;
+}
+
+WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const Vec3& position, float time,
+                        const RiverLine& river_line) {
+    if (body.type != WaterType::River) return sampleWaterWith(body, world, position, time, nullptr);
+    // Fuera de la caja: ninguna muestra a menos de su medio ancho.
+    if (!river_line.mayContain(position)) return WaterSample{};
+    return sampleWaterWith(body, world, position, time, &river_line.samples);
+}
+
 namespace {
 WaterSample sampleWaterWith(const WaterBody& body, const core::Mat4& world, const Vec3& position, float time,
                             const std::vector<RiverSample>* river_line) {

@@ -55,6 +55,10 @@ struct EntityInfo {
     // Lo crea el motor en marcha (las teselas de un TerrainGrid): no se guarda
     // en la escena ni se copia con su padre. No se serializa.
     bool transient = false;
+    // Oculta en la Escena del editor (una Data Layer del World Partition con
+    // "Visible en el editor" apagado): RenderSync no dibuja su malla. Lo pone
+    // y lo quita el editor cada frame; no se serializa.
+    bool editor_hidden = false;
 };
 
 // Jerarquia: padre e hijos EN ORDEN (el de la ventana Jerarquia).
@@ -96,6 +100,9 @@ struct MeshRenderer {
     int part = 0;  // indice en ModelAsset::parts
     bool visible = true;
     ShadowCasting cast_shadows = ShadowCasting::On;
+    // Resolucion de su lightmap respecto a la de la escena (Ventana >
+    // Iluminacion > Lightmaps). 0 = sin lightmap: lo iluminan las sondas.
+    float lightmap_scale = 1.0f;
     // Materiales (.crmat) que sustituyen a los del modelo, por hueco (el
     // indice es el del material en el modelo). Vacio o invalido = el suyo.
     std::vector<assets::AssetRef> materials;

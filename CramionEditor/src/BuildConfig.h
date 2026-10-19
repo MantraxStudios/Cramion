@@ -78,7 +78,7 @@ struct BuildConfig {
     bool version_in_title = false;
     std::string icon;           // relativa al proyecto (o absoluta); vacia = icono del motor
     std::string startup_scene;  // UUID de la escena; vacio = la escena inicial del proyecto
-    int window_mode = 0;        // 0 maximizada, 1 pantalla completa, 2 ventana
+    int window_mode = 0;        // 0 maximizada, 1 pantalla completa, 2 ventana, 3 ventana sin bordes
     int width = 1600;
     int height = 900;
     bool static_batching = true;

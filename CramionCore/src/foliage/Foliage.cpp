@@ -172,6 +172,9 @@ FoliageResult generateFoliage(const Foliage& f, const core::Vec3& center, const 
     const float min_normal_y = std::cos(std::clamp(f.max_slope, 0.0f, 90.0f) * 3.14159265f / 180.0f);
     const float x0 = center.x - area * 0.5f;
     const float z0 = center.z - area * 0.5f;
+    // Agua de la escena (compartida entre bosques; nula = ninguna).
+    static const std::vector<FoliageWater> kNoWater;
+    const std::vector<FoliageWater>& waters = f.water != nullptr ? *f.water : kNoWater;
 
     // Filas repartidas en trozos fijos con el job system (no hilos propios):
     // el resultado sale en el mismo orden con cualquier numero de hilos.
@@ -223,7 +226,7 @@ FoliageResult generateFoliage(const Foliage& f, const core::Vec3& center, const 
                 }
                 // Ni en los rios ni bajo el agua de los lagos.
                 bool wet = false;
-                for (const FoliageWater& w : f.water) {
+                for (const FoliageWater& w : waters) {
                     if (w.river) {
                         const float abx = w.b.x - w.a.x, abz = w.b.z - w.a.z;
                         const float len2 = abx * abx + abz * abz;

@@ -734,7 +734,17 @@ int main(int argc, char** argv) {
                 g.mouse(dm::MouseButton::Left, true);
                 g.frames(15);
                 const bool cracking = world.findByName("Grietas").activeSelf() && world.findByName("Grietas").get<ecs::MeshRenderer>().mesh;
-                g.frames(hold_frames);
+                // Se suelta en cuanto se rompe (como mucho `hold_frames`).
+                // Seguir apretando cavaba hacia abajo: si la caja del jugador
+                // pisa tambien el bloque de al lado (casi siempre: mide 0,6 m),
+                // no cae y abre un pozo junto a el. El tronco (360 frames) bajaba
+                // varios bloques mas y su objeto acababa en el fondo, a mas de
+                // 3 m (fuera del iman de recoger): no se recogia.
+                for (int i = 0; i < hold_frames &&
+                                g.voxels.getBlock(ground.block.x, ground.block.y, ground.block.z) == block;
+                     ++i) {
+                    g.frame();
+                }
                 g.mouse(dm::MouseButton::Left, false);
                 g.frames(120);  // el objeto cae y se recoge
                 return std::make_pair(g.voxels.getBlock(ground.block.x, ground.block.y, ground.block.z) != block, cracking);

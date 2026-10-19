@@ -28,6 +28,10 @@ layout(set = 0, binding = 3) uniform WeatherBuffer {
     vec4 snow;        // x = cobertura (0..1), y = espesor (m), z = humedad al derretirse, w = reservado
     vec4 fire_zones[4];  // xy = esquina minima (x, z), z = lado (m), w = parte del mapa usada (0 = apagada)
     Decal decals[kMaxDecals];
+    // Lightmaps (GpuWeather::lightmap): x = 0 sin, 1 visibilidad del sol, 2 con
+    // irradiancia; y = fuerza de la sombra horneada del sol; z = vista de
+    // depuracion (1 irradiancia, 2 visibilidad del sol, 3 UV2/densidad).
+    vec4 lightmap;
 } weather;
 #ifdef CRAMION_COMPAT
 // Modo compatible (moviles): 16 texturas por shader como mucho (el minimo de
@@ -59,6 +63,34 @@ float surface_sun_shadow = 1.0;
 layout(location = 4) out vec4 out_shading;
 #endif
 vec4 surface_shading = vec4(0.0);
+
+// --- Lightmaps (PLAN-LIGHTMAPS 2.6) ---
+// Donde cae el pixel en el atlas: xy = UV del atlas, z = capa (-1 = sin
+// lightmap). Los rellena setupLightmap (lightmap_common.glsl) en skinned.frag
+// y surface.frag; el terreno, el follaje y los voxeles no (z = -1).
+vec3 surface_lightmap = vec3(0.0, 0.0, -1.0);
+vec3 surface_view = vec3(0.0);             // hacia la camara (0 = sin Fresnel)
+vec2 surface_lightmap_uv2 = vec2(-1.0);     // UV2 del modelo (vista de densidad sin hornear)
+uint surface_lightmap_slot = 0xFFFFFFFFu;   // hueco de la instancia (color de la vista de densidad)
+#ifdef CRAMION_LIGHTMAP
+// Atlas de lightmaps (BakedGi.h, LightmapSet): capa = pagina; rgb = irradiancia
+// (difuso = albedo * rgb), a = visibilidad del sol. Una sola textura: en el modo
+// compatible el vidrio llega justo a 16 (SkinnedPass).
+layout(set = 0, binding = 7) uniform sampler2DArray lightmap_atlas;
+#endif
+// Ruido de gradiente entrelazado (Jimenez): el dither de los 32 niveles de la
+// sombra del sol.
+float lightmapDither(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+// Copia de multiBounceAo (lighting.frag): la oclusion del material sobre la
+// luz horneada.
+vec3 multiBounceAoSurface(float ao, vec3 albedo) {
+    vec3 a = 2.0404 * albedo - 0.3324;
+    vec3 b = -4.7951 * albedo + 0.6417;
+    vec3 c = 2.7552 * albedo + 0.6903;
+    return max(vec3(ao), ((ao * a + b) * ao + c) * ao);
+}
 
 // Movimiento en pantalla de este pixel, de las posiciones de recorte (sin
 // jitter) de este frame y del anterior.
@@ -357,6 +389,45 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
         }
     }
 
+    // --- Lightmap (PLAN-LIGHTMAPS 2.6 y 3.6) ---
+    // La visibilidad horneada del sol va con la sombra propia; la irradiancia,
+    // con la emision (difuso = albedo * rgb), y el pixel se marca con el signo
+    // del alfa de out_material (lighting.frag no le suma el cielo ni la GI).
+    bool lightmapped = surface_lightmap.z >= 0.0 && weather.lightmap.x > 0.5;
+    float sun_visible = clamp(surface_sun_shadow, 0.0, 1.0);
+    int lightmap_debug = int(weather.lightmap.z + 0.5);
+#ifdef CRAMION_LIGHTMAP
+    if (lightmapped) {
+        vec4 lm = textureLod(lightmap_atlas, surface_lightmap, 0.0);
+        sun_visible *= mix(1.0, clamp(lm.a, 0.0, 1.0), weather.lightmap.y);
+        if (weather.lightmap.x > 1.5) {
+            vec3 lin = toLinear(albedo.rgb);
+            vec3 f0 = mix(vec3(reflectance), lin, metallic);
+            float nv = dot(surface_view, surface_view) > 0.0 ? clamp(dot(normal, surface_view), 1e-4, 1.0) : 1.0;
+            vec3 fresnel = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - nv, 5.0);
+            emissive += max(lm.rgb, vec3(0.0)) * lin * (1.0 - fresnel) * (1.0 - metallic) *
+                        multiBounceAoSurface(occlusion, lin);
+        }
+        if (lightmap_debug == 1) emissive = max(lm.rgb, vec3(0.0));
+        if (lightmap_debug == 2) emissive = vec3(clamp(lm.a, 0.0, 1.0));
+        if (lightmap_debug == 3) {
+            // Un cuadro por texel del atlas, con un tono por instancia.
+            vec2 texel = floor(surface_lightmap.xy * vec2(textureSize(lightmap_atlas, 0).xy));
+            float checker = mod(texel.x + texel.y, 2.0);
+            float hue = fract(float(surface_lightmap_slot) * 0.61803399);
+            vec3 tint = clamp(abs(fract(hue + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0);
+            emissive = mix(tint * 0.35, tint, checker);
+        }
+    } else if (lightmap_debug == 3 && surface_lightmap_uv2.x >= 0.0) {
+        // Sin hornear: las UV2 en un tablero de 32 x 32 (colores = fract(uv)).
+        vec2 cell = floor(surface_lightmap_uv2 * 32.0);
+        float checker = mod(cell.x + cell.y, 2.0);
+        emissive = vec3(fract(surface_lightmap_uv2 * 4.0), 0.5) * mix(0.35, 1.0, checker);
+        lightmapped = true;
+    }
+#endif
+    if (lightmap_debug > 0 && !lightmapped) emissive = vec3(0.0);
+
     // --- Antialiasing especular (Tokuyoshi 2019) ---
     vec3 du = dFdx(aa_normal);
     vec3 dv = dFdy(aa_normal);
@@ -367,9 +438,11 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
 
     out_albedo = vec4(albedo.rgb, occlusion);
     out_normal = vec4(encodeNormal(normal), roughness, reflectance);
-    // Metalicidad (0..1) + 2 x sombra propia en 8 niveles (0 = nada).
-    float self_shadow_level = floor((1.0 - clamp(surface_sun_shadow, 0.0, 1.0)) * 7.0 + 0.5);
-    out_material = vec4(emissive, clamp(metallic, 0.0, 1.0) + 2.0 * self_shadow_level);
+    // Metalicidad (0..1) + 2 x nivel de sombra del sol (32 niveles con dither:
+    // la propia del relieve por la horneada); negativo = con lightmap.
+    float level = clamp(floor((1.0 - sun_visible) * 31.0 + lightmapDither(gl_FragCoord.xy)), 0.0, 31.0);
+    float packed_a = clamp(metallic, 0.0, 1.0) + 2.0 * level;
+    out_material = vec4(emissive, lightmapped ? -(packed_a + 0.5) : packed_a);
 #ifndef CRAMION_COMPAT
     out_shading = surface_shading;
 #endif

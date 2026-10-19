@@ -155,6 +155,8 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     asset::setTextureCacheFolder(project_.libraryFolder() / "Cache" / "Textures");
     model_previews_.start(project_.libraryFolder() / "Thumbnails");
     scripts_.setAssetsRoot(project_.assetsFolder());
+    // Visual Script en Play: el grafo ilumina los cables por los que pasa y ensena los valores de los pines.
+    scripts_.setVisualScriptLiveDebug(true);
     // DataPacks montados en Play: se apuntan en Library y se quitan al parar;
     // si el editor se cerro en Play, se quitan ahora (el proyecto queda limpio).
     project::cleanupDataPackJournal(project_.libraryFolder() / "DataPacks.journal", project_.assetsFolder());
@@ -183,6 +185,7 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
         scripts_.setScreen(screen);
     }
     scripts_.setXr(&renderer_.xr(), &xr_rig_);
+    scripts_.setUi(&ui_);  // UI.pointerOverUi, Entity:uiScreenRect...
     audio_.setAssetsRoot(project_.assetsFolder());
     // Oclusion: paredes (colliders) entre el sonido y el oyente.
     audio_.setOcclusionQuery(audio::physicsOcclusionQuery(physics_));
@@ -507,7 +510,8 @@ bool EditorApp::saveScene() {
         if (wp.enabled && wp.external_cells) external = &wp;
     }
     if (external != nullptr) {
-        const int cells = worldpart::WorldPartitionSystem::writeExternalCells(world_, external->cell_size, scene_path_, &error);
+        // Con sus rejillas y sus capas (un archivo por celda de cada una).
+        const int cells = worldpart::WorldPartitionSystem::writeExternalCells(world_, *external, scene_path_, &error);
         if (cells < 0) {
             std::cerr << "[Editor] No se pudieron guardar las celdas: " << error << "\n";
             return false;
@@ -635,6 +639,7 @@ void EditorApp::resetUndo() {
     terrain_redo_.clear();
     flatten_prime_ = true;  // escena nueva: su terreno ya esta aplanado bajo los edificios
     current_state_ = ecs::serializeWorld(world_);
+    primeConstructionScripts();  // abrir una escena no pasa los Construction Script (ya estan hechos)
 }
 
 void EditorApp::commit() {
@@ -656,6 +661,8 @@ void EditorApp::flushCommit() {
     if (playing()) {
         return;
     }
+    // Lo que se coloco o cambio pasa su Construction Script (en el mismo paso de deshacer).
+    runConstructionScripts();
     recordPrefabOverrides();
     std::string state = ecs::serializeWorld(world_);
     if (state == current_state_) {
@@ -710,6 +717,7 @@ void EditorApp::undo() {
     const ecs::DVec3 origin_before = world_.origin();
     ecs::deserializeWorld(world_, current_state_);
     alignOriginAfterLoad(origin_before);
+    primeConstructionScripts();  // el estado deshecho no vuelve a pasar su Construction Script
     dirty_ = true;
     updateTitle();
 }
@@ -741,6 +749,7 @@ void EditorApp::redo() {
     const ecs::DVec3 origin_before = world_.origin();
     ecs::deserializeWorld(world_, current_state_);
     alignOriginAfterLoad(origin_before);
+    primeConstructionScripts();  // el estado deshecho no vuelve a pasar su Construction Script
     dirty_ = true;
     updateTitle();
 }
@@ -1466,7 +1475,9 @@ void EditorApp::syncWorld(float delta_seconds, bool secondary) {
     }
     renderer_.setViewSlot(view);
     renderer_.setEditorHelpersEnabled(!game);
-    renderer_.setSceneDrawMode(static_cast<gfx::SceneDrawMode>(scene_draw_mode_));
+    // Vistas de los lightmaps (SceneDrawMode 4..6) encima del modo de la vista.
+    renderer_.setSceneDrawMode(lightmap_debug_view_ > 0 ? static_cast<gfx::SceneDrawMode>(3 + std::clamp(lightmap_debug_view_, 1, 3))
+                                                        : static_cast<gfx::SceneDrawMode>(scene_draw_mode_));
     if (!secondary && (view != last_render_view_ || (game && cinematics_.cutThisFrame()))) {
         renderer_.invalidateHistory();
     }

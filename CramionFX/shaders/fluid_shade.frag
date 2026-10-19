@@ -17,6 +17,7 @@ layout(set = 0, binding = 7, r32f) uniform readonly image2D depth_smooth;
 layout(set = 0, binding = 8) uniform sampler2D thick_absorb;
 layout(set = 0, binding = 9) uniform sampler2D thick_scatter;
 layout(set = 0, binding = 10) uniform sampler2D thick_emission;
+layout(set = 0, binding = 11) uniform sampler2D thick_crust;  // x costra * grosor, y grosor (de lo que emite)
 
 // --- Set 1: el del vidrio (VulkanRenderer::updateGlassDescriptors) ---
 layout(set = 1, binding = 0) uniform CameraBuffer {
@@ -108,10 +109,11 @@ const vec2 kThickTaps[12] = vec2[](vec2(0.0, 1.0), vec2(0.866, 0.5), vec2(0.866,
                                    vec2(-0.866, -0.5), vec2(-0.866, 0.5), vec2(0.0, 0.5), vec2(0.433, -0.25),
                                    vec2(-0.433, -0.25), vec2(0.433, 0.25), vec2(-0.433, 0.25), vec2(0.0, -0.5));
 
-void sampleThickness(vec2 uv, float z, out vec4 absorb, out vec4 scatter, out vec4 emission) {
+void sampleThickness(vec2 uv, float z, out vec4 absorb, out vec4 scatter, out vec4 emission, out vec2 crust) {
     absorb = textureLod(thick_absorb, uv, 0.0);
     scatter = textureLod(thick_scatter, uv, 0.0);
     emission = textureLod(thick_emission, uv, 0.0);
+    crust = textureLod(thick_crust, uv, 0.0).xy;
     float pixels = fr.params.z * abs(fr.projection[1][1]) * 0.5 * fr.viewport.y / max(z, 1e-3);
     pixels = min(pixels, 48.0);
     if (pixels < 1.5) return;
@@ -125,11 +127,13 @@ void sampleThickness(vec2 uv, float z, out vec4 absorb, out vec4 scatter, out ve
         absorb += a * w;
         scatter += textureLod(thick_scatter, q, 0.0) * w;
         emission += textureLod(thick_emission, q, 0.0) * w;
+        crust += textureLod(thick_crust, q, 0.0).xy * w;
         weight += w;
     }
     absorb /= weight;
     scatter /= weight;
     emission /= weight;
+    crust /= weight;
 }
 
 float depthAt(ivec2 p) {
@@ -165,7 +169,8 @@ void main() {
     vec4 absorb;
     vec4 scatter;
     vec4 emission;
-    sampleThickness(uv, z, absorb, scatter, emission);
+    vec2 crust_sum;
+    sampleThickness(uv, z, absorb, scatter, emission, crust_sum);
     float thickness = max(absorb.a, 1e-4);
     vec3 sigma = absorb.rgb / thickness;
     vec3 diffuse_color = scatter.rgb / thickness;
@@ -226,8 +231,11 @@ void main() {
 
     // --- Emision (lava): costra oscura que se abre en grietas brillantes ---
     if (dot(emissive, emissive) > 0.0) {
-        float crust = 0.0;
-        for (int m = 0; m < int(kFluidMaterials); ++m) crust = max(crust, fr.materials[m].params.w * step(0.001, dot(fr.materials[m].emission_vort.rgb, vec3(1.0))));
+        // La costra de los liquidos que emiten EN ESTE pixel, ponderada por su
+        // grosor (como la rugosidad). Antes era el maximo de los 8 materiales
+        // de la escena: una lava con costra la ponia a cualquier otra lava,
+        // aunque no estuviera ni en pantalla.
+        float crust = clamp(crust_sum.x / max(crust_sum.y, 1e-4), 0.0, 1.0);
         float t = fr.params2.y;
         float noise = fluidNoise3(world * 3.0 + vec3(0.0, t * 0.15, 0.0)) * 0.65 + fluidNoise3(world * 9.0 - vec3(t * 0.1)) * 0.35;
         float cracks = mix(1.0, smoothstep(0.35, 0.7, noise) * 1.6 + 0.08, crust);

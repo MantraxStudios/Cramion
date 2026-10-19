@@ -40,7 +40,9 @@
   <li><strong>Clip</strong>: un archivo de Assets (<code>.mp4 .m4v .mov .webm .mkv .avi .wmv</code>). Entra en el juego
     exportado.</li>
   <li><strong>URL</strong>: <code>https://</code> (o <code>http://</code> solo hacia este PC, <code>localhost</code>), con la
-    misma política que <a href="cpp-http.html">Http</a>. También listas HLS <code>.m3u8</code> en Windows. El botón
+    misma política que <a href="cpp-http.html">Http</a>. También listas HLS <code>.m3u8</code> en Windows. Con el motor
+    compilado con FFmpeg (opción <code>CRAMION_WITH_FFMPEG</code>, apagada por defecto) también <code>rtsp://</code>,
+    <code>rtmp://</code> (cámaras y directos) y DASH <code>.mpd</code>. El botón
     <strong>Probar URL</strong> del Inspector la abre en otro hilo y muestra sus datos o el motivo exacto por el que no se
     puede (política, códec que falta, red...).</li>
 </ul>
@@ -152,9 +154,13 @@ entity().videoPause();</code></pre>
   <li>Los vídeos de Assets entran en el paquete <code>.crpack</code> comprimidos a nivel 1 (ya vienen comprimidos: así no se
     gasta tiempo al exportar). Los paquetes de versiones anteriores se siguen leyendo.</li>
   <li><strong>Windows</strong>: Media Foundation, la del sistema (sin librerías extra ni licencias para tu juego).</li>
-  <li><strong>Android</strong>: el componente se carga y se guarda, pero todavía no reproduce (llegará en una versión
-    posterior); <code>OnVideoError</code> lo indica.</li>
-  <li>El <strong>servidor dedicado</strong> de Linux carga las escenas con VideoPlayer y lo ignora (no decodifica nada).</li>
+  <li><strong>Android</strong>: MediaCodec del sistema (por hardware si el móvil lo tiene), sin librerías extra. Archivos de
+    Assets y <code>https://</code> (desde Android 9). HLS <code>.m3u8</code> solo con FFmpeg; si no, <code>OnVideoError</code>
+    lo indica.</li>
+  <li>El <strong>servidor dedicado</strong> de Linux carga las escenas con VideoPlayer y lo ignora (no decodifica nada),
+    salvo si se compila con FFmpeg.</li>
+  <li><strong>FFmpeg</strong> (opcional, <code>CRAMION_WITH_FFMPEG</code>): sus bibliotecas no van incluidas; hay que
+    repartirlas con el juego y cumplir su licencia (LGPL o GPL según cómo se compilaran).</li>
 </ul>
 
 <h3 id="VideoPlayer">Referencia: Video Player <code>VideoPlayer</code></h3>

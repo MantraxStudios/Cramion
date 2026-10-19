@@ -24,6 +24,7 @@
 #include "CramionFX/vk/VfxPass.h"
 #include "CramionFX/vk/VideoTextures.h"
 #include "CramionFX/vk/BakedGi.h"
+#include "CramionFX/vk/LightmapAtlas.h"
 #include "CramionFX/vk/WaterPass.h"
 #include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/GraphicsSettings.h"
@@ -131,6 +132,12 @@ enum class SceneDrawMode : int {
     Unlit = 1,         // solo el color de los materiales, sin luz ni sombras
     Wireframe = 2,     // solo las lineas de la geometria
     LitWireframe = 3,  // con luz y las lineas de las mallas encima
+    // Vistas de depuracion de los lightmaps (sin luz, exposicion 1; magenta
+    // oscuro = sin lightmap): la irradiancia horneada, la visibilidad del sol
+    // y un tablero por texel del atlas (densidad de las UV2).
+    LightmapIrradiance = 4,
+    SunVisibility = 5,
+    LightmapUv = 6,
 };
 
 // Nubes volumetricas (componente Sky).
@@ -256,6 +263,11 @@ public:
     // llevar la resolucion bajada por el presupuesto adaptativo.
     const GraphicsSettings& graphicsSettings() const { return user_graphics_; }
     const GraphicsSettings& effectiveGraphicsSettings() const { return graphics_; }
+    // Tope de FPS del juego (Graphics "fps_limit", 0 = sin tope). El
+    // presupuesto adaptativo apunta al menor de target_fps y el tope: si no,
+    // sin profiler de GPU mediria la espera del tope como frame lento y
+    // bajaria la calidad sin motivo. En VR manda el casco.
+    void setFrameRateCap(float fps);
 
     // --- Presupuesto adaptativo (FrameBudget.h) ---
     const HardwareProfile& hardwareProfile() const { return hardware_; }
@@ -396,6 +408,8 @@ public:
     // (pruebas, preset Baja).
     void setLiteLightingForced(bool lite) { lite_lighting_forced_ = lite ? 1 : 0; }
     void clearLiteLightingForced() { lite_lighting_forced_ = -1; }
+    // -1 = lo decide el presupuesto, 0 = completa, 1 = ligera.
+    int liteLightingForced() const { return lite_lighting_forced_; }
     bool liteLighting() const {
         if (lite_lighting_forced_ >= 0) return lite_lighting_forced_ != 0;
         return !budget_suspended_ && budget_.enabled() && budget_.level(Lever::Lighting) > 0;
@@ -896,6 +910,29 @@ public:
     // El sol del horneado (modo Horneado) sigue valiendo: en modo horneado y
     // con la hora del dia sin moverlo. Entonces su luz directa ya esta en la GI.
     bool bakedSunActive(const core::Vec3& sun_direction) const;
+    // --- Lightmaps (.crbake v4, PLAN-LIGHTMAPS Fase 2; VulkanRendererLightmaps.cpp) ---
+    // Hay paginas subidas y el modo de iluminacion es Horneada.
+    bool lightmapsActive() const;
+    // Sube con cada setBakedLighting (RenderSync rehace su indice de registros).
+    std::uint64_t bakedGeneration() const { return baked_generation_; }
+    // El Light direccional esta en modo Horneada (lo pone RenderSync): con un
+    // .crbake v4 y el sol donde estaba, sus sombras salen del lightmap.
+    void setSunBakeMode(bool baked) { sun_bake_mode_ = baked; }
+    bool sunBakeMode() const { return sun_bake_mode_; }
+    // De donde salen las sombras del sol con la iluminacion de ahora.
+    SunShadowSource sunShadowSource(const core::Vec3& sun_direction) const;
+    // Los 9 coeficientes de la irradiancia del cielo (ya / pi), como los usa
+    // lighting.frag: el cielo del horneado. Espera a la GPU (solo al hornear).
+    std::array<core::Vec3, 9> readSkyIrradianceSh();
+    // Exposicion manual fija (multiplica la de la hora del dia; <= 0 = la de
+    // siempre): comparar capturas en tiempo real y horneada (MCP).
+    void setExposureOverride(float exposure) { exposure_override_ = exposure; }
+    float exposureOverride() const { return exposure_override_; }
+    // "SSAO sobre lo horneado" (0..1; Fase 3): cuanto oscurece el SSAO la luz
+    // de los lightmaps.
+    void setLightmapAo(float amount) { lightmap_ao_ = std::clamp(amount, 0.0f, 1.0f); }
+    float lightmapAo() const { return lightmap_ao_; }
+    const LightmapAtlas& lightmapAtlas() const { return lightmap_atlas_; }
     const FluidPass& fluid() const { return fluid_pass_; }
 
     // --- Texturas de la interfaz (iconos, miniaturas del editor) ---
@@ -903,6 +940,10 @@ public:
     // (0 = error); su vista se registra en ImGui. destroyUiTexture espera a
     // la GPU: quitar varias de golpe, no una por frame.
     std::uint32_t createUiTexture(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height);
+    // Lo mismo con una imagen ya comprimida (BC1-BC7 con sus mips, la de la
+    // cache de texturas): se sube tal cual. 0 si no se pudo (o si la GPU no
+    // lee BC: quien llama la sube en RGBA8).
+    std::uint32_t createUiTextureCompressed(const asset::TextureData& texture);
     VkImageView uiTextureView(std::uint32_t id) const;
     void destroyUiTextures(const std::vector<std::uint32_t>& ids);
 
@@ -1022,6 +1063,7 @@ public:
     void setVideoPlanesEnabled(bool enabled) { video_planes_enabled_ = enabled; }
     std::uint32_t viewSlot() const { return view_slot_; }
     VkImageView viewImageView(std::uint32_t slot) const {
+        view_images_used_ = true;  // desde ahora se copia cada frame (recordViewCopy)
         return static_cast<VkImageView>(*view_images_[slot < kViewSlots ? slot : 0].view());
     }
     // Corte de camara (otra vista, un corte de una cinematica): las pasadas
@@ -1157,6 +1199,17 @@ private:
     void createBakedGi();
     void destroyBakedGi();
     void updateBakedGiSets();
+    // Lightmaps (VulkanRendererLightmaps.cpp): atlas (binding 7 del set de la
+    // geometria) y registros por instancia (binding 8, por frame en vuelo).
+    void createLightmapResources();
+    void destroyLightmapResources();
+    void writeLightmapDescriptors(std::uint32_t frame_index);
+    void uploadLightmaps();
+    void writeLightmapRecords(const scene::Scene& scene, std::uint32_t frame_index);
+    // weather.lightmap (modo, fuerza de la sombra horneada, vista de depuracion).
+    core::Vec4 lightmapUniform(const core::Vec3& sun_direction) const;
+    // La vista de depuracion de los lightmaps de este dibujo (0 = ninguna).
+    int lightmapDebugView() const;
     void recordSsrPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Guarda los reflejos y la luz rebotada filtrados de este frame como
     // historia del siguiente.
@@ -1302,6 +1355,17 @@ private:
     VulkanImage upscale_target_{};
     VulkanImage taa_history_{};
     VulkanImage upscaled_color_{};
+    // Cadena corta de FSR 1 (recordEarlyPostChain): composicion a la
+    // resolucion interna en 8 bits, despues EASU y RCAS sobre esa imagen.
+    VulkanImage early_ldr_{};       // composicion (interna)
+    VulkanImage early_upscaled_{};  // EASU (pantalla); RCAS escribe ldr_color_
+    FullscreenPass easu_ldr_pass_{};
+    FullscreenPass rcas_ldr_pass_{};
+    vk::raii::DescriptorPool early_pool_{nullptr};
+    std::vector<vk::raii::DescriptorSet> early_composite_sets_;
+    std::vector<vk::raii::DescriptorSet> early_easu_sets_;
+    std::vector<vk::raii::DescriptorSet> early_rcas_sets_;
+    bool early_post_active_ = false;  // este frame va por la cadena corta
     VulkanImage output_depth_{};
     bool output_depth_blit_ = false;
     // Mapa de lluvia: profundidad de la escena desde arriba (lo que tiene algo
@@ -1381,6 +1445,15 @@ private:
     std::uint32_t dynamic_probes_per_frame_ = 256;
     std::uint32_t dynamic_probe_cursor_ = 0;
     std::uint32_t baked_probe_count_ = 0;
+    // Lightmaps (.crbake v4).
+    LightmapAtlas lightmap_atlas_;
+    std::vector<VulkanBuffer> lightmap_record_buffers_;  // GpuLightmapRecord por hueco de huesos
+    std::vector<GpuLightmapRecord> lightmap_record_staging_;
+    bool lightmaps_uploaded_ = false;
+    bool sun_bake_mode_ = false;
+    std::uint64_t baked_generation_ = 0;
+    float exposure_override_ = 0.0f;
+    float lightmap_ao_ = 1.0f;
     vk::raii::DescriptorSetLayout probe_update_layout_{nullptr};
     vk::raii::DescriptorPool probe_update_pool_{nullptr};
     std::vector<vk::raii::DescriptorSet> probe_update_sets_;
@@ -1422,6 +1495,9 @@ private:
     // rayos conserva su copia) y los que estaban fuera al construirla.
     bool streaming_restore_ = false;
     std::vector<bool> rt_scene_evicted_;
+    // Los modelos que entraron en la escena de rayos (tenian instancias al
+    // construirla); uno que se dibuja sin estar la pide otra vez.
+    std::vector<bool> rt_scene_used_;
     std::vector<float> model_pixels_;
     bool texture_streaming_ = true;
     int texture_lod_bias_ = 0;
@@ -1433,13 +1509,23 @@ private:
     // Subidas del streaming en hilos aparte (volver a la GPU, cambiar el
     // detalle de las texturas): el modelo se crea entero en otro hilo y el
     // principal solo lo pone en su sitio al terminar (sin esperar a la GPU).
+    // Estado compartido con el hilo de streaming (VulkanDevice::
+    // runStreamingTask): en cola, en marcha, terminado o cancelado. Definido
+    // en VulkanRendererSkyMap.cpp.
+    struct ModelJobState;
     struct ModelJob {
         std::uint32_t index = 0;
         int texture_lod = 0;
         bool restore = false;  // volvia de fuera de la GPU
         bool append = false;   // modelo nuevo (uploadNewModels): entra en orden
-        std::future<std::unique_ptr<SkinnedModel>> result;
+        std::shared_ptr<ModelJobState> state;
     };
+    // El hilo termino y la GPU ya copio todo lo del modelo (no bloquea).
+    static bool modelJobReady(const ModelJob& job);
+    // Saca el modelo de un trabajo listo (nulo si fallo).
+    static std::unique_ptr<SkinnedModel> takeModelJob(ModelJob& job);
+    // Espera a que el hilo termine (no a la GPU).
+    static void waitModelJob(const ModelJob& job);
     std::vector<ModelJob> model_jobs_;
     // La escena va a cambiar un modelo (Scene::setModelWriteHook): los hilos
     // terminan y lo que traian se tira (seria de los datos de antes).
@@ -1550,13 +1636,21 @@ private:
         // Modelos rigidos de un solo hueso (escenarios): cada submalla tiene
         // su caja en el mundo, en submesh_bounds_ a partir de este indice.
         // Los animados se descartan enteros por su esfera.
+        // Las cajas de LOD0 solo estan si se dibuja con LOD0 (lod0_bounds):
+        // con otro LOD no se calculan y quien las pida usa world_box.
         bool per_submesh = false;
+        bool lod0_bounds = false;
         std::uint32_t first_bounds = 0;
-        // La union de esas cajas (y las del LOD): si la luz no la toca, ninguna
-        // submalla (una prueba en vez de una por submalla).
+        // La union de esas cajas (y las del LOD; con otro LOD, tambien la del
+        // modelo entero, asi que siempre cubre LOD0): si la luz no la toca,
+        // ninguna submalla (una prueba en vez de una por submalla).
         core::Aabb world_box{};
         // Indice del actor en scene.actors() (para el contorno de seleccion).
         std::uint32_t scene_actor = 0;
+        // Identidad estable (scene::Actor::id; sin ella, kIndexIdentity | su
+        // indice): los vectores de movimiento de los huesos buscan con ella
+        // sus matrices del frame anterior (BoneRange::id).
+        std::uint64_t id = 0;
         bool cast_shadows = true;
         bool shadows_only = false;
         // Matrices en el buffer de huesos (huesos + la instancia, si hay).
@@ -1564,6 +1658,9 @@ private:
         // LOD elegido este frame (0 = la malla original) y, si no es 0, las
         // cajas en el mundo de sus submallas en lod_bounds_.
         std::uint32_t lod = 0;
+        // Animados: el LOD de sus sombras del sol (con el error de siempre;
+        // el de la camara es mas estricto, kAnimatedLodPixels).
+        std::uint32_t shadow_lod = 0;
         std::uint32_t first_lod_bounds = 0;
         // Escala mayor del objeto (el error de los LODs va en unidades del
         // modelo).
@@ -1581,13 +1678,28 @@ private:
         bool closed = false;  // malla cerrada: el task shader descarta por cono
     };
     std::vector<DrawBatch> draw_batches_;
+    // Caja en el mundo de la submalla `i` del LOD que dibuja el actor (nullptr:
+    // sin caja propia, vale world_box) y la de la submalla `i` de LOD0 (si no
+    // se calcularon, world_box).
+    const core::Aabb* submeshBox(const ActorDraw& draw, std::uint32_t i) const {
+        if (!draw.per_submesh) return nullptr;
+        if (draw.lod > 0) return &lod_bounds_[draw.first_lod_bounds + i];
+        return draw.lod0_bounds ? &submesh_bounds_[draw.first_bounds + i] : nullptr;
+    }
+    const core::Aabb& lod0Box(const ActorDraw& draw, std::uint32_t i) const {
+        return draw.lod0_bounds ? submesh_bounds_[draw.first_bounds + i] : draw.world_box;
+    }
     // Set 3 del G-buffer con mesh shaders (comandos y contadores de cull.comp):
     // [frame * 2 + fase], se reescribe si el culling cambia de buffers.
     vk::raii::DescriptorPool mesh_draw_pool_{nullptr};
     std::vector<vk::raii::DescriptorSet> mesh_draw_sets_;
     std::vector<std::array<vk::Buffer, 2>> mesh_draw_buffers_;
     bool meshGeometryAllowed() const;
-    std::unordered_map<std::uint64_t, std::uint32_t> batch_lookup_;
+    // Lote de cada (modelo, grupo) este frame, sin tabla hash (antes, una
+    // busqueda por cluster): batch_first_[modelo] es el primer hueco del
+    // modelo en batch_of_group_ (UINT32_MAX = aun ninguno este frame).
+    std::vector<std::uint32_t> batch_first_;
+    std::vector<std::uint32_t> batch_of_group_;
 public:
     // Llamadas de dibujo de los escenarios (lotes) y clusteres que agrupan.
     std::uint32_t batchCount() const { return static_cast<std::uint32_t>(draw_batches_.size()); }
@@ -1603,27 +1715,96 @@ private:
     // actor el frame anterior, y las esferas (antes y despues) de lo que se
     // movio. Una cascada guardada que contiene algo que se movio se redibuja
     // ya: si no, el objeto se sombreaba a si mismo con su sombra vieja.
+    // Por IDENTIDAD (scene::Actor::id; sin ella, la posicion en la lista), no
+    // por indice: un actor que entra o sale (el streaming de residencia lo
+    // hace sin parar) solo marca su propia esfera. Antes desplazaba a todos
+    // los de detras y se redibujaban las 4 cascadas y todas las luces locales.
+    // Tambien guarda sus cajas del frame: si no se movio (mismo modelo y
+    // misma matriz) se copian en vez de transformarlas otra vez (escenarios
+    // estaticos: buffer persistente de B4 en la CPU).
     struct ActorMotion {
+        std::uint64_t id = 0;
         core::Mat4 transform = core::Mat4::identity();
+        core::Mat4 to_world = core::Mat4::identity();  // transform x hueso (rigidos)
         core::Vec3 center{};
         float radius = 0.0f;
         bool cast_shadows = true;
+        bool animated = false;     // con esqueleto (no va en la cache de las cascadas)
+        bool per_submesh = false;
+        bool lod0_bounds = false;
         std::uint32_t lod = 0;
         std::uint32_t model = 0;  // otro modelo en el mismo sitio tambien cambia la sombra
+        std::uint32_t model_revision = 0;
+        std::uint32_t first_bounds = 0;      // en previous_submesh_bounds_ (frame anterior)
+        std::uint32_t first_lod_bounds = 0;  // en previous_lod_bounds_
+        float max_scale = 1.0f;
+        core::Aabb world_box{};  // ActorDraw::world_box (cubre LOD0)
     };
-    std::vector<ActorMotion> previous_actor_motion_;
+    // Identidad de un actor sin id: su indice con el bit alto (no choca con
+    // los id de las entidades, que caben en 32 bits).
+    static constexpr std::uint64_t kIndexIdentity = 1ull << 63;
+    std::vector<ActorMotion> previous_actor_motion_;  // los del frame anterior, en su orden
+    std::vector<ActorMotion> actor_motion_;           // los de este frame
+    std::vector<std::uint8_t> previous_motion_matched_;
+    // id -> indice en previous_actor_motion_: solo se construye si el orden
+    // cambio (lo normal es encontrarlo en el siguiente hueco).
+    std::unordered_map<std::uint64_t, std::uint32_t> previous_motion_lookup_;
+    bool previous_motion_lookup_ready_ = false;
+    std::vector<core::Aabb> previous_submesh_bounds_;
+    std::vector<core::Aabb> previous_lod_bounds_;
+    // Las vistas secundarias (segunda vista del editor, Render Textures) no
+    // tocan el registro: sus cajas de la vista principal se guardan aparte
+    // mientras tanto.
+    bool actor_motion_view_ = true;  // esta llamada a updateActors es de la vista principal
+    bool actor_boxes_stashed_ = false;
+    std::vector<core::Aabb> stashed_submesh_bounds_;
+    std::vector<core::Aabb> stashed_lod_bounds_;
+    // Revision de cada modelo en la GPU (sube al reemplazarlo o sacarlo): las
+    // cajas guardadas de otra version no valen.
+    std::vector<std::uint32_t> model_revision_;
+    std::uint32_t model_revision_counter_ = 0;
+    std::uint32_t modelRevision(std::uint32_t index) const {
+        return index < model_revision_.size() ? model_revision_[index] : 0u;
+    }
+    void bumpModelRevision(std::uint32_t index) {
+        if (model_revision_.size() <= index) model_revision_.resize(index + 1, 0u);
+        model_revision_[index] = ++model_revision_counter_;
+    }
     std::vector<core::Aabb> lod_bounds_;
     // Estadisticas de LOD del ultimo frame: triangulos de los escenarios con
     // el LOD elegido (sin culling) y cuantos actores usan un LOD > 0.
     std::uint64_t lod_triangles_ = 0;
     std::uint32_t lod_actors_ = 0;
     // Nivel para un actor rigido: el mas simple cuyo error proyectado no pasa
-    // de post_.lod_pixel_error pixeles.
+    // de post_.lod_pixel_error pixeles (pixel_limit > 0: ese error en su lugar).
     std::uint32_t chooseLod(const SkinnedModel& model, const core::Mat4& to_world, const core::Vec3& center,
-                            float radius, const core::Vec3& camera_position, float pixels_per_unit) const;
+                            float radius, const core::Vec3& camera_position, float pixels_per_unit,
+                            float pixel_limit = 0.0f) const;
+    // Si la sombra de un animado puede caer en el tramo de profundidad que
+    // cubre la cascada `cascade` (ver shadow_view_*).
+    bool animatedShadowInCascade(const ActorDraw& draw, std::uint32_t cascade) const;
     std::vector<core::Vec4> moved_spheres_;  // xyz = centro, w = radio
     std::vector<bool> moved_sphere_animated_;  // la de moved_spheres_ es de un actor con esqueleto
+    // Entro o salio algun actor que proyecta sombra (sus esferas ya estan en
+    // moved_spheres_): la oclusion del cielo se rehace.
     bool actor_set_changed_ = true;
+    // Cambio casi todo (otra escena, origen movido): las cascadas y las luces
+    // locales se redibujan enteras, como antes con cualquier cambio.
+    bool actor_set_reset_ = true;
+    // Rejilla (XZ) de los actores para las luces locales: cada luz mira solo
+    // las celdas que alcanza en vez de todos los actores (luces x N). Se
+    // construye al pedirla, una vez por updateActors.
+    static constexpr float kActorGridCell = 8.0f;
+    static constexpr std::uint32_t kActorGridBuckets = 4096;  // potencia de 2
+    bool actor_grid_ready_ = false;
+    float actor_grid_margin_ = 0.0f;                // radio mayor de lo que esta en la rejilla
+    std::vector<std::uint32_t> actor_grid_start_;   // kActorGridBuckets + 1
+    std::vector<std::uint32_t> actor_grid_items_;   // indices en actor_draws_
+    std::vector<std::uint32_t> actor_grid_large_;   // los que no caben en una celda (se miran siempre)
+    std::vector<std::uint32_t> actor_grid_query_;   // resultado de la ultima consulta
+    void buildActorGrid();
+    // Indices (ordenados) de actor_draws_ cuya esfera puede tocar la de la luz.
+    const std::vector<std::uint32_t>& actorsNear(const core::Vec3& position, float range);
     std::vector<core::Aabb> submesh_bounds_;
     // Culling en GPU de los clusteres de escenario.
     GpuCulling gpu_culling_{};
@@ -1643,6 +1824,10 @@ private:
     // Imagenes de las vistas del editor (copias del resultado de cada frame).
     std::array<VulkanImage, kViewSlots> view_images_{};
     std::uint32_t view_slot_ = 0;
+    // Alguien (el visor del editor, por ImGui) muestra las imagenes de vista.
+    // Si nadie las pidio (el juego exportado), la copia de cada frame sobra.
+    // (El espejo de VR la sigue haciendo siempre.)
+    mutable bool view_images_used_ = false;
     void recordViewCopy(const vk::raii::CommandBuffer& cmd);
     void recordRenderTextureCopy(const vk::raii::CommandBuffer& cmd);
     SceneDrawMode scene_draw_mode_ = SceneDrawMode::Lit;
@@ -1772,6 +1957,10 @@ private:
     std::array<int, kMaxFramesInFlight> slot_xr_eye_{-1, -1};
     float xr_right_eye_gpu_ms_ = 0.0f;
     bool xr_budget_applied_ = false;
+    float frame_rate_cap_ = 0.0f;  // setFrameRateCap
+    float desktopTargetFps() const {
+        return frame_rate_cap_ > 0.0f ? std::min(user_graphics_.target_fps, frame_rate_cap_) : user_graphics_.target_fps;
+    }
     // Con el casco en marcha la escena se dibuja al tamano de su ojo (no al de
     // la ventana): applyPendingResize lo cambia.
     vk::Extent2D xr_output_extent_{0, 0};
@@ -1830,6 +2019,10 @@ private:
     std::vector<std::uint32_t> shadow_scratch_;
     std::vector<GpuCluster> gpu_clusters_;
     std::uint32_t gpu_visible_submeshes_ = 0;
+    // Vidrio: la piramide Hi-Z de este frame (construida con esta camara)
+    // esta lista para probarlo, y su lista de cajas (reutilizada).
+    bool glass_occlusion_ready_ = false;
+    std::vector<GpuGlassItem> glass_items_;
     std::uint32_t occluded_submeshes_ = 0;
     core::Mat4 camera_view_projection_ = core::Mat4::identity();
     core::Mat4 camera_projection_ = core::Mat4::identity();  // sin jitter (profundidad lineal)
@@ -1963,7 +2156,21 @@ private:
     // redibujan este frame.
     std::array<scene::ShadowCascade, scene::kShadowCascadeCount> rendered_cascades_{};
     std::array<core::Vec3, scene::kShadowCascadeCount> rendered_cascade_camera_{};
+    // Hacia donde miraba la camara al dibujarla: los proyectores se filtran
+    // con el trozo de vista de entonces (shadow_slice_frustums_), asi que si
+    // gira mas que el margen del trozo la cascada se redibuja.
+    std::array<core::Vec3, scene::kShadowCascadeCount> rendered_cascade_forward_{};
+    // TerrainPass::shadowSignature() con que se dibujo cada cascada: si el
+    // terreno de sombra cambia (tesela que entra o sale, se esculpe), se rehace.
+    std::array<std::uint64_t, scene::kShadowCascadeCount> terrain_shadow_signature_{};
+    // La firma tras el prepare() de la vista principal (no la de una sonda:
+    // prepareView la cambia hasta el siguiente prepare). Es la que se compara.
+    std::uint64_t terrain_main_signature_ = 0;
     std::array<bool, scene::kShadowCascadeCount> cascade_due_{};
+    // Algo pequeno para sus texeles cambio dentro de la cascada (se movio,
+    // entro o salio) y no la forzo: en su siguiente turno se redibuja aunque
+    // el encuadre no haya cambiado.
+    std::array<bool, scene::kShadowCascadeCount> cascade_stale_{};
     // Con la cache de lo estatico (ShadowMap::hasStaticCache): la cascada
     // tiene actores animados este frame / los tenia el anterior (hay que
     // borrar su silueta). cascade_due_ es entonces "redibujar lo estatico".
@@ -2056,6 +2263,28 @@ private:
     // lee) y su imagen ya es textura (layout valido para el descriptor).
     bool light_shafts_drawn_ = false;
     bool light_shafts_ready_ = false;
+    // Cascada que se esta dibujando (-1: luz local o mapa de lluvia, sin
+    // filtrar) y lo necesario para saber en que cascadas puede caer la sombra
+    // de un animado: la camara de las sombras (profundidad de vista) y lo
+    // largas que son (altura del sol). Se fijan en updateUniforms.
+    int shadow_cascade_drawing_ = -1;
+    core::Vec3 shadow_view_position_{};
+    core::Vec3 shadow_view_forward_{0.0f, 0.0f, -1.0f};
+    float shadow_length_per_meter_ = 1.0f;
+    // Trozo de la vista que cubre cada cascada (algo mas ancho que la camara,
+    // para aguantar un giro hasta que la cascada se redibuje; si gira mas, se
+    // fuerza: rendered_cascade_forward_) y hacia donde va la luz: un
+    // proyector cuya sombra barrida (hasta el fondo de la caja de la cascada,
+    // shadow_slice_reach_) no lo toca no hace falta.
+    std::array<core::Frustum, scene::kShadowCascadeCount> shadow_slice_frustums_{};
+    std::array<float, scene::kShadowCascadeCount> shadow_slice_reach_{};
+    // Lo que la camara puede desplazarse antes de que la cascada se redibuje
+    // (10 % de su alcance): engorda la prueba para que el trozo de vista de
+    // cuando se dibujo siga cubriendo el de ahora.
+    std::array<float, scene::kShadowCascadeCount> shadow_slice_pad_{};
+    bool shadow_slices_valid_ = false;
+    core::Vec3 shadow_light_travel_{0.0f, -1.0f, 0.0f};
+    bool bloom_ready_ = false;  // nivel 0 del bloom ya como textura (para cuando no se dibuja)
     GpuCloudPush cloud_push_{};
     // Tiempo que llevan moviendose las nubes con el viento.
     float cloud_time_ = 0.0f;
@@ -2124,6 +2353,13 @@ private:
     // si no aplica (VR y movil tienen sus propios topes).
     float floor_base_scale_ = 1.0f;
     bool floor_exempt_ = false;
+    // Sesgo de mips del escalado (desiredTextureFiltering): con la escala y
+    // el escalador SIN el presupuesto adaptativo (preset, VR y tope de VRAM).
+    // Asi un paso del presupuesto no cambia el sampler: antes cada paso
+    // paraba la GPU y reescribia los sets de todos los modelos (un tiron, muy
+    // visible en VR).
+    float mip_bias_scale_ = 1.0f;
+    Upscaler mip_bias_upscaler_ = Upscaler::Off;
     void updateRenderScaleFloor();
     // Nivel de salida de la palanca RenderScale segun el preset (si ya escala,
     // 0), el movil (0) y la VR (el del perfil).
@@ -2150,9 +2386,14 @@ private:
         std::uint32_t model = 0;
         std::uint32_t start = 0;
         std::uint32_t count = 0;
+        std::uint64_t id = 0;  // ActorDraw::id: el mismo actor el frame anterior, por identidad
     };
     std::vector<core::Mat4> last_world_bones_;
     std::vector<BoneRange> last_bone_ranges_;
+    // id -> indice en last_bone_ranges_: solo se construye si el orden cambio
+    // (lo normal es encontrarlo en el siguiente hueco, como
+    // previous_motion_lookup_).
+    std::unordered_map<std::uint64_t, std::uint32_t> last_bone_lookup_;
     // Los de este frame (se intercambian con los de arriba): sin reservar
     // y liberar cientos de KB en cada frame.
     std::vector<core::Mat4> world_bones_now_;
@@ -2165,6 +2406,13 @@ private:
     std::uint32_t motion_offset_ = 0;
     // La imagen que lee el post-proceso: la escalada o la de la escena.
     const VulkanImage& postSource() const { return upscaling_ ? upscaled_color_ : scene_color_; }
+    // FSR 1 en la vista principal sin efectos que necesiten la imagen HDR a la
+    // resolucion de pantalla (bloom, rayos de luz, profundidad de campo,
+    // desenfoque de movimiento, auto-exposicion): la cadena corta.
+    bool earlyPostChain() const;
+    void recordEarlyPostChain(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    void recordCompositeTo(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index, const VulkanImage& target,
+                           const vk::raii::DescriptorSet& set);
     void computeRenderExtent();
     void recordUpscalePass(const vk::raii::CommandBuffer& cmd);
     void recordOutputDepth(const vk::raii::CommandBuffer& cmd);
@@ -2172,6 +2420,18 @@ private:
     bool sun_shadows_ = true;
     float sun_shadow_strength_ = 1.0f;
     bool sunShadows() const { return shadows_enabled_ && sun_shadows_; }
+    // Las cascadas del sol tienen quien las lea. Con el sol horneado entero
+    // la iluminacion de lo opaco no las mira (su luz y su sombra van en la GI
+    // horneada), pero el agua, el vidrio, la luz volumetrica y los fluidos si:
+    // sin ellos en la escena no se dibujan (ni las sombras del sol por rayos).
+    bool sunCascadesNeeded(const core::Vec3& sun_direction) const;
+    bool sceneHasGlass() const;
+    // Lo que decidio la programacion de cascadas de este frame (lo usa
+    // recordShadowPass; en VR, el del primer ojo).
+    bool sun_cascades_needed_ = true;
+    // Ajustes por gama del escritorio (F2-8: alcance de sombras y sesgo de
+    // LOD). El movil y la VR tienen su propio perfil: sin ellos.
+    bool tierBiasActive() const { return mobile_level_ < 0 && !xr_.running(); }
     bool cascade_debug_ = false;
     bool clouds_enabled_ = true;
     bool clouds_allowed_ = true;  // tope del renderizador (setCloudsAllowed)

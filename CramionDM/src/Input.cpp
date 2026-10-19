@@ -25,6 +25,14 @@ void Input::reset() {
     xrAxes_.fill(0.0f);
 }
 
+void Input::suppressMouseButton(MouseButton button) {
+    const auto idx = static_cast<size_t>(button);
+    if (idx >= kButtonCount) return;
+    buttonDown_[idx] = false;
+    buttonPressed_[idx] = false;
+    buttonReleased_[idx] = false;
+}
+
 void Input::onEvent(const Event& event) {
     switch (event.type) {
         case EventType::KeyPressed: {

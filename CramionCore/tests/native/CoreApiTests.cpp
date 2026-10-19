@@ -252,6 +252,11 @@ void testPhysicsAndAudio() {
     b.add<physics::BoxCollider>();
     b.setWorldPosition(Vec3{-30.0f, 0.0f, 0.0f});
     t.world.create("Oyente").add<audio::AudioListener>();
+    // P6: un techo en la capa 8 ("Techo") sobre una esquina del suelo.
+    ecs::Entity roof = t.world.create("Techo");
+    roof.add<physics::BoxCollider>().size = Vec3{2.0f, 1.0f, 2.0f};
+    roof.setWorldPosition(Vec3{5.0f, 3.0f, 5.0f});
+    roof.get<ecs::EntityInfo>().layer = 8;
     t.scripts.start(t.world);
     check(t.call("Physics.raycast", {Value(Vec3{0, 5, 0}), Value(Vec3{0, -1, 0})}).isNil(), "sin fisica: raycast nil");
     physics::PhysicsSystem physics;
@@ -269,6 +274,38 @@ void testPhysicsAndAudio() {
     check(physics.collisionIgnored(a, b), "Physics.ignoreCollision");
     t.call("Physics.ignoreCollision", {ApiFixture::entity(a), ApiFixture::entity(b), Value(false)});
     check(!physics.collisionIgnored(a, b), "Physics.ignoreCollision(a, b, false) lo deshace");
+
+    // P6: mascara de capas, sphereCast y overlapSphere.
+    {
+        physics::PhysicsSettings settings = physics.settings();
+        settings.layer_names[8] = "Techo";
+        physics.setSettings(settings);
+        const Value down{Vec3{0, -1, 0}};
+        const Value top = t.call("Physics.raycast", {Value(Vec3{5, 6, 5}), down, Value(100)});
+        check(top.isObject() && top["entity"].asEntity() == roof.handle() && top["layer"].asNumber() == 8.0,
+              "Physics.raycast sin mascara: el techo (layer 8)");
+        const double no_roof = static_cast<double>(physics::kDefaultRaycastLayers & ~physics::layerBit(8));
+        const Value under = t.call("Physics.raycast", {Value(Vec3{5, 6, 5}), down, Value(100), Value(no_roof)});
+        check(under.isObject() && under["entity"].asEntity() == ground.handle(), "Physics.raycast con mascara: atraviesa el techo");
+        const Value only_roof = t.call("Physics.layerMask", {Value("Techo")});
+        check(only_roof.asNumber() == static_cast<double>(physics::layerBit(8)), "Physics.layerMask(\"Techo\")");
+        check(t.call("Physics.raycast", {Value(Vec3{0, 6, 0}), down, Value(100), only_roof}).isNil(),
+              "solo la capa del techo: el suelo no cuenta");
+        const Value ignored = t.call("Physics.raycast", {Value(Vec3{5, 6, 5}), down, Value(100), Value(), ApiFixture::entity(roof)});
+        check(ignored.isObject() && ignored["entity"].asEntity() == ground.handle(), "Physics.raycast ignorando una entidad");
+        // Una esfera de 0,5 m que baja al lado del techo (a 1,3 m de su centro en X) lo roza.
+        const Value sphere = t.call("Physics.sphereCast", {Value(Vec3{6.3f, 6, 5}), Value(0.5), down, Value(100)});
+        check(sphere.isObject() && sphere["entity"].asEntity() == roof.handle(), "Physics.sphereCast: la esfera roza el techo");
+        const Value thin = t.call("Physics.raycast", {Value(Vec3{6.3f, 6, 5}), down, Value(100)});
+        check(thin.isObject() && thin["entity"].asEntity() == ground.handle(), "(el rayo fino por ahi no lo toca)");
+        const Value masked = t.call("Physics.sphereCast", {Value(Vec3{6.3f, 6, 5}), Value(0.5), down, Value(100),
+                                                           Value(Value::Array{Value("Default")})});
+        check(masked.isObject() && masked["entity"].asEntity() == ground.handle(), "Physics.sphereCast con lista de capas");
+        const Value near_roof = t.call("Physics.overlapSphere", {Value(Vec3{5, 3, 5}), Value(0.5)});
+        check(near_roof.isArray() && near_roof.size() == 1 && near_roof[0].asEntity() == roof.handle(), "Physics.overlapSphere");
+        check(t.call("Physics.overlapSphere", {Value(Vec3{5, 3, 5}), Value(0.5), Value("Default")}).size() == 0,
+              "Physics.overlapSphere con mascara");
+    }
     t.scripts.setPhysics(nullptr);
     physics.stop();
 

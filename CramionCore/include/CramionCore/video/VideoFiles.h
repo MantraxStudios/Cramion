@@ -26,7 +26,8 @@ namespace cramion::video {
 bool isVideoUrl(const std::string& text);
 
 // La URL se puede abrir: https, http solo a este PC (la politica de
-// net::checkUrl, Http.h) o el decodificador de pruebas cramion://test.
+// net::checkUrl, Http.h), rtsp:// y rtmp:// si hay backend FFmpeg
+// (streamingProtocolsAvailable) o el decodificador de pruebas cramion://test.
 // false + motivo legible si no.
 bool checkVideoUrl(const std::string& url, std::string* error);
 

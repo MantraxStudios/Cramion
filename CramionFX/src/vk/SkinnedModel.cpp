@@ -4,6 +4,7 @@
 #include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/SkinnedPass.h"
 #include "CramionFX/vk/VulkanDevice.h"
+#include "CramionFX/vk/VulkanDeviceUpload.h"
 
 #include <meshoptimizer.h>
 
@@ -95,7 +96,7 @@ std::vector<std::uint8_t> halveRgba(const std::uint8_t* src, std::uint32_t w, st
 
 // Crea una textura RGBA8 sin sus `lod` mips mas grandes (no baja de 32 px).
 void createRgbaLod(VulkanTexture& out, const VulkanDevice& device, std::uint32_t w, std::uint32_t h,
-                   const std::uint8_t* pixels, int lod) {
+                   const std::uint8_t* pixels, int lod, UploadBatch& batch) {
     std::vector<std::uint8_t> current;
     const std::uint8_t* src = pixels;
     for (int i = 0; i < lod && std::min(w, h) >= 64; ++i) {
@@ -105,7 +106,7 @@ void createRgbaLod(VulkanTexture& out, const VulkanDevice& device, std::uint32_t
         w = nw;
         h = nh;
     }
-    out.create(device, w, h, src);
+    out.create(device, w, h, src, batch);
 }
 
 // Si las texturas perezosas (que no guardan pixeles) tienen alfa recortado:
@@ -119,26 +120,47 @@ std::uint64_t lazyTextureKey(const asset::TextureData& texture, const void* devi
     return mix64(key, reinterpret_cast<std::uintptr_t>(device));
 }
 
-std::shared_ptr<VulkanTexture> sharedTexture(std::uint64_t key, const std::function<void(VulkanTexture&)>& make) {
+// Cada entrada recuerda tambien el lote que la sube: quien la reutiliza no
+// puede dibujarla hasta que ese lote termine (UploadBatch::dependOn). Si la
+// fence ya no existe, ese lote termino hace tiempo.
+template <typename T>
+struct SharedEntry {
+    std::weak_ptr<T> resource;
+    std::weak_ptr<UploadFence> fence;
+};
+
+std::shared_ptr<VulkanTexture> sharedTexture(std::uint64_t key, UploadBatch& batch,
+                                             const std::function<void(VulkanTexture&)>& make) {
     static std::mutex mutex;
-    static std::unordered_map<std::uint64_t, std::weak_ptr<VulkanTexture>> cache;
+    static std::unordered_map<std::uint64_t, SharedEntry<VulkanTexture>> cache;
     {
         const std::lock_guard<std::mutex> lock(mutex);
         const auto it = cache.find(key);
         if (it != cache.end()) {
-            if (std::shared_ptr<VulkanTexture> alive = it->second.lock()) return alive;
+            if (std::shared_ptr<VulkanTexture> alive = it->second.resource.lock()) {
+                batch.dependOn(it->second.fence.lock());
+                return alive;
+            }
         }
     }
     auto texture = std::make_shared<VulkanTexture>();
     make(*texture);
+    // La GPU copia en ella hasta que el lote termina, aunque el modelo se tire antes.
+    batch.keepAlive(texture);
     const std::lock_guard<std::mutex> lock(mutex);
     // De vez en cuando, fuera las de modelos que ya no existen.
     if (cache.size() > 4096) {
-        for (auto it = cache.begin(); it != cache.end();) it = it->second.expired() ? cache.erase(it) : std::next(it);
+        for (auto it = cache.begin(); it != cache.end();) {
+            it = it->second.resource.expired() ? cache.erase(it) : std::next(it);
+        }
     }
-    std::weak_ptr<VulkanTexture>& slot = cache[key];
-    if (std::shared_ptr<VulkanTexture> alive = slot.lock()) return alive;  // otro hilo la subio a la vez
-    slot = texture;
+    SharedEntry<VulkanTexture>& slot = cache[key];
+    if (std::shared_ptr<VulkanTexture> alive = slot.resource.lock()) {  // otro hilo la subio a la vez
+        batch.dependOn(slot.fence.lock());
+        return alive;
+    }
+    slot.resource = texture;
+    slot.fence = batch.fence();
     return texture;
 }
 
@@ -146,24 +168,34 @@ std::shared_ptr<VulkanTexture> sharedTexture(std::uint64_t key, const std::funct
 // Igual que las texturas: misma clave de contenido = mismo buffer de la GPU.
 // Las variantes de material de RenderSync copian la malla del original tal
 // cual (salvo tiling en las UV), asi que comparten vertices e indices.
-std::shared_ptr<VulkanBuffer> sharedBuffer(std::uint64_t key, const std::function<VulkanBuffer()>& make) {
+std::shared_ptr<VulkanBuffer> sharedBuffer(std::uint64_t key, UploadBatch& batch,
+                                           const std::function<std::shared_ptr<VulkanBuffer>()>& make) {
     static std::mutex mutex;
-    static std::unordered_map<std::uint64_t, std::weak_ptr<VulkanBuffer>> cache;
+    static std::unordered_map<std::uint64_t, SharedEntry<VulkanBuffer>> cache;
     {
         const std::lock_guard<std::mutex> lock(mutex);
         const auto it = cache.find(key);
         if (it != cache.end()) {
-            if (std::shared_ptr<VulkanBuffer> alive = it->second.lock()) return alive;
+            if (std::shared_ptr<VulkanBuffer> alive = it->second.resource.lock()) {
+                batch.dependOn(it->second.fence.lock());
+                return alive;
+            }
         }
     }
-    auto buffer = std::make_shared<VulkanBuffer>(make());
+    std::shared_ptr<VulkanBuffer> buffer = make();  // (el lote ya lo mantiene vivo)
     const std::lock_guard<std::mutex> lock(mutex);
     if (cache.size() > 4096) {
-        for (auto it = cache.begin(); it != cache.end();) it = it->second.expired() ? cache.erase(it) : std::next(it);
+        for (auto it = cache.begin(); it != cache.end();) {
+            it = it->second.resource.expired() ? cache.erase(it) : std::next(it);
+        }
     }
-    std::weak_ptr<VulkanBuffer>& slot = cache[key];
-    if (std::shared_ptr<VulkanBuffer> alive = slot.lock()) return alive;  // otro hilo lo subio a la vez
-    slot = buffer;
+    SharedEntry<VulkanBuffer>& slot = cache[key];
+    if (std::shared_ptr<VulkanBuffer> alive = slot.resource.lock()) {  // otro hilo lo subio a la vez
+        batch.dependOn(slot.fence.lock());
+        return alive;
+    }
+    slot.resource = buffer;
+    slot.fence = batch.fence();
     return buffer;
 }
 
@@ -171,6 +203,24 @@ template <typename T>
 std::uint64_t vectorKey(const std::vector<T>& values, std::uint64_t seed) {
     return mix64(murmur64(reinterpret_cast<const std::uint8_t*>(values.data()), values.size() * sizeof(T), seed),
                  values.size());
+}
+
+// UV de lightmap empaquetadas como las lee skinned.vert (unorm16x2, u en los
+// 16 bits bajos); (-1, -1) = sin lightmap (0xFFFFFFFF). Igual que
+// lighting::packLightmapUv de CramionCore.
+std::vector<std::uint32_t> packLightmapUvs(const std::vector<core::Vec2>& uvs) {
+    std::vector<std::uint32_t> packed(uvs.size());
+    const auto q = [](float v) { return static_cast<std::uint32_t>(std::clamp(v, 0.0f, 1.0f) * 65535.0f + 0.5f); };
+    for (std::size_t i = 0; i < uvs.size(); ++i) {
+        const core::Vec2& uv = uvs[i];
+        if (uv.x < 0.0f || uv.y < 0.0f) {
+            packed[i] = 0xFFFFFFFFu;
+            continue;
+        }
+        const std::uint32_t value = q(uv.x) | (q(uv.y) << 16);
+        packed[i] = value == 0xFFFFFFFFu ? 0xFFFEFFFFu : value;
+    }
+    return packed;
 }
 
 // ¿Cada arista (con los vertices soldados por posicion) la comparten
@@ -311,34 +361,48 @@ std::uint32_t SkinnedModel::reliefFlags(std::uint32_t flags, const asset::Materi
 }
 
 void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& model,
-                          const SkinnedPass& pass, int texture_lod) {
+                          const SkinnedPass& pass, int texture_lod, bool wait_for_gpu) {
     destroy();
     texture_lod_ = std::clamp(texture_lod, 0, 4);
 
+    // Un lote para todo el modelo: antes cada buffer y cada textura esperaba
+    // a la GPU por separado (un modelo con 30 texturas, ~32 esperas).
+    const auto batch = std::make_shared<UploadBatch>(device);
+
     // (Tambien storage: los mesh shaders leen los vertices de los meshlets.)
     const std::uint64_t device_key = reinterpret_cast<std::uintptr_t>(&device);
-    vertices_ = sharedBuffer(mix64(vectorKey(model.vertices.get(), 0x7e47e4ULL), device_key), [&] {
+    vertices_ = sharedBuffer(mix64(vectorKey(model.vertices.get(), 0x7e47e4ULL), device_key), *batch, [&] {
         return VulkanBuffer::createDeviceLocal(
             device, model.vertices.data(), sizeof(asset::SkinnedVertex) * model.vertices.size(),
-            vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer);
+            vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer, *batch);
     });
     // Indices de LOD0 y detras los de los LODs (sus submallas se desplazan).
     const std::uint64_t index_key =
         mix64(mix64(vectorKey(model.indices.get(), 0x1d1ce5ULL), vectorKey(model.lod_indices.get(), 0x10d1ULL)), device_key);
-    indices_ = sharedBuffer(index_key, [&] {
+    indices_ = sharedBuffer(index_key, *batch, [&] {
         if (model.lod_indices.empty()) {
             return VulkanBuffer::createDeviceLocal(device, model.indices.data(),
                                                    sizeof(std::uint32_t) * model.indices.size(),
-                                                   vk::BufferUsageFlagBits::eIndexBuffer);
+                                                   vk::BufferUsageFlagBits::eIndexBuffer, *batch);
         }
         std::vector<std::uint32_t> all;
         all.reserve(model.indices.size() + model.lod_indices.size());
         all.insert(all.end(), model.indices.begin(), model.indices.end());
         all.insert(all.end(), model.lod_indices.begin(), model.lod_indices.end());
         return VulkanBuffer::createDeviceLocal(device, all.data(), sizeof(std::uint32_t) * all.size(),
-                                               vk::BufferUsageFlagBits::eIndexBuffer);
+                                               vk::BufferUsageFlagBits::eIndexBuffer, *batch);
     });
     index_count_ = static_cast<std::uint32_t>(model.indices.size());
+    // UV de lightmap (PLAN-LIGHTMAPS 1.6): una por vertice, compartidas como
+    // los vertices (las variantes de material las copian del original).
+    lightmap_uvs_.reset();
+    if (!model.lightmap_uvs.empty() && model.lightmap_uvs.size() == model.vertices.size()) {
+        lightmap_uvs_ = sharedBuffer(mix64(vectorKey(model.lightmap_uvs, 0x11e3a9ULL), device_key), *batch, [&] {
+            const std::vector<std::uint32_t> packed = packLightmapUvs(model.lightmap_uvs);
+            return VulkanBuffer::createDeviceLocal(device, packed.data(), sizeof(std::uint32_t) * packed.size(),
+                                                   vk::BufferUsageFlagBits::eStorageBuffer, *batch);
+        });
+    }
     submeshes_ = model.submeshes;
     lods_.clear();
     for (const asset::MeshLod& lod : model.lods) {
@@ -362,7 +426,7 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         const bool lazy = asset::isLazyTexture(stored);
         const std::uint64_t key = mix64(lazy ? lazyTextureKey(stored, &device) : textureKey(stored, &device),
                                         0x10D0000ull + static_cast<std::uint64_t>(lod));
-        textures_.push_back(sharedTexture(key, [&](VulkanTexture& out) {
+        textures_.push_back(sharedTexture(key, *batch, [&](VulkanTexture& out) {
             // Perezosa: se decodifica aqui (este hilo) y se tira al subirla.
             asset::TextureData decoded;
             if (lazy) {
@@ -378,14 +442,14 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
             }
             const asset::TextureData& texture = lazy ? decoded : stored;
             if (texture.format == asset::TextureFormat::Rgba8) {
-                createRgbaLod(out, device, texture.width, texture.height, texture.pixels.data(), lod);
+                createRgbaLod(out, device, texture.width, texture.height, texture.pixels.data(), lod, *batch);
             } else if (!device.textureCompressionBcSupported()) {
                 // GPU sin BC (casi todas las de movil): se descomprime aqui (el
                 // nivel 0; los mips los hace la GPU). Antes el modelo entero
                 // fallaba y el juego no arrancaba en esos moviles.
                 const std::vector<std::uint8_t> rgba = asset::decodeBlockCompressed(texture);
                 if (rgba.empty()) throw std::runtime_error("Textura comprimida con datos incompletos: " + texture.name);
-                createRgbaLod(out, device, texture.width, texture.height, rgba.data(), lod);
+                createRgbaLod(out, device, texture.width, texture.height, rgba.data(), lod, *batch);
             } else {
                 // Comprimida con mips: se salta los `lod` mas grandes (si
                 // tiene; sin bajar de 16 px).
@@ -407,7 +471,7 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
                     mips = texture.mip_levels;
                 }
                 out.createCompressed(device, w, h, blockFormat(texture.format), block, mips,
-                                     texture.pixels.data() + offset, texture.pixels.size() - offset);
+                                     texture.pixels.data() + offset, texture.pixels.size() - offset, *batch);
             }
         }));
         if (lazy) {
@@ -420,7 +484,8 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         const std::array<std::uint8_t, 4> texel = {r, g, b, 255};
         const std::uint64_t key = mix64(0x7e7e1u ^ (static_cast<std::uint64_t>(r) << 16 | static_cast<std::uint64_t>(g) << 8 | b),
                                         reinterpret_cast<std::uintptr_t>(&device));
-        textures_.push_back(sharedTexture(key, [&](VulkanTexture& out) { out.create(device, 1, 1, texel.data()); }));
+        textures_.push_back(
+            sharedTexture(key, *batch, [&](VulkanTexture& out) { out.create(device, 1, 1, texel.data(), *batch); }));
         return textures_.size() - 1;
     };
     const std::size_t white_index = add_texel(255, 255, 255);
@@ -434,12 +499,17 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
     // --- Un descriptor set por material ---
     const auto material_count = static_cast<std::uint32_t>(model.materials.size());
 
-    vk::DescriptorPoolSize pool_size{vk::DescriptorType::eCombinedImageSampler,
-                                     material_count * SkinnedPass::kMaterialBindingCount};
+    // (+ por material: un uniform buffer, el tiling de las UV, binding 9, y
+    // un storage buffer, las UV de lightmap, binding 10.)
+    const std::array<vk::DescriptorPoolSize, 3> pool_sizes = {
+        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
+                               material_count * SkinnedPass::kMaterialBindingCount},
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, std::max(material_count, 1u)},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, std::max(material_count, 1u)}};
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     pool_info.maxSets = material_count;
-    pool_info.setPoolSizes(pool_size);
+    pool_info.setPoolSizes(pool_sizes);
     pool_ = vk::raii::DescriptorPool(device.handle(), pool_info);
 
     const std::vector<vk::DescriptorSetLayout> layouts(material_count, *pass.materialSetLayout());
@@ -451,6 +521,31 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
     const auto pick = [](std::int32_t texture, std::size_t fallback) {
         return (texture >= 0) ? static_cast<std::size_t>(texture) : fallback;
     };
+
+    // --- Tiling de las UV (binding kMaterialUvBinding de cada set) ---
+    // Un vec4 por material (xy repeticion, zw desplazamiento), cada uno en su
+    // offset alineado. Compartido por contenido como la geometria: los modelos
+    // sin tiling (casi todos) usan el mismo buffer de identidad, y las
+    // variantes con el mismo tiling, el mismo.
+    const auto uv_transform = [](const asset::MaterialData& material) {
+        return core::Vec4{material.uv_scale.x, material.uv_scale.y, material.uv_offset.x, material.uv_offset.y};
+    };
+    const vk::DeviceSize uv_stride =
+        std::max<vk::DeviceSize>(device.limits().minUniformBufferOffsetAlignment, sizeof(core::Vec4));
+    bool tiled = false;
+    for (const asset::MaterialData& material : model.materials) {
+        tiled = tiled || material.uv_scale.x != 1.0f || material.uv_scale.y != 1.0f || material.uv_offset.x != 0.0f ||
+                material.uv_offset.y != 0.0f;
+    }
+    std::vector<std::uint8_t> uv_data(static_cast<std::size_t>(uv_stride) * (tiled ? material_count : 1u), 0);
+    for (std::uint32_t m = 0; m < (tiled ? material_count : 1u); ++m) {
+        const core::Vec4 value = tiled ? uv_transform(model.materials[m]) : core::Vec4{1.0f, 1.0f, 0.0f, 0.0f};
+        std::memcpy(uv_data.data() + static_cast<std::size_t>(uv_stride) * m, &value, sizeof(value));
+    }
+    uv_buffer_ = sharedBuffer(mix64(vectorKey(uv_data, 0x71e5ULL), device_key), *batch, [&] {
+        return VulkanBuffer::createDeviceLocal(device, uv_data.data(), uv_data.size(),
+                                               vk::BufferUsageFlagBits::eUniformBuffer, *batch);
+    });
 
     materials_.reserve(material_count);
     material_views_.assign(material_count, std::vector<vk::ImageView>(SkinnedPass::kMaterialBindingCount));
@@ -467,6 +562,7 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
                                ? GpuSkinnedPush::kFlagSpecularMap
                                : 0u;
         gpu.shader_flags = reliefFlags(gpu.shader_flags, material, parallax, pass.tessellationEnabled());
+        if (lightmap_uvs_) gpu.shader_flags |= GpuSkinnedPush::kFlagLightmap;
         gpu.shading = shadingBits(material);
         // El signo de la escala del normal map dice su convenio (ver
         // skinned.frag): positivo = OpenGL, negativo = DirectX.
@@ -477,6 +573,7 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         gpu.transparent = material.transparent;
         gpu.surface_shader = material.surface_shader;
         gpu.surface_params = material.surface_params;
+        gpu.uv_transform = uv_transform(material);
 
         // Sin textura emisiva, el factor multiplica al blanco: un material
         // emisivo liso (glTF sin mapa) sigue brillando.
@@ -505,6 +602,20 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
                                    ? lazy_alpha[albedo]
                                    : hasAlpha(model.textures[albedo]);
         }
+        // Un factor de alfa bajo recorta aunque la textura sea opaca (como en
+        // skinned.frag): la sombra y los rayos tienen que recortarlo igual.
+        gpu.texture_alpha = gpu.alpha_masked;
+        gpu.alpha_masked = gpu.texture_alpha || gpu.base_color.w < 0.5f;
+        // BC1 que no viene de la cache de texturas (un DDS del artista): puede
+        // llevar el alfa de 1 bit, asi que se trata como recortada.
+        bool unknown_alpha = false;
+        if (material.albedo_texture >= 0 && static_cast<std::size_t>(material.albedo_texture) < model.textures.size()) {
+            const asset::TextureData& albedo = model.textures[static_cast<std::size_t>(material.albedo_texture)];
+            unknown_alpha = !asset::isLazyTexture(albedo) && albedo.alpha < 0 && albedo.format == asset::TextureFormat::Bc1;
+        }
+        // Con texture_alpha (no alpha_masked): el factor base_color.w cambia en
+        // vivo y bindMaterialPipeline lo mira aparte.
+        gpu.opaque_albedo = !gpu.texture_alpha && !unknown_alpha && material.albedo_render_texture < 0;
         materials_.push_back(gpu);
         if (material.albedo_render_texture >= 0) render_texture_refs_.push_back({m, 0, material.albedo_render_texture});
         if (material.emissive_render_texture >= 0) render_texture_refs_.push_back({m, 4, material.emissive_render_texture});
@@ -517,16 +628,36 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
             material_views_[m][t] = infos[t].imageView;
         }
 
-        std::array<vk::WriteDescriptorSet, SkinnedPass::kMaterialBindingCount> writes{};
+        std::array<vk::WriteDescriptorSet, SkinnedPass::kMaterialBindingCount + 1> writes{};
         for (std::uint32_t t = 0; t < SkinnedPass::kMaterialBindingCount; ++t) {
             writes[t].dstSet = *material_sets_[m];
             writes[t].dstBinding = t;
             writes[t].descriptorType = vk::DescriptorType::eCombinedImageSampler;
             writes[t].setImageInfo(infos[t]);
         }
-        // Modo compatible: el set solo tiene las texturas PBR.
+        // Modo compatible: el set solo tiene las texturas PBR (y el tiling,
+        // que va justo detras de las que se escriben).
+        const std::uint32_t texture_writes = SkinnedPass::materialBindingCount();
+        const vk::DescriptorBufferInfo uv_info{*uv_buffer_->handle(), tiled ? uv_stride * m : 0,
+                                               sizeof(core::Vec4)};
+        vk::WriteDescriptorSet& uv_write = writes[texture_writes];
+        uv_write = vk::WriteDescriptorSet{};
+        uv_write.dstSet = *material_sets_[m];
+        uv_write.dstBinding = SkinnedPass::kMaterialUvBinding;
+        uv_write.descriptorType = vk::DescriptorType::eUniformBuffer;
+        uv_write.setBufferInfo(uv_info);
         device.handle().updateDescriptorSets(
-            vk::ArrayProxy<const vk::WriteDescriptorSet>(SkinnedPass::materialBindingCount(), writes.data()), nullptr);
+            vk::ArrayProxy<const vk::WriteDescriptorSet>(texture_writes + 1, writes.data()), nullptr);
+        // Binding 10: sus UV de lightmap (o el buffer ficticio de la pasada).
+        vk::DescriptorBufferInfo lightmap_info{};
+        lightmap_info.buffer = lightmap_uvs_ ? *lightmap_uvs_->handle() : *pass.dummyLightmapUvs().handle();
+        lightmap_info.range = VK_WHOLE_SIZE;
+        vk::WriteDescriptorSet lightmap_write{};
+        lightmap_write.dstSet = *material_sets_[m];
+        lightmap_write.dstBinding = SkinnedPass::kLightmapUvBinding;
+        lightmap_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        lightmap_write.setBufferInfo(lightmap_info);
+        device.handle().updateDescriptorSets(lightmap_write, nullptr);
     }
 
     // --- Grupos de dibujo (un grupo por material con submallas opacas) ---
@@ -560,13 +691,33 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         slot_count_ += group.capacity;
     }
 
-    buildMeshlets(device, model, pass);
+    buildMeshlets(device, model, pass, *batch);
 
-    std::cout << "[Vulkan] Modelo " << model.name << " subido: " << model.textures.size()
-              << " texturas con mipmaps, " << material_count << " materiales\n";
+    // Todo grabado: un envio (sin esperar a la GPU salvo que se pida).
+    upload_ = batch->submit();
+    if (wait_for_gpu) waitUpload();
+
+    if (VulkanDevice::debugLog()) {
+        std::cout << "[Vulkan] Modelo " << model.name << " subido: " << model.textures.size()
+                  << " texturas con mipmaps, " << material_count << " materiales\n";
+    }
 }
 
-void SkinnedModel::buildMeshlets(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass) {
+bool SkinnedModel::uploadReady() const {
+    if (!upload_) return true;
+    if (!upload_->done()) return false;
+    upload_.reset();
+    return true;
+}
+
+void SkinnedModel::waitUpload() const {
+    if (!upload_) return;
+    upload_->wait();
+    upload_.reset();
+}
+
+void SkinnedModel::buildMeshlets(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass,
+                                 UploadBatch& batch) {
     meshlet_ranges_.clear();
     closed_.clear();
     max_cluster_meshlets_ = 0;
@@ -640,11 +791,11 @@ void SkinnedModel::buildMeshlets(const VulkanDevice& device, const asset::ModelD
     while (all_triangles.size() % 4 != 0) all_triangles.push_back(0);
 
     const auto storage = vk::BufferUsageFlagBits::eStorageBuffer;
-    meshlets_ = VulkanBuffer::createDeviceLocal(device, gpu.data(), sizeof(GpuMeshlet) * gpu.size(), storage);
+    meshlets_ = VulkanBuffer::createDeviceLocal(device, gpu.data(), sizeof(GpuMeshlet) * gpu.size(), storage, batch);
     meshlet_vertices_ = VulkanBuffer::createDeviceLocal(device, all_vertices.data(),
-                                                        sizeof(std::uint32_t) * all_vertices.size(), storage);
+                                                        sizeof(std::uint32_t) * all_vertices.size(), storage, batch);
     meshlet_triangles_ =
-        VulkanBuffer::createDeviceLocal(device, all_triangles.data(), all_triangles.size(), storage);
+        VulkanBuffer::createDeviceLocal(device, all_triangles.data(), all_triangles.size(), storage, batch);
 
     const vk::DescriptorPoolSize pool_size{vk::DescriptorType::eStorageBuffer, 4};
     vk::DescriptorPoolCreateInfo pool_info{};
@@ -659,9 +810,9 @@ void SkinnedModel::buildMeshlets(const VulkanDevice& device, const asset::ModelD
     meshlet_sets_ = vk::raii::DescriptorSets(device.handle(), alloc);
     const std::array<vk::DescriptorBufferInfo, 4> infos = {
         vk::DescriptorBufferInfo{*vertices().handle(), 0, VK_WHOLE_SIZE},
-        vk::DescriptorBufferInfo{*meshlets_.handle(), 0, VK_WHOLE_SIZE},
-        vk::DescriptorBufferInfo{*meshlet_vertices_.handle(), 0, VK_WHOLE_SIZE},
-        vk::DescriptorBufferInfo{*meshlet_triangles_.handle(), 0, VK_WHOLE_SIZE}};
+        vk::DescriptorBufferInfo{*meshlets_->handle(), 0, VK_WHOLE_SIZE},
+        vk::DescriptorBufferInfo{*meshlet_vertices_->handle(), 0, VK_WHOLE_SIZE},
+        vk::DescriptorBufferInfo{*meshlet_triangles_->handle(), 0, VK_WHOLE_SIZE}};
     std::array<vk::WriteDescriptorSet, 4> writes{};
     for (std::uint32_t i = 0; i < 4; ++i) {
         writes[i].dstSet = *meshlet_sets_[0];
@@ -670,8 +821,10 @@ void SkinnedModel::buildMeshlets(const VulkanDevice& device, const asset::ModelD
         writes[i].setBufferInfo(infos[i]);
     }
     device.handle().updateDescriptorSets(writes, nullptr);
-    std::cout << "[Vulkan] " << model.name << ": " << gpu.size() << " meshlets en " << lodCount() << " LODs"
-              << (closed_[0] ? " (malla cerrada)" : "") << "\n";
+    if (VulkanDevice::debugLog()) {
+        std::cout << "[Vulkan] " << model.name << ": " << gpu.size() << " meshlets en " << lodCount() << " LODs"
+                  << (closed_[0] ? " (malla cerrada)" : "") << "\n";
+    }
 }
 
 void SkinnedModel::setMaterialImage(const VulkanDevice& device, const SkinnedPass& pass, std::uint32_t material,
@@ -719,21 +872,25 @@ void SkinnedModel::refreshSampler(const VulkanDevice& device, const SkinnedPass&
 void SkinnedModel::destroy() {
     meshlet_sets_.clear();
     meshlet_pool_ = nullptr;
-    meshlets_.destroy();
-    meshlet_vertices_.destroy();
-    meshlet_triangles_.destroy();
+    // (Si la GPU aun los copia, el lote de subida los mantiene vivos.)
+    meshlets_.reset();
+    meshlet_vertices_.reset();
+    meshlet_triangles_.reset();
+    upload_.reset();
     meshlet_ranges_.clear();
     closed_.clear();
     material_sets_.clear();
     material_views_.clear();
     material_sampler_revision_ = 0;
     pool_ = nullptr;
+    uv_buffer_.reset();
     textures_.clear();
     materials_.clear();
     submeshes_.clear();
     lods_.clear();
     indices_.reset();
     vertices_.reset();
+    lightmap_uvs_.reset();
     index_count_ = 0;
 }
 

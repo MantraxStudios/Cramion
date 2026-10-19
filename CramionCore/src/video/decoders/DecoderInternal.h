@@ -15,15 +15,33 @@ namespace cramion::video::detail {
 bool isSyntheticUri(const std::string& uri);
 std::unique_ptr<IVideoDecoder> makeSyntheticDecoder();
 
-// Sin backend (Linux, Android hasta la Fase 2): open() falla con `reason`.
+// Sin backend (Linux sin FFmpeg, DASH sin FFmpeg...): open() falla con `reason`.
 std::unique_ptr<IVideoDecoder> makeNullDecoder(std::string reason);
 // Motivo por el que esta plataforma no reproduce video.
 std::string platformUnsupportedReason();
 
 // Termina en .m3u8 (sin contar ?query ni #fragmento).
 bool isHlsUri(const std::string& uri);
+// Termina en .mpd (DASH; sin contar ?query ni #fragmento).
+bool isDashUri(const std::string& uri);
 // https:// o http://
 bool isNetworkUri(const std::string& uri);
+// rtsp://, rtsps://, rtmp:// o rtmps:// (en directo; solo con FFmpeg).
+bool isStreamingUri(const std::string& uri);
+
+#if defined(__ANDROID__)
+// MediaCodecDecoder.cpp: archivo o https:// (Android 9+) con AMediaExtractor y
+// AMediaCodec. HLS no (sin FFmpeg, open() falla con un motivo claro).
+std::unique_ptr<IVideoDecoder> makeMediaCodecDecoder();
+// Se puede abrir `uri` en este movil (HLS no; https:// necesita Android 9).
+bool mediaCodecAvailable(const std::string& uri, std::string* why);
+#endif
+
+#if defined(CRAMION_HAS_FFMPEG)
+// FfmpegDecoder.cpp (opcion CRAMION_WITH_FFMPEG): RTSP/RTMP, DASH, HLS fuera
+// de Windows y, en Linux, todo.
+std::unique_ptr<IVideoDecoder> makeFfmpegDecoder();
+#endif
 
 #if defined(_WIN32)
 // MfDecoder.cpp: archivo o http(s) con IMFSourceReader asincrono.

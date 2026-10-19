@@ -2,7 +2,10 @@
 // Start / Update, Delay dentro de un Sequence (la cadena sigue donde iba),
 // For Loop y variables, lo del Inspector, Custom Event y temporizadores,
 // Flip Flop, Send Event entre objetos, errores, depuracion, recarga en
-// caliente y Event Destroy.
+// caliente y Event Destroy. Fase 2: funciones (puras, con ejecucion y
+// recursivas), macros (varias salidas exec, datos y Delay dentro), Timeline,
+// Construction Script fuera de Play, depuracion en vivo (cables y entradas),
+// firmas, reglas de compileGraph y el archivo (los .crgraph de antes igual).
 
 #include "ApiTest.h"
 
@@ -177,6 +180,290 @@ void libraryWithoutPlay() {
     check(!vscript::compileGraph(used).ok, "compileGraph: no se puede usar el valor de un nodo puro desactivado");
 }
 
+// --- Fase 2: funciones, macros, Timeline y Construction Script ---------------------
+
+// Funciones: Doble (pura), Factorial (pura y recursiva) y Saludar (con ejecucion).
+const char* const kFunctionsGraph = R"({
+    "variables": [{"name": "fact", "type": "float", "value": "0"}],
+    "functions": [
+        {"name": "Doble", "kind": "function", "pure": true, "inputs": [{"name": "X", "type": "float", "value": "0"}],
+         "outputs": [{"name": "Y", "type": "float"}]},
+        {"name": "Factorial", "kind": "function", "pure": true, "inputs": [{"name": "N", "type": "float", "value": "1"}],
+         "outputs": [{"name": "R", "type": "float"}]},
+        {"name": "Saludar", "kind": "function", "inputs": [{"name": "Texto", "type": "string", "value": "hola"}], "outputs": []}
+    ],
+    "nodes": [
+        {"id": 1, "kind": "event.start"},
+        {"id": 2, "kind": "fn.call", "fn": "Saludar", "values": {"Texto": "funcion saludar"}},
+        {"id": 3, "kind": "debug.print"},
+        {"id": 4, "kind": "str.format", "inputs": [{"name": "Formato", "type": "string", "value": "doble={d}"}, {"name": "d", "type": "any"}]},
+        {"id": 5, "kind": "fn.call", "fn": "Doble", "values": {"X": "21"}},
+        {"id": 6, "kind": "var.set", "fn": "fact"},
+        {"id": 7, "kind": "fn.call", "fn": "Factorial", "values": {"N": "5"}},
+        {"id": 10, "kind": "fn.entry", "fn": "Doble", "graph": "fn:Doble"},
+        {"id": 11, "kind": "fn.return", "fn": "Doble", "graph": "fn:Doble"},
+        {"id": 12, "kind": "math.mul", "graph": "fn:Doble", "values": {"B": "2"}},
+        {"id": 20, "kind": "fn.entry", "fn": "Factorial", "graph": "fn:Factorial"},
+        {"id": 21, "kind": "flow.branch", "graph": "fn:Factorial"},
+        {"id": 22, "kind": "logic.less_equal", "graph": "fn:Factorial", "values": {"B": "1"}},
+        {"id": 23, "kind": "fn.return", "fn": "Factorial", "graph": "fn:Factorial", "values": {"R": "1"}},
+        {"id": 24, "kind": "fn.return", "fn": "Factorial", "graph": "fn:Factorial"},
+        {"id": 25, "kind": "math.mul", "graph": "fn:Factorial"},
+        {"id": 26, "kind": "fn.call", "fn": "Factorial", "graph": "fn:Factorial"},
+        {"id": 27, "kind": "math.sub", "graph": "fn:Factorial", "values": {"B": "1"}},
+        {"id": 30, "kind": "fn.entry", "fn": "Saludar", "graph": "fn:Saludar"},
+        {"id": 31, "kind": "debug.print", "graph": "fn:Saludar"},
+        {"id": 32, "kind": "fn.return", "fn": "Saludar", "graph": "fn:Saludar"}
+    ],
+    "links": [
+        {"from": 1, "to": 2},
+        {"from": 2, "to": 6},
+        {"from": 7, "out": "R", "to": 6, "in": "Valor"},
+        {"from": 6, "to": 3},
+        {"from": 5, "out": "Y", "to": 4, "in": "d"},
+        {"from": 4, "to": 3, "in": "Texto"},
+        {"from": 10, "to": 11},
+        {"from": 10, "out": "X", "to": 12, "in": "A"},
+        {"from": 12, "to": 11, "in": "Y"},
+        {"from": 20, "to": 21},
+        {"from": 20, "out": "N", "to": 22, "in": "A"},
+        {"from": 22, "to": 21, "in": "Condicion"},
+        {"from": 21, "out": "Verdadero", "to": 23},
+        {"from": 21, "out": "Falso", "to": 24},
+        {"from": 20, "out": "N", "to": 25, "in": "A"},
+        {"from": 26, "out": "R", "to": 25, "in": "B"},
+        {"from": 25, "to": 24, "in": "R"},
+        {"from": 20, "out": "N", "to": 27, "in": "A"},
+        {"from": 27, "to": 26, "in": "N"},
+        {"from": 30, "to": 31},
+        {"from": 30, "out": "Texto", "to": 31, "in": "Texto"},
+        {"from": 31, "to": 32}
+    ]
+})";
+
+// Macros: Comprobar (dos salidas exec y un dato) y Esperar (un Delay dentro).
+const char* const kMacrosGraph = R"({
+    "functions": [
+        {"name": "Comprobar", "kind": "macro",
+         "inputs": [{"name": "Entrada", "type": "exec"}, {"name": "Valor", "type": "float", "value": "0"}],
+         "outputs": [{"name": "Si", "type": "exec"}, {"name": "No", "type": "exec"}, {"name": "Doble", "type": "float"}]},
+        {"name": "Esperar", "kind": "macro", "inputs": [{"name": "Entrada", "type": "exec"}], "outputs": [{"name": "Salida", "type": "exec"}]}
+    ],
+    "nodes": [
+        {"id": 1, "kind": "event.start"},
+        {"id": 2, "kind": "flow.sequence", "outputs": [{"name": "Then 0", "type": "exec"}, {"name": "Then 1", "type": "exec"},
+         {"name": "Then 2", "type": "exec"}]},
+        {"id": 3, "kind": "macro.call", "fn": "Comprobar", "values": {"Valor": "5"}},
+        {"id": 4, "kind": "debug.print"},
+        {"id": 5, "kind": "str.format", "inputs": [{"name": "Formato", "type": "string", "value": "macro si doble={d}"}, {"name": "d", "type": "any"}]},
+        {"id": 6, "kind": "debug.print", "values": {"Texto": "macro no por error"}},
+        {"id": 7, "kind": "macro.call", "fn": "Comprobar", "values": {"Valor": "-1"}},
+        {"id": 8, "kind": "debug.print", "values": {"Texto": "macro no negativo"}},
+        {"id": 9, "kind": "macro.call", "fn": "Esperar"},
+        {"id": 10, "kind": "debug.print", "values": {"Texto": "despues de la macro con delay"}},
+        {"id": 20, "kind": "macro.entry", "fn": "Comprobar", "graph": "macro:Comprobar"},
+        {"id": 21, "kind": "flow.branch", "graph": "macro:Comprobar"},
+        {"id": 22, "kind": "logic.greater", "graph": "macro:Comprobar", "values": {"B": "0"}},
+        {"id": 23, "kind": "macro.exit", "fn": "Comprobar", "graph": "macro:Comprobar"},
+        {"id": 24, "kind": "math.mul", "graph": "macro:Comprobar", "values": {"B": "2"}},
+        {"id": 30, "kind": "macro.entry", "fn": "Esperar", "graph": "macro:Esperar"},
+        {"id": 31, "kind": "flow.delay", "graph": "macro:Esperar", "values": {"Segundos": "0.25"}},
+        {"id": 32, "kind": "macro.exit", "fn": "Esperar", "graph": "macro:Esperar"}
+    ],
+    "links": [
+        {"from": 1, "to": 2},
+        {"from": 2, "out": "Then 0", "to": 3},
+        {"from": 3, "out": "Si", "to": 4},
+        {"from": 3, "out": "Doble", "to": 5, "in": "d"},
+        {"from": 5, "to": 4, "in": "Texto"},
+        {"from": 3, "out": "No", "to": 6},
+        {"from": 2, "out": "Then 1", "to": 7},
+        {"from": 7, "out": "No", "to": 8},
+        {"from": 2, "out": "Then 2", "to": 9},
+        {"from": 9, "out": "Salida", "to": 10},
+        {"from": 20, "out": "Entrada", "to": 21},
+        {"from": 20, "out": "Valor", "to": 22, "in": "A"},
+        {"from": 22, "to": 21, "in": "Condicion"},
+        {"from": 21, "out": "Verdadero", "to": 23, "in": "Si"},
+        {"from": 21, "out": "Falso", "to": 23, "in": "No"},
+        {"from": 20, "out": "Valor", "to": 24, "in": "A"},
+        {"from": 24, "to": 23, "in": "Doble"},
+        {"from": 30, "out": "Entrada", "to": 31},
+        {"from": 31, "out": "Completado", "to": 32, "in": "Salida"}
+    ]
+})";
+
+// Timeline de 1 s: Alpha de 0 a 10 (y una pista vector); Update pone la variable.
+const char* const kTimelineGraph = R"({
+    "variables": [{"name": "valor", "type": "float", "value": "0"}],
+    "nodes": [
+        {"id": 1, "kind": "event.start"},
+        {"id": 2, "kind": "flow.timeline", "timeline": {"length": 1, "tracks": [
+            {"name": "Alpha", "type": "float", "keys": [{"t": 0, "v": 0}, {"t": 1, "v": 10}]},
+            {"name": "Pos", "type": "vec3", "keys": [[0, [0, 0, 0]], [1, [2, 4, 6]]]}]}},
+        {"id": 3, "kind": "var.set", "fn": "valor"},
+        {"id": 4, "kind": "debug.print", "values": {"Texto": "timeline fin"}}
+    ],
+    "links": [
+        {"from": 1, "to": 2, "in": "Play desde el inicio"},
+        {"from": 2, "out": "Update", "to": 3},
+        {"from": 2, "out": "Alpha", "to": 3, "in": "Valor"},
+        {"from": 2, "out": "Finished", "to": 4}
+    ]
+})";
+
+// Construction Script: escala con la variable del Inspector y un Spawn de "Plantilla".
+const char* const kConstructionGraph = R"({
+    "variables": [{"name": "tam", "type": "vec3", "value": "1 1 1"}],
+    "nodes": [
+        {"id": 1, "kind": "event.construction", "graph": "construction"},
+        {"id": 2, "kind": "entity.set_scale", "graph": "construction"},
+        {"id": 3, "kind": "var.get", "fn": "tam", "graph": "construction"},
+        {"id": 4, "kind": "entity.spawn", "graph": "construction", "values": {"Posicion": "0 5 0"}},
+        {"id": 5, "kind": "entity.find", "graph": "construction", "values": {"Nombre": "Plantilla"}}
+    ],
+    "links": [
+        {"from": 1, "to": 2},
+        {"from": 3, "to": 2, "in": "Escala"},
+        {"from": 2, "to": 4},
+        {"from": 5, "to": 4, "in": "Prefab"}
+    ]
+})";
+
+bool compiles(const std::string& text) {
+    vscript::Graph g;
+    return vscript::graphFromJson(text, g) && vscript::compileGraph(g).ok;
+}
+
+const vscript::Link* linkFrom(const vscript::Graph& g, int from, int to) {
+    for (const vscript::Link& l : g.links) {
+        if (l.from_node == from && l.to_node == to) return &l;
+    }
+    return nullptr;
+}
+
+// Lo de la fase 2 sin Play: archivo, firmas, validacion y curvas.
+void phase2WithoutPlay() {
+    using vscript::PinType;
+    std::printf("Fase 2 sin Play\n");
+    // Un grafo de antes se guarda igual (sin claves nuevas).
+    const std::string plain = vscript::graphToJson(vscript::exampleGraph());
+    check(plain.find("\"functions\"") == std::string::npos && plain.find("\"graph\"") == std::string::npos &&
+              plain.find("\"timeline\"") == std::string::npos && plain.find("\"version\": 1") != std::string::npos,
+          "JSON: un grafo sin fase 2 se guarda como antes (version 1, sin claves nuevas)");
+
+    // Funciones: los pines salen de la firma.
+    vscript::Graph g;
+    check(vscript::graphFromJson(kFunctionsGraph, g) && g.functions.size() == 3, "funciones: se leen las firmas");
+    const vscript::Node* doble = g.find(5);
+    const vscript::Node* saludar = g.find(2);
+    check(doble != nullptr && doble->pure && doble->inputs.size() == 1 && doble->inputs[0].name == "X" && doble->inputs[0].value == "21" &&
+              doble->outputs.size() == 1 && doble->outputs[0].type == PinType::Float,
+          "fn.call puro: sin exec, X = 21 y Y Float");
+    check(saludar != nullptr && !saludar->pure && saludar->inputs.size() == 2 && saludar->inputs[0].type == PinType::Exec &&
+              saludar->outputs.size() == 1,
+          "fn.call con ejecucion: exec de entrada y de salida");
+    check(g.find(10) != nullptr && g.find(10)->outputs.size() == 2 && g.find(10)->outputs[1].name == "X" && g.find(11)->inputs.size() == 2,
+          "fn.entry da los parametros y fn.return pide los resultados");
+    const vscript::CompileResult compiled = vscript::compileGraph(g);
+    for (const vscript::NodeError& e : compiled.errors) std::printf("    nodo %d: %s\n", e.node, e.message.c_str());
+    check(compiled.ok, "compileGraph: el grafo de funciones no tiene errores");
+    vscript::Graph again;
+    const std::string saved = vscript::graphToJson(g);
+    check(saved.find("\"version\": 2") != std::string::npos && vscript::graphFromJson(saved, again) && again.functions.size() == 3 &&
+              again.find(26) != nullptr && again.find(26)->graph == "fn:Factorial" && again.links.size() == g.links.size() &&
+              again.find(5)->inputs[0].value == "21",
+          "JSON ida y vuelta: firmas, grafo de cada nodo, enlaces y valores (version 2)");
+
+    // Cambiar la firma: los enlaces y valores siguen por nombre.
+    vscript::Subgraph* def = g.findSubgraph("fn:Doble");
+    def->inputs.insert(def->inputs.begin(), vscript::Pin{"Escala", PinType::Float, "1", {}});
+    g.syncSubgraph("fn:Doble");
+    const vscript::Link* x_link = linkFrom(g, 10, 12);
+    check(g.find(5)->inputs.size() == 2 && g.find(5)->inputs[0].name == "Escala" && g.find(5)->inputs[1].value == "21" &&
+              x_link != nullptr && x_link->from_pin == 2,
+          "syncSubgraph: parametro nuevo; valores y enlaces por nombre");
+    check(g.renameSubgraph("fn:Doble", "Duplicar") && g.find(5)->fn == "Duplicar" && g.find(10)->graph == "fn:Duplicar" &&
+              g.findSubgraph("fn:Duplicar") != nullptr && !g.renameSubgraph("fn:Duplicar", "Factorial"),
+          "renameSubgraph: sus nodos y sus llamadas (no a un nombre usado)");
+    check(vscript::compileGraph(g).ok, "y sigue compilando");
+    g.removeSubgraph("fn:Duplicar");
+    check(g.find(5) == nullptr && g.find(10) == nullptr && g.find(12) == nullptr && g.findSubgraph("fn:Duplicar") == nullptr &&
+              linkFrom(g, 5, 4) == nullptr,
+          "removeSubgraph: con sus nodos, sus llamadas y sus enlaces");
+
+    // addSubgraph: entrada y salida enlazadas; nombres unicos.
+    vscript::Graph made;
+    const std::string first = made.addSubgraph("Mia", vscript::SubgraphKind::Function).key();
+    const std::string second = made.addSubgraph("Mia", vscript::SubgraphKind::Function).key();
+    const std::string macro = made.addSubgraph({}, vscript::SubgraphKind::Macro).key();
+    check(first == "fn:Mia" && second == "fn:Mia2" && macro == "macro:NuevaMacro" && made.nodes.size() == 6 && made.links.size() == 3 &&
+              vscript::compileGraph(made).ok,
+          "addSubgraph: entrada + salida enlazadas y nombre unico");
+    made.editing = "fn:Mia";
+    check(made.add(vscript::makeNode("debug.print")).graph == "fn:Mia", "Graph::editing: los nodos nuevos van al grafo que se ve");
+    std::string why;
+    check(!made.connect(1, 0, 3, 0, &why) && !why.empty(), "connect: no enlaza nodos de grafos distintos");
+
+    // Macros: pines exec en la firma.
+    vscript::Graph macros;
+    check(vscript::graphFromJson(kMacrosGraph, macros) && macros.find(3)->inputs.size() == 2 &&
+              macros.find(3)->outputs.size() == 3 && macros.find(3)->outputs[1].type == PinType::Exec &&
+              macros.find(20)->outputs.size() == 2 && macros.find(23)->inputs.size() == 3,
+          "macro.call / entry / exit con los pines de la firma (exec incluidos)");
+    check(vscript::compileGraph(macros).ok, "compileGraph: el grafo de macros no tiene errores");
+
+    // Reglas de cada grafo.
+    const std::string base = R"({"functions": [{"name": "F", "kind": "function"}, {"name": "M", "kind": "macro",
+        "inputs": [{"name": "In", "type": "exec"}], "outputs": [{"name": "Out", "type": "exec"}]}],
+        "nodes": [{"id": 1, "kind": "fn.entry", "fn": "F", "graph": "fn:F"}, {"id": 2, "kind": "macro.entry", "fn": "M", "graph": "macro:M"},
+                  {"id": 3, "kind": "event.start"})";
+    check(compiles(base + "]}"), "base de las reglas: compila");
+    check(!compiles(base + R"(, {"id": 4, "kind": "flow.delay", "graph": "fn:F"}]})"), "una funcion no puede tener Delay");
+    check(compiles(base + R"(, {"id": 4, "kind": "flow.delay", "graph": "macro:M"}]})"), "una macro si");
+    check(!compiles(base + R"(, {"id": 4, "kind": "event.update", "graph": "fn:F"}]})"), "un evento no va en una funcion");
+    check(!compiles(base + R"(, {"id": 4, "kind": "flow.timeline", "graph": "fn:F"}]})"), "un Timeline no va en una funcion");
+    check(!compiles(base + R"(, {"id": 4, "kind": "macro.call", "fn": "M", "graph": "macro:M"}]})"), "una macro no se usa a si misma");
+    check(!compiles(base + R"(, {"id": 4, "kind": "event.construction"}]})"), "Construction Script solo en su grafo");
+    check(compiles(base + R"(, {"id": 4, "kind": "event.construction", "graph": "construction"}]})"), "y en su grafo, si");
+    check(!compiles(base + R"(, {"id": 4, "kind": "fn.call", "fn": "NoExiste"}]})"), "una llamada a una funcion que no existe");
+    check(!compiles(base + R"(, {"id": 4, "kind": "debug.print", "graph": "fn:Otra"}]})"), "un nodo en un grafo que no existe");
+    check(!compiles(base + R"(, {"id": 4, "kind": "debug.print"}], "links": [{"from": 1, "to": 4}]})"),
+          "un enlace de una funcion al Event Graph");
+    check(!compiles(base + R"(, {"id": 4, "kind": "flow.delay", "graph": "macro:M"},
+                     {"id": 5, "kind": "macro.call", "fn": "M", "graph": "fn:F"}]})"),
+          "una funcion no puede usar una macro que espera");
+
+    // Timeline: curvas, archivo y pines.
+    vscript::TimelineTrack track;
+    track.keys = {vscript::TimelineKey{0.0f, core::Vec3{0.0f, 0.0f, 0.0f}, vscript::CurveInterp::Linear},
+                  vscript::TimelineKey{1.0f, core::Vec3{10.0f, 0.0f, 0.0f}, vscript::CurveInterp::Smooth},
+                  vscript::TimelineKey{2.0f, core::Vec3{20.0f, 0.0f, 0.0f}, vscript::CurveInterp::Constant},
+                  vscript::TimelineKey{3.0f, core::Vec3{0.0f, 0.0f, 0.0f}, vscript::CurveInterp::Linear}};
+    check(vscript::evaluateTrack(track, -1.0f).x == 0.0f && vscript::evaluateTrack(track, 0.5f).x == 5.0f &&
+              vscript::evaluateTrack(track, 1.5f).x == 15.0f && vscript::evaluateTrack(track, 1.25f).x < 12.5f &&
+              vscript::evaluateTrack(track, 2.5f).x == 20.0f && vscript::evaluateTrack(track, 9.0f).x == 0.0f,
+          "evaluateTrack: lineal, suave, constante y fuera de las claves");
+    vscript::Graph timeline;
+    check(vscript::graphFromJson(kTimelineGraph, timeline) && timeline.find(2)->timeline.tracks.size() == 2 &&
+              timeline.find(2)->outputs.size() == 6 && timeline.find(2)->outputs[5].type == PinType::Vector &&
+              linkFrom(timeline, 2, 3) != nullptr,
+          "Timeline: una salida por pista (float y vector)");
+    vscript::Graph timeline_again;
+    check(vscript::graphFromJson(vscript::graphToJson(timeline), timeline_again) &&
+              timeline_again.find(2)->timeline.tracks[1].keys.size() == 2 &&
+              timeline_again.find(2)->timeline.tracks[1].keys[1].value.z == 6.0f && timeline_again.links.size() == timeline.links.size(),
+          "Timeline: JSON ida y vuelta (pistas, claves y enlaces)");
+    check(vscript::compileGraph(timeline).ok, "compileGraph: el Timeline no tiene errores");
+    timeline.find(2)->timeline.tracks.erase(timeline.find(2)->timeline.tracks.begin());  // sin Alpha
+    timeline.syncTimeline(2);
+    bool alpha_link = false;
+    for (const vscript::Link& l : timeline.links) alpha_link = alpha_link || (l.from_node == 2 && l.to_node == 3 && l.to_pin == 1);
+    check(timeline.find(2)->outputs.size() == 5 && !alpha_link && linkFrom(timeline, 2, 4) != nullptr,
+          "syncTimeline: quitar una pista quita sus enlaces (los demas siguen)");
+    check(compiles(kConstructionGraph), "compileGraph: el Construction Script no tiene errores");
+}
+
 }  // namespace
 
 int main() {
@@ -184,6 +471,11 @@ int main() {
     std::filesystem::remove_all(kRoot);
     vscript::registerVisualScriptComponents();
     libraryWithoutPlay();
+    phase2WithoutPlay();
+    writeGraph("Funciones.crgraph", kFunctionsGraph);
+    writeGraph("Macros.crgraph", kMacrosGraph);
+    writeGraph("Timeline.crgraph", kTimelineGraph);
+    writeGraph("Construction.crgraph", kConstructionGraph);
 
     // Delay dentro de un Sequence: Then 1 espera a que termine Then 0.
     writeGraph("Delay.crgraph", R"({
@@ -541,8 +833,36 @@ int main() {
     t.scripts.setMessageListener([&](ecs::Entity e, const std::string& method, const std::string&) {
         messages.push_back(e.name() + ":" + method);
     });
+
+    // Construction Script (fuera de Play, como en el editor).
+    t.world.create("Plantilla");
+    ecs::Entity builder = withGraph(t.world, "Constructor", "Construction.crgraph");
+    builder.get<vscript::VisualScript>().properties.push_back({"tam", scripting::PropertyType::Vector, "2 2 2"});
+    check(t.scripts.hasConstructionScript("Graphs/Construction.crgraph") && !t.scripts.hasConstructionScript("Graphs/Delay.crgraph"),
+          "hasConstructionScript: solo el grafo que lo tiene");
+    const std::size_t entities_before = t.world.entityCount();
+    std::string construction_error;
+    const bool constructed = t.scripts.runConstructionScript(t.world, builder, &construction_error);
+    if (!construction_error.empty()) std::printf("    %s\n", construction_error.c_str());
+    check(constructed && builder.localScale().x == 2.0f && t.world.entityCount() == entities_before + 1,
+          "Construction Script: la escala del Inspector y un Spawn");
+    check(t.scripts.runConstructionScript(t.world, builder, &construction_error) && t.world.entityCount() == entities_before + 1,
+          "otra pasada: lo que creo la anterior se borra (no se acumula)");
+    int owned = 0;
+    for (const entt::entity h : t.world.registry().view<vscript::ConstructionOwned>()) {
+        if (t.world.registry().get<vscript::ConstructionOwned>(h).owner == builder.uuid()) ++owned;
+    }
+    check(owned == 1, "lo creado queda marcado con su dueno (ConstructionOwned)");
+
+    // Funciones, macros y Timeline en Play (con la depuracion en vivo).
+    ecs::Entity functions = withGraph(t.world, "Funciones", "Funciones.crgraph");
+    withGraph(t.world, "Macros", "Macros.crgraph");
+    ecs::Entity timeline = withGraph(t.world, "Timeline", "Timeline.crgraph");
+    t.scripts.setVisualScriptLiveDebug(true);
+
     t.scripts.setVisualScriptDebugging(true);
     t.scripts.start(t.world);
+    check(!t.scripts.runConstructionScript(t.world, builder), "en Play el Construction Script no corre");
 
     t.frame(0.125f);
     check(t.logged("Hola desde Visual Scripting"), "el grafo de ejemplo: Event Start -> Print");
@@ -565,6 +885,20 @@ int main() {
     check(t.logged("lista len=2 find=2"), "Array: Add (cambia la variable), Length y Find");
     check(t.logged("fi=5 up=HOLA sp=3"), "FInterp To, To Upper, Split y Format Text");
     check(t.logged("trace hit=false"), "Line Trace sin nada delante: Hit = false");
+
+    // Fase 2 en Play.
+    check(t.logged("funcion saludar"), "funcion con ejecucion: su parametro dentro del cuerpo");
+    check(t.logged("doble=42"), "funcion pura: Doble(21) = 42");
+    check(variable(t, functions, "fact") == "120", "funcion recursiva: Factorial(5) = 120");
+    check(t.logged("macro si doble=10") && !t.logged("macro no por error") && t.logged("macro no negativo"),
+          "macro: sale por Si / No segun su entrada y da su dato (Doble)");
+    check(!t.logged("despues de la macro con delay"), "macro con Delay: la cadena espera");
+    {
+        scripting::ScriptSystem::VisualScriptDebug live;
+        check(t.scripts.visualScriptDebug(functions, live) && live.flows.contains("1:0") && live.flows.contains("21:1") &&
+                  live.inputs.contains("5:0") && live.inputs["5:0"] == "21",
+              "depuracion en vivo: cables por los que paso la ejecucion y valor de las entradas");
+    }
     check(t.logged("componentes add=false has=true") && t.logged("no se puede cambiar desde un grafo"),
           "Add Component no toca Transform; Has Component");
     check(t.logged("despues del desactivado") && !t.logged("no deberia salir: desactivado"),
@@ -604,11 +938,14 @@ int main() {
     t.frame(0.125f);
     t.frame(0.125f);
     check(!t.logged("despues del delay"), "Delay: aun no (0.5 de 0.625 s, el frame de Start cuenta)");
+    check(t.logged("despues de la macro con delay"), "macro con Delay: sigue por la salida de la macro (0.25 s)");
+    check(variable(t, timeline, "valor") == "5" && !t.logged("timeline fin"), "Timeline: Update cada frame con la curva (0.5 s -> 5)");
     t.frame(0.125f);
     check(t.logged("despues del delay") && t.logged("then 1"), "Delay terminado: sigue la cadena y despues el Sequence");
     check(variable(t, flip, "a") == "3" && variable(t, flip, "b") == "2", "Flip Flop alterna A / B cada frame");
     for (int i = 0; i < 4; ++i) t.frame(0.125f);
     check(variable(t, timer, "cuenta") == "4", "Set Timer con Repetir: Ping cada 0.25 s (1 s -> 4)");
+    check(variable(t, timeline, "valor") == "10" && logCount(t, "timeline fin") == 1, "Timeline: llega al final (10) y Finished una vez");
     t.scripts.callMethod(timer, "Ping", 0.0f);
     check(variable(t, timer, "cuenta") == "5", "la interfaz (callMethod) lanza el Custom Event");
 

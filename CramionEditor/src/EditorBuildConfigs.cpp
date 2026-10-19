@@ -228,8 +228,8 @@ void EditorApp::drawBuildConfigsWindow() {
     // Ventana.
     if (!android) {
     row("Ventana");
-    static const char* kModes[] = {"Maximizada", "Pantalla completa (sin bordes)", "Ventana"};
-    changed |= ImGui::Combo("##window", &c.window_mode, kModes, 3);
+    static const char* kModes[] = {"Maximizada", "Pantalla completa (sin bordes)", "Ventana", "Ventana sin bordes"};
+    changed |= ImGui::Combo("##window", &c.window_mode, kModes, 4);
     row("Tamano de la ventana");
     int size_wh[2] = {c.width, c.height};
     if (ImGui::InputInt2("##size", size_wh)) {
@@ -237,7 +237,8 @@ void EditorApp::drawBuildConfigsWindow() {
         c.height = std::clamp(size_wh[1], 240, 16384);
         changed = true;
     }
-    ImGui::SetItemTooltip("En modo Ventana; maximizada es el tamano al restaurar.");
+    ImGui::SetItemTooltip("En modo Ventana o Ventana sin bordes (centrada; si con el marco no cabe en la pantalla, va sin "
+                          "marco); maximizada es el tamano al restaurar.");
     }
     ImGui::Dummy(ImVec2(label_w - ImGui::GetStyle().ItemSpacing.x, 0.0f));
     ImGui::SameLine(label_w);

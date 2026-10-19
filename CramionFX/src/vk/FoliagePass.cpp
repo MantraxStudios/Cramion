@@ -1,6 +1,8 @@
 #include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/FoliagePass.h"
 
+#include "CramionFX/asset/Dds.h"
+#include "CramionFX/asset/TextureCompression.h"
 #include "CramionFX/asset/TreeGenerator.h"
 
 #include "CramionFX/vk/GBuffer.h"
@@ -10,7 +12,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <chrono>
+#include <cstdio>
 #include <iostream>
+#include <thread>
+#include <fstream>
+#include <filesystem>
+#include <cstdlib>
 
 namespace cramion::gfx {
 
@@ -168,6 +176,7 @@ void FoliagePass::create(const VulkanDevice& device, const vk::raii::DescriptorS
 }
 
 void FoliagePass::destroy() {
+    stopTextureCompression();
     // Una subida en segundo plano puede estar creando buffers: que termine.
     if (device_ != nullptr) device_->drainTasks();
     pending_.reset();
@@ -187,6 +196,7 @@ void FoliagePass::destroy() {
     bounds_.destroy();
     albedo_array_ = TextureArray{};
     normal_array_ = TextureArray{};
+    albedo_format_ = vk::Format::eR8G8B8A8Srgb;
     albedo_layers_ = 0;
     texture_sampler_ = nullptr;
     gbuffer_pipeline_ = nullptr;
@@ -355,8 +365,31 @@ void FoliagePass::setSpecies(const std::array<asset::TreeSpecies, kSpecies>& spe
     buildMeshes();
 }
 
+// Texturas de los arboles en BC7: generateTreeTextures da 11 capas de 1024
+// con sus mips para el color y otras 11 para las normales (132 MB en RGBA8).
+// Se comprimen una vez en segundo plano a la cache del usuario
+// (asset::compressBc7Layers) y se suben en BC7 desde el arranque siguiente.
+// Medido: el color da 41,8 dB y pasa a BC7 (66 -> 16,5 MB); las normales
+// (con su oclusion y un dato en el alfa) dan 40,0 dB en su peor capa, se
+// quedan en RGBA8.
+
+void FoliagePass::stopTextureCompression() {
+    if (bc7_stop_) bc7_stop_->store(true);
+    if (bc7_thread_.joinable()) bc7_thread_.join();
+    bc7_stop_.reset();
+}
+
 void FoliagePass::createTextures() {
-    const asset::TreeTextures t = asset::generateTreeTextures(1024);
+    stopTextureCompression();
+    auto generated = std::make_shared<asset::TreeTextures>(asset::generateTreeTextures(1024));
+    const asset::TreeTextures& t = *generated;
+    const std::uint64_t hash = asset::hashMipLayers(t.normal, asset::hashMipLayers(t.albedo, t.size));
+    const std::filesystem::path cache_file = device_->textureCompressionBcSupported()
+                                                 ? asset::userTextureCachePath("arboles", hash)
+                                                 : std::filesystem::path{};
+    asset::Bc7ArrayCache cache;
+    const bool cached =
+        !cache_file.empty() && asset::readBc7ArrayCache(cache_file, hash, t.size, {&t.albedo, &t.normal}, cache);
     const auto upload = [&](TextureArray& texture, const std::vector<std::vector<std::vector<std::uint8_t>>>& layers,
                             vk::Format format) {
         const VulkanDevice& device = *device_;
@@ -373,7 +406,9 @@ void FoliagePass::createTextures() {
         info.usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
         info.initialLayout = vk::ImageLayout::eUndefined;
         // El color (SRGB) tambien se ve como UNORM desde los rayos.
-        if (format == vk::Format::eR8G8B8A8Srgb) info.flags = vk::ImageCreateFlagBits::eMutableFormat;
+        if (format == vk::Format::eR8G8B8A8Srgb || format == vk::Format::eBc7SrgbBlock) {
+            info.flags = vk::ImageCreateFlagBits::eMutableFormat;
+        }
         texture.image = vk::raii::Image(device.handle(), info);
         const vk::MemoryRequirements requirements = texture.image.getMemoryRequirements();
         vk::MemoryAllocateInfo allocate{};
@@ -432,10 +467,48 @@ void FoliagePass::createTextures() {
         view.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mips, 0, count};
         texture.view = vk::raii::ImageView(device.handle(), view);
     };
-    upload(albedo_array_, t.albedo, vk::Format::eR8G8B8A8Srgb);
+    const bool albedo_bc7 = cached && cache.bc7[0];
+    const bool normal_bc7 = cached && cache.bc7[1];
+    albedo_format_ = albedo_bc7 ? vk::Format::eBc7SrgbBlock : vk::Format::eR8G8B8A8Srgb;
+    upload(albedo_array_, albedo_bc7 ? cache.blocks[0] : t.albedo, albedo_format_);
     albedo_mips_ = t.mips;
     albedo_layers_ = static_cast<std::uint32_t>(t.albedo.size());
-    upload(normal_array_, t.normal, vk::Format::eR8G8B8A8Unorm);
+    upload(normal_array_, normal_bc7 ? cache.blocks[1] : t.normal,
+           normal_bc7 ? vk::Format::eBc7UnormBlock : vk::Format::eR8G8B8A8Unorm);
+    if (cached) {
+        std::cout << "[Vegetacion] Texturas de los arboles (cache " << cache_file.filename().string() << "): color "
+                  << (albedo_bc7 ? "BC7" : "RGBA8") << ", normales " << (normal_bc7 ? "BC7" : "RGBA8") << "\n";
+    } else if (!cache_file.empty()) {
+        // Una vez: a BC7 en segundo plano (3 hilos, para no frenar el juego)
+        // y a la cache; el siguiente arranque ya las sube comprimidas.
+        auto stop = std::make_shared<std::atomic<bool>>(false);
+        bc7_stop_ = stop;
+        bc7_thread_ = std::thread([generated, hash, cache_file, stop] {
+            const auto start = std::chrono::steady_clock::now();
+            const unsigned threads = std::max(std::thread::hardware_concurrency() / 4, 1u);
+            asset::Bc7ArrayCache result;
+            result.bc7.assign(2, 0);
+            result.blocks.assign(2, {});
+            double psnr[2] = {0.0, 0.0};
+            result.bc7[0] = asset::compressBc7Layers(generated->albedo, generated->size, result.blocks[0], *stop, threads,
+                                                     /*premultiplied=*/true, psnr[0]) ? 1 : 0;
+            if (stop->load()) return;
+            result.bc7[1] = asset::compressBc7Layers(generated->normal, generated->size, result.blocks[1], *stop, threads,
+                                                     /*premultiplied=*/false, psnr[1]) ? 1 : 0;
+            if (stop->load()) return;
+            for (std::size_t a = 0; a < 2; ++a) {
+                if (!result.bc7[a]) result.blocks[a].clear();
+            }
+            if (!asset::writeBc7ArrayCache(cache_file, hash, generated->size, {&generated->albedo, &generated->normal},
+                                           result)) {
+                return;
+            }
+            const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+            std::cout << "[Vegetacion] Texturas de los arboles comprimidas para el proximo arranque en " << seconds
+                      << " s: color " << (result.bc7[0] ? "BC7" : "RGBA8") << " (PSNR " << psnr[0] << " dB), normales "
+                      << (result.bc7[1] ? "BC7" : "RGBA8") << " (PSNR " << psnr[1] << " dB)\n";
+        });
+    }
 
     createTextureSampler();
 }

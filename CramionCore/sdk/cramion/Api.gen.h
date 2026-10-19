@@ -1595,6 +1595,20 @@ template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
 inline Value ignoreCollision(const T0& a = {}, const T1& b = {}, const T2& activar = {}) {
     return detail::api("Physics.ignoreCollision", Values{Value(a), Value(b), Value(activar)});
 }
+/// Physics.layerMask("Default", "Terreno", ...)
+/// mascara (bit i = capa i) de esas capas
+/// Devuelve: numero
+template <typename T0 = Value, typename T1 = Value, typename... Mas>
+inline Value layerMask(const T0& texto = {}, const T1& texto2 = {}, Mas&&... mas) {
+    return detail::api("Physics.layerMask", Values{Value(texto), Value(texto2), Value(std::forward<Mas>(mas))...});
+}
+/// Physics.overlapSphere(centro, radio, mascara, ignorar)
+/// los objetos que tocan la esfera
+/// Devuelve: lista de Entity
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value overlapSphere(const T0& centro = {}, const T1& radio = {}, const T2& mascara = {}, const T3& ignorar = {}) {
+    return detail::api("Physics.overlapSphere", Values{Value(centro), Value(radio), Value(mascara), Value(ignorar)});
+}
 /// Physics.simulatedTime()
 /// Segundos de fisica simulados desde el Play (pasos fijos dados)
 /// Devuelve: numero
@@ -2626,6 +2640,37 @@ inline Value systemLanguage(Mas&&... mas) {
 }
 }  // namespace Text
 
+namespace UI {
+/// UI.draggedElement()
+/// el elemento con UIEventTrigger que se esta arrastrando (on_drag_begin..on_drag_end) o nil
+/// Devuelve: Entity o nil
+template <typename... Mas>
+inline Value draggedElement(Mas&&... mas) {
+    return detail::api("UI.draggedElement", Values{Value(std::forward<Mas>(mas))...});
+}
+/// UI.focus(campo)
+/// da el foco a un UIInputField (el cursor al final; ese Enter no lo envia); nil se lo quita
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value focus(const T0& campo = {}) {
+    return detail::api("UI.focus", Values{Value(campo)});
+}
+/// UI.isTyping()
+/// hay un campo de texto con el foco (el teclado es suyo)
+/// Devuelve: bool
+template <typename... Mas>
+inline Value isTyping(Mas&&... mas) {
+    return detail::api("UI.isTyping", Values{Value(std::forward<Mas>(mas))...});
+}
+/// UI.pointerOverUi()
+/// el raton esta sobre la interfaz (un control, una imagen que recibe el raton, un ScrollView)
+/// Devuelve: bool
+template <typename... Mas>
+inline Value pointerOverUi(Mas&&... mas) {
+    return detail::api("UI.pointerOverUi", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace UI
+
 namespace Video {
 /// Video.info("Videos/intro.mp4")
 /// {width, height, fps, duration, frameCount, seekable, live, codec, backend, hardware, audioTracks} o nil
@@ -3273,6 +3318,20 @@ template <typename... Mas>
 inline Value active(Mas&&... mas) {
     return detail::api("WorldPartition.active", Values{Value(std::forward<Mas>(mas))...});
 }
+/// WorldPartition.dataLayers()
+/// las Data Layers y si estan activas ({Ruinas = true, ...})
+/// Devuelve: objeto
+template <typename... Mas>
+inline Value dataLayers(Mas&&... mas) {
+    return detail::api("WorldPartition.dataLayers", Values{Value(std::forward<Mas>(mas))...});
+}
+/// WorldPartition.isDataLayerActive("Ruinas")
+/// la Data Layer esta activa? (sin declarar = si)
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value isDataLayerActive(const T0& texto = {}) {
+    return detail::api("WorldPartition.isDataLayerActive", Values{Value(texto)});
+}
 /// WorldPartition.isLoaded(posicion)
 /// la celda de ese punto esta cargada?
 /// Devuelve: bool
@@ -3285,6 +3344,12 @@ inline Value isLoaded(const T0& posicion = {}) {
 template <typename... Mas>
 inline Value loadAll(Mas&&... mas) {
     return detail::api("WorldPartition.loadAll", Values{Value(std::forward<Mas>(mas))...});
+}
+/// WorldPartition.setDataLayer("Ruinas", true)
+/// activa o apaga una Data Layer (sus objetos se cargan o se descargan)
+template <typename T0 = Value, typename T1 = Value>
+inline Value setDataLayer(const T0& texto = {}, const T1& activar = {}) {
+    return detail::api("WorldPartition.setDataLayer", Values{Value(texto), Value(activar)});
 }
 /// WorldPartition.stats()
 /// {cells, loadedCells, objects, unloadedObjects, storedBytes}

@@ -35,12 +35,16 @@ enum Stage : std::uint32_t {
 };
 
 constexpr std::uint32_t kSimBindings = 22;
-constexpr std::uint32_t kRenderBindings = 11;
+constexpr std::uint32_t kRenderBindings = 12;
 constexpr std::uint32_t kMaxCells = (1u << 21) - 1u;  // + la de las muertas = 2^21 (4096 bloques de 512)
 constexpr std::uint32_t kStateBytes = 64;
 constexpr vk::Format kDepthFormat = vk::Format::eR32Sfloat;
 constexpr vk::Format kTestFormat = vk::Format::eD32Sfloat;
 constexpr vk::Format kThickFormat = vk::Format::eR16G16B16A16Sfloat;
+// Costra de la lava (thick_[3]): costra * grosor y grosor de lo que emite.
+constexpr vk::Format kCrustFormat = vk::Format::eR16G16Sfloat;
+constexpr std::size_t kThickTargets = 4;
+vk::Format thickFormat(std::size_t i) { return i == 3 ? kCrustFormat : kThickFormat; }
 
 // MISMO orden que fluid_common.glsl.
 struct MaterialGpu {
@@ -172,7 +176,8 @@ void FluidPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
         const std::array<Type, kRenderBindings> types = {
             Type::eUniformBuffer,        Type::eStorageBuffer, Type::eStorageBuffer, Type::eStorageBuffer,
             Type::eCombinedImageSampler, Type::eStorageImage,  Type::eStorageImage,  Type::eStorageImage,
-            Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler};
+            Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+            Type::eCombinedImageSampler};
         std::array<vk::DescriptorSetLayoutBinding, kRenderBindings> bindings{};
         for (std::uint32_t i = 0; i < kRenderBindings; ++i) bindings[i] = vk::DescriptorSetLayoutBinding{i, types[i], 1, all};
         vk::DescriptorSetLayoutCreateInfo info{};
@@ -183,7 +188,7 @@ void FluidPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
         {vk::DescriptorType::eUniformBuffer, 2 * frames_in_flight},
         {vk::DescriptorType::eStorageBuffer, (kSimBindings + 3) * frames_in_flight},
         {vk::DescriptorType::eStorageImage, 3 * frames_in_flight},
-        {vk::DescriptorType::eCombinedImageSampler, 4 * frames_in_flight},
+        {vk::DescriptorType::eCombinedImageSampler, 5 * frames_in_flight},
     }};
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -379,7 +384,7 @@ void FluidPass::createRender(vk::Format color_format) {
             {{}, vk::ShaderStageFlagBits::eFragment, *thick_fragment, "main"},
         }};
         vk::PipelineDepthStencilStateCreateInfo depth{};
-        std::array<vk::PipelineColorBlendAttachmentState, 3> attachments{};
+        std::array<vk::PipelineColorBlendAttachmentState, kThickTargets> attachments{};
         for (auto& a : attachments) {
             a.blendEnable = VK_TRUE;
             a.srcColorBlendFactor = vk::BlendFactor::eOne;
@@ -392,7 +397,8 @@ void FluidPass::createRender(vk::Format color_format) {
         }
         vk::PipelineColorBlendStateCreateInfo blend{};
         blend.setAttachments(attachments);
-        const std::array<vk::Format, 3> formats = {kThickFormat, kThickFormat, kThickFormat};
+        const std::array<vk::Format, kThickTargets> formats = {thickFormat(0), thickFormat(1), thickFormat(2),
+                                                               thickFormat(3)};
         vk::PipelineRenderingCreateInfo rendering{};
         rendering.setColorAttachmentFormats(formats);
         vk::GraphicsPipelineCreateInfo info{};
@@ -871,9 +877,10 @@ void FluidPass::ensureTargets(vk::Extent2D extent, vk::ImageView scene_depth) {
     depth_smooth_.create(*device_, extent, kDepthFormat, vk::ImageUsageFlagBits::eStorage, vk::ImageAspectFlagBits::eColor);
     depth_test_.create(*device_, extent, kTestFormat, vk::ImageUsageFlagBits::eDepthStencilAttachment,
                        vk::ImageAspectFlagBits::eDepth);
-    for (VulkanImage& t : thick_) {
-        t.create(*device_, half, kThickFormat, vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
-                 vk::ImageAspectFlagBits::eColor);
+    for (std::size_t i = 0; i < thick_.size(); ++i) {
+        thick_[i].create(*device_, half, thickFormat(i),
+                         vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+                         vk::ImageAspectFlagBits::eColor);
     }
     targets_ready_ = true;
     writeRenderSets();
@@ -894,10 +901,11 @@ void FluidPass::writeRenderSets() {
             {nullptr, *depth_temp_.view(), vk::ImageLayout::eGeneral},
             {nullptr, *depth_smooth_.view(), vk::ImageLayout::eGeneral},
         }};
-        const std::array<vk::DescriptorImageInfo, 3> thick = {{
+        const std::array<vk::DescriptorImageInfo, kThickTargets> thick = {{
             {*sampler_, *thick_[0].view(), vk::ImageLayout::eShaderReadOnlyOptimal},
             {*sampler_, *thick_[1].view(), vk::ImageLayout::eShaderReadOnlyOptimal},
             {*sampler_, *thick_[2].view(), vk::ImageLayout::eShaderReadOnlyOptimal},
+            {*sampler_, *thick_[3].view(), vk::ImageLayout::eShaderReadOnlyOptimal},
         }};
         std::array<vk::WriteDescriptorSet, kRenderBindings> writes{};
         for (std::uint32_t i = 0; i < kRenderBindings; ++i) {
@@ -917,6 +925,8 @@ void FluidPass::writeRenderSets() {
         }
         writes[4].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         writes[4].pImageInfo = &scene_depth;
+        writes[11].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[11].pImageInfo = &thick[3];
         device_->handle().updateDescriptorSets(writes, nullptr);
     }
 }
@@ -995,8 +1005,8 @@ void FluidPass::recordPrepare(const vk::raii::CommandBuffer& cmd, std::uint32_t 
     // --- Grosor y material (media resolucion) ---
     {
         const vk::Extent2D half = thick_[0].extent();
-        std::array<vk::RenderingAttachmentInfo, 3> attachments{};
-        for (std::size_t i = 0; i < 3; ++i) {
+        std::array<vk::RenderingAttachmentInfo, kThickTargets> attachments{};
+        for (std::size_t i = 0; i < kThickTargets; ++i) {
             attachments[i].imageView = *thick_[i].view();
             attachments[i].imageLayout = Layout::eColorAttachmentOptimal;
             attachments[i].loadOp = vk::AttachmentLoadOp::eClear;

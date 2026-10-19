@@ -128,4 +128,47 @@ void ShadowCascades::update(const Camera& camera, const DirectionalLight& sun,
     }
 }
 
+void ShadowCascades::fitStatic(const core::Aabb& world_box, const DirectionalLight& sun, std::uint32_t shadow_map_size) {
+    const Vec3 light_direction = core::length(sun.direction) > 1e-6f ? core::normalize(sun.direction) : Vec3{0.0f, -1.0f, 0.0f};
+    const Vec3 up = (std::abs(light_direction.y) > 0.99f) ? Vec3{0.0f, 0.0f, 1.0f} : Vec3{0.0f, 1.0f, 0.0f};
+    const Vec3 center = (world_box.min + world_box.max) * 0.5f;
+    const float radius = std::max(core::length(world_box.max - world_box.min) * 0.5f, 0.5f);
+    // La camara del sol mirando al centro de la caja desde fuera de ella.
+    const Vec3 eye = center - light_direction * (radius + caster_margin_);
+    const Mat4 view = core::lookAt(eye, center, up);
+    // La caja (sus 8 esquinas) vista desde el sol: el encuadre justo.
+    float lo_x = 1e30f, hi_x = -1e30f, lo_y = 1e30f, hi_y = -1e30f, lo_z = 1e30f, hi_z = -1e30f;
+    for (int i = 0; i < 8; ++i) {
+        const Vec3 corner{(i & 1) ? world_box.max.x : world_box.min.x, (i & 2) ? world_box.max.y : world_box.min.y,
+                          (i & 4) ? world_box.max.z : world_box.min.z};
+        const Vec4 p = view * Vec4{corner.x, corner.y, corner.z, 1.0f};
+        lo_x = std::min(lo_x, p.x);
+        hi_x = std::max(hi_x, p.x);
+        lo_y = std::min(lo_y, p.y);
+        hi_y = std::max(hi_y, p.y);
+        lo_z = std::min(lo_z, p.z);
+        hi_z = std::max(hi_z, p.z);
+    }
+    // Cuadrado (mismo texel en x e y) y ajustado a la rejilla de texeles.
+    const auto map_size = static_cast<float>(std::max(shadow_map_size, 1u));
+    // Un texel de margen: al ajustar el centro a la rejilla (medio texel como
+    // mucho) la caja sigue dentro.
+    float side = std::max(hi_x - lo_x, hi_y - lo_y);
+    const float texel = std::max(side / std::max(map_size - 1.0f, 1.0f), 1e-4f);
+    side = texel * map_size;
+    const float cx = std::round((lo_x + hi_x) * 0.5f / texel) * texel;
+    const float cy = std::round((lo_y + hi_y) * 0.5f / texel) * texel;
+    // La vista de Vulkan mira hacia -z: la profundidad va de -hi_z a -lo_z.
+    const float near_plane = std::max(-hi_z - 1.0f, 0.0f);
+    const float far_plane = -lo_z + 1.0f;
+    const Mat4 projection =
+        core::orthographic(cx - side * 0.5f, cx + side * 0.5f, cy - side * 0.5f, cy + side * 0.5f, near_plane, far_plane);
+    const Mat4 view_projection = projection * view;
+    for (ShadowCascade& cascade : cascades_) {
+        cascade.light_view_projection = view_projection;
+        cascade.split_distance = 1e9f;
+        cascade.texel_world_size = texel;
+    }
+}
+
 }  // namespace cramion::scene

@@ -8,7 +8,9 @@
 
 #include "Theme.h"
 
+#include <CramionFX/asset/Dds.h>
 #include <CramionFX/asset/ImageFile.h>
+#include <CramionFX/asset/TextureCompression.h>
 
 #include <cstdlib>
 
@@ -356,20 +358,85 @@ ImTextureID ImGuiLayer::image(const std::filesystem::path& file, ImVec2* size) {
     return loadTexture(file, size, 2048);
 }
 
+ImTextureID ImGuiLayer::uiImage(const std::filesystem::path& assets_root, const std::string& relative, ImVec2* size) {
+    // native(): comparar las cadenas tal cual (path::operator!= las descompone
+    // por elementos, y esto va por cada imagen de cada frame).
+    if (assets_root.native() != ui_refs_root_.native()) {  // otro proyecto: las rutas ya no valen
+        ui_refs_root_ = assets_root;
+        ui_image_refs_.clear();
+        ui_font_refs_.clear();
+    }
+    auto it = ui_image_refs_.find(relative);
+    if (it == ui_image_refs_.end()) {
+        UiImageRef ref;
+        ref.file = assets_root / std::filesystem::path(std::u8string(relative.begin(), relative.end()));
+        ref.key = ref.file.wstring() + L"|" + std::to_wstring(2048u);  // la misma clave que image()
+        it = ui_image_refs_.emplace(relative, std::move(ref)).first;
+    }
+    return loadTexture(it->second.file, it->second.key, size, 2048);
+}
+
+ImFont* ImGuiLayer::uiFont(const std::filesystem::path& assets_root, const std::string& relative) {
+    if (assets_root.native() != ui_refs_root_.native()) {
+        ui_refs_root_ = assets_root;
+        ui_image_refs_.clear();
+        ui_font_refs_.clear();
+    }
+    if (const auto it = ui_font_refs_.find(relative); it != ui_font_refs_.end()) return it->second;
+    ImFont* font = uiFont(assets_root / std::filesystem::path(std::u8string(relative.begin(), relative.end())));
+    ui_font_refs_.emplace(relative, font);
+    return font;
+}
+
 ImTextureID ImGuiLayer::loadTexture(const std::filesystem::path& file, ImVec2* size, std::uint32_t max_size) {
-    std::error_code error;
-    const std::filesystem::file_time_type stamp = std::filesystem::last_write_time(file, error);
-    Thumbnail& thumb = thumbnails_[file.wstring() + L"|" + std::to_wstring(max_size)];
+    return loadTexture(file, file.wstring() + L"|" + std::to_wstring(max_size), size, max_size);
+}
+
+ImTextureID ImGuiLayer::loadTexture(const std::filesystem::path& file, const std::wstring& key, ImVec2* size,
+                                    std::uint32_t max_size) {
+    Thumbnail& thumb = thumbnails_[key];
     thumb.max_size = max_size;
     thumb.last_used = frame_;
+    // La fecha del archivo (para recargarlo si cambia en disco) se mira al
+    // pedirlo por primera vez y despues cada 1,5 s, no en cada frame: con
+    // muchos iconos de la interfaz eran muchas llamadas al sistema por frame.
+    constexpr auto kStampInterval = std::chrono::milliseconds(1500);
+    const bool fresh = !thumb.decoding.valid() && thumb.set == VK_NULL_HANDLE && !thumb.failed;
+    const auto now = std::chrono::steady_clock::now();
+    std::error_code error;
+    std::filesystem::file_time_type stamp = thumb.stamp;
+    if (fresh || now - thumb.stamp_checked >= kStampInterval) {
+        stamp = std::filesystem::last_write_time(file, error);
+        thumb.stamp_checked = now;
+    }
     // Nuevo o cambiado en disco: decodificar en otro hilo.
-    if ((!thumb.decoding.valid() && thumb.set == VK_NULL_HANDLE && !thumb.failed) || (!error && stamp != thumb.stamp)) {
+    if (fresh || (!error && stamp != thumb.stamp)) {
         if (thumb.decoding.valid()) return 0;  // aun decodificando la version anterior
         thumb.stamp = stamp;
         thumb.failed = false;
         auto pixels = std::make_shared<Thumbnail::Pixels>();
         thumb.pixels = pixels;
-        thumb.decoding = std::async(std::launch::async, [file, pixels, max_size]() {
+        // En una GPU sin BC no se intenta el camino BC7 (ni comprimir ni
+        // descomprimir despues): RGBA8 como antes.
+        const bool bc_supported = renderer_ != nullptr && renderer_->device().textureCompressionBcSupported();
+        thumb.decoding = std::async(std::launch::async, [file, pixels, max_size, bc_supported]() {
+            // Las imagenes de la interfaz (image/uiImage, hasta 2048): BC7 de
+            // la cache de texturas si no pierden nitidez (loadUiTexture).
+            if (bc_supported && max_size >= 2048) {
+                try {
+                    asset::TextureData bc;
+                    if (asset::loadUiTexture(file, max_size, bc) && bc.format != asset::TextureFormat::Rgba8 &&
+                        !bc.pixels.empty()) {
+                        pixels->width = bc.width;
+                        pixels->height = bc.height;
+                        pixels->compressed = std::move(bc);
+                        return true;
+                    }
+                } catch (const std::exception&) {
+                    // (p. ej. un nombre que no se puede pasar a la pagina de
+                    // codigos al escribir el registro): RGBA8, como antes.
+                }
+            }
             asset::ImageRgba8 image;
             if (!asset::loadImageRgba8(file, image, max_size)) return false;
             pixels->width = image.width;
@@ -395,7 +462,14 @@ void ImGuiLayer::updateThumbnails() {
             continue;
         }
         const bool ok = thumb.decoding.get();
-        if (!ok || thumb.pixels == nullptr || thumb.pixels->rgba.empty()) {
+        if (ok && thumb.pixels != nullptr && !thumb.pixels->compressed.pixels.empty() &&
+            !renderer_->device().textureCompressionBcSupported()) {
+            // La GPU no lee BC: se descomprime (solo el nivel 0).
+            thumb.pixels->rgba = asset::decodeBlockCompressed(thumb.pixels->compressed);
+            thumb.pixels->compressed = asset::TextureData{};
+        }
+        const bool compressed = ok && thumb.pixels != nullptr && !thumb.pixels->compressed.pixels.empty();
+        if (!ok || thumb.pixels == nullptr || (thumb.pixels->rgba.empty() && !compressed)) {
             thumb.failed = true;
             continue;
         }
@@ -403,7 +477,18 @@ void ImGuiLayer::updateThumbnails() {
             replaced_sets.push_back(thumb.set);
             replaced.push_back(thumb.texture);
         }
-        thumb.texture = renderer_->createUiTexture(thumb.pixels->rgba.data(), thumb.pixels->width, thumb.pixels->height);
+        thumb.texture = compressed ? renderer_->createUiTextureCompressed(thumb.pixels->compressed)
+                                   : renderer_->createUiTexture(thumb.pixels->rgba.data(), thumb.pixels->width,
+                                                                thumb.pixels->height);
+        if (compressed && thumb.texture == 0) {
+            // No se pudo subir en BC: se descomprime (nivel 0) y va en RGBA8.
+            thumb.pixels->rgba = asset::decodeBlockCompressed(thumb.pixels->compressed);
+            thumb.pixels->compressed = asset::TextureData{};
+            if (!thumb.pixels->rgba.empty()) {
+                thumb.texture = renderer_->createUiTexture(thumb.pixels->rgba.data(), thumb.pixels->width,
+                                                           thumb.pixels->height);
+            }
+        }
         thumb.size = ImVec2(static_cast<float>(thumb.pixels->width), static_cast<float>(thumb.pixels->height));
         thumb.set = thumb.texture != 0 ? ImGui_ImplVulkan_AddTexture(renderer_->uiTextureView(thumb.texture),
                                                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)

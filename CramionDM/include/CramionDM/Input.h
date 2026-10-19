@@ -58,6 +58,12 @@ public:
     float scrollX() const { return scrollX_; }
     float scrollY() const { return scrollY_; }
 
+    // Quita de esta copia del estado un boton del raton (mantenido, pulsado y
+    // soltado) o la rueda: la entrada que llega a los scripts cuando ese clic
+    // es de la interfaz del juego (ui::UiSystem::filterGameInput).
+    void suppressMouseButton(MouseButton button);
+    void suppressScroll() { scrollX_ = scrollY_ = 0.0f; }
+
     // Modificadores activos en el último evento de teclado.
     KeyMods mods() const { return mods_; }
 

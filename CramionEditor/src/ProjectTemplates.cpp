@@ -2413,8 +2413,10 @@ void buildCars(project::ProjectInfo& project) {
     b.box("Rampa 1", Vec3{0.0f, 1.0f, -60.0f}, Vec3{6.0f, 0.4f, 12.0f}, ramp, Vec3{14.0f, 0.0f, 0.0f});
     b.box("Rampa 2", Vec3{40.0f, 0.8f, 0.0f}, Vec3{12.0f, 0.4f, 6.0f}, ramp, Vec3{0.0f, 0.0f, -12.0f});
     b.ring(120.0f, 1.2f, 1.0f, barrier);
+    // Los conos, a la derecha de la salida: antes uno quedaba justo delante
+    // del coche (x = 0, a 25 m) y al acelerar recto se chocaba con el.
     for (int i = 0; i < 8; ++i) {
-        b.box("Cono " + std::to_string(i + 1), Vec3{-20.0f + static_cast<float>(i) * 4.0f, 0.4f, -25.0f}, Vec3{0.5f, 0.8f, 0.5f},
+        b.box("Cono " + std::to_string(i + 1), Vec3{6.0f + static_cast<float>(i) * 4.0f, 0.4f, -25.0f}, Vec3{0.5f, 0.8f, 0.5f},
               ramp);
     }
 

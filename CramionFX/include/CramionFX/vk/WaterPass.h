@@ -27,6 +27,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace cramion::gfx {
@@ -58,9 +59,10 @@ struct WaterVertex {
 
 struct WaterBodyDesc {
     GpuWaterBody params{};
-    // Rio: su cinta (vacia en oceano/lago). Se vuelve a subir si cambia la version.
-    std::vector<WaterVertex> vertices;
-    std::vector<std::uint32_t> indices;
+    // Rio: su cinta (nula en oceano/lago). Se vuelve a subir si cambia la
+    // version. Compartida (RenderSync la guarda): no se copia cada frame.
+    std::shared_ptr<const std::vector<WaterVertex>> vertices;
+    std::shared_ptr<const std::vector<std::uint32_t>> indices;
     std::uint64_t mesh_version = 0;
 };
 
@@ -100,6 +102,9 @@ public:
     // desde la esquina (origin_x, origin_z) cada `cell` metros. Vacio = calma.
     void setRipples(const std::vector<float>& heights, std::uint32_t size, float origin_x, float origin_z, float cell);
     bool empty() const { return bodies_.empty(); }
+    // Calidad Baja (iluminacion ligera): el reflejo en pantalla del agua con
+    // 12 pasos y 3 de afinado en vez de 32 y 6 (water.frag, ocean.w).
+    void setLowQuality(bool low) { low_quality_ = low; }
 
     // Cada frame (sus buffers ya no los usa la GPU): parametros y mallas.
     void prepare(std::uint32_t frame);
@@ -139,6 +144,15 @@ private:
 
     const VulkanDevice* device_ = nullptr;
     std::uint32_t frames_ = 0;
+    // Oclusion del oceano: una consulta por frame en vuelo alrededor de su
+    // dibujo. Sin ningun pixel visible dos frames seguidos (detras de murallas
+    // o del terreno) no se simula su FFT: se sigue dibujando (barato) para
+    // saber cuando vuelve a verse, y sus olas siguen del mismo instante.
+    vk::raii::QueryPool ocean_queries_{nullptr};
+    std::vector<std::uint8_t> ocean_query_armed_;    // reseteada en recordSimulation, para record()
+    std::vector<std::uint8_t> ocean_query_pending_;  // con resultado por leer
+    std::uint32_t ocean_hidden_frames_ = 0;
+    std::uint32_t ocean_query_frame_ = 0;
     vk::raii::DescriptorSetLayout set_layout_{nullptr};
     vk::raii::PipelineLayout layout_{nullptr};
     vk::raii::Pipeline pipeline_{nullptr};
@@ -178,6 +192,7 @@ private:
 
     std::vector<WaterBodyDesc> bodies_;
     float time_ = 0.0f;
+    bool low_quality_ = false;
 };
 
 }  // namespace cramion::gfx

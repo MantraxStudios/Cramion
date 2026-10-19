@@ -38,8 +38,13 @@
 #include <CramionFX/core/Math.h>
 
 #include <array>
+#include <functional>
 #include <string>
 #include <vector>
+
+namespace cramion::dm {
+class Input;
+}
 
 namespace cramion::ui {
 
@@ -76,6 +81,21 @@ struct Image {
     std::string texture;  // en Assets (vacia = color liso)
     float corner_radius = 0.0f;
     bool preserve_aspect = false;
+    // Recibe el raton (como Raycast Target de uGUI): con false no tapa los
+    // clics al juego ni a lo de debajo (la imagen fantasma de un arrastre, una
+    // brujula decorativa). Las imagenes con opacidad 0 nunca lo tapan.
+    bool raycast_target = true;
+    // Atlas (como uvRect de RawImage, pero desde arriba a la izquierda): la
+    // parte de la textura que se ve, en 0..1. Por defecto, toda.
+    core::Vec2 uv_rect_pos{0.0f, 0.0f};
+    core::Vec2 uv_rect_size{1.0f, 1.0f};
+    // 9-slice: bordes que no se estiran, en pixeles de la imagen (de la parte
+    // del atlas): izquierda/arriba y derecha/abajo. Todo 0 = sin 9-slice.
+    // slice_scale: unidades del Canvas por pixel de la imagen en los bordes.
+    core::Vec2 slice_left_top{0.0f, 0.0f};
+    core::Vec2 slice_right_bottom{0.0f, 0.0f};
+    float slice_scale = 1.0f;
+    bool slice_fill_center = true;
     void reflect(ecs::PropertyVisitor& v);
 };
 
@@ -132,13 +152,20 @@ struct InputField {
     std::string text;
     std::string placeholder = "Escribe...";
     float font_size = 26.0f;
-    int max_length = 0;  // 0 = sin limite
+    int max_length = 0;  // caracteres (UTF-8: "n" con tilde cuenta 1); 0 = sin limite
     bool password = false;
     core::Vec3 background{0.10f, 0.10f, 0.12f};
     core::Vec3 text_color{1.0f, 1.0f, 1.0f};
     Uuid target{};
     std::string on_change;  // function X:OnEscribe(texto)
     std::string on_submit;  // Enter: function X:OnEnviar(texto)
+    // En ejecucion (no se guardan): el cursor y el otro extremo de la
+    // seleccion, en bytes del texto y siempre al principio de un caracter
+    // (-1 = al final; anchor == caret: sin seleccion), y el desplazamiento
+    // horizontal del texto (pixeles) para que el cursor se vea.
+    int caret = -1;
+    int anchor = -1;
+    float scroll = 0.0f;
     void reflect(ecs::PropertyVisitor& v);
 };
 
@@ -206,6 +233,29 @@ struct Mask {
     void reflect(ecs::PropertyVisitor& v);
 };
 
+// Eventos del puntero de un elemento (como el Event Trigger de uGUI): entrar,
+// salir, clic derecho, doble clic, arrastrar y soltar encima. Sirve en
+// cualquier elemento (una casilla del inventario: UIImage + esto). El evento
+// lo recibe el elemento mas arriba bajo el raton o, si no tiene, su padre mas
+// cercano con UIEventTrigger (el icono y el numero de una casilla cuentan como
+// la casilla). Al script de C++ le llega on("Metodo", fn) con un objeto
+// {entity, position (pixeles de la vista), button, other}: other es lo que se
+// arrastra (on_drop) o donde se solto (on_drag_end). A los Visual Scripts, la
+// entidad.
+struct EventTrigger {
+    Uuid target{};               // objeto cuyo script recibe los eventos (vacio = este)
+    std::string on_hover;        // el raton entra
+    std::string on_exit;         // el raton sale
+    std::string on_right_click;  // pulsar y soltar el boton derecho encima
+    std::string on_double_click;
+    std::string on_drag_begin;   // se pulsa encima y el raton se mueve drag_threshold pixeles
+    std::string on_drag;         // cada frame que se mueve mientras se arrastra
+    std::string on_drag_end;     // se suelta (other = el elemento con on_drop de debajo, o nada)
+    std::string on_drop;         // le sueltan encima lo que se arrastraba (other = eso)
+    float drag_threshold = 6.0f; // pixeles antes de empezar a arrastrar (un clic no arrastra)
+    void reflect(ecs::PropertyVisitor& v);
+};
+
 // --- Sistema ---
 
 struct UiRect {
@@ -226,6 +276,14 @@ struct UiDrawCommand {
     bool wrap = false;
     bool shadow = false;
     bool preserve_aspect = false;
+    // Image: parte de la textura (uv, 0..1 desde arriba a la izquierda) y
+    // 9-slice (bordes en pixeles de la imagen: izquierda, arriba, derecha,
+    // abajo; 0 = sin 9-slice) con su escala a pixeles de la vista.
+    core::Vec2 uv0{0.0f, 0.0f};
+    core::Vec2 uv1{1.0f, 1.0f};
+    core::Vec4 slice{0.0f, 0.0f, 0.0f, 0.0f};
+    float slice_scale = 1.0f;
+    bool slice_fill = true;
     // Texto
     bool rich = false;        // con etiquetas <b>, <color=...>...
     bool bold = false;
@@ -246,10 +304,33 @@ struct UiInput {
     bool mouse_down = false;
     bool mouse_pressed = false;
     bool mouse_released = false;
+    // Boton derecho y doble clic del izquierdo (UIEventTrigger).
+    bool right_down = false;
+    bool right_pressed = false;
+    bool right_released = false;
+    bool double_click = false;
     std::string typed;  // caracteres escritos este frame
     bool backspace = false;
     bool enter = false;
     float wheel = 0.0f;  // rueda del raton (+ = hacia arriba)
+    // Campo de texto con el foco: mover el cursor (con shift, seleccionar),
+    // borrar hacia delante, seleccionar todo y el portapapeles.
+    bool key_left = false;
+    bool key_right = false;
+    bool key_home = false;
+    bool key_end = false;
+    bool key_delete = false;
+    bool shift = false;
+    bool select_all = false;  // Ctrl+A
+    bool copy = false;        // Ctrl+C
+    bool cut = false;         // Ctrl+X
+    bool paste = false;       // Ctrl+V
+    std::string clipboard;    // el texto del portapapeles (con paste)
+    std::function<void(const std::string&)> set_clipboard;  // copy / cut
+    // Ancho en pixeles de un texto con la fuente de la interfaz a ese tamano
+    // (colocar el cursor con el raton y dibujar la seleccion). Sin ella se
+    // aproxima (medio tamano por caracter).
+    std::function<float(const std::string& text, float font_px)> measure_text;
 };
 
 // Un rayo que usa la interfaz en el mundo (el de un mando de VR).
@@ -284,10 +365,14 @@ struct UiEvent {
     ecs::Entity source;  // el control
     ecs::Entity target;  // quien tiene el script
     std::string method;
-    enum class Kind { Click, Number, Text, Bool } kind = Kind::Click;
+    // Pointer: un evento de UIEventTrigger (position, button, other).
+    enum class Kind { Click, Number, Text, Bool, Pointer } kind = Kind::Click;
     float number = 0.0f;
     std::string text;
     bool flag = false;
+    core::Vec2 position{};  // Pointer: el raton (pixeles de la vista)
+    int button = 0;         // Pointer: 0 izquierdo, 1 derecho
+    ecs::Entity other;      // Pointer: lo arrastrado (on_drop) o donde se solto (on_drag_end)
 };
 
 class UiSystem {
@@ -301,9 +386,27 @@ public:
     // El raton esta sobre algun control o se esta escribiendo (el juego no
     // deberia usar ese clic/teclado).
     bool capturingMouse() const { return capturing_mouse_; }
+    // Lo mismo, con el nombre de la API de los scripts (UI.pointerOverUi): el
+    // raton estaba sobre la interfaz en el ultimo update (un control, una
+    // imagen que recibe el raton, un ScrollView o una lista abierta).
+    bool pointerOverUi() const { return capturing_mouse_; }
     bool typing() const { return focused_ != entt::null; }
-    // Rectangulo (pixeles) de un elemento en el ultimo update (editor).
+    // Da el foco a un campo de texto (con el cursor al final) o se lo quita
+    // (entt::null). false si no es un UIInputField que responde.
+    bool focus(ecs::World& world, entt::entity field);
+    // La entrada que ven los scripts, sin los clics de la interfaz: un boton
+    // del raton que se pulso con el raton sobre la interfaz no llega al juego
+    // (ni pulsado, ni mantenido, ni soltado) hasta que se suelta; uno que se
+    // pulso fuera sigue siendo del juego aunque pase por encima. La rueda
+    // sobre la interfaz tampoco. Una vez por frame, antes de los scripts, con
+    // una copia de la entrada (usa el estado del ultimo update()).
+    void filterGameInput(dm::Input& input);
+    // Rectangulo (pixeles) de un elemento en el ultimo update (editor y
+    // Entity:uiScreenRect de los scripts).
     bool rectOf(entt::entity entity, UiRect& rect) const;
+    // UIEventTrigger: el elemento que se esta arrastrando (on_drag_begin..
+    // on_drag_end) o entt::null.
+    entt::entity draggedElement() const { return drag_active_ ? drag_source_ : entt::entity{entt::null}; }
     float scaleOf(entt::entity entity) const;  // escala de su Canvas
     // Elemento visible mas arriba bajo un punto (seleccion en el editor).
     entt::entity pick(float x, float y) const;
@@ -356,6 +459,23 @@ private:
     // Clic de un Button o un Toggle; el valor de un Slider (t = 0..1 de su barra).
     void activate(ecs::World& world, ecs::Entity control);
     void setSlider(ecs::World& world, ecs::Entity control, float t);
+    // UIEventTrigger: el que recibe el puntero en (x, y) (sin `exclude` ni sus
+    // hijos) y un evento suyo.
+    entt::entity triggerAt(ecs::World& world, float x, float y, entt::entity exclude) const;
+    void pointerEvent(ecs::World& world, entt::entity source, std::string EventTrigger::*method, const UiInput& input,
+                      int button, entt::entity other);
+    void updatePointerEvents(ecs::World& world, const UiInput& input, entt::entity trigger, bool consumed);
+    // Campo de texto: el cursor donde esta el raton (keep_anchor: ampliando la
+    // seleccion) y la edicion del que tiene el foco.
+    void placeCaret(entt::entity entity, InputField& field, const UiInput& input, bool keep_anchor) const;
+    void editField(ecs::World& world, ecs::Entity entity, InputField& field, const UiInput& input, entt::entity hovered);
+    bool ignore_enter_ = false;  // focus() desde un script: ese Enter no envia
+    entt::entity hover_trigger_ = entt::null;
+    entt::entity right_target_ = entt::null;
+    entt::entity drag_source_ = entt::null;
+    bool drag_active_ = false;
+    core::Vec2 drag_start_{};
+    core::Vec2 drag_last_{};
 
     std::vector<Laid> laid_;
     std::vector<UiDrawCommand> draw_;
@@ -364,6 +484,9 @@ private:
     entt::entity dragging_ = entt::null;
     entt::entity focused_ = entt::null;
     bool capturing_mouse_ = false;
+    // filterGameInput: botones del raton (izquierdo, derecho, central) que se
+    // pulsaron sobre la interfaz y aun no se han soltado.
+    std::array<bool, 3> ui_buttons_{false, false, false};
 
     std::vector<WorldCanvasDraw> world_canvases_;
     std::array<UiPointerHit, kMaxPointers> pointer_hits_{};

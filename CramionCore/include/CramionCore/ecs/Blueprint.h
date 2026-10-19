@@ -71,6 +71,25 @@ bool createEmptyBlueprint(const BlueprintCreateOptions& options, BlueprintCreate
 bool convertPrefabToBlueprint(const std::filesystem::path& prefab_file, const std::filesystem::path& assets_root,
                               BlueprintCreateResult& out, std::string* error = nullptr);
 
+// --- Renombrar / mover ------------------------------------------------------------
+struct BlueprintRelocation {
+    std::string old_graph;   // relativo a Assets/ (antes)
+    std::string new_graph;   // relativo a Assets/ (despues; igual si no cambio)
+    bool moved = false;      // el .crgraph se movio o renombro
+    int updated_files = 0;   // escenas y prefabs de Assets con la ruta cambiada
+};
+// Tras mover o renombrar el .crprefab de un Blueprint (de `old_prefab` a
+// `new_prefab`, que ya existe): si su .crgraph estaba al lado con su mismo
+// nombre, va con el (con el nombre nuevo) y la ruta cambia en el bloque
+// "blueprint", en el VisualScript de sus entidades y en las escenas y prefabs
+// de Assets que la usan. Un grafo con otro nombre (compartido) no se mueve.
+// El uuid del grafo no cambia.
+bool relocateBlueprintGraph(const std::filesystem::path& old_prefab, const std::filesystem::path& new_prefab,
+                            const std::filesystem::path& assets_root, BlueprintRelocation& out, std::string* error = nullptr);
+// Cambia cada `"graph": "<from>"` de un texto JSON (escena, prefab) por `to`
+// sin tocar nada mas (ni el formato). Devuelve cuantos cambio.
+int replaceGraphReferences(std::string& text, const std::string& from, const std::string& to);
+
 }  // namespace cramion::ecs
 
 #endif  // CRAMION_CORE_ECS_BLUEPRINT_H

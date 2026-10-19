@@ -33,6 +33,14 @@ namespace {
 // 10 fps: no gasta GPU ni CPU mientras no se usa. Las ventanas del propio
 // editor (dialogos, ventanas sueltas de ImGui) cuentan como primer plano.
 constexpr float kBackgroundFrameMs = 100.0f;
+// Y sin dibujar la escena: solo un frame cada kBackgroundRedrawMs (la
+// interfaz y los mensajes siguen a 10 fps). Dibujar la vista a 10 fps gastaba
+// la GPU de otro programa: con el juego exportado delante, el editor en una
+// escena con nubes y luz volumetrica pedia ~30 ms de GPU por frame y el
+// juego tenia tirones de 50 ms (p95). No si una IA lo usa por MCP (sus
+// capturas necesitan frames) ni mientras carga un proyecto o una escena.
+constexpr float kBackgroundRedrawMs = 2000.0f;
+constexpr float kMcpActiveSeconds = 10.0f;
 
 bool inBackground(HWND main_window) {
     if (IsIconic(main_window)) return true;
@@ -174,8 +182,12 @@ int main(int argc, char** argv) {
             return std::chrono::duration<float, std::milli>(FrameClock::now() - t).count();
         };
         cramion::prof::setLog([](const std::string& line) { std::cout << line << std::endl; });
+        auto last_render = FrameClock::now();
         while (!app.quitRequested()) {
             const auto frame_start = FrameClock::now();
+            const bool background_idle = app.backgroundThrottleAllowed() && inBackground(window.handle()) &&
+                                         !app.projectLoading() && !app.sceneLoading() &&
+                                         app.secondsSinceMcp() > kMcpActiveSeconds;
             cramion::prof::beginFrame();
             // En modo cine (grabar por MCP) el tiempo avanza a pasos fijos.
             const float delta_seconds = app.cinemaDelta(clock.tick());
@@ -203,25 +215,29 @@ int main(int argc, char** argv) {
             scene.update(app.sceneWantsInput() ? input : idle_input, delta_seconds);
             const float scene_ms = msSince(t);
             const auto render_start = std::chrono::steady_clock::now();
-            // Escena y Juego visibles a la vez: las dos se dibujan cada frame
-            // (la otra primero, sin presentar), tambien en Play.
-            if (app.wantsSecondaryView()) {
-                CR_PROFILE_SCOPE("Vista secundaria");
-                app.syncWorld(delta_seconds, /*secondary=*/true);
-                renderer.drawFrame(scene, /*present=*/false);
+            const bool skip_render = background_idle && !app.xrFrameOpen() && msSince(last_render) < kBackgroundRedrawMs;
+            if (!skip_render) {
+                last_render = FrameClock::now();
+                // Escena y Juego visibles a la vez: las dos se dibujan cada frame
+                // (la otra primero, sin presentar), tambien en Play.
+                if (app.wantsSecondaryView()) {
+                    CR_PROFILE_SCOPE("Vista secundaria");
+                    app.syncWorld(delta_seconds, /*secondary=*/true);
+                    renderer.drawFrame(scene, /*present=*/false);
+                    app.afterRender();
+                }
+                {
+                    CR_PROFILE_SCOPE("Sincronizar mundo");
+                    app.syncWorld(delta_seconds);
+                }
+                app.renderXrEyes();
+                {
+                    CR_PROFILE_SCOPE("Render (CPU)");
+                    renderer.drawFrame(scene);
+                }
+                app.endXrFrame();
                 app.afterRender();
-            }
-            {
-                CR_PROFILE_SCOPE("Sincronizar mundo");
-                app.syncWorld(delta_seconds);
-            }
-            app.renderXrEyes();
-            {
-                CR_PROFILE_SCOPE("Render (CPU)");
-                renderer.drawFrame(scene);
-            }
-            app.endXrFrame();
-            app.afterRender();
+            }  // !skip_render
             app.setRenderCpuTime(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() -
                                                                             render_start)
                                      .count());

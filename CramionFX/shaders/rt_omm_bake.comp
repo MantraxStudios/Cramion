@@ -33,6 +33,7 @@ struct RtMaterial {
     uint metallic_roughness_texture;
     uint emissive_texture;
     uint flags;
+    vec4 uv_transform;  // tiling de las UV: xy = repeticion, zw = desplazamiento
 };
 
 layout(std430, set = 1, binding = 1) readonly buffer RtVertices { RtVertex rt_vertices[]; };
@@ -121,10 +122,12 @@ void main() {
     RtVertex a = rt_vertices[rt_indices[triangle * 3u]];
     RtVertex b = rt_vertices[rt_indices[triangle * 3u + 1u]];
     RtVertex c = rt_vertices[rt_indices[triangle * 3u + 2u]];
+    // El material del modelo dueno de los triangulos (los que comparten su
+    // BLAS tienen el mismo alfa: RayTracing::build los agrupa asi).
     RtMaterial material = rt_materials[rt_triangle_materials[triangle]];
-    vec2 uv_a = vec2(a.u, a.v);
-    vec2 uv_b = vec2(b.u, b.v);
-    vec2 uv_c = vec2(c.u, c.v);
+    vec2 uv_a = vec2(a.u, a.v) * material.uv_transform.xy + material.uv_transform.zw;
+    vec2 uv_b = vec2(b.u, b.v) * material.uv_transform.xy + material.uv_transform.zw;
+    vec2 uv_c = vec2(c.u, c.v) * material.uv_transform.xy + material.uv_transform.zw;
     uint texture_index = material.albedo_texture;
     float alpha_factor = material.base_color.a;
 

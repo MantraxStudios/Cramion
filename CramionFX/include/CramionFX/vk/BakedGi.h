@@ -70,6 +70,35 @@ inline std::uint32_t surfaceCellHash(std::uint32_t lo, std::uint32_t hi) {
     return h;
 }
 
+// --- Lightmaps por texel de UV2 (.crbake v4, PLAN-LIGHTMAPS.md Fase 2) ---
+// Paginas RGBA16F de un unico array 2D (capa = pagina): rgb = irradiancia en
+// el convenio del render (difuso = albedo x rgb; Fase 3), a = visibilidad del
+// sol (0..1). Cada instancia Static con lightmap tiene un registro: su pagina
+// y el rectangulo (uv_atlas = uv2 * scale_offset.xy + scale_offset.zw).
+inline constexpr std::uint32_t kLightmapNone = 0xFFFFFFFFu;
+struct LightmapPage {
+    std::uint32_t width = 0, height = 0;
+    std::vector<std::uint16_t> texels;  // half x4; se vacia al subirla
+};
+struct LightmapRecord {
+    std::array<std::uint64_t, 2> entity{}, model{};  // UUID (alto, bajo)
+    std::int32_t part = 0;
+    std::uint32_t page = kLightmapNone;
+    core::Vec4 scale_offset{1.0f, 1.0f, 0.0f, 0.0f};  // uv_atlas = uv2 * xy + zw
+    std::uint64_t layout_hash = 0;
+    std::array<float, 12> world{};  // 3x4 por columnas al hornear (relativa a world_origin): aviso si se movio
+};
+struct LightmapSet {
+    std::uint32_t width = 0, height = 0;  // tamano del array
+    std::vector<LightmapPage> pages;
+    std::vector<LightmapRecord> records;
+    float texels_per_meter = 0.0f;
+    bool sun_visibility = false;  // el canal a vale
+    bool has_irradiance = false;  // Fase 3
+    core::Vec3 bounds_min{}, bounds_max{};  // de lo horneado (mapa de sombra estatico, Fase 4)
+    bool empty() const { return pages.empty() || records.empty(); }
+};
+
 struct BakedLighting {
     std::vector<BakedProbeVolume> volumes;  // del mas pequeno al mas grande (gana el primero que contiene el punto)
     std::vector<core::Vec4> probes;         // kBakedProbeVec4 por sonda
@@ -78,10 +107,20 @@ struct BakedLighting {
     // sombras ya estan dentro de las sondas y del lightmap de superficie. En
     // modo horneado el renderizador no las dibuja en tiempo real (no hay luz
     // doble ni mapas de sombra suyos). Version 3 del .crbake.
+    // En la v4 el sol nunca va horneado como luz: sun_baked dice si su Light
+    // estaba en Horneada al hornear (informativo) y sun_direction donde estaba
+    // (las sombras horneadas valen mientras no se mueva).
     bool sun_baked = false;                 // el sol se horneo entero (directa + sombras)
     core::Vec3 sun_direction{};             // hacia donde iban sus rayos al hornear
     std::vector<std::array<std::uint64_t, 2>> baked_lights;  // UUID (alto, bajo) de las puntuales/focos horneados
-    bool empty() const { return (volumes.empty() || probes.empty()) && surface.empty(); }
+    // Version del .crbake (1-3: sol en las sondas; 4: lightmaps). Las de antes
+    // se dibujan exactamente como siempre (sun_in_probes).
+    std::uint32_t version = 3;
+    bool sun_in_probes = true;
+    LightmapSet lightmaps;
+    std::array<double, 3> world_origin{};    // origen flotante al hornear
+    std::array<std::uint64_t, 2> scene_uuid{};
+    bool empty() const { return (volumes.empty() || probes.empty()) && surface.empty() && lightmaps.empty(); }
     bool lightBaked(std::uint64_t high, std::uint64_t low) const {
         for (const auto& id : baked_lights) {
             if (id[0] == high && id[1] == low) return true;
@@ -90,15 +129,28 @@ struct BakedLighting {
     }
 };
 
-// Si el sol de ahora sigue siendo el horneado (la hora del dia no lo ha
-// movido mas de ~2 grados). Si se movio, el sol vuelve a tiempo real.
-inline bool bakedSunMatches(const BakedLighting& baked, const core::Vec3& sun_direction) {
-    if (!baked.sun_baked) return false;
+// Misma direccion que la del horneado (la hora del dia no ha movido el sol mas
+// de ~2 grados).
+inline bool bakedSunDirectionMatches(const BakedLighting& baked, const core::Vec3& sun_direction) {
     const float la = core::length(baked.sun_direction);
     const float lb = core::length(sun_direction);
     if (la < 1e-6f || lb < 1e-6f) return false;
     return core::dot(baked.sun_direction, sun_direction) / (la * lb) > 0.99939f;  // cos(2 grados)
 }
+
+// Si el sol de ahora sigue siendo el horneado (la hora del dia no lo ha
+// movido mas de ~2 grados). Si se movio, el sol vuelve a tiempo real.
+inline bool bakedSunMatches(const BakedLighting& baked, const core::Vec3& sun_direction) {
+    if (!baked.sun_baked) return false;
+    return bakedSunDirectionMatches(baked, sun_direction);
+}
+
+// De donde salen las sombras del sol (VulkanRenderer::sunShadowSource).
+enum class SunShadowSource : int {
+    Cascades = 0,         // tiempo real (mapas en cascada / rayos)
+    LegacyBaked = 1,      // .crbake v1-3: el sol entero en las sondas
+    BakedVisibility = 2,  // .crbake v4: visibilidad horneada en el lightmap (canal a)
+};
 
 enum class LightingMode : int {
     Realtime = 0,  // SSGI o trazado de rayos (lo de siempre)

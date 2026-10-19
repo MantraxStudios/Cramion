@@ -24,6 +24,7 @@
 // se dibujan en tiempo real. Las "Mixtas" solo aportan su rebote.
 
 #include "CramionCore/Uuid.h"
+#include "CramionCore/asset/BakedLightingFile.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/World.h"
@@ -67,11 +68,55 @@ struct LightProbeVolume {
 
 void registerLightingComponents();
 
+inline constexpr std::uint32_t kNoBakeMaterial = 0xFFFFFFFFu;
+
 struct BakeTriangle {
     core::Vec3 a, b, c;
-    core::Vec3 albedo{0.5f, 0.5f, 0.5f};  // lineal
+    core::Vec3 albedo{0.5f, 0.5f, 0.5f};  // lineal (albedo de rebote, ya limitado a 0.95)
     core::Vec3 emission{};                // lineal (unidades del renderizador)
+    // Indice en BakeScene::materials (kNoBakeMaterial: el color de arriba vale tal cual).
+    std::uint32_t material = kNoBakeMaterial;
 };
+
+// De donde sale el color de un material (PLAN-LIGHTMAPS 0.2). gatherBakeScene
+// solo apunta las rutas (hilo principal); resolveBakeMaterials lee las
+// texturas en el hilo del horneado y pone el color de cada triangulo.
+struct BakeMaterial {
+    // Material de un modelo del asset: su .crdata, pieza e indice.
+    Uuid model{};
+    std::filesystem::path model_file;
+    int part = -1;
+    std::uint32_t index = 0;
+    // .crmat o malla de codigo: imagenes en disco (vacio = sin textura).
+    bool from_files = false;
+    std::filesystem::path albedo_file;
+    std::filesystem::path emissive_file;
+    // Factores lineales (sin texturas), emision ya x6 (skinned.frag).
+    core::Vec3 base_albedo{0.5f, 0.5f, 0.5f};
+    core::Vec3 base_emission{};
+    float metallic = 0.0f;
+    float roughness = 0.8f;
+    // Resultado (resolveBakeMaterials).
+    core::Vec3 albedo{0.5f, 0.5f, 0.5f};  // de rebote, limitado a 0.95
+    core::Vec3 emission{};
+    float coverage = 1.0f;  // texeles opacos de la textura de color (recorte por alfa)
+    bool resolved = false;
+};
+
+// Lo que gatherBakeScene puso de cada malla de modelo (los lightmaps la
+// cambian por su copia con UV2 y usan sus materiales).
+struct BakeMeshEntry {
+    Uuid entity{};
+    Uuid model{};
+    int part = 0;
+    std::uint32_t first = 0, count = 0;            // sus triangulos en BakeScene::triangles
+    std::vector<std::uint32_t> materials;          // por material de la pieza: indice en BakeScene::materials
+    std::vector<std::uint8_t> transparent;         // por material de la pieza
+};
+
+// Albedo de rebote (convenio del meta pass de Unity, PLAN-LIGHTMAPS 1.5):
+// difuso sin la parte metalica mas un poco del especular; limitado a 0.95.
+core::Vec3 bounceAlbedo(const core::Vec3& albedo, float metallic, float roughness);
 
 struct BakeVolume {
     core::Vec3 min{};
@@ -99,6 +144,9 @@ struct BakeSettings {
     // enciende con este texel (sin el, las sombras horneadas serian las de
     // las sondas: muy borrosas). 0 = no encenderlo.
     float auto_surface_texel = 0.5f;
+    // .crbake v4 (lightmaps): la luz DIRECTA del sol no va a las sondas (se
+    // evalua siempre en tiempo real); su rebote si (PLAN-LIGHTMAPS 1.2).
+    bool exclude_sun_direct = false;
 };
 
 struct BakeScene {
@@ -113,9 +161,18 @@ struct BakeScene {
     bool sun_baked = false;  // el sol tambien en directa (y sombras)
     // UUID (alto, bajo) de las puntuales/focos horneados (van al .crbake).
     std::vector<std::array<std::uint64_t, 2>> baked_light_ids;
+    // Fuerza de la sombra del sol (Light.shadow_strength; 0 si no proyecta).
+    float sun_shadow_strength = 1.0f;
+    // El cielo del render: los 9 coeficientes de su irradiancia (ya / pi,
+    // VulkanRenderer::readSkyIrradianceSh). Sin ellos (pruebas), el degradado
+    // de abajo.
+    std::array<core::Vec3, 9> sky_sh{};
+    bool has_sky_sh = false;
     core::Vec3 sky_zenith{0.30f, 0.46f, 0.85f};
     core::Vec3 sky_horizon{0.72f, 0.80f, 0.90f};
     std::vector<BakeVolume> volumes;
+    std::vector<BakeMaterial> materials;  // los de BakeTriangle::material
+    std::vector<BakeMeshEntry> meshes;    // las mallas de modelo que entraron (gatherBakeScene)
     BakeSettings settings;
 };
 
@@ -136,6 +193,8 @@ struct BakeProgress {
 
 struct BakeStats {
     std::size_t triangles = 0;
+    std::size_t materials = 0;          // resolveBakeMaterials: materiales con color leido
+    std::size_t material_textures = 0;  // ... de ellos con textura
     std::size_t probes = 0;
     std::size_t invalid_probes = 0;
     std::size_t surface_texels = 0;
@@ -219,6 +278,20 @@ void gatherBakeScene(ecs::World& world, assets::AssetManager& assets, BakeScene&
                      const TerrainProvider& terrains = {}, BakeGatherReport* report = nullptr,
                      const ModelPartProvider& parts = {});
 
+// Lee las texturas de los materiales (BakeScene::materials: medias de color y
+// de emision, recorte por alfa) y pone el color de cada triangulo. En el hilo
+// del horneado: lee los .crdata con texturas. Sin materiales no hace nada.
+void resolveBakeMaterials(BakeScene& scene, BakeProgress* progress = nullptr, BakeStats* stats = nullptr);
+
+// Parte de los triangulos de las mallas (los `mesh_triangles` primeros) cuyo
+// centroide cae dentro de algun volumen de sondas (1 sin volumenes). En
+// `uncovered`, los que quedan fuera.
+float probeCoverage(const BakeScene& scene, std::size_t mesh_triangles, std::vector<std::uint32_t>* uncovered = nullptr);
+
+// La matriz de reposo de una pieza rigida (un hueso: nodo x offset, como la
+// dibuja RenderSync sin Animator). Identidad sin huesos.
+core::Mat4 restPoseMatrix(const asset::ModelData& data);
+
 // Puede entrar en el horneado (Static propio o de algun padre)?
 bool staticInHierarchy(ecs::Entity entity);
 
@@ -237,13 +310,13 @@ void gatherBakeLights(ecs::World& world, const scene::LightSet& sun, BakeScene& 
 // (0 = sin tope), las separa mas: la separacion final es size / (n - 1).
 BakeVolume volumeAround(const std::vector<BakeTriangle>& triangles, float spacing, float max_probes = 0.0f,
                         std::size_t bounds_count = 0);
+// Lo mismo alrededor de un subconjunto (indices en `triangles`): el volumen
+// automatico extra cuando los del usuario no cubren lo Static (probeCoverage).
+BakeVolume volumeAround(const std::vector<BakeTriangle>& triangles, const std::vector<std::uint32_t>& subset,
+                        float spacing, float max_probes = 0.0f);
 
-// <escena>.crbake
+// <escena>.crbake (saveBakedLighting / loadBakedLighting: asset/BakedLightingFile.h).
 std::filesystem::path bakedLightingFile(const std::filesystem::path& scene_file);
-bool saveBakedLighting(const std::filesystem::path& file, const gfx::BakedLighting& data, gfx::LightingMode mode,
-                       std::string* error = nullptr);
-bool loadBakedLighting(const std::filesystem::path& file, gfx::BakedLighting& data, gfx::LightingMode& mode,
-                       std::string* error = nullptr);
 
 // Irradiancia de una sonda en una direccion (la misma cuenta que el shader;
 // para las pruebas y la vista del editor).

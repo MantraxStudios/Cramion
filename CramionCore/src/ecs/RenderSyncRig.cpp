@@ -462,7 +462,7 @@ Entity RenderSync::skinnedEntity(World& world, Entity e, const std::string* bone
     const auto matches = [&](Entity x) {
         const auto it = animations_.find(x.handle());
         if (it == animations_.end() || it->second.seen + 2 < frame_) return false;
-        const asset::ModelData* data = it->second.animator.model();
+        const asset::ModelData* data = stateModel(it->second);
         if (data == nullptr || data->bones.empty()) return false;
         return bone == nullptr || findBone(*data, *bone) >= 0;
     };
@@ -516,7 +516,7 @@ void RenderSync::updateSockets(World& world, scene::Scene& scene) {
             // El hueso con la cache de nodos (findBone por nombre cada frame cuesta).
             if (world.valid(it->second) && skinnedEntity(world, cached, nullptr) == cached) {
                 const auto anim = animations_.find(cached.handle());
-                const asset::ModelData* model = anim != animations_.end() ? anim->second.animator.model() : nullptr;
+                const asset::ModelData* model = anim != animations_.end() ? stateModel(anim->second) : nullptr;
                 if (model != nullptr && socketBone(h, *model, socket.bone) >= 0) source = cached;
             }
         }
@@ -533,14 +533,29 @@ void RenderSync::updateSockets(World& world, scene::Scene& scene) {
             drive_sockets_[source.handle()].push_back(h);
             continue;
         }
-        AnimationState& state = animations_[source.handle()];
-        const asset::ModelData* data = state.animator.model();
+        anim::Animator& animator = stateAnimator(animations_[source.handle()]);
+        const asset::ModelData* data = animator.model();
         const int node = data != nullptr ? socketBone(h, *data, socket.bone) : -1;
-        if (node < 0 || static_cast<std::size_t>(node) >= state.animator.globals().size()) continue;
-        const Mat4 bone_world = source.worldMatrix() * state.animator.globals()[static_cast<std::size_t>(node)];
+        if (node < 0 || static_cast<std::size_t>(node) >= animator.globals().size()) continue;
+        const Mat4 bone_world = source.worldMatrix() * animator.globals()[static_cast<std::size_t>(node)];
+        // Su escala en el mundo: la de su padre por la suya, como cualquier hijo. Antes era s.localScale() tal cual y,
+        // bajo un padre escalado, setWorldMatrix la dividia cada frame por la del padre: el objeto encogia hasta
+        // desaparecer (el hacha en la mano de un personaje con escala 1,03 dejaba de verse en unos segundos).
+        const Vec3 local_scale = s.localScale();
+        Vec3 scale = local_scale;
+        if (const Entity p = s.parent(); p.valid()) {
+            Vec3 pt{};
+            Quat pr{};
+            Vec3 ps{1.0f, 1.0f, 1.0f};
+            decomposeMatrix(p.worldMatrix(), pt, pr, ps);
+            scale = Vec3{scale.x * ps.x, scale.y * ps.y, scale.z * ps.z};
+        }
         const Mat4 m = withoutScale(bone_world) *
-                       core::composeTrs(socket.position, quatFromEulerDegrees(socket.rotation), s.localScale());
+                       core::composeTrs(socket.position, quatFromEulerDegrees(socket.rotation), scale);
         s.setWorldMatrix(m);
+        // La escala local exacta (la descomposicion de setWorldMatrix la
+        // devuelve con error de coma flotante y se iria acumulando).
+        s.setLocalScale(local_scale);
         moved.push_back(h);
     }
     if (moved.empty()) return;
@@ -565,10 +580,10 @@ void RenderSync::updateSockets(World& world, scene::Scene& scene) {
 bool RenderSync::boneWorld(World& world, Entity e, const std::string& bone, Mat4& out) {
     const Entity source = skinnedEntity(world, e, &bone);
     if (!source.valid()) return false;
-    AnimationState& state = animations_[source.handle()];
-    const int node = findBone(*state.animator.model(), bone);
-    if (node < 0 || static_cast<std::size_t>(node) >= state.animator.globals().size()) return false;
-    out = source.worldMatrix() * state.animator.globals()[static_cast<std::size_t>(node)];
+    anim::Animator& animator = stateAnimator(animations_[source.handle()]);
+    const int node = findBone(*animator.model(), bone);
+    if (node < 0 || static_cast<std::size_t>(node) >= animator.globals().size()) return false;
+    out = source.worldMatrix() * animator.globals()[static_cast<std::size_t>(node)];
     return true;
 }
 
@@ -576,9 +591,9 @@ bool RenderSync::skeletonPose(World& world, Entity e, SkeletonPose& out) {
     out = SkeletonPose{};
     const Entity source = skinnedEntity(world, e, nullptr);
     if (!source.valid()) return false;
-    AnimationState& state = animations_[source.handle()];
-    const asset::ModelData& data = *state.animator.model();
-    if (state.animator.globals().size() != data.nodes.size()) return false;
+    anim::Animator& animator = stateAnimator(animations_[source.handle()]);
+    const asset::ModelData& data = *animator.model();
+    if (animator.globals().size() != data.nodes.size()) return false;
     // Solo los nodos del esqueleto: los huesos y sus antepasados (sin la raiz
     // de la escena ni las mallas).
     std::vector<bool> keep(data.nodes.size(), false);
@@ -594,7 +609,7 @@ bool RenderSync::skeletonPose(World& world, Entity e, SkeletonPose& out) {
         index[i] = static_cast<int>(out.names.size());
         out.names.push_back(data.nodes[i].name);
         out.nodes.push_back(static_cast<int>(i));
-        const Mat4 m = w * state.animator.globals()[i];
+        const Mat4 m = w * animator.globals()[i];
         out.positions.push_back(Vec3{m.m[3][0], m.m[3][1], m.m[3][2]});
         const int parent = data.nodes[i].parent;
         out.parents.push_back(parent >= 0 ? index[static_cast<std::size_t>(parent)] : -1);
@@ -616,7 +631,7 @@ const asset::ModelData* RenderSync::skeletonData(World& world, Entity e, float* 
     const Entity source = skinnedEntity(world, e, nullptr);
     if (!source.valid()) return nullptr;
     if (scale != nullptr) *scale = maxAxisScale(source.worldMatrix());
-    return animations_[source.handle()].animator.model();
+    return stateModel(animations_[source.handle()]);
 }
 
 }  // namespace cramion::ecs

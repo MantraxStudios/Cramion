@@ -431,6 +431,7 @@ void ScriptSystem::setXr(xr::XrSystem* system, const xr::XrRig* rig) {
     impl_->xr_system = system;
     impl_->xr_rig = rig;
 }
+void ScriptSystem::setUi(ui::UiSystem* ui) { impl_->ui = ui; }
 bool ScriptSystem::cursorLocked() const { return impl_->cursor_locked; }
 void ScriptSystem::releaseCursor() { impl_->lockCursor(false); }
 void ScriptSystem::setLog(LogCallback log) { impl_->log = std::move(log); }
@@ -715,6 +716,32 @@ bool ScriptSystem::takeVisualScriptBreak(std::string& graph, int& node, entt::en
 
 std::vector<entt::entity> ScriptSystem::visualScriptObjects(const std::string& graph) const {
     return impl_->vs_debug != nullptr ? impl_->vs_debug->objects(graph) : std::vector<entt::entity>{};
+}
+
+void ScriptSystem::setVisualScriptLiveDebug(bool on) {
+    if (impl_->vs_debug) impl_->vs_debug->setLive(on);
+}
+
+bool ScriptSystem::hasConstructionScript(const std::string& graph) {
+    return impl_->vs_debug != nullptr && impl_->vs_debug->hasConstruction(graph);
+}
+
+bool ScriptSystem::runConstructionScript(ecs::World& world, ecs::Entity entity, std::string* error) {
+    Impl& d = *impl_;
+    if (d.running || d.vs_debug == nullptr) {
+        if (error != nullptr) *error = d.running ? "el juego esta en marcha" : "Visual Scripting no esta disponible";
+        return false;
+    }
+    // Como la consola fuera de Play: sobre la escena del editor, y lo que se
+    // destruya (Entity:destroy) se borra al terminar.
+    ecs::World* previous = d.world;
+    d.world = &world;
+    std::string problem;
+    const bool ok = d.vs_debug->construct(entity, problem);
+    d.flushDestroys();
+    d.world = previous;
+    if (!ok && error != nullptr) *error = problem;
+    return ok;
 }
 
 bool ScriptSystem::loadTestFile(const std::string& file, std::string* error) {

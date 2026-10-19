@@ -62,7 +62,8 @@ struct Foliage {
     float max_slope = 32.0f;  // grados
     int max_instances = 4000000;
     std::vector<FoliageClearing> clearings;
-    std::vector<FoliageWater> water;  // en marcha (no se guarda)
+    // En marcha (no se guarda): la misma lista para todos los bosques.
+    std::shared_ptr<const std::vector<FoliageWater>> water;
     // Dibujo (gfx::FoliageSettings).
     float lod1_distance = 120.0f;
     float lod2_distance = 450.0f;

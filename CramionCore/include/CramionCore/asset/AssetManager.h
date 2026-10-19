@@ -16,6 +16,10 @@
 #include <unordered_set>
 #include <vector>
 
+namespace cramion::lighting {
+struct LightmapUvSet;
+}
+
 namespace cramion::assets {
 
 // Un nodo de la jerarquia de un modelo importado. Al instanciar el modelo en
@@ -40,6 +44,20 @@ struct ModelAsset {
     std::vector<std::string> animation_names;  // de la pieza animada
 };
 
+// Los colores de un material tal como los ve el horneado de luz
+// (readMaterialColors, PLAN-LIGHTMAPS 0.2): factor del material por la media
+// lineal de su textura, en las unidades del render.
+struct MaterialColors {
+    core::Vec3 albedo{1.0f, 1.0f, 1.0f};  // lineal: base_color x media(toLinear(textura)); sin limitar
+    core::Vec3 emission{};                // lineal: emisivo x 6 x media(toLinear(textura emisiva)) (skinned.frag)
+    float opaque_fraction = 1.0f;         // texeles con alfa >= 0.5 de la textura de color (recorte por alfa)
+    bool transparent = false;             // vidrio, agua
+    float metallic = 0.0f;
+    float roughness = 0.8f;
+    bool albedo_texture = false;          // tiene textura de color...
+    bool albedo_texture_read = false;     // ... y se pudo leer (si no, el factor x 0.6)
+};
+
 // Carga y guarda en memoria los assets de un proyecto. Un asset se carga una
 // vez aunque lo usen muchas entidades.
 class AssetManager {
@@ -59,8 +77,12 @@ public:
     // hilo: miniaturas, extraer clips). `file` vacio para las primitivas.
     // `decode_textures` = false: las texturas quedan comprimidas tal como
     // estan en el .crdata (para reescribirlas, p. ej. el lote estatico).
+    // `uvs`: las UV de lightmap de la escena (LightmapUvSet): cada pieza que
+    // tenga disposicion se parte y lleva su UV2 antes de reagrupar y de los
+    // LODs (PLAN-LIGHTMAPS 1.4). Sin el (lote estatico, miniaturas), sin UV2.
     static std::shared_ptr<ModelAsset> readModel(const Uuid& uuid, const std::filesystem::path& file,
-                                                 const std::string& name, bool decode_textures = true);
+                                                 const std::string& name, bool decode_textures = true,
+                                                 const lighting::LightmapUvSet* uvs = nullptr);
     // Solo las mallas (vertices, indices, submallas, materiales, nodos y
     // huesos): sin los bytes de las texturas, sin LODs y sin cache. Para
     // quien necesita la geometria de un modelo que el renderizador ya se
@@ -73,6 +95,13 @@ public:
     // Las texturas incrustadas de un .crdata tal como estan (sin decodificar,
     // con su uso: TextureData::usage), sin las mallas: exportar el juego.
     static std::vector<asset::TextureData> readModelTextures(const std::filesystem::path& file);
+    // Colores de los materiales de un modelo para el horneado de luz: lee el
+    // .crdata con sus texturas, resuelve las perezosas y devuelve, por pieza y
+    // por material, el color medio (MaterialColors). `wanted`: que piezas
+    // (vacio = todas; las demas quedan vacias). Suelta las texturas al
+    // terminar. Las primitivas se generan. Cualquier hilo (el del horneado).
+    static std::vector<std::vector<MaterialColors>> readMaterialColors(const Uuid& uuid, const std::filesystem::path& file,
+                                                                       const std::vector<bool>& wanted = {});
 
     // Ruta de un .hdr en disco para el renderizador
     // (VulkanRenderer::loadEnvironment): el HDR incrustado en el .crdata se
@@ -101,6 +130,12 @@ public:
 
     AssetDatabase& database() { return database_; }
 
+    // --- UV de lightmap de la escena abierta (.crbake v4 o "Generar UV de
+    // lightmap") --- Lo que se lea desde ahora sale con sus UV2; lo ya cargado
+    // no cambia (quien las cambia recarga: RenderSync::reset). nullptr = sin UV2.
+    void setLightmapUvs(std::shared_ptr<const lighting::LightmapUvSet> uvs);
+    const std::shared_ptr<const lighting::LightmapUvSet>& lightmapUvs() const { return lightmap_uvs_; }
+
 private:
     struct Loader;  // hilos de fondo y sus colas
     void takeFinished(const Uuid* only);
@@ -110,6 +145,7 @@ private:
     std::unordered_map<Uuid, std::shared_ptr<ModelAsset>> models_;
     std::unordered_set<Uuid> failed_loads_;
     std::unique_ptr<Loader> loader_;
+    std::shared_ptr<const lighting::LightmapUvSet> lightmap_uvs_;
 };
 
 }  // namespace cramion::assets

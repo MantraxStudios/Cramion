@@ -30,6 +30,20 @@
 //
 // La sesion no sabe nada del ECS: da eventos (takeEvents) y el sistema de
 // scripts crea, mueve y borra las entidades.
+//
+// Posiciones absolutas (protocolo 2): cada equipo tiene su origen flotante
+// (a mas de 2 km de la camara el mundo se desplaza en pasos de 1024 m) y sus
+// posiciones locales no valen en los demas. Por eso la sesion solo trabaja con
+// posiciones absolutas en doble precision (NetPosition = origen + local, la
+// convierte el sistema de scripts) y por la red van relativas a un sector de
+// 1024 m: el sector en 3 x int16 y el resto en 3 x float (18 bytes; ~0,06 mm
+// de precision en cualquier sitio hasta +-33.000 km). Al conectar, el cliente
+// manda su version del protocolo (el dato de conexion de ENet) y el servidor
+// rechaza las distintas con un motivo claro; el Welcome lleva la del
+// servidor (un cliente nuevo no se queda con un servidor viejo). Los valores
+// Vec3 de los mensajes (NetValue) siguen siendo float tal cual: para mandar
+// una posicion del mundo en un mensaje, mejor en coordenadas absolutas
+// (Scene.toAbsolute: tres numeros en doble precision) o relativas a algo.
 
 #include <CramionFX/core/Math.h>
 
@@ -72,6 +86,30 @@ struct NetValue {
 void encodeValue(std::string& out, const NetValue& value);
 bool decodeValue(const std::string& in, std::size_t& at, NetValue& out, int depth = 0);
 
+// Posicion absoluta del mundo en doble precision (origen flotante + local).
+// Se construye desde un Vec3 (cerca del origen, o ya absoluta) para que el
+// codigo de antes siga valiendo.
+struct NetPosition {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    NetPosition() = default;
+    NetPosition(double px, double py, double pz) : x(px), y(py), z(pz) {}
+    NetPosition(const core::Vec3& v) : x(v.x), y(v.y), z(v.z) {}  // NOLINT: implicita a proposito
+    core::Vec3 toVec3() const { return core::Vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)}; }
+    friend bool operator==(const NetPosition&, const NetPosition&) = default;
+};
+// Distancia entre dos posiciones absolutas (en doble precision).
+double distanceBetween(const NetPosition& a, const NetPosition& b);
+
+// Version del protocolo de red. 1: posiciones en float locales (sin
+// version). 2: posiciones absolutas por sector y version al conectar.
+inline constexpr std::uint32_t kProtocolVersion = 2;
+inline constexpr double kSectorSize = 1024.0;  // metros por sector (el paso del origen flotante)
+// Por la red: sector (3 x int16) + resto (3 x float). Tambien lo usan las pruebas.
+void encodePosition(std::string& out, const NetPosition& p);
+bool decodePosition(const std::string& in, std::size_t& at, NetPosition& out);
+
 inline constexpr std::uint32_t kServerId = 1;   // el servidor es el jugador 1
 inline constexpr std::uint32_t kEveryone = 0;   // destino: todos (menos quien lo manda)
 inline constexpr std::uint16_t kDefaultPort = 7777;
@@ -100,7 +138,7 @@ struct NetEvent {
     std::uint32_t owner = 0;
     std::string text;
     NetValue value;
-    core::Vec3 position{};
+    NetPosition position{};  // absoluta
     core::Quat rotation{};
     double time = 0.0;  // Transform: hora del dueno (s) cuando la mando
 };
@@ -109,7 +147,7 @@ struct NetEvent {
 struct NetObject {
     std::uint32_t owner = kServerId;
     std::string prefab;
-    core::Vec3 position{};
+    NetPosition position{};  // absoluta
     core::Quat rotation{};
     std::map<std::string, NetValue> vars;
     float relevance = 0.0f;  // servidor: solo a jugadores a menos de esto (0 = a todos)
@@ -155,11 +193,12 @@ public:
     // --- Objetos (el spawn y el despawn, solo el servidor) ---
     // Devuelve el id de red (0 si no es servidor). No genera evento local: el
     // servidor ya crea la entidad.
-    std::uint32_t spawn(const std::string& prefab, const core::Vec3& position, const core::Quat& rotation,
+    // Posiciones absolutas (NetPosition: origen del mundo + local).
+    std::uint32_t spawn(const std::string& prefab, const NetPosition& position, const core::Quat& rotation,
                         std::uint32_t owner = kServerId);
     void despawn(std::uint32_t net_id);
     // Posicion y giro (solo el dueno; sin fiabilidad).
-    void sendTransform(std::uint32_t net_id, const core::Vec3& position, const core::Quat& rotation);
+    void sendTransform(std::uint32_t net_id, const NetPosition& position, const core::Quat& rotation);
     // Variable de red (solo el dueno o el servidor; fiable).
     void setVar(std::uint32_t net_id, const std::string& key, const NetValue& value);
     // Todos cargan una escena (solo el servidor): los objetos se olvidan.
@@ -181,7 +220,7 @@ public:
     void setMaxSpeed(std::uint32_t net_id, float meters_per_second);
     // Compensacion de lag: donde estaba el objeto hace `seconds_ago` (en
     // este equipo; el servidor lo usa con el ping del que dispara).
-    bool positionAt(std::uint32_t net_id, float seconds_ago, core::Vec3& position, core::Quat& rotation) const;
+    bool positionAt(std::uint32_t net_id, float seconds_ago, NetPosition& position, core::Quat& rotation) const;
     // Perdida de paquetes (0..1) con ese jugador.
     float packetLoss(std::uint32_t player) const;
     // Bytes por segundo (media del ultimo segundo).
@@ -192,12 +231,18 @@ public:
     std::uint64_t bytesSent() const { return bytes_sent_; }
     std::uint64_t bytesReceived() const { return bytes_received_; }
 
+    // Pruebas: se presenta con otra version del protocolo (un juego viejo o
+    // uno mas nuevo). Antes de connect / host.
+    void overrideProtocol(std::uint32_t version) { protocol_ = version; }
+    std::uint32_t protocol() const { return protocol_; }
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     NetRole role_ = NetRole::None;
     std::uint32_t local_id_ = 0;
     std::uint32_t next_net_id_ = 1;
+    std::uint32_t protocol_ = kProtocolVersion;
     std::map<std::uint32_t, NetObject> objects_;
     std::vector<NetEvent> events_;
     std::uint64_t bytes_sent_ = 0;
@@ -205,11 +250,11 @@ private:
 
     struct HistorySample {
         double time = 0.0;
-        core::Vec3 position{};
+        NetPosition position{};
         core::Quat rotation{};
     };
     std::map<std::uint32_t, std::vector<HistorySample>> history_;
-    std::map<std::uint32_t, core::Vec3> focus_;  // servidor: donde esta cada jugador
+    std::map<std::uint32_t, NetPosition> focus_;  // servidor: donde esta cada jugador
     struct Delayed {
         double at = 0.0;
         std::uint32_t to = 0;
@@ -224,7 +269,7 @@ private:
     double rate_time_ = 0.0;
     std::uint64_t rate_sent_ = 0;
     std::uint64_t rate_received_ = 0;
-    void record(std::uint32_t net_id, const core::Vec3& position, const core::Quat& rotation);
+    void record(std::uint32_t net_id, const NetPosition& position, const core::Quat& rotation);
     void forwardTransform(const std::string& data, std::uint32_t from, std::uint32_t net_id);
     bool relevantTo(const NetObject& o, std::uint32_t player) const;
     void sendNow(std::uint32_t to, const std::string& data, bool reliable);

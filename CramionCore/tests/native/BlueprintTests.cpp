@@ -3,7 +3,8 @@
 // guardar el prefab, un prefab normal sale igual que antes, crear desde un
 // modelo sintetico (3 nodos, 2 huesos), desde un prefab y vacio, convertir un
 // prefab, el orden del esqueleto en reposo, los objetos de hueso y que las
-// instancias de otra escena se actualizan, y nombres con acentos (UTF-8).
+// instancias de otra escena se actualizan, nombres con acentos (UTF-8) y
+// renombrar o mover un Blueprint (su .crgraph va con el).
 // Sale como CramionApiBlueprintTests.
 
 #include "ApiTest.h"
@@ -19,7 +20,10 @@
 
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
+#include <string>
 
 using namespace cramion;
 using namespace cramion::apitest;
@@ -367,6 +371,86 @@ void testUtf8Names(const std::filesystem::path& root) {
           "convertir otra vez: encuentra su grafo");
 }
 
+std::string readText(const std::filesystem::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+void writeTextFile(const std::filesystem::path& file, const std::string& text) {
+    std::filesystem::create_directories(file.parent_path());
+    std::ofstream(file, std::ios::binary) << text;
+}
+
+// Renombrar o mover un Blueprint: su .crgraph va con el y la ruta cambia en
+// el bloque, en su raiz y en las escenas que lo usan.
+void testRename(const std::filesystem::path& root) {
+    std::printf("Renombrar y mover un Blueprint\n");
+    const std::filesystem::path assets = root / "Assets";
+    std::string text = R"({"a": {"graph": "Blueprints/X.crgraph", "graph_path": "Blueprints/X.crgraph"}, "b": {"graph":"Blueprints/X.crgraph"},
+        "c": {"graph": "Blueprints/X.crgraph2"}})";
+    check(ecs::replaceGraphReferences(text, "Blueprints/X.crgraph", "Otra/Y.crgraph") == 2 &&
+              text.find("\"graph_path\": \"Blueprints/X.crgraph\"") != std::string::npos &&
+              text.find("\"graph\":\"Otra/Y.crgraph\"") != std::string::npos &&
+              text.find("\"graph\": \"Blueprints/X.crgraph2\"") != std::string::npos,
+          "replaceGraphReferences: solo la clave \"graph\" con esa ruta exacta");
+
+    ecs::BlueprintCreateOptions options;
+    options.name = "BP_Viejo";
+    options.assets_root = assets;
+    ecs::BlueprintCreateResult out;
+    check(ecs::createEmptyBlueprint(options, out) && out.graph_rel == "Blueprints/BP_Viejo.crgraph", "un Blueprint para renombrar");
+    const std::filesystem::path scene = assets / "Escenas" / "Nivel.crscene";
+    writeTextFile(scene, R"({"entities": [{"name": "BP_Viejo", "components": {"VisualScript": {"graph": "Blueprints/BP_Viejo.crgraph", "enabled": true}}}]})");
+
+    // Renombrar (como el navegador: el .crprefab ya se movio).
+    const std::filesystem::path renamed = assets / "Blueprints" / "BP_Nuevo.crprefab";
+    std::filesystem::rename(out.prefab_file, renamed);
+    ecs::BlueprintRelocation moved;
+    std::string error;
+    check(ecs::relocateBlueprintGraph(out.prefab_file, renamed, assets, moved, &error) && moved.moved &&
+              moved.old_graph == "Blueprints/BP_Viejo.crgraph" && moved.new_graph == "Blueprints/BP_Nuevo.crgraph",
+          "renombrar: el .crgraph se renombra con el");
+    if (!error.empty()) std::printf("    %s\n", error.c_str());
+    check(std::filesystem::exists(assets / "Blueprints" / "BP_Nuevo.crgraph") && !std::filesystem::exists(out.graph_file),
+          "el archivo viejo ya no esta");
+    const std::string bp_text = ecs::readPrefabFile(renamed);
+    ecs::BlueprintInfo info;
+    ecs::World world;
+    const ecs::Entity bp = ecs::instantiatePrefab(world, bp_text);
+    check(ecs::blueprintInfo(bp_text, info) && info.graph_path == moved.new_graph && bp.valid() &&
+              bp.get<vscript::VisualScript>().graph == moved.new_graph,
+          "el bloque blueprint y el VisualScript de la raiz con la ruta nueva");
+    const std::string scene_text = readText(scene);
+    check(moved.updated_files >= 2 && scene_text.find("BP_Nuevo.crgraph") != std::string::npos &&
+              scene_text.find("BP_Viejo.crgraph") == std::string::npos,
+          "las escenas que lo usan tambien");
+
+    // Mover a otra carpeta.
+    const std::filesystem::path other = assets / "Otra" / "BP_Nuevo.crprefab";
+    std::filesystem::create_directories(other.parent_path());
+    std::filesystem::rename(renamed, other);
+    ecs::BlueprintRelocation moved_again;
+    check(ecs::relocateBlueprintGraph(renamed, other, assets, moved_again) && moved_again.new_graph == "Otra/BP_Nuevo.crgraph" &&
+              std::filesystem::exists(assets / "Otra" / "BP_Nuevo.crgraph") && readText(scene).find("Otra/BP_Nuevo.crgraph") != std::string::npos,
+          "mover a otra carpeta: el .crgraph va con el");
+
+    // Un grafo compartido (con otro nombre) no se mueve.
+    ecs::BlueprintInfo shared;
+    ecs::blueprintInfo(ecs::readPrefabFile(other), shared);
+    const std::filesystem::path common = assets / "Otra" / "Comun.crgraph";
+    std::filesystem::rename(assets / "Otra" / "BP_Nuevo.crgraph", common);
+    shared.graph_path = "Otra/Comun.crgraph";
+    ecs::writeBlueprintInfo(other, shared);
+    const std::filesystem::path third = assets / "Otra" / "BP_Tercero.crprefab";
+    std::filesystem::rename(other, third);
+    ecs::BlueprintRelocation kept;
+    check(ecs::relocateBlueprintGraph(other, third, assets, kept) && !kept.moved && kept.new_graph == "Otra/Comun.crgraph" &&
+              std::filesystem::exists(common),
+          "un grafo con otro nombre (compartido) se queda donde esta");
+    ecs::BlueprintRelocation not_bp;
+    check(!ecs::relocateBlueprintGraph(scene, scene, assets, not_bp), "un archivo que no es Blueprint: false");
+}
+
 }  // namespace
 
 int main() {
@@ -383,6 +467,7 @@ int main() {
     testFromModel(root);
     testFromPrefabAndEmpty(root);
     testUtf8Names(root);
+    testRename(root);
 
     std::filesystem::remove_all(root, ec);
     return finish();

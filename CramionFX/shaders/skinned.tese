@@ -24,6 +24,13 @@ layout(set = 0, binding = 0) uniform CameraBuffer {
 
 layout(set = 1, binding = 3) uniform sampler2D occlusion_map;
 
+// Repeticion (xy) y desplazamiento (zw) de las UV del material (tiling del
+// .crmat): la altura se lee con ellos; v_uv sale sin ellos (los aplica el
+// fragment shader).
+layout(set = 1, binding = 9) uniform MaterialUv {
+    vec4 material_uv;
+};
+
 // Debe coincidir con GpuSkinnedPush (y con skinned.vert).
 layout(push_constant) uniform PushConstants {
     mat4 model;
@@ -41,6 +48,8 @@ layout(location = 1) in vec2 in_uv[];
 layout(location = 2) in vec4 in_tangent[];
 layout(location = 3) in vec3 in_world_position[];
 layout(location = 6) in vec3 in_previous_world[];
+layout(location = 7) in vec2 in_lightmap_uv[];
+layout(location = 8) in uint in_lightmap_slot[];
 
 // Lo mismo que skinned.vert entrega a skinned.frag.
 layout(location = 0) out vec3 v_normal;
@@ -49,6 +58,9 @@ layout(location = 2) out vec4 v_tangent;
 layout(location = 3) out vec3 v_world_position;
 layout(location = 4) out vec4 v_current_clip;
 layout(location = 5) out vec4 v_previous_clip;
+// Lightmap: la UV2 con las baricentricas y el hueco del vertice 0.
+layout(location = 7) out vec2 v_lightmap_uv;
+layout(location = 8) flat out uint v_lightmap_slot;
 
 void main() {
     vec3 w = gl_TessCoord;
@@ -61,10 +73,11 @@ void main() {
     // Mip de la altura segun lo que mide cada trozo nuevo en texeles: con el
     // mip 0 de lejos el relieve seria ruido.
     vec2 size = vec2(textureSize(occlusion_map, 0));
-    float texels = max(max(length((in_uv[1] - in_uv[0]) * size), length((in_uv[2] - in_uv[1]) * size)),
-                       length((in_uv[0] - in_uv[2]) * size));
+    vec2 tiled = material_uv.xy * size;
+    float texels = max(max(length((in_uv[1] - in_uv[0]) * tiled), length((in_uv[2] - in_uv[1]) * tiled)),
+                       length((in_uv[0] - in_uv[2]) * tiled));
     float lod = max(log2(max(texels / max(gl_TessLevelInner[0], 1.0), 1.0)), 0.0);
-    float height = textureLod(occlusion_map, uv, lod).g;
+    float height = textureLod(occlusion_map, uv * material_uv.xy + material_uv.zw, lod).g;
 
     vec3 offset = normalize(normal) * (height * push.emissive.w);
     world += offset;
@@ -78,4 +91,6 @@ void main() {
                   vec4(world, 1.0);
     v_current_clip = camera.unjittered_view_projection * vec4(world, 1.0);
     v_previous_clip = camera.previous_view_projection * vec4(previous, 1.0);
+    v_lightmap_uv = w.x * in_lightmap_uv[0] + w.y * in_lightmap_uv[1] + w.z * in_lightmap_uv[2];
+    v_lightmap_slot = in_lightmap_slot[0];
 }

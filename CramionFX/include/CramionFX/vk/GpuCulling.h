@@ -34,6 +34,17 @@ struct GpuCluster {
 };
 static_assert(sizeof(GpuCluster) == 64, "GpuCluster debe coincidir con cull.comp");
 
+// Una submalla de vidrio para glass_cull.comp (std430).
+struct GpuGlassItem {
+    core::Vec4 bounds_min{};
+    core::Vec4 bounds_max{};
+    std::uint32_t first_index = 0;
+    std::uint32_t index_count = 0;
+    std::uint32_t pad0 = 0;
+    std::uint32_t pad1 = 0;
+};
+static_assert(sizeof(GpuGlassItem) == 48, "GpuGlassItem debe coincidir con glass_cull.comp");
+
 // Culling de los clusteres en la GPU: frustum + oclusion con una piramide
 // Hi-Z, en dos fases (ver cull.comp). El resultado son comandos de dibujo
 // indirecto agrupados por (actor x material): la CPU ya no decide que se
@@ -83,6 +94,15 @@ public:
     // de ese frame debe estar esperada).
     Stats readStats(std::uint32_t frame_index) const;
 
+    // Vidrio (glass_cull.comp): la CPU sube las submallas que ve en el campo de
+    // vision y la GPU deja un comando por cada una, con 0 instancias si la
+    // piramide Hi-Z de este frame la tapa. Solo despues de recordHiZ() y fuera
+    // de un pase de dibujo. false si no se puede (sin el shader, sin piramide):
+    // entonces se dibuja directamente, como antes.
+    bool recordGlassCull(const VulkanDevice& device, const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
+                         const std::vector<GpuGlassItem>& items, const std::vector<VulkanBuffer>& camera_buffers);
+    const VulkanBuffer& glassCommands(std::uint32_t frame_index) const { return glass_commands_[frame_index]; }
+
     std::uint32_t clusterCount() const { return cluster_count_; }
     const VulkanBuffer& commands(std::uint32_t phase) const { return commands_[phase]; }
     const VulkanBuffer& counts(std::uint32_t phase) const { return counts_[phase]; }
@@ -119,6 +139,12 @@ private:
 
     ComputePass cull_pass_;
     ComputePass hiz_pass_;
+    ComputePass glass_pass_;
+    bool glass_ready_ = false;
+    std::uint32_t glass_capacity_ = 0;
+    std::array<VulkanBuffer, kMaxFramesInFlight> glass_items_;     // los escribe la CPU
+    std::array<VulkanBuffer, kMaxFramesInFlight> glass_commands_;  // los escribe la GPU
+    std::vector<vk::raii::DescriptorSet> glass_sets_;              // uno por frame
     vk::raii::DescriptorPool pool_{nullptr};
     // [frame][fase]
     std::vector<vk::raii::DescriptorSet> cull_sets_;

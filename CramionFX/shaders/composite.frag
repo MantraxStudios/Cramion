@@ -294,8 +294,12 @@ void main() {
     }
 
     // --- Bloom ---
-    vec3 halo = texture(bloom, uv).rgb / kBloomLevels * settings.bloom_tint.rgb;
-    color = mix(color, halo, settings.exposure.y);
+    // Solo si esta encendido: apagado no se graba (recordBloomPass) y su
+    // nivel 0 puede no tener nada valido (mix con basura * 0 puede ser NaN).
+    if (settings.exposure.y > 0.0) {
+        vec3 halo = texture(bloom, uv).rgb / kBloomLevels * settings.bloom_tint.rgb;
+        color = mix(color, halo, settings.exposure.y);
+    }
 
     // --- Rayos de luz ---
     // Solo si se dibujaron este frame: si no, la imagen puede no tener nada
@@ -303,7 +307,11 @@ void main() {
     if (settings.tone.x > 0.0) color += texture(light_shafts, uv).rgb * settings.tone.x;
 
     // --- Destellos del sol en la lente ---
-    color += lensFlare(uv) * luminance(textureLod(bloom, settings.lens.zw, 0.0).rgb / kBloomLevels + vec3(4.0));
+    // (Tambien leen el bloom: con destellos el bloom se graba aunque este
+    // apagado; sin ellos no se toca.)
+    if (settings.lens.y * settings.flare.x > 0.0) {
+        color += lensFlare(uv) * luminance(textureLod(bloom, settings.lens.zw, 0.0).rgb / kBloomLevels + vec3(4.0));
+    }
 
     // --- Vision nocturna (antes de la exposicion: depende de la luz real) ---
     // Cuanta noche hay sale de la luz del cielo (la hora), no de lo que se ve:

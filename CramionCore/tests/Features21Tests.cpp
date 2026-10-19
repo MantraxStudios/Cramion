@@ -13,6 +13,12 @@
 #include "CramionCore/gameplay/Dialogue.h"
 #include "CramionCore/gameplay/Localization.h"
 #include "CramionCore/gameplay/SaveGame.h"
+#include "CramionCore/asset/BakedLightingFile.h"
+#include "CramionCore/asset/LightmapUv.h"
+#include "CramionCore/ecs/StaticBatching.h"
+#include "CramionCore/lighting/BakeLights.h"
+#include "CramionCore/lighting/BakeTracer.h"
+#include "CramionCore/lighting/Lightmapper.h"
 #include "CramionCore/lighting/ProbeBaker.h"
 #include "CramionCore/physics/Fracture.h"
 #include "CramionCore/physics/PhysicsComponents.h"
@@ -22,11 +28,22 @@
 #include "CramionCore/twod/System2D.h"
 #include "CramionCore/vfx/VisualEffect.h"
 
+#include <CramionFX/asset/TextureStats.h>
 #include <CramionFX/scene/Scene.h>
+#include <CramionFX/scene/ShadowCascades.h>
 
+// El filtro del lightmapper (interno de CramionCore) para probarlo suelto.
+#include "../src/lighting/LightmapperInternal.h"
+
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <functional>
+#include <map>
 #include <random>
 #include <string>
 
@@ -780,6 +797,9 @@ void testBakeLargeScenes() {
     }
 }
 
+// Lightmaps por UV2 (PLAN-LIGHTMAPS.md, Fases 0 a 3).
+#include "LightmapTests.inc"
+
 void testReplay() {
     std::printf("Repeticiones\n");
     ecs::World world;
@@ -819,6 +839,26 @@ int main() {
     testBakeGather();
     testBakedDirect();
     testBakeLargeScenes();
+    // Lightmaps (PLAN-LIGHTMAPS.md)
+    testSpotConeParity();
+    testAverageTexture();
+    testBakeSkySh();
+    testBakeDeterminism();
+    testLightmapUvUnwrap();
+    testLightmapUvApplyRejects();
+    testLightmapUvReadModel();
+    testLightmapAtlasPacking();
+    testLightmapWindowPatch();
+    testLightmapThinWall();
+    testLightmapValidity();
+    testLightmapDeterminism();
+    testCrbakeV4();
+    testStaticBatchKeepOut();
+    testLightmapSkyEnergy();
+    testLightmapPointLightParity();
+    testLightmapBounce();
+    testLightmapDenoise();
+    testStaticSunFit();
     testReplay();
     std::printf("\n%d de %d comprobaciones bien\n", checks - failures, checks);
     return failures == 0 ? 0 : 1;

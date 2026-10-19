@@ -756,6 +756,20 @@ inline MouseState mouse() {
 }
 }  // namespace Input
 
+// --- Interfaz: eventos del puntero (componente UIEventTrigger) ---
+/// Lo que llega en on("Metodo", fn) por on_hover, on_exit, on_right_click, on_double_click,
+/// on_drag_begin, on_drag, on_drag_end y on_drop de un UIEventTrigger:
+///   on("OnSoltar", [this](const Value& v) { UiPointerEvent e(v); mover(e.other, e.entity); });
+struct UiPointerEvent {
+    Entity entity;   ///< el elemento (el que tiene el UIEventTrigger)
+    Vec3 position;   ///< el raton, en pixeles de la vista (z = 0)
+    int button = 0;  ///< 0 izquierdo, 1 derecho
+    Entity other;    ///< on_drop: lo que se arrastraba; on_drag_end: donde se solto (o ninguna)
+    UiPointerEvent() = default;
+    explicit UiPointerEvent(const Value& v)
+        : entity(v["entity"].asEntity()), position(v["position"].asVec3()), button(v["button"].asInt()), other(v["other"].asEntity()) {}
+};
+
 // --- Physics ---
 struct RaycastHit {
     Entity entity;
@@ -782,6 +796,37 @@ inline bool raycast(const Vec3& origin, const Vec3& direction, float max_distanc
         hit->distance = r.f32();
     }
     return touched;
+}
+/// Mascara de capas por defecto de las consultas: todas menos "Ignore Raycast" (capa 2).
+inline constexpr std::uint32_t kDefaultLayers = ~(1u << 2);
+/// Todas las capas.
+inline constexpr std::uint32_t kAllLayers = 0xFFFFFFFFu;
+/// (interno) Un resultado de la API {entity, point, normal, distance} a RaycastHit.
+inline bool hitFromValue(const Value& r, RaycastHit* hit) {
+    if (!r.isObject()) return false;
+    if (hit != nullptr) {
+        hit->entity = r["entity"].asEntity();
+        hit->point = r["point"].asVec3();
+        hit->normal = r["normal"].asVec3();
+        hit->distance = r["distance"].asFloat();
+    }
+    return true;
+}
+/// Rayo solo contra las capas de layer_mask (bit i = capa i; Physics::layerMask("Default", "Terreno")).
+inline bool raycast(const Vec3& origin, const Vec3& direction, float max_distance, RaycastHit* hit, std::uint32_t layer_mask,
+                    Entity ignore = {}) {
+    const Value r = cramion::detail::api("Physics.raycast", Values{Value(origin), Value(direction), Value(max_distance),
+                                                                    Value(static_cast<double>(layer_mask)),
+                                                                    ignore.id() != 0 ? Value(ignore) : Value()});
+    return hitFromValue(r, hit);
+}
+/// Esfera de `radius` que avanza desde origin (colision de camara con grosor, ataques); true si choca.
+inline bool sphereCast(const Vec3& origin, float radius, const Vec3& direction, float max_distance, RaycastHit* hit,
+                       std::uint32_t layer_mask = kDefaultLayers, Entity ignore = {}) {
+    const Value r = cramion::detail::api("Physics.sphereCast", Values{Value(origin), Value(radius), Value(direction), Value(max_distance),
+                                                                       Value(static_cast<double>(layer_mask)),
+                                                                       ignore.id() != 0 ? Value(ignore) : Value()});
+    return hitFromValue(r, hit);
 }
 }  // namespace Physics
 

@@ -193,8 +193,23 @@ void EditorApp::drawSceneDrawModeMenu() {
         const int mode = kModes[clicked];
         if (mode < 2 || lines) {
             scene_draw_mode_ = mode;
+            lightmap_debug_view_ = 0;
             saveViewSettings();
         }
+    }
+    // Vistas de los lightmaps horneados (PLAN-LIGHTMAPS 2.6): la luz horneada,
+    // la sombra del sol horneada y las UV de lightmap (densidad).
+    ImGui::SameLine();
+    if (ImGui::SmallButton(lightmap_debug_view_ > 0 ? "LM*" : "LM")) ImGui::OpenPopup("lightmap_views");
+    ImGui::SetItemTooltip("Vistas de los lightmaps");
+    if (ImGui::BeginPopup("lightmap_views")) {
+        static const char* const kViews[] = {"Ninguna (el modo de arriba)", "Lightmap (irradiancia)", "Visibilidad del sol",
+                                             "UV de lightmap (densidad)"};
+        for (int i = 0; i < 4; ++i) {
+            if (ImGui::RadioButton(kViews[i], lightmap_debug_view_ == i)) lightmap_debug_view_ = i;
+        }
+        ImGui::TextDisabled("Magenta oscuro: sin lightmap (lo iluminan las sondas).");
+        ImGui::EndPopup();
     }
 }
 

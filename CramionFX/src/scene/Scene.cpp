@@ -110,6 +110,7 @@ void Scene::truncateModels(std::size_t count) {
     if (count < models_.size()) {
         models_.resize(count);
     }
+    if (count < variant_base_only_.size()) variant_base_only_.resize(count);
 }
 
 void Scene::spawnActor(std::uint32_t model_index, float x, float z, float height, float yaw) {
@@ -187,6 +188,7 @@ void Scene::clear() {
     beforeModelWrite();
     actors_.clear();
     models_.clear();
+    variant_base_only_.clear();
     fixed_sun_.reset();
 }
 

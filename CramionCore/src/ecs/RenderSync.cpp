@@ -251,6 +251,7 @@ std::shared_ptr<const assets::MaterialAsset> RenderSync::material(const Uuid& uu
 }
 
 void RenderSync::reloadMaterial(const Uuid& uuid) {
+    ++resolve_epoch_;  // un material que fallaba puede dar ahora otra variante
     failed_materials_.erase(uuid);
     const auto it = materials_.find(uuid);
     if (it == materials_.end()) return;  // nadie lo usa aun: se leera al usarlo
@@ -265,6 +266,7 @@ void RenderSync::reloadMaterial(const Uuid& uuid) {
 }
 
 void RenderSync::updateMaterial(const Uuid& uuid, const assets::MaterialAsset& data) {
+    ++resolve_epoch_;
     failed_materials_.erase(uuid);
     auto shared = std::make_shared<assets::MaterialAsset>(data);
     shared->uuid = uuid;
@@ -528,7 +530,7 @@ std::vector<asset::TextureData> RenderSync::materialTextureSources() {
 asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const std::vector<Uuid>& overrides,
                                           const VideoOverride& video) {
     registerPackResolver();
-    // Primero los materiales; la malla se copia al final (con el tiling).
+    // Primero los materiales; la malla se copia al final (compartida).
     asset::ModelData v;
     v.name = base.name;
     v.submeshes = base.submeshes;
@@ -623,13 +625,6 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         return lazy(key, relative, utf8Path(root / fromUtf8(relative)), true);
     };
 
-    // Tiling y desplazamiento de cada hueco: se hornean en las UV al final.
-    struct Tiling {
-        std::size_t material = 0;
-        core::Vec2 scale;
-        core::Vec2 offset;
-    };
-    std::vector<Tiling> tiled;
     // Huecos que no usa ninguna submalla (la puerta de una casa usa 3 de sus
     // 14 materiales): sin texturas. Antes se leian, decodificaban y subian las
     // de todos los huecos en cada pieza (cientos de MB por modelo).
@@ -714,12 +709,12 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         const std::function<std::int32_t(const std::string&)> texture = [&](const std::string& path) { return file(path); };
         applySurface(d, *mat, &texture);
         apply_video(d);
+        // Tiling y desplazamiento: van en el material (los aplican los
+        // shaders), no en las UV. Antes se horneaban en los vertices y la
+        // variante dejaba de compartir la malla con el original.
+        d.uv_scale = mat->tiling;
+        d.uv_offset = mat->offset;
         v.materials.push_back(d);
-
-        // Tiling y desplazamiento: se hornean en las UV de sus submallas.
-        const bool identity = mat->tiling.x == 1.0f && mat->tiling.y == 1.0f && mat->offset.x == 0.0f &&
-                              mat->offset.y == 0.0f;
-        if (!identity) tiled.push_back(Tiling{m, mat->tiling, mat->offset});
     }
 
     v.vertices = base.vertices;
@@ -733,22 +728,9 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
     v.lod_indices = base.lod_indices;
     v.lods = base.lods;
     v.lightmap_uvs = base.lightmap_uvs;
-    // Solo el tiling separa los vertices de los del original (SharedVector):
-    // los indices se leen por const para seguir compartidos.
-    std::vector<std::uint8_t> transformed(v.vertices.size(), 0);
-    const std::vector<std::uint32_t>& indices = v.indices;
-    for (const Tiling& t : tiled) {
-        for (const asset::SubMesh& submesh : v.submeshes) {
-            if (submesh.material != t.material) continue;
-            for (std::uint32_t i = 0; i < submesh.index_count; ++i) {
-                const std::uint32_t vertex = indices[submesh.first_index + i];
-                if (vertex >= v.vertices.size() || transformed[vertex]) continue;
-                transformed[vertex] = 1;
-                core::Vec2& uv = v.vertices[vertex].uv;
-                uv = core::Vec2{uv.x * t.scale.x + t.offset.x, uv.y * t.scale.y + t.offset.y};
-            }
-        }
-    }
+    v.lightmap_layout_hash = base.lightmap_layout_hash;
+    // Vertices e indices compartidos con el original (SharedVector), tambien
+    // con tiling: ya no se escriben aqui (el tiling va en el material).
     // (Sin finalizeModel: decodificaria las texturas perezosas aqui. Las que
     // vienen del modelo base ya estan decodificadas.) El uso de cada textura
     // elige su formato al comprimirla (BC1 o BC7).
@@ -981,6 +963,7 @@ void RenderSync::releaseClothModels() {
 }
 
 void RenderSync::forgetVariantsOf(std::uint32_t base) {
+    ++resolve_epoch_;  // sus indices de variante ya no valen en las caches
     for (auto it = variant_lookup_.begin(); it != variant_lookup_.end();) {
         if (variants_[it->second].base == base) {
             variants_[it->second].base = UINT32_MAX;  // ya no se rehace
@@ -1075,7 +1058,12 @@ int RenderSync::externalClip(std::uint32_t model, const Uuid& clip, scene::Scene
     if (auto pending = pending_clips_.find(key); pending != pending_clips_.end()) {
         if (pending->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return -1;
         CR_PROFILE_SCOPE("Clip recibido");
-        std::optional<asset::AnimationClip> loaded = pending->second.get();
+        std::optional<asset::AnimationClip> loaded;
+        try {
+            loaded = pending->second.get();
+        } catch (const std::exception&) {
+            // La tarea no llego a correr (el sistema de jobs se apago): sin clip.
+        }
         pending_clips_.erase(pending);
         int index = -1;
         if (loaded && model < scene.models().size()) {
@@ -1099,8 +1087,12 @@ int RenderSync::externalClip(std::uint32_t model, const Uuid& clip, scene::Scene
         skeleton->nodes = scene.models()[model]->nodes;
         const std::filesystem::path path = info->path;
         const std::string name = info->name;
-        pending_clips_.emplace(key, std::async(std::launch::async,
-                                               [skeleton, path, name]() -> std::optional<asset::AnimationClip> {
+        // En los hilos de disco del sistema de jobs (antes un std::async: un
+        // hilo del sistema nuevo por clip). La promesa lleva el resultado al
+        // futuro de siempre (pending_clips_ no cambia).
+        auto promise = std::make_shared<std::promise<std::optional<asset::AnimationClip>>>();
+        pending_clips_.emplace(key, promise->get_future());
+        jobs::scheduleIo([promise, load = [skeleton, path, name]() -> std::optional<asset::AnimationClip> {
                                                    const bool trace = std::getenv("CRAMION_TRACE_SHUTDOWN") != nullptr;
                                                    if (trace) std::cout << "[RenderSync] clip " << name << " empieza" << std::endl;
                                                    struct Fin {
@@ -1117,7 +1109,13 @@ int RenderSync::externalClip(std::uint32_t model, const Uuid& clip, scene::Scene
                                                    std::cerr << "[RenderSync] Clip " << name
                                                              << " no sirve para este modelo " << error << "\n";
                                                    return std::nullopt;
-                                               }));
+                                               }]() {
+            try {
+                promise->set_value(load());
+            } catch (...) {
+                promise->set_exception(std::current_exception());
+            }
+        }, jobs::Priority::Background);
         return -1;
     }
     if (info && info->type == assets::AssetType::AnimationClip && model < scene.models().size()) {
@@ -1145,6 +1143,24 @@ void RenderSync::prefetchClips(std::uint32_t model, const Uuid& controller_uuid,
             if (child.clip.valid()) externalClip(model, child.clip.uuid, scene);
         }
     }
+}
+
+anim::Animator& RenderSync::stateAnimator(AnimationState& state) {
+    if (state.animator.model() == nullptr && state.rest_only && state.rest_data != nullptr) {
+        state.animator = anim::Animator(*state.rest_data);
+        state.animator.play(-1);
+    }
+    return state.animator;
+}
+
+const anim::Animator& RenderSync::restPose(std::uint32_t model, const asset::ModelData& data) {
+    anim::Animator& pose = rest_poses_[model];
+    // Otro modelo en ese indice (o nuevo): se rehace.
+    if (pose.model() != &data || pose.boneMatrices().size() != data.bones.size()) {
+        pose = anim::Animator(data);
+        pose.play(-1);
+    }
+    return pose;
 }
 
 const asset::ModelData* RenderSync::actorModelData(Entity entity, const scene::Scene& scene) const {
@@ -1250,6 +1266,10 @@ void RenderSync::reset(scene::Scene& scene) {
     model_bounds_.clear();
     marca("animations_");
     animations_.clear();
+    rest_poses_.clear();
+    actor_rest_.clear();
+    model_direct_use_.clear();
+    ++resolve_epoch_;
     marca("controllers_");
     controllers_.clear();
     marca("failed_controllers_");
@@ -1257,7 +1277,7 @@ void RenderSync::reset(scene::Scene& scene) {
     motion_features_.clear();  // por indice de modelo: se rehacen
     marca("external_clips_");
     external_clips_.clear();
-    pending_clips_.clear();  // (los futuros esperan a su hilo al destruirse)
+    pending_clips_.clear();  // (la tarea solo usa sus copias: no hace falta esperarla)
     marca("prefetched_controllers_");
     prefetched_controllers_.clear();
     marca("decal_textures_");
@@ -1838,7 +1858,7 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
     water::advanceWaterTime(delta_seconds);
     std::vector<gfx::WaterBodyDesc> bodies;
     std::unordered_map<entt::entity, RiverMesh> seen;
-    std::vector<std::pair<const water::WaterBody*, Mat4>> water_bodies;
+    std::vector<RippleWater> water_bodies;
     int underwater = -1;
     std::shared_ptr<const water::OceanSpectrum> ocean_spectrum;
     float ocean_foam = 1.0f;
@@ -1883,7 +1903,6 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
         if (limit_water && nearest_water.count(e.handle()) == 0) return;
         const Mat4& m = e.worldMatrix();
         const Vec3 origin = e.worldPosition();
-        water_bodies.emplace_back(body, m);
         constexpr float kRad = kDegToRad;
         gfx::WaterBodyDesc desc;
         gfx::GpuWaterBody& p = desc.params;
@@ -1903,59 +1922,23 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
             ocean_foam_persistence = body->foam_persistence;
         }
 
-        // Camara cerca o bajo la superficie de cualquier agua (oceano, lago o
-        // rio): el shader decide por pixel con la misma ola. Solo si ahi hay
-        // agua de verdad: el suelo bajo la camara esta por debajo de la
-        // superficie (el rectangulo de un lago tambien cubre orillas y valles
-        // secos, y bajo tierra tampoco se esta en el agua).
-        if (underwater < 0) {
-            const int forced = water::underwaterOverride(camera_position);
-            const water::WaterSample at_camera = water::sampleWater(*body, m, camera_position, water::waterTime());
-            bool inside = false;
-            if (forced == 1) {
-                inside = true;
-            } else if (forced < 0 && at_camera.inside) {
-                // Oceano FFT: la altura de sus olas sale del espectro (viento).
-                const float waves = body->type == water::WaterType::Ocean
-                                        ? std::max(body->wave_height, water::oceanSpectrum(*body)->significant_height)
-                                        : body->wave_height;
-                const float margin = body->type == water::WaterType::River ? 0.3f : waves + 0.5f;
-                if (camera_position.y < at_camera.height + margin) {
-                    float ground = 0.0f;
-                    const bool has_ground = groundHeight(camera_position.x, camera_position.z, ground);
-                    inside = !has_ground || (ground < at_camera.height - 0.05f && camera_position.y > ground - 0.5f);
-                }
-            }
-            if (inside) {
-                underwater = static_cast<int>(bodies.size());
-                p.extra.z = at_camera.height;  // superficie aqui (el rio no es un plano)
-            }
-        }
+        // Rio: su cinta y su linea central, que solo se rehacen si cambia su
+        // forma (firma de puntos, anchos y matriz). Antes la cinta se copiaba
+        // dos veces por frame y la linea se rehacia en cada consulta.
+        RiverMesh mesh;
         if (body->type == water::WaterType::River) {
-            // Firma de lo que da forma a la cinta: puntos, anchos y la matriz.
-            std::uint64_t hash = 1469598103934665603ull;
-            const auto mix = [&](float f) {
-                std::uint32_t bits = 0;
-                std::memcpy(&bits, &f, sizeof(bits));
-                hash = (hash ^ bits) * 1099511628211ull;
-            };
-            for (const water::RiverPoint& point : body->points) {
-                mix(point.position.x);
-                mix(point.position.y);
-                mix(point.position.z);
-                mix(point.width);
-            }
-            for (int c = 0; c < 4; ++c) {
-                for (int r = 0; r < 4; ++r) mix(m.m[c][r]);
-            }
-            RiverMesh mesh;
+            const std::uint64_t hash = water::riverHash(*body, m);
             if (const auto it = rivers_.find(e.handle()); it != rivers_.end() && it->second.hash == hash) {
                 mesh = std::move(it->second);
             } else {
                 mesh.hash = hash;
                 mesh.version = ++river_version_;
+                mesh.line = std::make_shared<const water::RiverLine>(water::riverLine(*body, m));
+                auto vertices = std::make_shared<std::vector<gfx::WaterVertex>>();
+                auto indices = std::make_shared<std::vector<std::uint32_t>>();
                 const std::vector<water::RiverSample> line = water::riverCenterline(*body, m, 1.5f);
                 constexpr std::uint32_t kAcross = 8;
+                vertices->reserve(line.size() * kAcross);
                 for (std::size_t s = 0; s < line.size(); ++s) {
                     const water::RiverSample& sample = line[s];
                     const Vec3 side{-sample.tangent.z, 0.0f, sample.tangent.x};
@@ -1970,25 +1953,68 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
                         // flow = direccion * ancho: el shader saca de ahi las
                         // coordenadas del rio en metros (a traves, a lo largo).
                         const float width = std::max(sample.width, 0.01f);
-                        mesh.vertices.push_back(gfx::WaterVertex{{pos.x, pos.y, pos.z},
-                                                                 {a, sample.distance},
-                                                                 {sample.tangent.x * width, sample.tangent.z * width},
-                                                                 drop});
+                        vertices->push_back(gfx::WaterVertex{{pos.x, pos.y, pos.z},
+                                                             {a, sample.distance},
+                                                             {sample.tangent.x * width, sample.tangent.z * width},
+                                                             drop});
                     }
                 }
                 for (std::uint32_t i = 0; i + 1 < line.size(); ++i) {
                     for (std::uint32_t j = 0; j + 1 < kAcross; ++j) {
                         const std::uint32_t a = i * kAcross + j;
                         const std::uint32_t b = a + kAcross;
-                        mesh.indices.insert(mesh.indices.end(), {a, b, a + 1, a + 1, b, b + 1});
+                        indices->insert(indices->end(), {a, b, a + 1, a + 1, b, b + 1});
                     }
                 }
+                mesh.vertices = std::move(vertices);
+                mesh.indices = std::move(indices);
             }
             desc.vertices = mesh.vertices;
             desc.indices = mesh.indices;
             desc.mesh_version = mesh.version;
-            seen[e.handle()] = std::move(mesh);
         }
+        water_bodies.push_back(RippleWater{body, m, mesh.line});
+
+        // Camara cerca o bajo la superficie de cualquier agua (oceano, lago o
+        // rio): el shader decide por pixel con la misma ola. Solo si ahi hay
+        // agua de verdad: el suelo bajo la camara esta por debajo de la
+        // superficie (el rectangulo de un lago tambien cubre orillas y valles
+        // secos, y bajo tierra tampoco se esta en el agua).
+        if (underwater < 0) {
+            const int forced = water::underwaterOverride(camera_position);
+            // Oceano FFT: la altura de sus olas sale del espectro (viento).
+            const float waves = body->type == water::WaterType::Ocean
+                                    ? std::max(body->wave_height, water::oceanSpectrum(*body)->significant_height)
+                                    : body->wave_height;
+            // Muy por encima del oceano no se puede estar bajo sus olas: ni se
+            // muestrea (la suma del espectro en la CPU es lo caro). Las crestas
+            // no pasan de 2 veces su altura (con el mar de fondo) sobre el
+            // origen; con eso y el margen de abajo, holgado.
+            const bool far_above = forced != 1 && body->type == water::WaterType::Ocean &&
+                                   camera_position.y > origin.y + 3.0f * (waves + body->swell_height) + 1.5f;
+            water::WaterSample at_camera;
+            if (!far_above) {
+                at_camera = mesh.line != nullptr
+                                ? water::sampleWater(*body, m, camera_position, water::waterTime(), *mesh.line)
+                                : water::sampleWater(*body, m, camera_position, water::waterTime());
+            }
+            bool inside = false;
+            if (forced == 1) {
+                inside = true;
+            } else if (forced < 0 && at_camera.inside) {
+                const float margin = body->type == water::WaterType::River ? 0.3f : waves + 0.5f;
+                if (camera_position.y < at_camera.height + margin) {
+                    float ground = 0.0f;
+                    const bool has_ground = groundHeight(camera_position.x, camera_position.z, ground);
+                    inside = !has_ground || (ground < at_camera.height - 0.05f && camera_position.y > ground - 0.5f);
+                }
+            }
+            if (inside) {
+                underwater = static_cast<int>(bodies.size());
+                p.extra.z = at_camera.height;  // superficie aqui (el rio no es un plano)
+            }
+        }
+        if (body->type == water::WaterType::River) seen[e.handle()] = std::move(mesh);
         bodies.push_back(std::move(desc));
     });
     rivers_ = std::move(seen);
@@ -2020,21 +2046,51 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
 //   - si esta quieto y no es enorme (poste, roca, pilar, una caja flotando),
 //     es un obstaculo: las ondas chocan con el y rebotan.
 void RenderSync::updateRipples(World& world, gfx::VulkanRenderer& renderer, float delta_seconds,
-                               const Vec3& camera_position,
-                               const std::vector<std::pair<const water::WaterBody*, Mat4>>& bodies) {
+                               const Vec3& camera_position, const std::vector<RippleWater>& bodies) {
     CR_PROFILE_SCOPE("Ondas");
-    if (bodies.empty()) {
+    const float half_extent = water::RippleSimulation::kSize * water::RippleSimulation::kCellSize * 0.5f;
+    constexpr float kMaxObstacle = 5.0f;  // medio lado maximo de un obstaculo (m)
+    // Solo cuenta lo que esta a menos de esto de la camara en xz (la rejilla
+    // de las ondas y el obstaculo mas grande): unos 30 m.
+    const float reach = half_extent + kMaxObstacle;
+    // Agua a menos de `reach` de la camara (en xz): si no hay ninguna, no
+    // puede haber fuentes ni obstaculos, y la rejilla no cae sobre agua (no se
+    // ve). Antes se recorrian igual todos los colliders de la escena.
+    const auto near_camera = [&](const RippleWater& w) {
+        switch (w.body->type) {
+            case water::WaterType::Ocean:
+                // Sin borde en xz, pero a una altura a la que algo pueda
+                // cruzar su superficie (no el mar decenas de metros mas abajo).
+                return std::abs(camera_position.y - transformPoint(w.matrix, Vec3{}).y) < 2.0f * reach;
+            case water::WaterType::River:
+                return w.line != nullptr && w.line->mayContain(camera_position, reach);
+            case water::WaterType::Lake: {
+                // Rectangulo girado con la entidad (como sampleWater).
+                const Vec3 origin = transformPoint(w.matrix, Vec3{});
+                Vec3 axis{w.matrix.m[0][0], 0.0f, w.matrix.m[0][2]};
+                axis = core::length(axis) > 1e-5f ? core::normalize(axis) : Vec3{1.0f, 0.0f, 0.0f};
+                const Vec3 local{camera_position.x - origin.x, 0.0f, camera_position.z - origin.z};
+                const float du = std::max(std::abs(core::dot(local, axis)) - w.body->size.x * 0.5f, 0.0f);
+                const float dv =
+                    std::max(std::abs(core::dot(local, Vec3{-axis.z, 0.0f, axis.x})) - w.body->size.y * 0.5f, 0.0f);
+                return du * du + dv * dv < reach * reach;
+            }
+        }
+        return true;
+    };
+    if (bodies.empty() || std::none_of(bodies.begin(), bodies.end(), near_camera)) {
         if (ripples_.active()) ripples_.clear();
         ripple_previous_.clear();
         renderer.setWaterRipples({}, 0, 0.0f, 0.0f, 0.0f);
         return;
     }
     if (delta_seconds <= 0.0f) return;  // la segunda vista del editor: ya se hizo
-    std::vector<water::RippleSource> sources;
-    std::vector<water::RippleObstacle> obstacles;
-    std::unordered_map<entt::entity, Vec3> positions;
-    const float half_extent = water::RippleSimulation::kSize * water::RippleSimulation::kCellSize * 0.5f;
-    constexpr float kMaxObstacle = 5.0f;  // medio lado maximo de un obstaculo (m)
+    std::vector<water::RippleSource>& sources = ripple_sources_;
+    std::vector<water::RippleObstacle>& obstacles = ripple_obstacles_;
+    std::unordered_map<entt::entity, Vec3>& positions = ripple_positions_;
+    sources.clear();
+    obstacles.clear();
+    positions.clear();
 
     // Caja local (en el espacio de la entidad) de su forma de colision.
     const auto local_shape = [&](Entity e, Vec3& mn, Vec3& mx, bool& round) {
@@ -2088,11 +2144,11 @@ void RenderSync::updateRipples(World& world, gfx::VulkanRenderer& renderer, floa
         // Centro y extension en el mundo (las 8 esquinas).
         const Vec3 local_center = (mn + mx) * 0.5f;
         const Vec3 center = transformPoint(m, local_center);
-        positions[e.handle()] = center;
         if (std::abs(center.x - camera_position.x) > half_extent + kMaxObstacle ||
             std::abs(center.z - camera_position.z) > half_extent + kMaxObstacle) {
-            return;
+            return;  // lejos: ni se guarda (al entrar, su primer frame va sin velocidad)
         }
+        positions[e.handle()] = center;
         // Eje u: el X de la entidad en el plano xz.
         Vec3 axis{m.m[0][0], 0.0f, m.m[0][2]};
         axis = core::length(axis) > 1e-5f ? core::normalize(axis) : Vec3{1.0f, 0.0f, 0.0f};
@@ -2120,8 +2176,12 @@ void RenderSync::updateRipples(World& world, gfx::VulkanRenderer& renderer, floa
         if (!moving && std::max(half_u, half_v) > kMaxObstacle) return;
 
         // La superficie del agua en su centro.
-        for (const auto& [body, bm] : bodies) {
-            const water::WaterSample surface = water::sampleWater(*body, bm, center, water::waterTime());
+        for (const RippleWater& w : bodies) {
+            // Rio: con su linea en cache y descartado por su caja (antes, la
+            // linea entera se rehacia aqui por cada objeto).
+            const water::WaterSample surface =
+                w.line != nullptr ? water::sampleWater(*w.body, w.matrix, center, water::waterTime(), *w.line)
+                                  : water::sampleWater(*w.body, w.matrix, center, water::waterTime());
             if (!surface.inside) continue;
             const float radius = std::clamp(std::max(half_u, half_v), 0.15f, 6.0f);
             if (moving) {
@@ -2151,22 +2211,26 @@ void RenderSync::updateRipples(World& world, gfx::VulkanRenderer& renderer, floa
             return;
         }
     };
-    // Cada entidad una vez, tenga los componentes que tenga.
-    std::unordered_set<entt::entity> done;
-    const auto each = [&](auto view) {
-        for (const entt::entity h : view) {
-            if (done.insert(h).second) consider(world.wrap(h));
-        }
-    };
+    // Cada entidad una vez, tenga los componentes que tenga (vector ordenado:
+    // un conjunto hash de miles de entidades cada frame costaba mas que el
+    // resto).
+    std::vector<entt::entity>& candidates = ripple_candidates_;
+    candidates.clear();
+    const auto gather = [&](auto view) { candidates.insert(candidates.end(), view.begin(), view.end()); };
     entt::registry& registry = world.registry();
-    each(registry.view<physics::Rigidbody>());
-    each(registry.view<physics::BoxCollider>());
-    each(registry.view<physics::SphereCollider>());
-    each(registry.view<physics::CapsuleCollider>());
-    each(registry.view<physics::MeshCollider>());
-    each(registry.view<physics::WheelCollider>());
-    each(registry.view<navigation::NavAgent>());
-    ripple_previous_ = std::move(positions);
+    gather(registry.view<physics::Rigidbody>());
+    gather(registry.view<physics::BoxCollider>());
+    gather(registry.view<physics::SphereCollider>());
+    gather(registry.view<physics::CapsuleCollider>());
+    gather(registry.view<physics::MeshCollider>());
+    gather(registry.view<physics::WheelCollider>());
+    gather(registry.view<navigation::NavAgent>());
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+    for (const entt::entity h : candidates) consider(world.wrap(h));
+    // Las de este frame pasan a ser las anteriores; las viejas se vacian el
+    // proximo frame (sin soltar su memoria).
+    std::swap(ripple_previous_, positions);
 
     ripples_.update(camera_position, delta_seconds, sources, obstacles);
     if (ripples_.active()) {
@@ -2482,38 +2546,73 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
         forests.push_back({f, p, {}, false});
         for (foliage::FoliageClearing& c : forests.back().params.clearings) c.center = c.center + world_origin;
     }
-    // El agua de la escena (rios y lagos): alli no crecen arboles.
+    // El agua de la escena (rios y lagos): alli no crecen arboles. La lista
+    // solo se rehace si cambia su firma (la forma de cada rio, cada lago y el
+    // origen flotante), y la comparten todos los bosques: antes, en cada frame,
+    // la linea de cada rio y una copia de la lista por bosque.
     if (!forests.empty()) {
-        std::vector<foliage::FoliageWater> water;
-        for (const entt::entity handle : world.registry().view<water::WaterBody>()) {
+        std::uint64_t key = 1469598103934665603ull;
+        const auto mix_key = [&](const void* data, std::size_t size) {
+            const auto* p = static_cast<const unsigned char*>(data);
+            for (std::size_t i = 0; i < size; ++i) key = (key ^ p[i]) * 1099511628211ull;
+        };
+        const float origin_values[] = {world_origin.x, world_origin.y, world_origin.z};
+        mix_key(origin_values, sizeof(origin_values));
+        const auto water_view = world.registry().view<water::WaterBody>();
+        for (const entt::entity handle : water_view) {
             const Entity e = world.wrap(handle);
             if (!e.activeInHierarchy()) continue;
             const water::WaterBody& body = e.get<water::WaterBody>();
-            const core::Mat4& m = e.worldMatrix();
             if (body.type == water::WaterType::River) {
-                const std::vector<water::RiverSample> line = water::riverCenterline(body, m, 4.0f);
-                for (std::size_t i = 0; i + 1 < line.size(); ++i) {
-                    foliage::FoliageWater w;
-                    w.river = true;
-                    w.a = line[i].position + world_origin;
-                    w.b = line[i + 1].position + world_origin;
-                    w.width = std::max(line[i].width, line[i + 1].width);
-                    water.push_back(w);
-                }
+                const std::uint64_t river = water::riverHash(body, e.worldMatrix());
+                mix_key(&river, sizeof(river));
             } else if (body.type == water::WaterType::Lake) {
-                foliage::FoliageWater w;
-                w.a = e.worldPosition() + world_origin;
-                w.half = core::Vec2{body.size.x * 0.5f, body.size.y * 0.5f};
-                w.angle = std::atan2(-m.m[0][2], m.m[0][0]);
-                w.level = w.a.y;
-                water.push_back(w);
+                const Mat4& m = e.worldMatrix();
+                const Vec3 at = e.worldPosition();
+                const float values[] = {at.x, at.y, at.z, body.size.x, body.size.y, m.m[0][0], m.m[0][2]};
+                mix_key(values, sizeof(values));
             }
         }
-        for (const foliage::FoliageWater& w : water) {
-            const float values[] = {w.a.x, w.a.y, w.a.z, w.b.x, w.b.z, w.width, w.half.x, w.half.y, w.angle};
-            hash_bytes(values, sizeof(values));
+        if (foliage_water_ == nullptr || key != foliage_water_key_) {
+            auto water = std::make_shared<std::vector<foliage::FoliageWater>>();
+            for (const entt::entity handle : water_view) {
+                const Entity e = world.wrap(handle);
+                if (!e.activeInHierarchy()) continue;
+                const water::WaterBody& body = e.get<water::WaterBody>();
+                const core::Mat4& m = e.worldMatrix();
+                if (body.type == water::WaterType::River) {
+                    const std::vector<water::RiverSample> line = water::riverCenterline(body, m, 4.0f);
+                    for (std::size_t i = 0; i + 1 < line.size(); ++i) {
+                        foliage::FoliageWater w;
+                        w.river = true;
+                        w.a = line[i].position + world_origin;
+                        w.b = line[i + 1].position + world_origin;
+                        w.width = std::max(line[i].width, line[i + 1].width);
+                        water->push_back(w);
+                    }
+                } else if (body.type == water::WaterType::Lake) {
+                    foliage::FoliageWater w;
+                    w.a = e.worldPosition() + world_origin;
+                    w.half = core::Vec2{body.size.x * 0.5f, body.size.y * 0.5f};
+                    w.angle = std::atan2(-m.m[0][2], m.m[0][0]);
+                    w.level = w.a.y;
+                    water->push_back(w);
+                }
+            }
+            // Lo que aporta a la firma de la siembra (los mismos valores que
+            // antes, en un solo numero).
+            std::uint64_t water_signature = 1469598103934665603ull;
+            for (const foliage::FoliageWater& w : *water) {
+                const float values[] = {w.a.x, w.a.y, w.a.z, w.b.x, w.b.z, w.width, w.half.x, w.half.y, w.angle};
+                const auto* p = reinterpret_cast<const unsigned char*>(values);
+                for (std::size_t i = 0; i < sizeof(values); ++i) water_signature = (water_signature ^ p[i]) * 1099511628211ull;
+            }
+            foliage_water_ = std::move(water);
+            foliage_water_key_ = key;
+            foliage_water_signature_ = water_signature;
         }
-        for (Job& job : forests) job.params.water = water;
+        hash_bytes(&foliage_water_signature_, sizeof(foliage_water_signature_));
+        for (Job& job : forests) job.params.water = foliage_water_;
     }
     // Terrenos: solo los que pisa algun bosque cuentan en la firma (cargar
     // una tesela lejana ya no vuelve a sembrar todo). Suma conmutativa: el
@@ -2963,22 +3062,14 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             !e.activeInHierarchy()) {
             return;
         }
-        // Ya va dentro del lote estatico de la escena (juego exportado).
-        if (const EntityInfo* info = e.tryGet<EntityInfo>(); info != nullptr && info->static_batched) {
+        // Ya va dentro del lote estatico de la escena (juego exportado), o es
+        // de una Data Layer oculta en el editor.
+        if (const EntityInfo* info = e.tryGet<EntityInfo>(); info != nullptr && (info->static_batched || info->editor_hidden)) {
             return;
         }
         // Una tela o una malla creada por codigo mandan sobre el modelo del asset.
         const physics::Cloth* cloth = e.tryGet<physics::Cloth>();
         const physics::SoftBody* soft = cloth == nullptr ? e.tryGet<physics::SoftBody>() : nullptr;
-        std::optional<std::uint32_t> model =
-            cloth != nullptr ? resolveClothModel(e, *cloth, scene, renderer)
-            : soft != nullptr ? resolveSoftBodyModel(e, *soft, scene, renderer)
-            : renderer_component->mesh
-                ? resolveRuntimeMesh(renderer_component->mesh, scene, renderer)
-                : resolveModel(renderer_component->model, renderer_component->part, scene, added);
-        if (!model) {
-            return;
-        }
         // Video en sus materiales (VideoPlayer en Material Override): variante
         // aunque no tenga .crmat propio.
         const VideoOverride* video = nullptr;
@@ -2986,20 +3077,104 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             const auto found = video_overrides_.find(e.handle());
             if (found != video_overrides_.end() && found->second.texture >= 0) video = &found->second;
         }
-        if (!renderer_component->materials.empty() || video != nullptr) {
-            model = resolveVariant(*model, renderer_component->materials, scene, added, video);
-            if (video != nullptr) applyVideoIntensity(*model, *video, scene, renderer);
+
+        // Estado persistente por entidad (animador, caches; su tiempo
+        // sobrevive entre frames). Lo que no llega a dibujarse este frame se
+        // olvida al final (seen).
+        AnimationState& state = animations_[e.handle()];
+
+        // Modelo resuelto: de la cache de la entidad si nada cambio (A4). Solo
+        // los modelos de assets sin video (las telas y las mallas de codigo
+        // cambian por su cuenta).
+        const bool cacheable = cloth == nullptr && soft == nullptr && !renderer_component->mesh && video == nullptr;
+        const auto same_inputs = [&]() {
+            if (state.resolve_epoch != resolve_epoch_ || state.resolve_part != renderer_component->part ||
+                state.resolve_model != renderer_component->model.uuid ||
+                state.resolve_materials.size() != renderer_component->materials.size()) {
+                return false;
+            }
+            for (std::size_t i = 0; i < state.resolve_materials.size(); ++i) {
+                if (state.resolve_materials[i] != renderer_component->materials[i].uuid) return false;
+            }
+            return true;
+        };
+        std::optional<std::uint32_t> model;
+        bool from_cache = false;
+        bool variant_waits = false;  // su variante espera turno: se ve el modelo base
+        if (cacheable && same_inputs()) {
+            model = state.resolved;
+            from_cache = true;
+        } else {
+            model = cloth != nullptr ? resolveClothModel(e, *cloth, scene, renderer)
+                    : soft != nullptr ? resolveSoftBodyModel(e, *soft, scene, renderer)
+                    : renderer_component->mesh
+                        ? resolveRuntimeMesh(renderer_component->mesh, scene, renderer)
+                        : resolveModel(renderer_component->model, renderer_component->part, scene, added);
+            if (!model) {
+                return;
+            }
+            const std::uint32_t base = *model;
+            if (!renderer_component->materials.empty() || video != nullptr) {
+                const bool waiting_before = variant_waiting_;
+                variant_waiting_ = false;
+                model = resolveVariant(*model, renderer_component->materials, scene, added, video);
+                variant_waits = variant_waiting_;
+                variant_waiting_ = waiting_before || variant_waits;
+                if (video != nullptr) applyVideoIntensity(*model, *video, scene, renderer);
+            }
+            // "Solo base de variantes" (A8): el modelo de un asset que nadie
+            // dibuja tal cual no se sube a la GPU. En cuanto alguna entidad lo
+            // dibuja sin variante deja de serlo (para siempre en esta escena).
+            if (cacheable) {
+                if (model_direct_use_.size() <= base) model_direct_use_.resize(base + 1, 0);
+                if (*model == base && !variant_waits) {
+                    if (model_direct_use_[base] == 0) {
+                        model_direct_use_[base] = 1;
+                        scene.setVariantBaseOnly(base, false);
+                    }
+                } else if (*model != base && model_direct_use_[base] == 0) {
+                    scene.setVariantBaseOnly(base, true);
+                }
+                // Esperando su variante con el base fuera de la GPU: este frame
+                // no se dibuja (subir el base para unos frames era lo que se
+                // queria evitar).
+                if (variant_waits && model_direct_use_[base] == 0 && scene.variantBaseOnly(base)) return;
+            }
         }
         const asset::ModelData& data = *scene.models()[*model];
 
-        // Animador persistente por entidad (su tiempo sobrevive entre frames).
-        AnimationState& state = animations_[e.handle()];
-        if (state.clip == -2 || state.model != *model) {
+        // Sin nada que lo anime: sin Animator propio (pose de reposo
+        // compartida, ver AnimationState::rest_only).
+        const Animator* animator_component = e.tryGet<Animator>();
+        const bool rest_only = cacheable && !(data.nodes.size() > 1 && data.bones.size() > 1) &&
+                               data.animations.empty() &&
+                               (animator_component == nullptr || !animator_component->controller.valid()) &&
+                               !e.has<anim::MotionMatching>();
+        if (rest_only) {
+            if (state.clip == -2 || state.model != *model || !state.rest_only) {
+                state = AnimationState{};
+                state.model = *model;
+                state.clip = -1;
+                state.rest_only = true;
+                state.rest_data = &data;
+            }
+        } else if (state.clip == -2 || state.model != *model || state.rest_only) {
             state = AnimationState{};
             state.model = *model;
             state.animator = anim::Animator(data);
             state.clip = -1;
             state.animator.play(-1);
+        }
+        // (Despues de rehacer el estado: si no, se perderia.)
+        if (cacheable && !from_cache && !variant_waits) {
+            state.resolve_epoch = resolve_epoch_;
+            state.resolve_model = renderer_component->model.uuid;
+            state.resolve_part = renderer_component->part;
+            state.resolve_materials.resize(renderer_component->materials.size());
+            for (std::size_t i = 0; i < renderer_component->materials.size(); ++i) {
+                state.resolve_materials[i] = renderer_component->materials[i].uuid;
+            }
+            state.resolved = *model;
         }
         state.seen = frame_;
 
@@ -3381,27 +3556,46 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
 
         const Mat4& world_matrix = e.worldMatrix();
         if (count >= actors.size()) actors.emplace_back();
+        if (actor_rest_.size() < actors.size()) actor_rest_.resize(actors.size(), 0);
         scene::Actor& actor = actors[count];
-        // El mismo objeto en la misma posicion de la lista y sin animar: su
-        // animador (pose de reposo) ya esta; no se copia.
-        const bool same_slot = count < previous_entities_.size() && previous_entities_[count] == e.handle() &&
-                               actor.model == *model;
-        actor.model = *model;
-        actor.transform = world_matrix;
-        // Si ya estaba (mismo hueco y modelo) y se anima, basta con sus huesos:
-        // el render solo lee boneMatrices() (la animacion propia de la escena
-        // esta apagada). Copiar el animador entero eran decenas de KB por
-        // personaje y frame.
-        if (!same_slot) {
-            actor.animator = state.animator;
-        } else if (animating || state.animated) {
-            actor.animator.copyBonesFrom(state.animator);
+        // El render solo lee boneMatrices() de cada actor (la animacion propia
+        // de la escena esta apagada): se copian solo los huesos, y solo si
+        // cambian. Copiar el animador entero eran decenas de KB por personaje.
+        const bool same_model = actor.model == *model && !actor.animator.boneMatrices().empty();
+        if (state.rest_only) {
+            // Pose de reposo: la del modelo, compartida. El hueco ya la tiene
+            // si es del mismo modelo y estaba en reposo, aunque fuera de otra
+            // entidad (antes, por posicion: un objeto que entraba al principio
+            // hacia copiar a todos los de detras).
+            if (!same_model || actor_rest_[count] == 0) {
+                actor.animator.copyBonesFrom(restPose(*model, data));
+                actor_rest_[count] = 1;
+            }
+        } else {
+            // El mismo objeto en el mismo hueco y sin animar: sus huesos ya estan.
+            const bool same_slot = same_model && count < previous_entities_.size() &&
+                                   previous_entities_[count] == e.handle();
+            if (!same_slot || animating || state.animated) actor.animator.copyBonesFrom(state.animator);
+            actor_rest_[count] = 0;
         }
+        actor.model = *model;
+        actor.id = static_cast<std::uint64_t>(entt::to_integral(e.handle())) + 1u;
+        actor.transform = world_matrix;
         state.animated = animating;
-        const anim::Aabb& box = model_bounds_[*model];
-        const Vec3 center = (box.min + box.max) * 0.5f;
-        actor.bounds_center = transformPoint(world_matrix, center);
-        actor.bounds_radius = core::length(box.max - box.min) * 0.5f * maxAxisScale(world_matrix);
+        // La esfera en el mundo solo se recalcula si su Transform cambio (la
+        // version sube con cualquier cambio suyo o de sus padres). Las mallas
+        // de codigo y las telas cambian de caja sin moverse: siempre.
+        const Transform* transform = cacheable ? e.tryGet<Transform>() : nullptr;
+        const std::uint64_t transform_version = transform != nullptr ? transform->version : ~0ull;
+        if (transform == nullptr || state.bounds_version != transform_version) {
+            const anim::Aabb& box = model_bounds_[*model];
+            const Vec3 center = (box.min + box.max) * 0.5f;
+            state.bounds_center = transformPoint(world_matrix, center);
+            state.bounds_radius = core::length(box.max - box.min) * 0.5f * maxAxisScale(world_matrix);
+            state.bounds_version = transform != nullptr ? transform_version : ~0ull;
+        }
+        actor.bounds_center = state.bounds_center;
+        actor.bounds_radius = state.bounds_radius;
         if (cloth_positions != nullptr && !cloth_positions->empty()) {
             // La tela se aleja de su sitio (cae, ondea): la caja de sus particulas.
             Vec3 lo = cloth_positions->front(), hi = lo;
@@ -3414,6 +3608,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         }
         actor.cast_shadows = renderer_component->cast_shadows != ShadowCasting::Off;
         actor.shadows_only = renderer_component->cast_shadows == ShadowCasting::ShadowsOnly;
+        // Su lightmap horneado, si lo tiene (RenderSyncLightmaps.cpp).
+        assignLightmap(actor, e, *renderer_component, data, renderer);
 
         actor_entities_.push_back(e.handle());
         actor_models_.push_back(*model);
@@ -3648,13 +3844,18 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
         lights.sun.intensity *= light.intensity;
         renderer.setSunShadowsEnabled(light.cast_shadows);
         renderer.setSunShadowStrength(std::clamp(light.shadow_strength, 0.0f, 1.0f));
+        // Sol Horneado: con un .crbake con lightmaps, sus sombras del lightmap.
+        renderer.setSunBakeMode(light.bake_mode == LightBakeMode::Baked);
     } else if (hdr_active) {
         renderer.setSunShadowsEnabled(true);
         renderer.setSunShadowStrength(1.0f);
+        // Sin Light direccional: el modo con que se horneo (Ventana > Iluminacion).
+        renderer.setSunBakeMode(renderer.bakedLighting().sun_baked);
         scene.setFixedSun(renderer.environmentSunDirection());
     } else {
         renderer.setSunShadowsEnabled(true);
         renderer.setSunShadowStrength(1.0f);
+        renderer.setSunBakeMode(renderer.bakedLighting().sun_baked);
         scene.setFixedSun(std::nullopt);
         if (sky != nullptr) {
             scene.setDayCycleEnabled(sky->day_cycle);

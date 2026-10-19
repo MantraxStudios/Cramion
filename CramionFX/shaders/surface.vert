@@ -41,6 +41,14 @@ layout(push_constant) uniform PushConstants {
     uint flags;
 } push;
 
+// Repeticion (xy) y desplazamiento (zw) de las UV del material (tiling del
+// .crmat). Aqui, en los vertices: el gancho `vertex` del usuario recibe la UV
+// ya repetida, como cuando se horneaba en la malla (surface.frag no la vuelve
+// a aplicar).
+layout(set = 1, binding = 9) uniform MaterialUv {
+    vec4 material_uv;
+};
+
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
@@ -54,6 +62,15 @@ layout(location = 2) out vec4 v_tangent;
 layout(location = 3) out vec3 v_world_position;
 layout(location = 4) out vec4 v_current_clip;
 layout(location = 5) out vec4 v_previous_clip;
+// UV de lightmap del modelo (set 1, binding 10; PLAN-LIGHTMAPS 1.6; el 9 es el tiling del material): una por
+// vertice, unorm16x2 (u en los 16 bits bajos); 0xFFFFFFFF = sin lightmap.
+// Solo con kFlagLightmap (lo estatico rigido con UV2).
+layout(std430, set = 1, binding = 10) readonly buffer LightmapUvs {
+    uint lightmap_uvs[];
+};
+layout(location = 7) out vec2 v_lightmap_uv;
+layout(location = 8) flat out uint v_lightmap_slot;
+const uint kFlagLightmap = 1u << 6;
 
 #define CRAMION_VERTEX_STAGE 1
 #include "surface_common.glsl"
@@ -85,7 +102,7 @@ void main() {
     // como trasera y el fragment (!gl_FrontFacing) la gira hacia fuera. Girarla
     // aqui tambien la dejaba mirando hacia dentro (doble giro).
     vec3 normal = normal_to_world * in_normal;
-    vec2 uv = in_uv;
+    vec2 uv = in_uv * material_uv.xy + material_uv.zw;
     vec3 offset = vec3(0.0);
 
 #ifdef CRAMION_HAS_VERTEX
@@ -118,4 +135,16 @@ void main() {
     vec4 previous_world = previous_skin * vec4(in_position, 1.0);
     previous_world.xyz += offset;
     v_previous_clip = camera.previous_view_projection * previous_world;
+
+    // Lightmap: su UV2 y el hueco de la instancia (el de su matriz en el
+    // buffer de huesos: ahi esta su registro, lightmap_common.glsl).
+    v_lightmap_uv = vec2(-1.0);
+    v_lightmap_slot = 0xFFFFFFFFu;
+    if ((push.flags & kFlagLightmap) != 0u) {
+        uint packed = lightmap_uvs[gl_VertexIndex];
+        if (packed != 0xFFFFFFFFu) {
+            v_lightmap_uv = unpackUnorm2x16(packed);
+            v_lightmap_slot = (push.flags & 1u) != 0u ? uint(gl_InstanceIndex) : push.bone_offset + 1u;
+        }
+    }
 }

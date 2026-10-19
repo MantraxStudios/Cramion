@@ -57,6 +57,29 @@ vk::raii::Sampler createMaterialSampler(const VulkanDevice& device, const Textur
     return vk::raii::Sampler(device.handle(), sampler_info);
 }
 
+// Modo compatible (Vulkan 1.0, moviles): texturas y storage buffers por etapa
+// de un pipeline layout dentro de los minimos (16 y 4). Si se pasa, el
+// driver puede rechazar el pipeline: se avisa (PLAN-LIGHTMAPS 1.4).
+void checkCompatBudget(const char* layout, const std::vector<vk::DescriptorSetLayoutBinding>& bindings,
+                       std::uint32_t extra_fragment_samplers) {
+    if (!compat::lite()) return;
+    const std::pair<vk::ShaderStageFlagBits, const char*> stages[] = {{vk::ShaderStageFlagBits::eVertex, "vertices"},
+                                                                     {vk::ShaderStageFlagBits::eFragment, "fragmentos"}};
+    for (const auto& [stage, name] : stages) {
+        std::uint32_t samplers = stage == vk::ShaderStageFlagBits::eFragment ? extra_fragment_samplers : 0u;
+        std::uint32_t storage = 0;
+        for (const vk::DescriptorSetLayoutBinding& b : bindings) {
+            if (!(b.stageFlags & stage)) continue;
+            if (b.descriptorType == vk::DescriptorType::eCombinedImageSampler) samplers += b.descriptorCount;
+            if (b.descriptorType == vk::DescriptorType::eStorageBuffer) storage += b.descriptorCount;
+        }
+        if (samplers > 16 || storage > 4) {
+            std::cerr << "[Vulkan] Modo compatible: el layout de " << layout << " usa " << samplers << " texturas y "
+                      << storage << " storage buffers en " << name << " (minimo de Vulkan: 16 y 4)\n";
+        }
+    }
+}
+
 }  // namespace
 
 bool SkinnedPass::setTextureFiltering(const VulkanDevice& device, const TextureFiltering& filtering) {
@@ -94,8 +117,9 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
                                              vk::ShaderStageFlagBits::eTessellationEvaluation)
                       : vk::ShaderStageFlags{};
     geometry_push_stages_ = both | tess_stages;
-    shadow_push_stages_ = vk::ShaderStageFlagBits::eVertex | tess_stages;
-    std::array<vk::DescriptorSetLayoutBinding, 7> frame_bindings{};
+    // El fragment shader lee el alfa del color base (recorte de la sombra).
+    shadow_push_stages_ = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment | tess_stages;
+    std::array<vk::DescriptorSetLayoutBinding, kFrameBindingCount> frame_bindings{};
     frame_bindings[0].binding = 0;
     frame_bindings[0].descriptorType = vk::DescriptorType::eUniformBuffer;
     frame_bindings[0].descriptorCount = 1;
@@ -128,6 +152,17 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     frame_bindings[6].descriptorType = vk::DescriptorType::eCombinedImageSampler;
     frame_bindings[6].descriptorCount = 1;
     frame_bindings[6].stageFlags = both;
+    // Lightmaps horneados (PLAN-LIGHTMAPS 2.5): 7 = el atlas (array 2D RGBA16F,
+    // la unica textura nueva: en el modo compatible el vidrio llega justo a
+    // 16), 8 = los registros de cada instancia (GpuLightmapRecord).
+    frame_bindings[7].binding = 7;
+    frame_bindings[7].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    frame_bindings[7].descriptorCount = 1;
+    frame_bindings[7].stageFlags = vk::ShaderStageFlagBits::eFragment;
+    frame_bindings[8].binding = 8;
+    frame_bindings[8].descriptorType = vk::DescriptorType::eStorageBuffer;
+    frame_bindings[8].descriptorCount = 1;
+    frame_bindings[8].stageFlags = vk::ShaderStageFlagBits::eFragment;
 
     vk::DescriptorSetLayoutCreateInfo frame_layout_info{};
     frame_layout_info.setBindings(frame_bindings);
@@ -135,7 +170,11 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
 
     // --- Set 1: las texturas PBR del material ---
     // Las 4 ultimas son de los shaders del usuario (tambien en vertices).
-    std::array<vk::DescriptorSetLayoutBinding, kMaterialBindingCount> material_bindings{};
+    // Y detras, el tiling de las UV (kMaterialUvBinding = 9) y las UV de
+    // lightmap (kLightmapUvBinding = 10). En el modo compatible solo hay 5
+    // texturas: el 9 va en el indice 5 y el 10 en el 6 (los numeros de binding
+    // no cambian, los indices del array si).
+    std::vector<vk::DescriptorSetLayoutBinding> material_bindings(materialBindingCount());
     for (std::uint32_t i = 0; i < materialBindingCount(); ++i) {
         material_bindings[i].binding = i;
         material_bindings[i].descriptorType = vk::DescriptorType::eCombinedImageSampler;
@@ -147,11 +186,40 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
             material_bindings[i].stageFlags |= vk::ShaderStageFlagBits::eTessellationEvaluation;
         }
     }
+    // 10 = UV de lightmap del modelo (una por vertice, unorm16x2; 0xFFFFFFFF =
+    // sin lightmap). Existe siempre (la usan tambien el vidrio y las sombras
+    // con este layout); los modelos sin UV2 apuntan a dummyLightmapUvs().
+    vk::DescriptorSetLayoutBinding lightmap_uvs{};
+    lightmap_uvs.binding = kLightmapUvBinding;
+    lightmap_uvs.descriptorType = vk::DescriptorType::eStorageBuffer;
+    lightmap_uvs.descriptorCount = 1;
+    lightmap_uvs.stageFlags = vk::ShaderStageFlagBits::eVertex | mesh_stages;
+
+    // 9 = el tiling de las UV del material (uniform buffer): lo leen los
+    // fragment shaders (skinned.frag, sombras con alfa, vidrio), la
+    // teselacion (la altura) y surface.vert.
+    vk::DescriptorSetLayoutBinding uv_binding{};
+    uv_binding.binding = kMaterialUvBinding;
+    uv_binding.descriptorType = vk::DescriptorType::eUniformBuffer;
+    uv_binding.descriptorCount = 1;
+    uv_binding.stageFlags = both;
+    if (tessellation_) uv_binding.stageFlags |= vk::ShaderStageFlagBits::eTessellationEvaluation;
+    material_bindings.push_back(uv_binding);
+    material_bindings.push_back(lightmap_uvs);
 
     vk::DescriptorSetLayoutCreateInfo material_layout_info{};
     material_layout_info.setBindings(material_bindings);
-    material_layout_info.bindingCount = materialBindingCount();
     material_set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), material_layout_info);
+    {
+        // Geometria (set 0 + set 1) y vidrio (+ sus texturas: los bindings 3.. del set 2).
+        std::vector<vk::DescriptorSetLayoutBinding> geometry(frame_bindings.begin(), frame_bindings.end());
+        geometry.insert(geometry.end(), material_bindings.begin(), material_bindings.end());
+        checkCompatBudget("la geometria", geometry, 0);
+        checkCompatBudget("el vidrio", geometry, glassBindingCount() > 3 ? glassBindingCount() - 3 : 0);
+    }
+    const std::uint32_t no_lightmap = 0xFFFFFFFFu;
+    dummy_lightmap_uvs_ = VulkanBuffer::createDeviceLocal(device, &no_lightmap, sizeof(no_lightmap),
+                                                          vk::BufferUsageFlagBits::eStorageBuffer);
 
     hdr_format_ = hdr_format;
     createGeometryPipeline(device, gbuffer);
@@ -256,6 +324,8 @@ void SkinnedPass::createGeometryPipeline(const VulkanDevice& device, const GBuff
     const vk::raii::ShaderModule vertex_module = shaders::loadModule(device, "skinned.vert.spv");
     const vk::raii::ShaderModule fragment_module = shaders::loadModule(device, "skinned.frag.spv");
     geometry_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module);
+    geometry_opaque_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module, GeometryVariant::Fill,
+                                                      nullptr, nullptr, /*alpha_cutout=*/false);
     if (tessellation_) {
         const vk::raii::ShaderModule control_module = shaders::loadModule(device, "skinned.tesc.spv");
         const vk::raii::ShaderModule evaluation_module = shaders::loadModule(device, "skinned.tese.spv");
@@ -287,7 +357,8 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
                                                       const vk::raii::ShaderModule& fragment_module,
                                                       GeometryVariant variant,
                                                       const vk::raii::ShaderModule* tess_control,
-                                                      const vk::raii::ShaderModule* tess_evaluation) const {
+                                                      const vk::raii::ShaderModule* tess_evaluation,
+                                                      bool alpha_cutout) const {
     const bool lines = variant != GeometryVariant::Fill;
     const bool overlay = variant == GeometryVariant::WireOverlay;
     const bool tessellated = tess_control != nullptr && tess_evaluation != nullptr;
@@ -297,6 +368,14 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
         stages.push_back(stage(vk::ShaderStageFlagBits::eTessellationEvaluation, *tess_evaluation));
     }
     stages.push_back(stage(vk::ShaderStageFlagBits::eFragment, fragment_module));
+    // skinned.frag: constant_id 0 = kAlphaCutout (false: sin discard).
+    const VkBool32 cutout_value = alpha_cutout ? VK_TRUE : VK_FALSE;
+    const vk::SpecializationMapEntry cutout_entry{0, 0, sizeof(VkBool32)};
+    vk::SpecializationInfo cutout_info{};
+    cutout_info.setMapEntries(cutout_entry);
+    cutout_info.dataSize = sizeof(cutout_value);
+    cutout_info.pData = &cutout_value;
+    if (!alpha_cutout) stages.back().pSpecializationInfo = &cutout_info;
     // Triangulos como parches de 3 puntos de control para la teselacion.
     vk::PipelineTessellationStateCreateInfo tessellation_state{};
     tessellation_state.patchControlPoints = 3;
@@ -780,11 +859,16 @@ void SkinnedPass::destroy() {
     shadow_pipeline_ = nullptr;
     shadow_layout_ = nullptr;
     geometry_pipeline_ = nullptr;
+    // La de los opacos sin discard (early-Z) tambien: si queda viva, su
+    // destructor la libera al salir de main con el dispositivo ya destruido
+    // (lee la tabla de funciones liberada: 0xc0000005 al cerrar el juego).
+    geometry_opaque_pipeline_ = nullptr;
     geometry_wire_pipeline_ = nullptr;
     wire_overlay_pipeline_ = nullptr;
     geometry_layout_ = nullptr;
     material_set_layout_ = nullptr;
     frame_set_layout_ = nullptr;
+    dummy_lightmap_uvs_.destroy();
     sampler_ = nullptr;
 }
 

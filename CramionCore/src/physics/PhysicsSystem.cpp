@@ -89,6 +89,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -391,6 +392,17 @@ bool sameScale(const Vec3& a, const Vec3& b) {
 
 // --- Colliders de terreno en segundo plano ---
 
+cvar::CVar<bool> g_async_mesh("physics.AsyncMesh", true,
+                              "Construir en un hilo de fondo las Mesh Collider grandes (su arbol de busqueda): el "
+                              "cuerpo se crea sin ella y se rehace al llegar, unos frames despues",
+                              cvar::Saved);
+cvar::CVar<int> g_async_mesh_min("physics.AsyncMeshMinTriangles", 2000,
+                                 "Triangulos a partir de los cuales una Mesh Collider se construye en segundo plano",
+                                 cvar::Saved, 0, 100000000);
+cvar::CVar<int> g_async_mesh_wait_frames("physics.AsyncMeshMaxWaitFrames", 60,
+                                         "Frames que se espera a una Mesh Collider del hilo de fondo antes de "
+                                         "terminarla en el hilo principal (con algo movil encima, al momento)",
+                                         cvar::Saved, 0, 100000);
 cvar::CVar<bool> g_async_terrain("physics.AsyncTerrain", true,
                                  "Rehacer el collider de los terrenos (campo de alturas) en un hilo de fondo: el "
                                  "cuerpo viejo se queda hasta que llega el nuevo",
@@ -1460,6 +1472,63 @@ struct PhysicsSystem::Impl {
         }
     }
     std::map<MeshKey, JPH::RefConst<JPH::Shape>> mesh_shapes;
+    // Mesh Collider grandes construyendose en un hilo (g_async_mesh). Al
+    // llegar se guardan en mesh_shapes y las entidades que esperaban se
+    // rehacen. Antes se construian en el hilo principal la primera vez que
+    // aparecia cada modelo: al cargar una celda del World Partition con
+    // edificios, 100-150 ms de golpe (un tiron al andar).
+    // Como TerrainBuild: run() lo calcula una sola vez (en el job o, con
+    // finishNow, en el hilo principal si aun no habia empezado).
+    struct PendingMeshShape {
+        std::atomic<int> state{0};  // 0 en cola, 1 calculandose, 2 terminado
+        std::shared_ptr<asset::ModelData> copy;  // la malla (se suelta al terminar)
+        JPH::RefConst<JPH::PhysicsMaterial> material;
+        // Solo se leen con done() == true.
+        JPH::RefConst<JPH::Shape> result;
+        bool failed = false;
+        // Hilo principal.
+        // World::sceneGeneration al lanzarse: MeshKey es la direccion del
+        // ModelData y otra escena puede reutilizarla para otro modelo.
+        std::uint64_t generation = 0;
+        int frames = 0;              // sincronizaciones esperando
+        Vec3 lo{}, hi{};             // caja de la malla (local), para bodiesInBox
+
+        bool run() {
+            int expected = 0;
+            if (!state.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) return false;
+            if (copy) {
+                JPH::VertexList vertices;
+                JPH::IndexedTriangleList triangles;
+                meshTriangles(*copy, vertices, triangles);
+                JPH::PhysicsMaterialList materials_list;
+                materials_list.push_back(material);
+                JPH::MeshShapeSettings settings(std::move(vertices), std::move(triangles), std::move(materials_list));
+                const JPH::ShapeSettings::ShapeResult shape = settings.Create();
+                if (!shape.HasError()) {
+                    result = shape.Get();
+                } else {
+                    failed = true;
+                }
+            } else {
+                failed = true;
+            }
+            copy.reset();
+            state.store(2, std::memory_order_release);
+            return true;
+        }
+        bool done() const { return state.load(std::memory_order_acquire) == 2; }
+        void finishNow() {
+            if (run()) return;
+            while (!done()) std::this_thread::yield();
+        }
+    };
+    std::map<MeshKey, std::shared_ptr<PendingMeshShape>> pending_mesh_shapes;
+    std::map<MeshKey, std::vector<entt::entity>> pending_mesh_waiting;
+    // Fallaron en el hilo: la proxima vez se hacen aqui (con su envolvente,
+    // como siempre) en vez de relanzar el job una y otra vez.
+    std::set<MeshKey> failed_mesh_shapes;
+    entt::entity building_entity = entt::null;  // la que buildEntry esta construyendo
+    std::uint64_t currentSceneGeneration() const { return world != nullptr ? world->sceneGeneration() : 0; }
     // Mallas creadas por codigo (MeshRenderer::mesh): por malla y version.
     struct RuntimeShapeKey {
         const ecs::Mesh* mesh = nullptr;
@@ -1688,32 +1757,78 @@ struct PhysicsSystem::Impl {
         return nullptr;
     }
 
+    // Vertices y triangulos de una malla para su MeshShape (caras hacia fuera,
+    // como sus normales).
+    static void meshTriangles(const asset::ModelData& data, JPH::VertexList& vertices,
+                              JPH::IndexedTriangleList& triangles) {
+        vertices.reserve(data.vertices.size());
+        for (const asset::SkinnedVertex& v : data.vertices) {
+            vertices.push_back(JPH::Float3(v.position.x, v.position.y, v.position.z));
+        }
+        triangles.reserve(data.indices.size() / 3);
+        for (std::size_t i = 0; i + 2 < data.indices.size(); i += 3) {
+            std::uint32_t i0 = data.indices[i], i1 = data.indices[i + 1], i2 = data.indices[i + 2];
+            if (i0 >= data.vertices.size() || i1 >= data.vertices.size() || i2 >= data.vertices.size()) continue;
+            // La cara de delante de Jolt es la antihoraria respecto a su
+            // normal: se orienta cada triangulo con las normales de la
+            // malla (los modelos importados no siempre coinciden).
+            const Vec3& p0 = data.vertices[i0].position;
+            const Vec3 face = core::cross(data.vertices[i1].position - p0, data.vertices[i2].position - p0);
+            const Vec3 normal = data.vertices[i0].normal + data.vertices[i1].normal + data.vertices[i2].normal;
+            if (core::dot(face, normal) < 0.0f) std::swap(i1, i2);
+            triangles.push_back(JPH::IndexedTriangle(i0, i1, i2, 0));
+        }
+    }
+
     JPH::RefConst<JPH::Shape> meshShape(const asset::ModelData& data, bool convex,
                                         const JPH::PhysicsMaterial* material, const std::string& name) {
-        auto& slot = mesh_shapes[MeshKey{&data, convex, material}];
+        const MeshKey key{&data, convex, material};
+        auto& slot = mesh_shapes[key];
         if (slot != nullptr) return slot;
         if (data.vertices.empty()) return nullptr;
 
+        // Grande y sin prisa: en un hilo de fondo (ver PendingMeshShape).
+        const bool big = data.indices.size() / 3 >= static_cast<std::size_t>(std::max(0, g_async_mesh_min.get()));
+        if (!convex && big && g_async_mesh.get() && !sync_blocking && building_entity != entt::null &&
+            !failed_mesh_shapes.contains(key)) {
+            const std::uint64_t generation = currentSceneGeneration();
+            auto found = pending_mesh_shapes.find(key);
+            // De otra escena (misma direccion, otro modelo): se tira.
+            if (found != pending_mesh_shapes.end() && found->second->generation != generation) {
+                pending_mesh_waiting.erase(key);
+                pending_mesh_shapes.erase(found);
+                found = pending_mesh_shapes.end();
+            }
+            if (found == pending_mesh_shapes.end()) {
+                auto pending = std::make_shared<PendingMeshShape>();
+                // Copia de la malla (la del modelo puede cambiar mientras el
+                // hilo trabaja; SharedVector: sin copiar los datos); los
+                // triangulos y el arbol, en el hilo.
+                pending->copy = std::make_shared<asset::ModelData>();
+                pending->copy->vertices = data.vertices;
+                pending->copy->indices = data.indices;
+                pending->material = material;
+                pending->generation = generation;
+                Vec3 lo{1e30f, 1e30f, 1e30f};
+                Vec3 hi{-1e30f, -1e30f, -1e30f};
+                for (const asset::SkinnedVertex& v : data.vertices) {
+                    lo = Vec3{std::min(lo.x, v.position.x), std::min(lo.y, v.position.y), std::min(lo.z, v.position.z)};
+                    hi = Vec3{std::max(hi.x, v.position.x), std::max(hi.y, v.position.y), std::max(hi.z, v.position.z)};
+                }
+                pending->lo = lo;
+                pending->hi = hi;
+                jobs::schedule([pending]() { pending->run(); }, nullptr, jobs::Priority::Normal);
+                pending_mesh_shapes.emplace(key, pending);
+            }
+            // Se espera (tambien si ya termino: lo mete la siguiente sincronizacion).
+            pending_mesh_waiting[key].push_back(building_entity);
+            return nullptr;
+        }
+
         if (!convex && data.indices.size() >= 3) {
             JPH::VertexList vertices;
-            vertices.reserve(data.vertices.size());
-            for (const asset::SkinnedVertex& v : data.vertices) {
-                vertices.push_back(JPH::Float3(v.position.x, v.position.y, v.position.z));
-            }
             JPH::IndexedTriangleList triangles;
-            triangles.reserve(data.indices.size() / 3);
-            for (std::size_t i = 0; i + 2 < data.indices.size(); i += 3) {
-                std::uint32_t i0 = data.indices[i], i1 = data.indices[i + 1], i2 = data.indices[i + 2];
-                if (i0 >= data.vertices.size() || i1 >= data.vertices.size() || i2 >= data.vertices.size()) continue;
-                // La cara de delante de Jolt es la antihoraria respecto a su
-                // normal: se orienta cada triangulo con las normales de la
-                // malla (los modelos importados no siempre coinciden).
-                const Vec3& p0 = data.vertices[i0].position;
-                const Vec3 face = core::cross(data.vertices[i1].position - p0, data.vertices[i2].position - p0);
-                const Vec3 normal = data.vertices[i0].normal + data.vertices[i1].normal + data.vertices[i2].normal;
-                if (core::dot(face, normal) < 0.0f) std::swap(i1, i2);
-                triangles.push_back(JPH::IndexedTriangle(i0, i1, i2, 0));
-            }
+            meshTriangles(data, vertices, triangles);
             JPH::PhysicsMaterialList materials_list;
             materials_list.push_back(material);
             JPH::MeshShapeSettings settings(std::move(vertices), std::move(triangles), std::move(materials_list));
@@ -2550,6 +2665,11 @@ struct PhysicsSystem::Impl {
     // `terrain_shape`: el campo de alturas ya hecho (ver collectShapes).
     void buildEntry(ecs::Entity entity, BodyEntry& entry, bool simulate, const KeptVelocity* kept = nullptr,
                     const JPH::RefConst<JPH::Shape>* terrain_shape = nullptr) {
+        building_entity = entity.handle();
+        struct ClearBuilding {
+            entt::entity& e;
+            ~ClearBuilding() { e = entt::null; }
+        } clear_building{building_entity};
         const std::string& name = entity.name();
         const Rigidbody* rb = entity.tryGet<Rigidbody>();
         entry.type = rb != nullptr ? rb->type : BodyType::Static;
@@ -2663,22 +2783,38 @@ struct PhysicsSystem::Impl {
     // Hay algo que se mueve (cuerpos moviles o personajes) sobre la tesela de
     // terreno con esquina `corner`? Una consulta a la broadphase: barata.
     bool bodiesOver(const Vec3& corner, float size, float height) const {
-        if (!system) return false;
         const float lo_y = corner.y - 50.0f;
         const float hi_y = corner.y + std::max(height, 0.0f) + 500.0f;
-        const JPH::AABox box(JPH::Vec3(corner.x, lo_y, corner.z), JPH::Vec3(corner.x + size, hi_y, corner.z + size));
+        return bodiesInBox(Vec3{corner.x, lo_y, corner.z}, Vec3{corner.x + size, hi_y, corner.z + size});
+    }
+    // Lo mismo en una caja cualquiera (mundo).
+    bool bodiesInBox(const Vec3& lo, const Vec3& hi) const {
+        if (!system) return false;
+        const JPH::AABox box(JPH::Vec3(lo.x, lo.y, lo.z), JPH::Vec3(hi.x, hi.y, hi.z));
         AnyBodyCollector collector;
         system->GetBroadPhaseQuery().CollideAABox(box, collector, JPH::SpecifiedBroadPhaseLayerFilter(broadphase::kMoving),
                                                   JPH::ObjectLayerFilter());
         if (collector.found) return true;
         for (const auto& [handle, c] : characters) {
             const Vec3& p = c.position;
-            if (p.x >= corner.x && p.x <= corner.x + size && p.z >= corner.z && p.z <= corner.z + size && p.y >= lo_y &&
-                p.y <= hi_y) {
-                return true;
-            }
+            if (p.x >= lo.x && p.x <= hi.x && p.z >= lo.z && p.z <= hi.z && p.y >= lo.y && p.y <= hi.y) return true;
         }
         return false;
+    }
+    // Algo movil sobre (o dentro de) la Mesh Collider que `entry` espera: su
+    // caja local en el mundo, con un metro de margen (mas arriba).
+    bool bodiesOverMesh(const BodyEntry& entry, const PendingMeshShape& pending) const {
+        if (pending.lo.x > pending.hi.x) return false;
+        Vec3 lo{1e30f, 1e30f, 1e30f};
+        Vec3 hi{-1e30f, -1e30f, -1e30f};
+        for (int i = 0; i < 8; ++i) {
+            const Vec3 local{(i & 1) ? pending.hi.x : pending.lo.x, (i & 2) ? pending.hi.y : pending.lo.y,
+                             (i & 4) ? pending.hi.z : pending.lo.z};
+            const Vec3 p = ecs::transformPoint(entry.matrix, local);
+            lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+            hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+        }
+        return bodiesInBox(Vec3{lo.x - 1.0f, lo.y - 1.0f, lo.z - 1.0f}, Vec3{hi.x + 1.0f, hi.y + 3.0f, hi.z + 1.0f});
     }
 
     // Collider de un terreno en segundo plano (physics.AsyncTerrain):
@@ -2798,6 +2934,54 @@ struct PhysicsSystem::Impl {
         std::sort(candidates.begin(), candidates.end());
         candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
 
+        // Mesh Collider construidas en el hilo: a la cache, y quien las
+        // esperaba se rehace (su firma no coincide). Como los terrenos: con
+        // algo movil encima, pasados physics.AsyncMeshMaxWaitFrames o con
+        // sync_blocking, se termina ya en este hilo.
+        const std::uint64_t scene_generation = currentSceneGeneration();
+        for (auto it = pending_mesh_shapes.begin(); it != pending_mesh_shapes.end();) {
+            PendingMeshShape& pending = *it->second;
+            const auto waiting = pending_mesh_waiting.find(it->first);
+            if (pending.generation != scene_generation) {
+                // De otra escena: no se mete nunca (el job termina solo).
+                if (waiting != pending_mesh_waiting.end()) pending_mesh_waiting.erase(waiting);
+                it = pending_mesh_shapes.erase(it);
+                continue;
+            }
+            if (!pending.done()) {
+                ++pending.frames;
+                bool now = sync_blocking || pending.frames > g_async_mesh_wait_frames.get();
+                if (!now && waiting != pending_mesh_waiting.end()) {
+                    for (const entt::entity e : waiting->second) {
+                        const auto entry = entries.find(e);
+                        if (entry != entries.end() && bodiesOverMesh(entry->second, pending)) {
+                            now = true;
+                            break;
+                        }
+                    }
+                }
+                if (!now) {
+                    ++it;
+                    continue;
+                }
+                pending.finishNow();
+            }
+            if (pending.failed) {
+                // Fallo en el hilo: se rehace aqui (con su envolvente).
+                failed_mesh_shapes.insert(it->first);
+            } else {
+                mesh_shapes[it->first] = pending.result;
+            }
+            // Quien la esperaba se rehace (tambien si fallo: si no, se
+            // quedaria sin esa malla para siempre).
+            if (waiting != pending_mesh_waiting.end()) {
+                for (const entt::entity e : waiting->second) {
+                    if (const auto entry = entries.find(e); entry != entries.end()) entry->second.signature = 0;
+                }
+                pending_mesh_waiting.erase(waiting);
+            }
+            it = pending_mesh_shapes.erase(it);
+        }
         ++sync_generation;
         Pools pools(registry);
         std::optional<jobs::FrameBudget> terrain_budget;  // se crea al meter el primer collider de terreno
@@ -3084,26 +3268,53 @@ struct PhysicsSystem::Impl {
         }
     }
 
+    // Linea central de cada rio (paso 1 m) con su firma y su caja: se rehace
+    // solo si el rio cambia de forma (antes, en cada paso de la fisica).
+    std::unordered_map<entt::entity, water::RiverLine> buoyancy_rivers;
+    struct BuoyancyWater {
+        const water::WaterBody* body;
+        core::Mat4 matrix;
+        const water::RiverLine* river_line;  // rio: la de buoyancy_rivers
+    };
+    std::vector<BuoyancyWater> buoyancy_waters;  // se reutiliza en cada paso
     // Flotacion (componente WaterBody): cada cuerpo dinamico que toca el agua
     // recibe el empuje de Jolt, con la altura, la normal y la corriente del
     // agua en su centro (la misma ola que se dibuja).
     void applyBuoyancy(ecs::World& w, float dt) {
         auto view = w.registry().view<water::WaterBody>();
-        if (view.begin() == view.end()) return;
-        struct Water {
-            const water::WaterBody* body;
-            core::Mat4 matrix;
-            // Rio: su linea central una vez por paso (antes, una por cuerpo).
-            std::vector<water::RiverSample> river_line;
-        };
-        std::vector<Water> waters;
+        if (view.begin() == view.end()) {
+            buoyancy_rivers.clear();
+            return;
+        }
+        // Sin cuerpos dinamicos no hay nada que empujar: ni se mira el agua.
+        const bool any_dynamic = std::any_of(entries.begin(), entries.end(), [](const auto& item) {
+            return item.second.type == BodyType::Dynamic && !item.second.solid.IsInvalid();
+        });
+        if (!any_dynamic) return;
+        std::vector<BuoyancyWater>& waters = buoyancy_waters;
+        waters.clear();
         for (const entt::entity handle : view) {
             const ecs::Entity e = w.wrap(handle);
             const water::WaterBody& body = view.get<water::WaterBody>(handle);
             if (!body.buoyancy || !e.activeInHierarchy()) continue;
-            Water water_body{&body, e.worldMatrix(), {}};
-            if (body.type == water::WaterType::River) water_body.river_line = water::riverCenterline(body, water_body.matrix, 1.0f);
-            waters.push_back(std::move(water_body));
+            BuoyancyWater water_body{&body, e.worldMatrix(), nullptr};
+            if (body.type == water::WaterType::River) {
+                water::RiverLine& line = buoyancy_rivers[handle];
+                if (line.samples.empty() || line.hash != water::riverHash(body, water_body.matrix)) {
+                    line = water::riverLine(body, water_body.matrix);
+                }
+                water_body.river_line = &line;
+            }
+            waters.push_back(water_body);
+        }
+        // Rios que ya no estan (borrados o sin flotacion): fuera de la cache.
+        if (buoyancy_rivers.size() > waters.size()) {
+            for (auto it = buoyancy_rivers.begin(); it != buoyancy_rivers.end();) {
+                const bool used = std::any_of(waters.begin(), waters.end(), [&](const BuoyancyWater& b) {
+                    return b.river_line == &it->second;
+                });
+                it = used ? std::next(it) : buoyancy_rivers.erase(it);
+            }
         }
         if (waters.empty()) return;
         const float time = water::waterTime();
@@ -3117,11 +3328,12 @@ struct PhysicsSystem::Impl {
                 box = lock.GetBody().GetWorldSpaceBounds();
             }
             const JPH::Vec3 center = box.GetCenter();
-            for (const Water& water_body : waters) {
+            for (const BuoyancyWater& water_body : waters) {
                 const Vec3 at{center.GetX(), center.GetY(), center.GetZ()};
+                // Rio: descartado por su caja antes de buscar en la linea.
                 const water::WaterSample sample =
-                    water_body.body->type == water::WaterType::River
-                        ? water::sampleWater(*water_body.body, water_body.matrix, at, time, water_body.river_line)
+                    water_body.river_line != nullptr
+                        ? water::sampleWater(*water_body.body, water_body.matrix, at, time, *water_body.river_line)
                         : water::sampleWater(*water_body.body, water_body.matrix, at, time);
                 if (!sample.inside || box.mMin.GetY() >= sample.height) continue;
                 bodies.ApplyBuoyancyImpulse(entry.solid, JPH::RVec3(center.GetX(), sample.height, center.GetZ()),
@@ -3762,6 +3974,11 @@ void PhysicsSystem::stop() {
         pending.build->cancel->cancelled.store(true, std::memory_order_release);
     }
     d.pending_terrain.clear();
+    // Las Mesh Collider a medias tambien (sus jobs terminan solos y nadie las
+    // lee): su clave es la direccion del modelo, que otra escena puede reutilizar.
+    d.pending_mesh_shapes.clear();
+    d.pending_mesh_waiting.clear();
+    d.failed_mesh_shapes.clear();
     d.deferred_models.clear();
     for (auto& [key, mesh] : d.static_meshes) d.destroyStaticBody(mesh);  // los datos se quedan
     d.body_entities.clear();
@@ -3876,6 +4093,8 @@ void PhysicsSystem::flushPendingTerrain() {
     // los calcula). Se meten en la siguiente sincronizacion (update), que
     // ademas hace al momento los terrenos y modelos nuevos (sync_blocking).
     for (auto& [handle, pending] : d.pending_terrain) pending.build->finishNow();
+    // Y las Mesh Collider del hilo de fondo (las mete la misma sincronizacion).
+    for (auto& [key, pending] : d.pending_mesh_shapes) pending->finishNow();
     d.sync_blocking = true;
 }
 

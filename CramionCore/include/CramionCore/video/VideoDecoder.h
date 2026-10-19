@@ -2,7 +2,8 @@
 #define CRAMION_VIDEO_DECODER_H
 
 // Contrato A (plan del VideoPlayer, Fase 1). Lo implementa WP2
-// (src/video/decoders/: Synthetic, MediaFoundation en Windows, Null).
+// (src/video/decoders/: Synthetic, MediaFoundation en Windows, Null) y la
+// Fase 2 (MediaCodec en Android y FFmpeg opcional para RTSP/RTMP/DASH).
 // Ningun backend se enlaza de forma que impida arrancar: Media Foundation se
 // carga en diferido (Windows N/KN sin Media Feature Pack). decoderAvailable()
 // lo comprueba antes de usarlo.
@@ -89,10 +90,16 @@ public:
 };
 
 // uri: ruta absoluta (UTF-8), https://..., http://localhost..., .m3u8, cramion://test?...
+// y, con FFmpeg, rtsp://, rtmp:// y .mpd (DASH).
 std::unique_ptr<IVideoDecoder> createDecoder(const std::string& uri, const DecodeOptions& options);
 // En Windows comprueba que mfplat.dll se puede cargar; `why` dice que falta
-// (Media Feature Pack, extension HEVC/AV1...).
+// (Media Feature Pack, extension HEVC/AV1...). En Android, que https://
+// tenga Android 9 y que no sea HLS (sin FFmpeg).
 bool decoderAvailable(const std::string& uri, std::string* why = nullptr);
+// rtsp://, rtsps://, rtmp(s):// y DASH (.mpd) se pueden abrir: el motor se
+// compilo con el backend FFmpeg (opcion de CMake CRAMION_WITH_FFMPEG, apagada
+// por defecto).
+bool streamingProtocolsAvailable();
 
 // Decodificador sintetico (pruebas): cramion://test?w=64&h=36&fps=30&dur=2&tracks=2
 //   w,h (>= 8)  fps  dur (s; <= 0 = directo sin fin)  tracks (pistas de audio)

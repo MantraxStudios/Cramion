@@ -283,6 +283,8 @@ public:
     // pixeles del area cliente: la vista Juego del editor) y manda el
     // movimiento como MouseRawMoved (raw input, sin tope en los bordes).
     // Al perder el foco se suelta solo y al recuperarlo se vuelve a encerrar.
+    // Al soltarlo, el cursor vuelve a donde estaba al capturarlo (camara orbital con
+    // el clic derecho: el puntero no salta al centro de la ventana).
     void setCursorCaptured(bool captured, const RECT* client_region = nullptr);
     bool cursorCaptured() const { return cursor_captured_; }
 
@@ -320,6 +322,8 @@ private:
     bool raw_input_registered_ = false;
     bool has_capture_rect_ = false;
     RECT capture_rect_{};
+    POINT cursor_before_capture_{};  // donde estaba el cursor al capturarlo
+    bool has_cursor_before_capture_ = false;
 };
 
 }  // namespace cramion::dm

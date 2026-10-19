@@ -6,10 +6,29 @@
 
 layout(set = 1, binding = 0) uniform sampler2D albedo_map;
 
+// Repeticion (xy) y desplazamiento (zw) de las UV del material (tiling del
+// .crmat; ver skinned.frag).
+layout(set = 1, binding = 9) uniform MaterialUv {
+    vec4 material_uv;
+};
+// Debe coincidir con GpuSkinnedShadowPush (y con skinned_shadow.vert/.tesc/.tese).
+layout(push_constant) uniform PushConstants {
+    mat4 light_model_view_projection;
+    uint bone_offset;
+    float height;
+    float max_factor;
+    uint flags;
+    vec4 camera_model;
+    vec4 model_scale;
+    float alpha_factor;  // alfa del color base del material
+} push;
+
 layout(location = 0) in vec2 v_uv;
 
 void main() {
-    if (texture(albedo_map, v_uv).a < 0.5) {
+    // Textura x factor del material, igual que skinned.frag/surface.frag: un
+    // material medio transparente por su color recorta igual en la sombra.
+    if (texture(albedo_map, v_uv * material_uv.xy + material_uv.zw).a * push.alpha_factor < 0.5) {
         discard;
     }
 }

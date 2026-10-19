@@ -10,6 +10,13 @@ layout(triangles, fractional_odd_spacing, cw) in;
 
 layout(set = 1, binding = 3) uniform sampler2D occlusion_map;
 
+// Repeticion (xy) y desplazamiento (zw) de las UV del material (tiling del
+// .crmat): la altura se lee con ellos; v_uv sale sin ellos (los aplica el
+// fragment shader).
+layout(set = 1, binding = 9) uniform MaterialUv {
+    vec4 material_uv;
+};
+
 // Debe coincidir con GpuSkinnedShadowPush.
 layout(push_constant) uniform PushConstants {
     mat4 light_model_view_projection;
@@ -35,10 +42,11 @@ void main() {
     vec3 normal = w.x * in_normal[0] + w.y * in_normal[1] + w.z * in_normal[2];
 
     vec2 size = vec2(textureSize(occlusion_map, 0));
-    float texels = max(max(length((in_uv[1] - in_uv[0]) * size), length((in_uv[2] - in_uv[1]) * size)),
-                       length((in_uv[0] - in_uv[2]) * size));
+    vec2 tiled = material_uv.xy * size;
+    float texels = max(max(length((in_uv[1] - in_uv[0]) * tiled), length((in_uv[2] - in_uv[1]) * tiled)),
+                       length((in_uv[0] - in_uv[2]) * tiled));
     float lod = max(log2(max(texels / max(gl_TessLevelInner[0], 1.0), 1.0)), 0.0);
-    float height = textureLod(occlusion_map, uv, lod).g;
+    float height = textureLod(occlusion_map, uv * material_uv.xy + material_uv.zw, lod).g;
 
     // Los mismos metros que skinned.tese, por la normal del mundo, llevados
     // al espacio del modelo (con escala no uniforme la normal del mundo es

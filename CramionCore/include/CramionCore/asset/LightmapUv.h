@@ -2,17 +2,18 @@
 #define CRAMION_CORE_ASSET_LIGHTMAP_UV_H
 
 // UV de lightmap (UV2) generadas por el motor, como el "Generate Lightmap UVs"
-// de Unity. Implementacion: CramionCore/src/asset/LightmapUv.cpp (target
-// CramionAssets: la usa AssetManager::readModel).
+// de Unity (PLAN-LIGHTMAPS.md, Fase 1). Implementacion: LightmapUv.cpp (hash,
+// aplicar, E/S y el conjunto de disposiciones) y LightmapUnwrap.cpp (el
+// desenvuelto con xatlas: solo en el editor, Android no lo compila). Target
+// CramionAssets (la usa AssetManager::readModel).
 //
-// La malla se parte en cartas (zonas casi planas y conectadas), cada carta se
-// proyecta en su plano, se gira para ocupar la menor caja posible y todas se
-// empaquetan en el cuadrado [0, 1]^2 sin solaparse y con un hueco entre ellas.
-// Un vertice que esta en el borde de dos cartas necesita dos UV distintas: se
-// duplica (remap = de que vertice original sale cada vertice nuevo). El
-// resultado se guarda junto a la iluminacion horneada de la escena y se aplica
-// al cargar el modelo: el lightmap horneado y el que se dibuja usan siempre la
-// MISMA disposicion.
+// La disposicion es COMPACTA: los vertices de la pieza siguen en su sitio; los
+// que parte una costura de las cartas se anaden al final (duplicates) y solo
+// cambian las esquinas que apuntan a uno anadido (patch). Mismos triangulos en
+// el mismo orden. Se aplica al cargar el modelo, antes de reagrupar y de los
+// LODs: el lightmap horneado y el que se dibuja usan siempre la MISMA
+// disposicion. Lo generado va en Library/Cache/LightmapUV (.cruv) y dentro del
+// .crbake de la escena (trozo UVLY); nunca en el .crdata.
 
 #include "CramionCore/Uuid.h"
 
@@ -20,71 +21,109 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace cramion::lighting {
 
+// Version del desenvuelto (entra en LightmapUvSettings::hash): subirla si
+// cambia el algoritmo o el commit de xatlas.
+inline constexpr std::uint32_t kUnwrapVersion = 1;
+// UV2 que no tiene lightmap (pieza diminuta o cara degenerada): la iluminan
+// las sondas y el sol en tiempo real.
+inline constexpr std::uint32_t kLightmapUvNone = 0xFFFFFFFFu;
+
 struct LightmapUvSettings {
-    // Caras que se doblan mas que esto respecto a su vecina van en cartas
-    // distintas (grados).
-    float hard_angle = 66.0f;
-    // Hueco entre cartas en el espacio UV (0..1). Con el lightmap de un objeto
-    // de R texeles de lado, son padding * R texeles: el horneado lo calcula
-    // con la resolucion del objeto mas pequeno que usa la malla.
-    float padding = 2.5f / 64.0f;
+    float texels_per_unit = 20.0f;        // texeles por unidad del modelo
+    std::uint32_t padding = 2;            // texeles entre cartas (a esa densidad)
+    float min_component_texels = 2.0f;    // piezas sueltas mas pequenas: sin UV2 (sondas)
+    std::uint32_t max_size = 4096;        // lado maximo de la disposicion
+    int chart_iterations = 1;             // xatlas ChartOptions::maxIterations (2 en Alta)
+    std::uint64_t hash() const;           // texels_per_unit redondeado a 1/64 + kUnwrapVersion + commit de xatlas
 };
 
-// Disposicion de las UV de lightmap de una malla (una pieza de un modelo).
+// Disposicion COMPACTA: los vertices originales siguen en su sitio; los partidos
+// por las costuras de las cartas se anaden al final; solo cambian las esquinas
+// que apuntan a un vertice anadido. Mismos triangulos, mismo orden.
 struct LightmapUvLayout {
-    // Para saber si corresponde a la malla que se carga.
-    std::uint32_t source_vertices = 0;
-    std::uint32_t source_indices = 0;
-    std::uint64_t source_hash = 0;
-
-    // remap[i] = vertice original del vertice nuevo i.
-    std::vector<std::uint32_t> remap;
-    // Indices nuevos: mismos triangulos, en el mismo orden (las submallas no
-    // cambian), con los vertices partidos.
-    std::vector<std::uint32_t> indices;
-    // UV2 de cada vertice nuevo, en [0, 1].
-    std::vector<core::Vec2> uvs;
-
-    std::uint32_t charts = 0;
-    // Parte del cuadrado que ocupan las cartas (0..1).
-    float uv_area = 0.0f;
-    // Superficie total de la malla (unidades del modelo al cuadrado).
-    float surface_area = 0.0f;
+    std::uint64_t source_hash = 0;        // lightmapMeshHash de la pieza tal como sale del .crdata
+    std::uint32_t source_vertices = 0, source_indices = 0;
+    std::uint64_t settings_hash = 0;
+    std::uint64_t layout_hash = 0;        // huella de lo de abajo (la guarda cada registro del .crbake)
+    std::uint32_t width = 0, height = 0;  // texeles a texels_per_unit
+    float texels_per_unit = 0.0f;
+    std::vector<std::uint32_t> duplicates;    // vertice original de cada anadido (indice V + i)
+    std::vector<std::uint32_t> patch_corner;  // esquina (posicion en indices) ...
+    std::vector<std::uint32_t> patch_vertex;  // ... y su vertice nuevo
+    std::vector<std::uint32_t> uv;            // V + D valores unorm16x2 (u en los 16 bits bajos); 0xFFFFFFFF = sin lightmap
+    std::uint32_t charts = 0, ignored_triangles = 0;
+    float utilization = 0.0f;                 // texeles cubiertos / (width * height)
+    float lightmapped_area = 0.0f;            // unidades del modelo al cuadrado
 };
 
-// Huella de la geometria (posiciones e indices) para invalidar disposiciones viejas.
-std::uint64_t lightmapMeshHash(const asset::ModelData& model);
+struct LightmapUvPartKey {
+    Uuid model{};
+    int part = 0;
+    bool operator==(const LightmapUvPartKey&) const = default;
+};
+struct LightmapUvPartKeyHash {
+    std::size_t operator()(const LightmapUvPartKey& k) const {
+        return std::hash<Uuid>{}(k.model) ^ (static_cast<std::size_t>(static_cast<std::uint32_t>(k.part)) * 0x9E3779B97F4A7C15ull);
+    }
+};
 
+// Donde esta cada disposicion (un .cruv de Library o un trozo UVLY de un .crbake).
+// Se lee perezosamente en los hilos de carga.
+struct LightmapUvSet {
+    struct Source {
+        std::filesystem::path file;
+        std::uint64_t offset = 0, stored = 0, raw = 0;  // stored = 0: el archivo entero es un .cruv
+        bool zstd = true;
+        // Ya en memoria (el boton "Generar UV de lightmap" o el horneado):
+        // no se lee nada.
+        std::shared_ptr<const LightmapUvLayout> layout;
+    };
+    std::unordered_map<LightmapUvPartKey, Source, LightmapUvPartKeyHash> parts;
+    std::shared_ptr<const LightmapUvLayout> load(const Uuid& model, int part) const;  // nullptr si no hay o esta danada
+    bool empty() const { return parts.empty(); }
+};
+
+std::uint64_t lightmapMeshHash(const asset::ModelData& model);       // se mantiene (FNV de indices + posiciones)
 // Superficie de la malla en unidades del modelo (al cuadrado).
 float meshSurfaceArea(const asset::ModelData& model);
+#if CRAMION_HAS_LIGHTMAP_UNWRAP
+bool unwrapLightmapUvs(const asset::ModelData& part, const LightmapUvSettings& s, LightmapUvLayout& out,
+                       const std::function<bool(float)>& progress, std::string* error);  // false si se cancela
+#endif
+bool applyLightmapUvs(asset::ModelData& model, const LightmapUvLayout& layout);  // false sin tocar nada si no cuadra
+std::vector<std::uint8_t> encodeLightmapUvLayout(const LightmapUvLayout&);       // binario sin comprimir
+bool decodeLightmapUvLayout(const std::uint8_t* data, std::size_t size, LightmapUvLayout& out);
+bool saveLightmapUvLayout(const std::filesystem::path&, const LightmapUvLayout&);  // .cruv v2: "CRUV", v2, zstd(encode)
+bool loadLightmapUvLayout(const std::filesystem::path&, LightmapUvLayout&);
 
-// Genera la disposicion. false si la malla esta vacia.
-bool generateLightmapUvs(const asset::ModelData& model, LightmapUvLayout& out,
-                         const LightmapUvSettings& settings = {});
+// UV2 empaquetada (unorm16x2, u en los 16 bits bajos) -> [0, 1]^2; (-1, -1) si es kLightmapUvNone.
+inline core::Vec2 unpackLightmapUv(std::uint32_t packed) {
+    if (packed == kLightmapUvNone) return core::Vec2{-1.0f, -1.0f};
+    return core::Vec2{static_cast<float>(packed & 0xFFFFu) / 65535.0f, static_cast<float>(packed >> 16) / 65535.0f};
+}
+// Al reves (con clamp a [0, 1]); un valor negativo es kLightmapUvNone.
+inline std::uint32_t packLightmapUv(const core::Vec2& uv) {
+    if (uv.x < 0.0f || uv.y < 0.0f) return kLightmapUvNone;
+    const auto q = [](float v) {
+        const float c = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        return static_cast<std::uint32_t>(c * 65535.0f + 0.5f);
+    };
+    const std::uint32_t packed = q(uv.x) | (q(uv.y) << 16);
+    // (1, 1) daria 0xFFFFFFFF, el centinela: se queda a un paso.
+    return packed == kLightmapUvNone ? 0xFFFEFFFFu : packed;
+}
 
-// Parte los vertices, cambia los indices (tambien los de los LODs si ya
-// existen) y rellena ModelData::lightmap_uvs. false (sin tocar nada) si la
-// disposicion no es de esta malla.
-bool applyLightmapUvs(asset::ModelData& model, const LightmapUvLayout& layout);
-
-// Archivo .cruv (binario).
-bool saveLightmapUvLayout(const std::filesystem::path& file, const LightmapUvLayout& layout);
-bool loadLightmapUvLayout(const std::filesystem::path& file, LightmapUvLayout& out);
-
-// --- Registro ---
-// Que piezas de que modelos llevan UV de lightmap en la escena abierta (lo
-// rellena la iluminacion horneada al abrir la escena o al hornear).
-// AssetManager::readModel lo consulta al leer cada pieza. Seguro entre hilos.
-void registerLightmapUvs(const Uuid& model, int part, std::shared_ptr<const LightmapUvLayout> layout);
-void clearLightmapUvRegistry();
-std::shared_ptr<const LightmapUvLayout> registeredLightmapUvs(const Uuid& model, int part);
-// Aplica la disposicion registrada (si la hay). Devuelve si se aplico.
-bool applyRegisteredLightmapUvs(const Uuid& model, int part, asset::ModelData& data);
+// <cache>/<source_hash>_<settings_hash>.cruv (Library/Cache/LightmapUV).
+std::filesystem::path lightmapUvCacheFile(const std::filesystem::path& cache_folder, std::uint64_t source_hash,
+                                          std::uint64_t settings_hash);
 
 }  // namespace cramion::lighting
 

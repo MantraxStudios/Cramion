@@ -53,6 +53,11 @@ const uint STAGE_RESET = 0u;
 const uint STAGE_BEGIN = 1u;
 const uint STAGE_EMIT = 2u;
 const uint STAGE_UPDATE = 3u;
+// Orden de las vivas de atras adelante (mezcla alfa): ordenacion bitonica.
+const uint STAGE_SORT_LOCAL = 4u;           // bloques de 128 enteros (memoria compartida)
+const uint STAGE_SORT_FLIP = 5u;            // paso "flip" de altura push.count
+const uint STAGE_SORT_DISPERSE = 6u;        // paso "disperse" de altura push.count
+const uint STAGE_SORT_LOCAL_DISPERSE = 7u;  // los disperse de 128 a 2 (memoria compartida)
 
 struct VfxBlock {
     uvec4 info;  // x tipo, y flags
@@ -110,8 +115,8 @@ layout(set = 0, binding = 9) uniform sampler2D vfx_textures[16];
 layout(push_constant) uniform VfxPush {
     uint stage;
     uint slot;   // indice de la instancia
-    uint count;
-    uint pad;
+    uint count;  // SORT: altura del paso
+    uint pad;    // SORT: tamano de la ordenacion (potencia de 2, >= 128)
 } push;
 
 // --- Aleatorios (PCG) ---

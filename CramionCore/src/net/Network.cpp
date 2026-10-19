@@ -52,9 +52,17 @@ enum Msg : std::uint8_t {
 constexpr std::uint8_t kChannelReliable = 0;
 constexpr std::uint8_t kChannelFast = 1;
 constexpr int kMaxDepth = 16;
+// Dato de desconexion del servidor a un cliente de otra version: "PR" en los
+// 16 bits altos y la version del servidor en los bajos.
+constexpr std::uint32_t kRejectProtocol = 0x50520000u;
 
 // --- Escritura y lectura binaria (little endian, como x64) ---
 void put8(std::string& out, std::uint8_t v) { out.push_back(static_cast<char>(v)); }
+void put16(std::string& out, std::uint16_t v) {
+    char b[2];
+    std::memcpy(b, &v, 2);
+    out.append(b, 2);
+}
 void put32(std::string& out, std::uint32_t v) {
     char b[4];
     std::memcpy(b, &v, 4);
@@ -152,6 +160,14 @@ struct Reader {
         if (!need(1)) return 0;
         return static_cast<std::uint8_t>(data[at++]);
     }
+    std::uint16_t u16() {
+        std::uint16_t v = 0;
+        if (need(2)) {
+            std::memcpy(&v, data.data() + at, 2);
+            at += 2;
+        }
+        return v;
+    }
     std::uint32_t u32() {
         std::uint32_t v = 0;
         if (need(4)) {
@@ -198,7 +214,26 @@ struct Reader {
         q.w = f32();
         return q;
     }
+    // Posicion absoluta: sector (3 x int16) + resto (3 x float).
+    NetPosition pos() {
+        const auto sx = static_cast<std::int16_t>(u16());
+        const auto sy = static_cast<std::int16_t>(u16());
+        const auto sz = static_cast<std::int16_t>(u16());
+        const double rx = f32();
+        const double ry = f32();
+        const double rz = f32();
+        return NetPosition{sx * kSectorSize + rx, sy * kSectorSize + ry, sz * kSectorSize + rz};
+    }
 };
+
+// Sector de 1024 m de una coordenada y lo que queda dentro (0..1024).
+void sectorOf(double v, std::int16_t& sector, float& rest) {
+    double s = std::floor(v / kSectorSize);
+    if (!std::isfinite(s)) s = 0.0;
+    s = std::clamp(s, -32768.0, 32767.0);  // +-33.000 km; mas alla, el resto crece (y pierde precision)
+    sector = static_cast<std::int16_t>(s);
+    rest = static_cast<float>(v - s * kSectorSize);
+}
 
 // Windows: un UDP a un puerto cerrado (o a un cliente que se cayo) devuelve un
 // ICMP que Winsock convierte en error del socket (WSAECONNRESET); ENet corta
@@ -318,6 +353,38 @@ bool decodeValue(const std::string& in, std::size_t& at, NetValue& out, int dept
     return true;
 }
 
+// --- Posiciones absolutas ----------------------------------------------------------
+
+void encodePosition(std::string& out, const NetPosition& p) {
+    std::int16_t sx = 0, sy = 0, sz = 0;
+    float rx = 0.0f, ry = 0.0f, rz = 0.0f;
+    sectorOf(p.x, sx, rx);
+    sectorOf(p.y, sy, ry);
+    sectorOf(p.z, sz, rz);
+    put16(out, static_cast<std::uint16_t>(sx));
+    put16(out, static_cast<std::uint16_t>(sy));
+    put16(out, static_cast<std::uint16_t>(sz));
+    putF(out, rx);
+    putF(out, ry);
+    putF(out, rz);
+}
+
+bool decodePosition(const std::string& in, std::size_t& at, NetPosition& out) {
+    Reader r{in, at};
+    const NetPosition p = r.pos();
+    if (!r.ok) return false;
+    out = p;
+    at = r.at;
+    return true;
+}
+
+double distanceBetween(const NetPosition& a, const NetPosition& b) {
+    const double dx = a.x - b.x;
+    const double dy = a.y - b.y;
+    const double dz = a.z - b.z;
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 // --- Sesion ------------------------------------------------------------------------
 
 struct NetworkSession::Impl {
@@ -381,7 +448,9 @@ bool NetworkSession::connect(const std::string& address_text, std::uint16_t port
         return false;
     }
     address.port = port;
-    impl_->server = enet_host_connect(impl_->host, &address, 2, 0);
+    // El dato de la conexion lleva la version del protocolo (el servidor
+    // rechaza las distintas; los juegos de la version 1 mandaban 0).
+    impl_->server = enet_host_connect(impl_->host, &address, 2, protocol_);
     if (impl_->server == nullptr) {
         if (error) *error = "no se pudo conectar";
         close();
@@ -529,7 +598,7 @@ void NetworkSession::send(const std::string& name, const NetValue& value, std::u
     }
 }
 
-std::uint32_t NetworkSession::spawn(const std::string& prefab, const core::Vec3& position, const core::Quat& rotation,
+std::uint32_t NetworkSession::spawn(const std::string& prefab, const NetPosition& position, const core::Quat& rotation,
                                     std::uint32_t owner) {
     if (role_ != NetRole::Server) return 0;
     const std::uint32_t id = next_net_id_++;
@@ -543,7 +612,7 @@ std::uint32_t NetworkSession::spawn(const std::string& prefab, const core::Vec3&
     put32(data, id);
     put32(data, o.owner);
     putStr(data, prefab);
-    putVec3(data, position);
+    encodePosition(data, position);
     putQuat(data, rotation);
     broadcastRaw(data, true);
     return id;
@@ -557,7 +626,7 @@ void NetworkSession::despawn(std::uint32_t net_id) {
     broadcastRaw(data, true);
 }
 
-void NetworkSession::sendTransform(std::uint32_t net_id, const core::Vec3& position, const core::Quat& rotation) {
+void NetworkSession::sendTransform(std::uint32_t net_id, const NetPosition& position, const core::Quat& rotation) {
     const auto it = objects_.find(net_id);
     if (it == objects_.end() || !connected()) return;
     // Solo el dueno (o el servidor, que manda en todo lo que es suyo).
@@ -569,7 +638,7 @@ void NetworkSession::sendTransform(std::uint32_t net_id, const core::Vec3& posit
     put8(data, kTransform);
     put32(data, net_id);
     putF(data, static_cast<float>(time()));
-    putVec3(data, position);
+    encodePosition(data, position);
     putQuatPacked(data, rotation);
     if (role_ == NetRole::Client) {
         sendRaw(kServerId, data, false);
@@ -599,7 +668,7 @@ void NetworkSession::setMaxSpeed(std::uint32_t net_id, float meters_per_second) 
     if (const auto it = objects_.find(net_id); it != objects_.end()) it->second.max_speed = std::max(meters_per_second, 0.0f);
 }
 
-void NetworkSession::record(std::uint32_t net_id, const core::Vec3& position, const core::Quat& rotation) {
+void NetworkSession::record(std::uint32_t net_id, const NetPosition& position, const core::Quat& rotation) {
     std::vector<HistorySample>& h = history_[net_id];
     const double now = time();
     h.push_back(HistorySample{now, position, rotation});
@@ -608,7 +677,7 @@ void NetworkSession::record(std::uint32_t net_id, const core::Vec3& position, co
     if (drop > 0) h.erase(h.begin(), h.begin() + static_cast<std::ptrdiff_t>(drop));
 }
 
-bool NetworkSession::positionAt(std::uint32_t net_id, float seconds_ago, core::Vec3& position, core::Quat& rotation) const {
+bool NetworkSession::positionAt(std::uint32_t net_id, float seconds_ago, NetPosition& position, core::Quat& rotation) const {
     const auto it = history_.find(net_id);
     if (it == history_.end() || it->second.empty()) {
         const NetObject* o = object(net_id);
@@ -627,9 +696,11 @@ bool NetworkSession::positionAt(std::uint32_t net_id, float seconds_ago, core::V
     for (std::size_t i = 1; i < h.size(); ++i) {
         if (h[i].time < t) continue;
         const double span = h[i].time - h[i - 1].time;
-        const float a = span > 1e-6 ? static_cast<float>((t - h[i - 1].time) / span) : 1.0f;
-        position = core::lerp(h[i - 1].position, h[i].position, a);
-        rotation = core::slerp(h[i - 1].rotation, h[i].rotation, a);
+        const double a = span > 1e-6 ? (t - h[i - 1].time) / span : 1.0;
+        const NetPosition& p0 = h[i - 1].position;
+        const NetPosition& p1 = h[i].position;
+        position = NetPosition{p0.x + (p1.x - p0.x) * a, p0.y + (p1.y - p0.y) * a, p0.z + (p1.z - p0.z) * a};
+        rotation = core::slerp(h[i - 1].rotation, h[i].rotation, static_cast<float>(a));
         return true;
     }
     position = h.back().position;
@@ -651,8 +722,7 @@ bool NetworkSession::relevantTo(const NetObject& o, std::uint32_t player) const 
     if (o.relevance <= 0.0f || o.owner == player) return true;
     const auto f = focus_.find(player);
     if (f == focus_.end()) return true;  // aun no sabemos donde esta
-    const core::Vec3 d = o.position - f->second;
-    return core::dot(d, d) <= o.relevance * o.relevance;
+    return distanceBetween(o.position, f->second) <= static_cast<double>(o.relevance);
 }
 
 // Servidor: la posicion a cada jugador que la tenga cerca (menos a `from`).
@@ -726,6 +796,12 @@ void NetworkSession::update() {
         switch (event.type) {
             case ENET_EVENT_TYPE_CONNECT: {
                 if (role_ != NetRole::Server) break;  // el cliente espera su Welcome
+                // Otra version del protocolo (los de la 1 mandan 0): fuera, con
+                // el motivo en el dato de la desconexion. Sin id (no es jugador).
+                if (event.data != protocol_) {
+                    enet_peer_disconnect(event.peer, kRejectProtocol | (protocol_ & 0xFFFFu));
+                    break;
+                }
                 const std::uint32_t id = impl_->next_player++;
                 event.peer->data = reinterpret_cast<void*>(static_cast<std::uintptr_t>(id));
                 enet_peer_timeout(event.peer, 32, 5000, 10000);
@@ -737,6 +813,7 @@ void NetworkSession::update() {
                 const std::vector<std::uint32_t> list = players();
                 put32(welcome, static_cast<std::uint32_t>(list.size()));
                 for (const std::uint32_t p : list) put32(welcome, p);
+                put32(welcome, protocol_);  // version 2: al final (la 1 no la llevaba)
                 sendRaw(id, welcome, true);
                 // A los demas: entra uno.
                 std::string join;
@@ -750,7 +827,7 @@ void NetworkSession::update() {
                     put32(spawn_data, net_id);
                     put32(spawn_data, o.owner);
                     putStr(spawn_data, o.prefab);
-                    putVec3(spawn_data, o.position);
+                    encodePosition(spawn_data, o.position);
                     putQuat(spawn_data, o.rotation);
                     sendRaw(id, spawn_data, true);
                     for (const auto& [key, value] : o.vars) {
@@ -778,6 +855,7 @@ void NetworkSession::update() {
             case ENET_EVENT_TYPE_DISCONNECT: {
                 if (role_ == NetRole::Server) {
                     const std::uint32_t id = peerId(event.peer);
+                    if (id == 0) break;  // rechazado al conectar (otra version): nunca fue jugador
                     impl_->peers.erase(id);
                     despawnOwnedBy(id);
                     std::string leave;
@@ -792,6 +870,10 @@ void NetworkSession::update() {
                     NetEvent e;
                     e.type = NetEvent::Type::Disconnected;
                     e.text = local_id_ == 0 ? "no se pudo conectar con el servidor" : "se perdio la conexion con el servidor";
+                    if ((event.data & 0xFFFF0000u) == kRejectProtocol) {
+                        e.text = "el servidor usa otra version de la red (protocolo " + std::to_string(event.data & 0xFFFFu) +
+                                 ", este juego " + std::to_string(protocol_) + "): actualiza el juego o el servidor";
+                    }
                     impl_->server = nullptr;
                     events_.push_back(std::move(e));
                     // Cerrar sin perder el evento.
@@ -848,10 +930,25 @@ void NetworkSession::handlePacket(std::uint32_t from, const std::string& data) {
     switch (kind) {
         case kWelcome: {
             if (server) return;
-            local_id_ = r.u32();
+            const std::uint32_t id = r.u32();
             const std::uint32_t count = r.u32();
-            impl_->players.clear();
-            for (std::uint32_t i = 0; i < count && r.ok; ++i) impl_->players.insert(r.u32());
+            std::set<std::uint32_t> list;
+            for (std::uint32_t i = 0; i < count && r.ok; ++i) list.insert(r.u32());
+            // La version del servidor va al final (un servidor de la version 1
+            // no la manda): con otra, fuera (sus posiciones no se entienden).
+            const std::uint32_t server_protocol = r.u32();
+            if (!r.ok || server_protocol != protocol_) {
+                NetEvent e;
+                e.type = NetEvent::Type::Disconnected;
+                e.text = "el servidor usa otra version de la red (protocolo " +
+                         (r.ok ? std::to_string(server_protocol) : std::string("1")) + ", este juego " +
+                         std::to_string(protocol_) + "): actualiza el juego o el servidor";
+                close();  // no toca events_
+                events_.push_back(std::move(e));
+                return;
+            }
+            local_id_ = id;
+            impl_->players = std::move(list);
             impl_->players.insert(local_id_);
             NetEvent e;
             e.type = NetEvent::Type::Connected;
@@ -906,7 +1003,7 @@ void NetworkSession::handlePacket(std::uint32_t from, const std::string& data) {
             e.net_id = r.u32();
             e.owner = r.u32();
             e.text = r.str();
-            e.position = r.vec3();
+            e.position = r.pos();
             e.rotation = r.quat();
             if (!r.ok) return;
             NetObject& o = objects_[e.net_id];
@@ -932,7 +1029,7 @@ void NetworkSession::handlePacket(std::uint32_t from, const std::string& data) {
             e.type = NetEvent::Type::Transform;
             e.net_id = r.u32();
             e.time = static_cast<double>(r.f32());
-            e.position = r.vec3();
+            e.position = r.pos();
             e.rotation = unpackQuat(r.u32());
             if (!r.ok) return;
             const auto it = objects_.find(e.net_id);
@@ -944,12 +1041,12 @@ void NetworkSession::handlePacket(std::uint32_t from, const std::string& data) {
                 // Movimiento imposible (trampa o error): se corrige al dueno.
                 const double now = time();
                 const double dt = it->second.last_time < 0.0 ? 1.0 : std::max(now - it->second.last_time, 1.0 / 120.0);
-                const float limit = it->second.max_speed * 1.5f * static_cast<float>(dt) + 1.0f;
-                if (it->second.last_time >= 0.0 && core::length(e.position - it->second.position) > limit) {
+                const double limit = static_cast<double>(it->second.max_speed) * 1.5 * dt + 1.0;
+                if (it->second.last_time >= 0.0 && distanceBetween(e.position, it->second.position) > limit) {
                     std::string fix;
                     put8(fix, kCorrect);
                     put32(fix, e.net_id);
-                    putVec3(fix, it->second.position);
+                    encodePosition(fix, it->second.position);
                     putQuat(fix, it->second.rotation);
                     sendRaw(from, fix, true);
                     return;
@@ -986,7 +1083,7 @@ void NetworkSession::handlePacket(std::uint32_t from, const std::string& data) {
             NetEvent e;
             e.type = NetEvent::Type::Correction;
             e.net_id = r.u32();
-            e.position = r.vec3();
+            e.position = r.pos();
             e.rotation = r.quat();
             if (!r.ok) return;
             if (const auto it = objects_.find(e.net_id); it != objects_.end()) {

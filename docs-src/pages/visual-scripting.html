@@ -16,12 +16,13 @@
   <thead><tr><th>Grupo</th><th>Nodos</th></tr></thead>
   <tbody>
     <tr><td>Eventos</td><td>Start, Update, Late/Fixed Update, choques y triggers (también 2D), acción de entrada, tecla, eventos propios, temporizadores, <a href="websocket.html#conectar">On WebSocket</a> (mensajes de una conexión por su nombre: salidas Evento, Texto y Datos)</td></tr>
-    <tr><td>Flujo</td><td>Branch, Sequence, For, While (con tope), Delay, Do Once, Flip Flop, Gate</td></tr>
+    <tr><td>Flujo</td><td>Branch, Sequence, For, While (con tope), Delay, Do Once, Flip Flop, Gate, <a href="#timeline">Timeline</a></td></tr>
     <tr><td>Variables</td><td>Get / Set de las variables del grafo</td></tr>
     <tr><td>Matemáticas y lógica</td><td>operaciones, comparaciones, vectores, texto</td></tr>
     <tr><td>Objetos</td><td>transform, buscar, crear prefabs, destruir, campos de componentes</td></tr>
     <tr><td>API: …</td><td>todas las funciones y propiedades de la API (<code>Audio.playOneShot</code>, <code>Entity:translate</code>, <code>Get Entity.position</code>...)</td></tr>
     <tr><td>Depuración</td><td>Print, Log</td></tr>
+    <tr><td>Funciones y macros</td><td>las llamadas a las <a href="#funciones">funciones y macros</a> del grafo; dentro de una función, Return</td></tr>
   </tbody>
 </table>
 <p>
@@ -36,10 +37,44 @@
   Los botones <strong>Get</strong> y <strong>Set</strong> crean sus nodos.
 </p>
 
+<h3 id="funciones">Funciones y macros</h3>
+<p>
+  En <em>Mi Blueprint</em>, <strong>+</strong> junto a <em>Funciones</em> o <em>Macros</em> crea una y la abre en el lienzo
+  (arriba a la izquierda se ve qué grafo es). En <em>Detalles</em> se edita su firma: nombre, entradas y salidas con su tipo
+  y valor por defecto. Doble clic en una llamada abre su grafo.
+</p>
+<ul>
+  <li><strong>Función</strong>: empieza en su nodo de entrada y sale por un <strong>Return</strong> con sus resultados.
+    <em>Pura</em> = sus llamadas no tienen pines de ejecución (se calcula cada vez que se usa su valor). Puede llamarse a sí
+    misma (recursión); no puede esperar (Delay, Timeline).</li>
+  <li><strong>Macro</strong>: como una función, pero con varios pines de ejecución de entrada y de salida (por ejemplo
+    <em>Sí</em> / <em>No</em>) y puede esperar (Delay). No puede usarse a sí misma.</li>
+  <li>Las variables son las del grafo (las mismas en el Event Graph, las funciones y las macros).</li>
+</ul>
+
+<h3 id="construction">Construction Script</h3>
+<p>
+  <em>Mi Blueprint &gt; Construction Script</em> abre su grafo, que empieza en el nodo <strong>Construction Script</strong>.
+  Corre en el editor, fuera de Play, al colocar el objeto o al cambiarlo (moverlo, girarlo, escalarlo, cambiar una variable
+  del Inspector o compilar el grafo), como en Unreal. Lo que crea (<em>Spawn</em>) se borra y se vuelve a crear en cada
+  pasada; queda en la escena con el componente <em>Creado por Construction Script</em>. No puede esperar (Delay, Timeline).
+</p>
+
+<h3 id="timeline">Timeline</h3>
+<p>
+  Anima valores en el tiempo. En <em>Detalles</em>: duración, <em>Bucle</em>, <em>Autoplay</em> y sus pistas (float o
+  vector) con sus claves (tiempo, valor y curva: lineal, constante o suave); cada pista es una salida del nodo. Entradas
+  <em>Play</em>, <em>Play desde el inicio</em>, <em>Stop</em>, <em>Reverse</em>, <em>Reverse desde el final</em> y
+  <em>Set New Time</em>; salidas <strong>Update</strong> (cada frame mientras corre), <strong>Finished</strong> (al llegar
+  al final), <em>Direccion</em> y <em>Tiempo</em>. Solo en el Event Graph.
+</p>
+
 <h3 id="depurar">Depurar</h3>
 <ul>
   <li>En Play, con un objeto que usa el grafo (el seleccionado o el primero), los nodos que corren <strong>se iluminan</strong>,
-    los enlaces de ejecución muestran el flujo y al pasar el ratón por un pin se ve su último valor.</li>
+    los cables de ejecución por los que pasa de verdad muestran el flujo y al pasar el ratón por un pin se ve su último valor.
+    Los nodos elegidos llevan el valor de sus pines en una burbuja; clic derecho en un pin &gt; <em>Vigilar este valor</em>
+    la deja fija. <em>Detalles</em> enseña las entradas y salidas del nodo en vivo.</li>
   <li><kbd>F9</kbd> (o clic derecho) pone un <strong>punto de ruptura</strong>; con <em>Puntos de ruptura</em> activado, al
     pasar por él el juego se pausa y el nodo se selecciona.</li>
   <li>Los errores de compilación salen en el nodo (borde rojo) y en la lista de la izquierda.</li>

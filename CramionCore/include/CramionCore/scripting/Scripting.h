@@ -56,6 +56,9 @@ namespace cramion::xr {
 class XrSystem;
 class XrRig;
 }
+namespace cramion::ui {
+class UiSystem;
+}
 namespace cramion::asset {
 struct ModelData;
 }
@@ -181,6 +184,9 @@ public:
     // Tabla XR (realidad virtual): casco, mandos y vibracion. Las poses salen
     // en el mundo con el origen del rig. nullptr: XR.isAvailable() da false.
     void setXr(xr::XrSystem* system, const xr::XrRig* rig);
+    // La interfaz del juego en pantalla (tabla UI: UI.pointerOverUi,
+    // UI.isTyping, UI.focus...; Entity:uiScreenRect). nullptr: dan false / nil.
+    void setUi(ui::UiSystem* ui);
     bool cursorLocked() const;
     // El programa solto el raton por su cuenta (Escape en el editor, perder el foco).
     void releaseCursor();
@@ -297,6 +303,9 @@ public:
         std::map<int, double> executed;                  // nodo -> ultima vez que corrio (Time.time)
         std::map<std::string, std::string> values;       // "nodo:pin" -> ultimo valor (texto)
         std::map<std::string, std::string> variables;    // variables del grafo
+        // Con setVisualScriptLiveDebug(true):
+        std::map<std::string, double> flows;             // "nodo:salida" exec -> ultima vez que paso (Time.time)
+        std::map<std::string, std::string> inputs;       // "nodo:entrada" -> ultimo valor que leyo
     };
     // Lo que el editor pinta sobre el grafo de un objeto en Play. false si no tiene.
     bool visualScriptDebug(ecs::Entity entity, VisualScriptDebug& out);
@@ -307,6 +316,16 @@ public:
     bool takeVisualScriptBreak(std::string& graph, int& node, entt::entity& entity);
     // Objetos que ejecutan un .crgraph (vacio = todos).
     std::vector<entt::entity> visualScriptObjects(const std::string& graph) const;
+    // Depuracion en vivo (el editor la enciende; el juego exportado no paga
+    // nada): por que cables pasa la ejecucion y el valor de cada entrada.
+    void setVisualScriptLiveDebug(bool on);
+    // Construction Script (como Unreal): el editor lo ejecuta fuera de Play al
+    // colocar o cambiar un objeto con Visual Script. Trabaja sobre `world`;
+    // lo que crea (Spawn) se borra la proxima vez. false + `error` si fallo
+    // (o si el juego esta en marcha). hasConstructionScript: el .crgraph
+    // (ruta en Assets) tiene un nodo Construction Script.
+    bool runConstructionScript(ecs::World& world, ecs::Entity entity, std::string* error = nullptr);
+    bool hasConstructionScript(const std::string& graph);
 
     // --- Pruebas automaticas del juego (native/TestApi.cpp) ---
     // Las pruebas son scripts de C++ (CRAMION_TEST, sdk/cramion/Test.h).

@@ -601,6 +601,43 @@ void registerUi(Runtime& rt) {
                  return {};
              },
              {"", "Vec3 tamano de su RectTransform", "Vec3"});
+    // Atlas: la parte de la textura de su UIImage (0..1 desde arriba a la izquierda).
+    method(rt, "setUvRect",
+           [&rt](api::Call& c) -> api::Value {
+               ui::Image* i = rt.selfEntity(c).tryGet<ui::Image>();
+               if (i == nullptr) return false;
+               i->uv_rect_pos = core::Vec2{static_cast<float>(c.number(0, 0.0)), static_cast<float>(c.number(1, 0.0))};
+               i->uv_rect_size = core::Vec2{static_cast<float>(c.number(2, 1.0)), static_cast<float>(c.number(3, 1.0))};
+               return true;
+           },
+           {"x, y, ancho, alto", "parte de la textura de su UIImage (atlas de iconos), 0..1 desde arriba a la izquierda", "bool"});
+    method(rt, "uvRect",
+           [&rt](api::Call& c) -> api::Value {
+               const ui::Image* i = rt.selfEntity(c).tryGet<ui::Image>();
+               if (i == nullptr) return {};
+               api::Value out = api::Value::object();
+               out.set("x", i->uv_rect_pos.x);
+               out.set("y", i->uv_rect_pos.y);
+               out.set("width", i->uv_rect_size.x);
+               out.set("height", i->uv_rect_size.y);
+               return out;
+           },
+           {"", "parte de la textura de su UIImage: {x, y, width, height} (0..1)", "objeto"});
+    // El rectangulo final en pantalla (anclas, escala del Canvas, LayoutGroup
+    // y ScrollView ya aplicados), el del ultimo frame de la interfaz.
+    method(rt, "uiScreenRect",
+           [&rt](api::Call& c) -> api::Value {
+               const ecs::Entity x = rt.selfEntity(c);
+               ui::UiRect r;
+               if (rt.ui == nullptr || !rt.ui->rectOf(x.handle(), r)) return {};
+               api::Value out = api::Value::object();
+               out.set("x", r.x);
+               out.set("y", r.y);
+               out.set("width", r.w);
+               out.set("height", r.h);
+               return out;
+           },
+           {"", "rectangulo en pantalla (pixeles de la vista, ultimo frame): {x, y, width, height} o nil si no se ve", "objeto"});
 }
 
 // --- Malla, material y sombras del MeshRenderer ---

@@ -15,10 +15,15 @@
 #include <thread>
 #include <vector>
 
+// Vulkan Memory Allocator (vendor/vma): tipo opaco, la cabecera solo la ven
+// los .cpp de CramionFX.
+struct VmaAllocator_T;
+
 namespace cramion::gfx {
 
 class VulkanInstance;
 class VulkanSurface;
+class StagingRing;
 
 // Trabajo enviado a la GPU sin esperarlo (VulkanDevice::submitAsync). Se
 // consulta su fence sin bloquear: el hilo principal adopta el resultado
@@ -90,6 +95,38 @@ public:
     // Espera a que la GPU termine todo el trabajo pendiente.
     void waitIdle() const;
 
+    // --- Memoria (VMA) ---
+    // Asignador comun de buffers y texturas: reparte bloques grandes entre los
+    // recursos en lugar de una vkAllocateMemory por recurso (lenta y con el
+    // limite maxMemoryAllocationCount, 4096 en muchos drivers).
+    VmaAllocator_T* allocator() const { return allocator_; }
+    // Anillo de staging persistente (mapeado) de las subidas (UploadBatch).
+    // Nulo antes de initialize y despues de shutdown.
+    StagingRing* stagingRing() const { return staging_ring_.get(); }
+
+    // --- Cola de transferencia ---
+    // Familia de colas solo de copias (sin graficos), si la GPU la tiene y no
+    // se esta en modo compatible. Las subidas de UploadBatch copian alli y
+    // pasan la propiedad de los recursos a la cola de graficos.
+    // CRAMION_VK_NO_TRANSFER_QUEUE=1 la desactiva (pruebas).
+    bool hasTransferQueue() const { return transfer_family_ != UINT32_MAX; }
+    std::uint32_t transferFamily() const { return transfer_family_; }
+    std::uint32_t graphicsFamily() const { return queue_families_.graphics; }
+
+    // Envia un lote de subida sin esperar (UploadBatch::submit). `transfer`:
+    // las copias en la cola de transferencia (puede ser nulo); `graphics`: lo
+    // de la cola de graficos (recibir la propiedad, mips...), que espera a las
+    // copias con un semaforo. Si solo hay `graphics`, va todo ahi. El ticket
+    // es la fence del ultimo envio; `keep_alive` vive hasta que la GPU termina
+    // (lo suelta collectAsync).
+    std::shared_ptr<GpuTicket> submitUpload(vk::CommandBuffer transfer, vk::CommandBuffer graphics,
+                                            std::shared_ptr<const void> keep_alive) const;
+
+    // Mensajes de detalle (cada modelo subido, cada textura...): solo con
+    // CRAMION_LOG_LEVEL=debug (o CRAMION_VK_VERBOSE=1). std::cout sincroniza
+    // con stdio y desde los hilos de subida eran cientos de lineas por minuto.
+    static bool debugLog();
+
     // Indice del primer tipo de memoria compatible con `type_bits` que tenga
     // las propiedades pedidas. Lanza si la GPU no ofrece ninguno.
     std::uint32_t findMemoryType(std::uint32_t type_bits,
@@ -119,6 +156,13 @@ public:
     void runTask(std::function<void()> task) const;
     void drainTasks() const;
     std::uint32_t tasksInFlight() const { return static_cast<std::uint32_t>(tasks_in_flight_.load()); }
+    // Tareas largas de streaming (subir un modelo entero: decodificar sus
+    // texturas y grabar sus copias). Van a un grupo pequeno de hilos propio
+    // (CRAMION_STREAM_THREADS, 3 por defecto), no al planificador de las
+    // tareas cortas: un modelo de varios segundos no deja sin hilos al
+    // terreno ni a la vegetacion. Antes, un std::async (un hilo del sistema
+    // creado y destruido) por modelo. drainTasks tambien las espera.
+    void runStreamingTask(std::function<void()> task) const;
 
     // Formato de profundidad soportado por la GPU, elegido al inicializar.
     vk::Format depthFormat() const { return depth_format_; }
@@ -186,6 +230,12 @@ private:
     // Modo compatible: dispositivo con las extensiones y caracteristicas que
     // tenga (Vulkan 1.0-1.2, moviles), sin trazado de rayos ni mesh shaders.
     void createCompatLogicalDevice(const char* reason);
+    // Familia de colas solo de transferencia (UINT32_MAX si no hay o no sirve).
+    static std::uint32_t findTransferFamily(const vk::raii::PhysicalDevice& candidate, std::uint32_t graphics,
+                                            std::uint32_t present);
+    // VMA y el anillo de staging, con el dispositivo ya creado.
+    void createAllocator(const VulkanInstance& instance);
+    void destroyAllocator();
 
     // Primer formato de profundidad de la lista de preferencias que la GPU
     // admita como attachment.
@@ -195,6 +245,12 @@ private:
     vk::raii::Device device_{nullptr};
     vk::raii::Queue graphics_queue_{nullptr};
     vk::raii::Queue present_queue_{nullptr};
+    vk::raii::Queue transfer_queue_{nullptr};  // cola de transferencia dedicada (si hay)
+    std::uint32_t transfer_family_ = UINT32_MAX;
+    mutable std::mutex transfer_queue_mutex_;
+
+    VmaAllocator_T* allocator_ = nullptr;
+    std::shared_ptr<StagingRing> staging_ring_;  // (shared_ptr: tipo incompleto aqui)
 
     // Pool aparte para los comandos de usar y tirar (copias de staging).
     vk::raii::CommandPool transient_pool_{nullptr};
@@ -252,6 +308,14 @@ private:
     mutable bool task_stop_ = false;
     mutable std::atomic<int> tasks_in_flight_{0};
     TaskScheduler scheduler_;  // con task_mutex_
+
+    // --- Hilos de streaming (runStreamingTask) ---
+    void stopStreamingThreads();
+    mutable std::mutex stream_mutex_;
+    mutable std::condition_variable stream_cv_;
+    mutable std::deque<std::function<void()>> stream_tasks_;
+    mutable std::vector<std::thread> stream_threads_;
+    mutable bool stream_stop_ = false;
 };
 
 }  // namespace cramion::gfx

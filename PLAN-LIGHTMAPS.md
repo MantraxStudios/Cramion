@@ -8,6 +8,15 @@
 - **[W]** verificado en la fuente de xatlas (master, GitHub).
 - **[S]** supuesto o estimación: hay que medirlo.
 
+### Estado de la implementación (2026-10-19, sin compilar ni probar todavía)
+
+- **Fase 0** — 0.1 hecho (copia de `gi_raw_` a `gi_image_`, sin SVGF; al fusionar con F1-6 de `MEJORA.md` quedó una sola rama, solo con `!dynamicProbesActive()`: con sondas dinámicas el SVGF sigue, decisión pendiente en `PENDIENTES.md`) · 0.2 hecho (`TextureStats`, `AssetManager::readMaterialColors`, `resolveBakeMaterials` en el hilo del horneado; además albedo de rebote 1.5) · 0.3 hecho (`BakeLights.h`) · 0.4 hecho · 0.5 hecho · 0.6 hecho (`readSkyIrradianceSh`, `eTransferSrc` en IblProbe) · 0.7 hecho · 0.8 hecho (`probeCoverage` + `volumeAround` de un subconjunto) · 0.9 pendiente (es una prueba en el editor) · MCP `set_lighting_mode` hecho (+ `probe_coverage`, `seconds`) · documentación hecha · pruebas hechas (sin ejecutar).
+- **Fase 1** — 1.1 hecho (xatlas `f700c77` en `CramionCore/vendor/xatlas`, CMake y THIRD_PARTY_NOTICES) · 1.2 hecho · 1.3 hecho (`LightmapUnwrap.cpp`) · 1.4 hecho · 1.5 hecho · 1.6 hecho, con un cambio: la UV2 va en el **binding 10** del set 1 (el 9 lo usa ahora el tiling del material, `kMaterialUvBinding`, de otra tarea) · 1.7 hecho (botón «Generar UV de lightmap», vista con el botón LM de la vista Escena) · MCP `generate_lightmap_uvs` hecho (asíncrono: el resultado va en `lighting_state.uv_generation`) · documentación hecha · pruebas hechas (sin ejecutar) · medir White1: pendiente.
+- **Fase 2** — 2.1 hecho (`BakeTracer`) · 2.2 hecho (cuatro TU; receptores desde `BakeScene::meshes` de `gatherBakeScene`) · 2.3 hecho · 2.4 hecho (`BakedLightingFile`; registro LMRC de 112 B) · 2.5 hecho, con un cambio: los valores de `decal_info.yzw` van en `GpuWeather::lightmap` (al final del UBO: `decal_info.yzw` ya lo usa el parallax) · 2.6 hecho (la lectura del atlas solo en `skinned.frag`/`surface.frag`, con `CRAMION_LIGHTMAP`) · 2.7 hecho (`RenderSyncLightmaps.cpp`) · 2.8 hecho (flujo, ventana, MCP, lote estático al exportar, player) · 2.9 hecho (`iluminacion-horneada.html`; falta regenerar con `build_manual.py`) · 2.10 hecho (sin ejecutar) · 2.11 pendiente (capturas).
+- **Fase 3** — 3.1 parcial (sin la rejilla de luces por alcance) · 3.2 hecho · 3.3 hecho · 3.4 hecho · 3.5 pendiente (las sondas siguen saliendo de `bakeProbes`, ya sin la directa del sol) · 3.6 hecho · UI y MCP hechos · pruebas hechas salvo `testProbesFromLightmaps` · aceptación visual pendiente.
+- **Fase 4** — 4.1 hecho (`ShadowCascades::fitStatic` + `testStaticSunFit`) · 4.2 pendiente (no se ha conectado a `updateUniforms`/`recordShadowPass`: otra tarea está cambiando las cascadas) · 4.3 pendiente (medir en móvil) · UI pendiente.
+- **Fases 5 y 6** — pendientes.
+
 **Aviso:** `CramionFX/src/vk/VulkanRenderer.cpp` y `VulkanRenderer.h` tienen cambios sin confirmar de otra tarea: presupuesto adaptativo, nubes y luz volumétrica (`git diff --stat`: +205/−66 en el .cpp). En esos dos archivos los números de línea son aproximados (≈): búsquelos por el nombre de la función. El resto de referencias archivo:línea son del árbol actual.
 
 ---

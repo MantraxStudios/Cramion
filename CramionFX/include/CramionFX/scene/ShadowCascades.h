@@ -1,6 +1,7 @@
 #ifndef CRAMION_SCENE_SHADOW_CASCADES_H
 #define CRAMION_SCENE_SHADOW_CASCADES_H
 
+#include "CramionFX/core/Frustum.h"
 #include "CramionFX/core/Math.h"
 #include "CramionFX/scene/Camera.h"
 #include "CramionFX/scene/Light.h"
@@ -56,6 +57,12 @@ public:
     // `shadow_map_size` es la resolucion (en texeles) de cada cascada.
     void update(const Camera& camera, const DirectionalLight& sun,
                 std::uint32_t shadow_map_size);
+
+    // Sol Horneado sin cascadas por frame (PLAN-LIGHTMAPS 4.1): las cuatro
+    // cascadas con el mismo encuadre fijo, la caja `world_box` vista desde el
+    // sol (ortografica, ajustada a texeles). split_distance enorme: siempre la
+    // 0. Mientras la caja y el sol no cambien, el mapa no se redibuja.
+    void fitStatic(const core::Aabb& world_box, const DirectionalLight& sun, std::uint32_t shadow_map_size);
 
     const std::array<ShadowCascade, kShadowCascadeCount>& cascades() const { return cascades_; }
     const ShadowCascade& cascade(std::uint32_t index) const { return cascades_[index]; }

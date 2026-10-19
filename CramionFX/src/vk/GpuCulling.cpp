@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <exception>
 #include <iostream>
 
 namespace cramion::gfx {
@@ -21,6 +22,10 @@ struct CullPush {
 
 struct HizPush {
     std::uint32_t level = 0;
+};
+
+struct GlassPush {
+    std::uint32_t count = 0;
 };
 
 constexpr std::uint32_t kStatsCount = 4;
@@ -75,15 +80,32 @@ void GpuCulling::create(const VulkanDevice& device) {
     sampler_info.maxLod = static_cast<float>(kMaxHizLevels);
     hiz_sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
 
+    // Vidrio: sin su shader (un juego exportado con shaders de antes) se
+    // dibuja como siempre.
+    glass_ready_ = false;
+    try {
+        const std::array<Type, 4> glass_bindings = {Type::eUniformBuffer, Type::eStorageBuffer, Type::eStorageBuffer,
+                                                    Type::eCombinedImageSampler};
+        ComputePassDesc glass{};
+        glass.shader = "glass_cull.comp.spv";
+        glass.bindings = glass_bindings;
+        glass.push_constant_size = sizeof(GlassPush);
+        glass_pass_.create(device, glass);
+        glass_ready_ = true;
+    } catch (const std::exception& error) {
+        std::cerr << "[Vulkan] Oclusion del vidrio desactivada: " << error.what() << "\n";
+    }
+
     constexpr std::uint32_t kCullSets = kMaxFramesInFlight * 2;
+    constexpr std::uint32_t kGlassSets = kMaxFramesInFlight;
     const std::array<vk::DescriptorPoolSize, 4> pool_sizes = {
-        vk::DescriptorPoolSize{Type::eUniformBuffer, kCullSets},
-        vk::DescriptorPoolSize{Type::eStorageBuffer, kCullSets * 5},
-        vk::DescriptorPoolSize{Type::eCombinedImageSampler, kCullSets + kMaxHizLevels},
+        vk::DescriptorPoolSize{Type::eUniformBuffer, kCullSets + kGlassSets},
+        vk::DescriptorPoolSize{Type::eStorageBuffer, kCullSets * 5 + kGlassSets * 2},
+        vk::DescriptorPoolSize{Type::eCombinedImageSampler, kCullSets + kMaxHizLevels + kGlassSets},
         vk::DescriptorPoolSize{Type::eStorageImage, kMaxHizLevels * 2}};
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    pool_info.maxSets = kCullSets + kMaxHizLevels;
+    pool_info.maxSets = kCullSets + kMaxHizLevels + kGlassSets;
     pool_info.setPoolSizes(pool_sizes);
     pool_ = vk::raii::DescriptorPool(device.handle(), pool_info);
 
@@ -93,6 +115,13 @@ void GpuCulling::create(const VulkanDevice& device) {
     alloc.descriptorPool = *pool_;
     alloc.setSetLayouts(layouts);
     cull_sets_ = vk::raii::DescriptorSets(device.handle(), alloc);
+    if (glass_ready_) {
+        const std::vector<vk::DescriptorSetLayout> glass_layouts(kGlassSets, *glass_pass_.descriptorSetLayout());
+        vk::DescriptorSetAllocateInfo glass_alloc{};
+        glass_alloc.descriptorPool = *pool_;
+        glass_alloc.setSetLayouts(glass_layouts);
+        glass_sets_ = vk::raii::DescriptorSets(device.handle(), glass_alloc);
+    }
 
     for (VulkanBuffer& stats : stats_) {
         stats.create(device, sizeof(std::uint32_t) * kStatsCount,
@@ -109,6 +138,12 @@ void GpuCulling::destroy() {
     created_ = false;
     hiz_sets_.clear();
     cull_sets_.clear();
+    glass_sets_.clear();
+    glass_pass_.destroy();
+    glass_ready_ = false;
+    glass_capacity_ = 0;
+    for (VulkanBuffer& buffer : glass_items_) buffer.destroy();
+    for (VulkanBuffer& buffer : glass_commands_) buffer.destroy();
     pool_ = nullptr;
     hiz_pass_.destroy();
     cull_pass_.destroy();
@@ -458,6 +493,67 @@ void GpuCulling::recordHiZ(const vk::raii::CommandBuffer& cmd) const {
         memoryBarrier(cmd, Stage::eComputeShader, Access::eShaderWrite, Stage::eComputeShader,
                       Access::eShaderRead);
     }
+}
+
+bool GpuCulling::recordGlassCull(const VulkanDevice& device, const vk::raii::CommandBuffer& cmd,
+                                 std::uint32_t frame_index, const std::vector<GpuGlassItem>& items,
+                                 const std::vector<VulkanBuffer>& camera_buffers) {
+    if (!created_ || !glass_ready_ || items.empty() || hiz_levels_ == 0 || frame_index >= glass_sets_.size() ||
+        frame_index >= camera_buffers.size()) {
+        return false;
+    }
+    using Stage = vk::PipelineStageFlagBits2;
+    using Access = vk::AccessFlagBits2;
+    const auto count = static_cast<std::uint32_t>(items.size());
+    if (count > glass_capacity_) {
+        // Los buffers de los otros frames los puede estar usando la GPU.
+        device.waitIdle();
+        glass_capacity_ = std::max(count * 2, 256u);
+        for (std::uint32_t f = 0; f < kMaxFramesInFlight; ++f) {
+            glass_items_[f].create(device, sizeof(GpuGlassItem) * glass_capacity_, vk::BufferUsageFlagBits::eStorageBuffer,
+                                   vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+            glass_commands_[f].create(device, static_cast<vk::DeviceSize>(kCommandSize) * glass_capacity_,
+                                      vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndirectBuffer,
+                                      vk::MemoryPropertyFlagBits::eDeviceLocal);
+        }
+    }
+    // Los sets se escriben cada vez (los buffers o la piramide pueden haber
+    // cambiado): son 4 descriptores.
+    {
+        vk::DescriptorBufferInfo camera{*camera_buffers[frame_index].handle(), 0, VK_WHOLE_SIZE};
+        vk::DescriptorBufferInfo in{*glass_items_[frame_index].handle(), 0, VK_WHOLE_SIZE};
+        vk::DescriptorBufferInfo out{*glass_commands_[frame_index].handle(), 0, VK_WHOLE_SIZE};
+        vk::DescriptorImageInfo hiz{*hiz_sampler_, *hiz_view_, vk::ImageLayout::eGeneral};
+        std::array<vk::WriteDescriptorSet, 4> writes{};
+        for (std::uint32_t b = 0; b < 4; ++b) {
+            writes[b].dstSet = *glass_sets_[frame_index];
+            writes[b].dstBinding = b;
+        }
+        writes[0].descriptorType = vk::DescriptorType::eUniformBuffer;
+        writes[0].setBufferInfo(camera);
+        writes[1].descriptorType = vk::DescriptorType::eStorageBuffer;
+        writes[1].setBufferInfo(in);
+        writes[2].descriptorType = vk::DescriptorType::eStorageBuffer;
+        writes[2].setBufferInfo(out);
+        writes[3].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[3].setImageInfo(hiz);
+        device.handle().updateDescriptorSets(writes, nullptr);
+    }
+    glass_items_[frame_index].write(items.data(), sizeof(GpuGlassItem) * count);
+
+    // La piramide ya construida, y los comandos de este hueco ya leidos por
+    // el dibujo de su frame anterior.
+    memoryBarrier(cmd, Stage::eComputeShader | Stage::eDrawIndirect, Access::eShaderWrite | Access::eIndirectCommandRead,
+                  Stage::eComputeShader, Access::eShaderRead | Access::eShaderWrite);
+    GlassPush push{};
+    push.count = count;
+    cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *glass_pass_.pipeline());
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *glass_pass_.layout(), 0, *glass_sets_[frame_index],
+                           nullptr);
+    cmd.pushConstants<GlassPush>(*glass_pass_.layout(), vk::ShaderStageFlagBits::eCompute, 0, push);
+    cmd.dispatch((count + 63) / 64, 1, 1);
+    memoryBarrier(cmd, Stage::eComputeShader, Access::eShaderWrite, Stage::eDrawIndirect, Access::eIndirectCommandRead);
+    return true;
 }
 
 GpuCulling::Stats GpuCulling::readStats(std::uint32_t frame_index) const {

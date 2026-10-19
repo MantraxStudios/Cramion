@@ -261,19 +261,22 @@ vec4 screenSky(vec3 direction) {
 // de un arbol o un poste se quedaban con su color y los reflejos salian
 // estirados y a bandas (los escalones de los pasos).
 vec4 traceScreen(vec3 origin, vec3 ray) {
-    const int kSteps = 32;
-    const int kRefineSteps = 6;
+    // Calidad Baja (iluminacion ligera: water.ocean.w = 1): 12 pasos y 3 de
+    // afinado en vez de 32 y 6 (reflejos algo menos finos, ~60 % menos).
+    bool low_quality = water.ocean.w > 0.5;
+    int steps = low_quality ? 12 : 32;
+    int refine_steps = low_quality ? 3 : 6;
     const float kMaxDistance = 120.0;
     const float kFirstStep = 0.08;
     ivec2 size = textureSize(g_depth, 0);
-    float growth = pow(kMaxDistance / kFirstStep, 1.0 / float(kSteps));
+    float growth = pow(kMaxDistance / kFirstStep, 1.0 / float(steps));
     // Ruido que cambia cada frame (el TAA lo promedia).
     vec2 noise_pixel = gl_FragCoord.xy + 5.588238 * mod(floor(water.time_count.x * 60.0), 64.0);
     float jitter = fract(52.9829189 * fract(dot(noise_pixel, vec2(0.06711056, 0.00583715))));
     float previous_distance = 0.0;
     float previous_difference = -1.0;  // el origen (la superficie del agua) esta delante de la escena
     float distance_along = kFirstStep * mix(1.0, growth, jitter);
-    for (int i = 0; i < kSteps; ++i) {
+    for (int i = 0; i < steps; ++i) {
         vec3 sample_position = origin + ray * distance_along;
         vec2 uv;
         if (!project(sample_position, uv) || !insideScreen(uv)) break;
@@ -297,7 +300,7 @@ vec4 traceScreen(vec3 origin, vec3 ray) {
             vec2 hit_uv = uv;
             float hit_z = surface_z;
             float gap = difference;
-            for (int r = 0; r < kRefineSteps; ++r) {
+            for (int r = 0; r < refine_steps; ++r) {
                 float middle = 0.5 * (low + high);
                 vec3 p = origin + ray * middle;
                 vec2 puv;

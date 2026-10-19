@@ -346,9 +346,15 @@ const std::map<std::string, std::string>& intros() {
                            "mirando hacia delante."},
         {"WorldPartition", "Divide el mundo en celdas: en Play y en el juego solo estan cargadas las cercanas a las fuentes de "
                            "carga (o a la camara); lo lejano sale del mundo y vuelve al acercarse. <em>Construir HLOD</em> crea "
-                           "una malla simplificada por celda que se ve de lejos."},
+                           "una malla simplificada por celda que se ve de lejos. Varias <em>Rejillas</em> (cada una con su "
+                           "tamano y su distancia), <em>Data Layers</em> (capas que se ven u ocultan en el editor y se activan "
+                           "en el juego con <code>WorldPartition.setDataLayer</code>) y <em>Dependencias entre celdas</em> "
+                           "(una celda que carga otra)."},
         {"StreamingSource", "Lo que carga el mundo a su alrededor con World Partition (el jugador)."},
         {"AlwaysLoaded", "Esta entidad no se descarga nunca con World Partition."},
+        {"PartitionObject", "En un objeto que se descarga con World Partition: en que rejilla va (una de las <em>Rejillas</em> "
+                            "del World Partition) y en que <em>Data Layers</em> (separadas por comas). Con rejilla o capas "
+                            "tambien se descarga sin malla (luces, sonidos, disparadores de una capa)."},
         {"HlodProxy", "La malla simplificada de una celda (la crea <em>Construir HLOD</em>): solo se ve cuando su celda esta "
                       "descargada."},
         {"FogVolume", "Niebla local (caja o esfera) con su densidad, color, borde suave y ruido, iluminada por el sol, el cielo "

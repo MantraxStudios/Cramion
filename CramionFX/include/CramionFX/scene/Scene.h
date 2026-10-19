@@ -24,6 +24,10 @@ namespace cramion::scene {
 // El modelo (malla, esqueleto, clips) se comparte entre instancias.
 struct Actor {
     std::uint32_t model = 0;  // Indice en Scene::models().
+    // Identidad estable entre frames (CramionCore: la entidad + 1; 0 = sin
+    // identidad, se usa su posicion en la lista). El renderizador sigue con
+    // ella lo que se movio, entro o salio aunque cambie el orden de la lista.
+    std::uint64_t id = 0;
     core::Mat4 transform = core::Mat4::identity();
     anim::Animator animator;
 
@@ -132,6 +136,20 @@ public:
     void setModelWriteHook(std::function<void(std::uint32_t first, std::uint32_t last)> hook) const {
         model_write_hook_ = std::move(hook);
     }
+    // "Solo base de variantes": el modelo esta en la escena porque sus
+    // variantes de material (.crmat) parten de el, pero ninguna instancia lo
+    // dibuja tal cual. El renderizador no lo sube hasta que alguna lo dibuje
+    // y el streaming lo saca en cuanto deja de dibujarse (sus texturas, que
+    // todas las variantes sustituyen, eran VRAM para nada).
+    void setVariantBaseOnly(std::uint32_t model, bool base_only) {
+        if (model >= models_.size()) return;
+        if (variant_base_only_.size() < models_.size()) variant_base_only_.resize(models_.size(), 0);
+        variant_base_only_[model] = base_only ? 1 : 0;
+    }
+    bool variantBaseOnly(std::uint32_t model) const {
+        return model < variant_base_only_.size() && variant_base_only_[model] != 0;
+    }
+
     const std::vector<Actor>& actors() const { return actors_; }
     // Editable (editor): el renderizador lee el transform de cada actor en
     // cada frame. (La estructura de los rayos y el mapa de lluvia se
@@ -192,6 +210,7 @@ private:
         if (model_write_hook_) model_write_hook_(first, last);
     }
     std::vector<Actor> actors_;
+    std::vector<std::uint8_t> variant_base_only_;  // por modelo (setVariantBaseOnly)
 
     float time_seconds_ = 0.0f;
     // Angulo del sol en su arco: 0 = amanecer, pi/2 = mediodia, pi = ocaso,

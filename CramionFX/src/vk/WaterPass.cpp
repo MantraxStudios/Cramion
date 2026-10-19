@@ -16,7 +16,7 @@ struct GpuWaterUniform {
     core::Vec4 ripple{};         // olas interactivas: x, z de la esquina, celda (m), lado (0 = no hay)
     core::Vec4 cascade_size{};   // lado de cada cascada del oceano (m)
     core::Vec4 cascade_slope{};  // varianza de la pendiente de cada cascada
-    core::Vec4 ocean{};          // x choppiness, y altura significativa, z niveles del clipmap, w -
+    core::Vec4 ocean{};          // x choppiness, y altura significativa, z niveles del clipmap, w = calidad Baja (1)
     GpuWaterBody bodies[kMaxWaterBodies];
 };
 
@@ -90,6 +90,15 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
     destroy();
     device_ = &device;
     frames_ = frames_in_flight;
+    {
+        vk::QueryPoolCreateInfo info{};
+        info.queryType = vk::QueryType::eOcclusion;
+        info.queryCount = frames_in_flight;
+        ocean_queries_ = vk::raii::QueryPool(device.handle(), info);
+        ocean_query_armed_.assign(frames_in_flight, 0);
+        ocean_query_pending_.assign(frames_in_flight, 0);
+        ocean_hidden_frames_ = 0;
+    }
 
     const auto stages = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
     const std::array<vk::DescriptorSetLayoutBinding, 4> bindings = {{
@@ -438,6 +447,9 @@ void WaterPass::destroy() {
     grid_ = Mesh{};
     ocean_full_ = Mesh{};
     ocean_ring_ = Mesh{};
+    ocean_queries_ = nullptr;
+    ocean_query_armed_.clear();
+    ocean_query_pending_.clear();
     for (VulkanBuffer& buffer : uniforms_) buffer.destroy();
     uniforms_.clear();
     sets_.clear();
@@ -580,7 +592,8 @@ void WaterPass::prepare(std::uint32_t frame) {
         data.cascade_size = spectrum_.sizes;
         data.cascade_slope = spectrum_.slope_variance;
     }
-    data.ocean = core::Vec4{spectrum_.choppiness, spectrum_.significant_height, static_cast<float>(kOceanLevels), 0.0f};
+    data.ocean = core::Vec4{spectrum_.choppiness, spectrum_.significant_height, static_cast<float>(kOceanLevels),
+                            low_quality_ ? 1.0f : 0.0f};
     if (ripple_size_ > 0 && frame < ripple_buffers_.size()) {
         ripple_buffers_[frame].write(ripples_.data(), sizeof(float) * ripple_size_ * ripple_size_);
     }
@@ -591,7 +604,9 @@ void WaterPass::prepare(std::uint32_t frame) {
         if (body.params.extent.z > 1.5f && river.version != body.mesh_version) {
             if (river.index_count > 0) garbage_.push_back(Garbage{std::move(river), frames_ + 1});
             river = Mesh{};
-            if (!body.indices.empty()) upload(*device_, river, body.vertices, body.indices);
+            if (body.vertices && body.indices && !body.indices->empty()) {
+                upload(*device_, river, *body.vertices, *body.indices);
+            }
             river.version = body.mesh_version;
         }
     }
@@ -600,6 +615,26 @@ void WaterPass::prepare(std::uint32_t frame) {
 
 void WaterPass::recordSimulation(const vk::raii::CommandBuffer& cmd, std::uint32_t frame) {
     if (bodies_.empty() || spectrum_modes_.empty() || frame >= fft_sets_.size()) return;
+    // Lo que conto la consulta de este hueco la ultima vez (su frame ya
+    // termino: el renderizador espero su fence). Sin resultado, visible.
+    if (*ocean_queries_ && frame < ocean_query_armed_.size()) {
+        if (ocean_query_pending_[frame]) {
+            std::uint64_t samples = 1;
+            const vk::Result r = (*device_->handle()).getQueryPoolResults(
+                *ocean_queries_, frame, 1, sizeof(samples), &samples, sizeof(samples), vk::QueryResultFlagBits::e64);
+            if (r == vk::Result::eSuccess) ocean_hidden_frames_ = samples == 0 ? ocean_hidden_frames_ + 1 : 0;
+            ocean_query_pending_[frame] = 0;
+        }
+        cmd.resetQueryPool(*ocean_queries_, frame, 1);
+        ocean_query_armed_[frame] = 1;
+        ocean_query_frame_ = frame;
+        // Dos lecturas seguidas sin un pixel: nada que simular (las olas siguen
+        // con el tiempo cuando vuelva a verse).
+        if (ocean_hidden_frames_ >= 2 && ocean_ready_) {
+            last_simulated_ = time_;
+            return;
+        }
+    }
     if (spectrum_uploaded_[frame] != spectrum_.key) {
         spectrum_buffers_[frame].write(spectrum_modes_.data(), sizeof(float) * spectrum_modes_.size());
         spectrum_uploaded_[frame] = spectrum_.key;
@@ -718,11 +753,20 @@ void WaterPass::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
         cmd.pushConstants<GpuWaterPush>(*layout_, stages, 0, push);
         if (type < 0.5f) {
             // Oceano: nivel 0 (instancia 0) y los anillos (instancias 1..).
+            // Con su consulta de oclusion solo en la vista que preparo el FFT.
+            const bool query = frame == ocean_query_frame_ && frame < ocean_query_armed_.size() &&
+                               ocean_query_armed_[frame];
+            if (query) cmd.beginQuery(*ocean_queries_, frame, {});
             cmd.bindVertexBuffers(0, *ocean_full_.vertices.handle(), {0});
             cmd.bindIndexBuffer(*ocean_full_.indices.handle(), 0, vk::IndexType::eUint32);
             cmd.drawIndexed(ocean_full_.index_count, 1, 0, 0, 0);
             cmd.bindIndexBuffer(*ocean_ring_.indices.handle(), 0, vk::IndexType::eUint32);
             cmd.drawIndexed(ocean_ring_.index_count, kOceanLevels - 1, 0, 0, 1);
+            if (query) {
+                cmd.endQuery(*ocean_queries_, frame);
+                ocean_query_armed_[frame] = 0;
+                ocean_query_pending_[frame] = 1;
+            }
             continue;
         }
         const Mesh* mesh = type < 1.5f ? &grid_ : &rivers_[i];

@@ -44,7 +44,7 @@ BuildConfigs loadBuildConfigs(const std::filesystem::path& file) {
                 b.version_in_title = c.value("version_in_title", b.version_in_title);
                 b.icon = c.value("icon", b.icon);
                 b.startup_scene = c.value("startup_scene", b.startup_scene);
-                b.window_mode = std::clamp(c.value("window_mode", b.window_mode), 0, 2);
+                b.window_mode = std::clamp(c.value("window_mode", b.window_mode), 0, 3);
                 b.width = std::clamp(c.value("width", b.width), 320, 16384);
                 b.height = std::clamp(c.value("height", b.height), 240, 16384);
                 b.static_batching = c.value("static_batching", b.static_batching);

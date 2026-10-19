@@ -47,7 +47,9 @@ layout(location = 5) in vec4 v_previous_clip;
 
 const float kEmissiveIntensity = 6.0;
 
+#define CRAMION_LIGHTMAP 1
 #include "gbuffer_surface.glsl"
+#include "lightmap_common.glsl"
 #include "parallax_common.glsl"
 
 const uint kFlagHeightMap = 1u << 3;
@@ -125,6 +127,7 @@ void main() {
     // Normal en espacio tangente (para el agua de la lluvia).
     vec3 tangent_normal = has_tangent ? normalize(transpose(tbn) * final_normal) : vec3(0.0, 0.0, 1.0);
 
+    setupLightmap(v_world_position, camera.position.xyz);
     writeSurface(vec4(clamp(s.albedo, 0.0, 1.0), s.alpha), n, final_normal, tangent_normal, n,
                  clamp(s.metallic, 0.0, 1.0), clamp(s.roughness, 0.04, 1.0), clamp(s.occlusion, 0.0, 1.0),
                  max(s.emission, vec3(0.0)) * kEmissiveIntensity, push.reflectance, v_world_position);

@@ -57,6 +57,14 @@ std::uint32_t anisotropyFor(HardwareTier tier);
 // cual la camara no dibuja un objeto, para cada nivel: 1.5 / 1 / 0.75 / 0.5.
 // El presupuesto puede subirlo (cullPixels); se usa el mayor de los dos.
 float tinyObjectPixelsFor(HardwareTier tier);
+// Alcance de las sombras del sol (m) para cada nivel: 60 / 80 / 100 / 100. Las
+// cuatro cascadas se reparten en menos metros: menos objetos por cascada y
+// mas nitidez por texel.
+float shadowDistanceFor(HardwareTier tier);
+// Sesgo de LOD de las mallas para cada nivel (multiplica el error en pixeles
+// permitido): 2 / 1.5 / 1 / 1. La palanca Lod va encima (antes Bajo y Medio
+// arrancaban en Lod 1; ahora en 0, para no contarlo dos veces).
+float lodScaleFor(HardwareTier tier);
 // Con histeresis: un objeto se oculta por debajo de `threshold` pixeles y no
 // vuelve hasta pasar de 1.25 x `threshold` (en el borde no parpadea).
 inline bool tinyObject(float pixels, float threshold, bool was_tiny) {

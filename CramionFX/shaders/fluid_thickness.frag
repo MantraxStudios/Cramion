@@ -15,6 +15,10 @@ layout(location = 4) in float v_radius;
 layout(location = 0) out vec4 out_absorb;    // rgb absorcion * grosor, a grosor
 layout(location = 1) out vec4 out_scatter;   // rgb color difuso * grosor, a espuma * grosor
 layout(location = 2) out vec4 out_emission;  // rgb emision * grosor, a rugosidad * grosor
+// Costra de la lava: x costra * grosor, y grosor; solo de los materiales que
+// emiten (el agua no la diluye). fluid_shade.frag divide: la media de los
+// liquidos que hay en ESE pixel.
+layout(location = 3) out vec2 out_crust;
 
 void main() {
     // Media resolucion: gl_FragCoord * 2 en la imagen completa.
@@ -34,4 +38,6 @@ void main() {
     out_absorb = vec4(m.absorb_visc.rgb * chord, chord);
     out_scatter = vec4(m.scatter_cohes.rgb * chord, clamp(v_foam, 0.0, 1.0) * chord);
     out_emission = vec4(m.emission_vort.rgb * chord, m.params.y * chord);
+    float emissive_chord = chord * step(0.001, dot(m.emission_vort.rgb, vec3(1.0)));
+    out_crust = vec2(m.params.w * emissive_chord, emissive_chord);
 }

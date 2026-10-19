@@ -47,13 +47,43 @@ const std::vector<std::string>& qualityPresetNames();
 void applyQualityPreset(gfx::VulkanRenderer& renderer, int level);
 
 // Modo de la ventana del juego (game.ini / Graphics.ini del jugador).
-enum class WindowMode : int { Maximized = 0, Fullscreen = 1, Windowed = 2 };
+//   Maximized:  ventana con marco, maximizada (el area de trabajo).
+//   Fullscreen: sin bordes, del tamano del monitor.
+//   Windowed:   con marco, width x height de dentro, centrada en el area de
+//               trabajo. Si con el marco no cabe en el area de trabajo pero
+//               el tamano si cabe en el monitor (1920x1080 en un monitor de
+//               1920x1080), va sin marco y centrada en el monitor: el tamano
+//               de dentro es siempre el pedido.
+//   Borderless: sin bordes, width x height, centrada en el monitor.
+enum class WindowMode : int { Maximized = 0, Fullscreen = 1, Windowed = 2, Borderless = 3 };
+inline constexpr int kWindowModeCount = 4;
 // Cambia el modo y el tamano (el de dentro, en pixeles) de una ventana
-// Win32 ya creada. Pantalla completa = sin bordes, del tamano del monitor.
+// Win32 ya creada.
 void applyWindowMode(HWND hwnd, WindowMode mode, int width, int height);
+
+// El monitor de la ventana (o el principal si no hay ventana), en pixeles:
+// su tamano y el mayor tamano de dentro que cabe con el marco de Windows en
+// su area de trabajo (sin la barra de tareas). false si no se sabe (Android).
+struct MonitorSize {
+    int width = 0;
+    int height = 0;
+    int windowed_max_width = 0;
+    int windowed_max_height = 0;
+};
+bool monitorSize(HWND hwnd, MonitorSize& out);
 
 // Lee window_mode / window_width / window_height de un .ini (si estan).
 bool readWindowSettings(const std::filesystem::path& file, WindowMode& mode, int& width, int& height);
+
+// Tope de FPS del juego exportado (Graphics "fps_limit"): 0 = sin tope; si no,
+// entre kFpsLimitMin y kFpsLimitMax. Lo aplica el bucle del reproductor
+// (espera al final de cada frame); con VSync manda tambien la pantalla.
+inline constexpr int kFpsLimitMin = 15;
+inline constexpr int kFpsLimitMax = 360;
+// 0 (sin tope) o el valor recortado a [kFpsLimitMin, kFpsLimitMax].
+int clampFpsLimit(double fps);
+// fps_limit de un .ini (0 si no esta).
+int readFpsLimit(const std::filesystem::path& file);
 
 class RendererGraphicsHost final : public scripting::GraphicsHost {
 public:
@@ -77,6 +107,9 @@ public:
     // El modo con el que se abrio la ventana (game.ini o el guardado).
     void setWindowState(WindowMode mode, int width, int height);
     void setSaver(Saver saver) { saver_ = std::move(saver); }
+    // Tope de FPS (0 = sin tope). Solo lo aplica el reproductor.
+    int fpsLimit() const { return fps_limit_; }
+    void setFpsLimit(int fps) { fps_limit_ = clampFpsLimit(fps); }
 
 private:
     gfx::VulkanRenderer& renderer_;
@@ -86,6 +119,7 @@ private:
     WindowMode window_mode_ = WindowMode::Maximized;
     int window_width_ = 1600;
     int window_height_ = 900;
+    int fps_limit_ = 0;
 };
 
 }  // namespace cramion::editor

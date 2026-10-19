@@ -123,6 +123,22 @@ void testLakeAndRiver() {
     check(!sampleWater(river, identity, Vec3{30.0f, 0.0f, 8.0f}, 0.0f).inside, "fuera del cauce");
     const std::vector<RiverSample> line = riverCenterline(river, identity, 1.0f);
     check(line.size() > 50 && std::abs(line.back().distance - 60.0f) < 2.0f, "linea central subdividida");
+
+    // La linea en cache (con su caja) da lo mismo que rehacerla en cada
+    // consulta, dentro y fuera del cauce (1.000 puntos).
+    const RiverLine cached = riverLine(river, identity);
+    check(cached.hash == riverHash(river, identity) && cached.samples.size() == line.size(), "linea en cache");
+    bool same = true;
+    for (int i = 0; i < 1000; ++i) {
+        const Vec3 p{-10.0f + 0.08f * static_cast<float>(i), 0.0f, -12.0f + 0.024f * static_cast<float>(i)};
+        const WaterSample a = sampleWater(river, identity, p, 1.5f);
+        const WaterSample b = sampleWater(river, identity, p, 1.5f, cached);
+        if (a.inside != b.inside || (a.inside && (a.height != b.height || a.velocity.x != b.velocity.x))) same = false;
+    }
+    check(same, "el muestreo con la linea en cache da lo mismo");
+    WaterBody moved = river;
+    moved.points[1].width = 7.0f;
+    check(riverHash(moved, identity) != cached.hash, "la firma cambia con el rio");
 }
 
 void testScene() {

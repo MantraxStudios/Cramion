@@ -3,6 +3,7 @@
 #include "CramionFX/vk/GBuffer.h"
 
 #include "CramionFX/asset/ImageFile.h"
+#include "CramionFX/asset/TextureCompression.h"
 #include "CramionFX/core/Frustum.h"
 #include "CramionFX/vk/VulkanDevice.h"
 #include "CramionFX/vk/VulkanShader.h"
@@ -12,6 +13,12 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <unordered_set>
+#include <thread>
+#include <mutex>
+#include <filesystem>
+#include <chrono>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <utility>
@@ -238,12 +245,47 @@ void TerrainPass::setTextureFiltering(const TextureFiltering& filtering) {
     }
 }
 
+// Hilos que comprimen las capas a BC7 para la cache del usuario (ver
+// buildLayerSet). Se guardan para pararlos y esperarlos en destroy() (y, por
+// si acaso, al destruirse), en vez de dejarlos sueltos con detach().
+struct TerrainPass::LayerBc7Jobs {
+    std::shared_ptr<std::atomic<bool>> stop = std::make_shared<std::atomic<bool>>(false);
+    std::mutex mutex;
+    std::vector<std::thread> threads;  // (con mutex)
+
+    void add(std::thread thread) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        threads.push_back(std::move(thread));
+    }
+    void stopAndJoin() {
+        stop->store(true);
+        std::vector<std::thread> joining;
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            joining.swap(threads);
+        }
+        for (std::thread& thread : joining) {
+            if (thread.joinable()) thread.join();
+        }
+    }
+    ~LayerBc7Jobs() { stopAndJoin(); }
+};
+
 void TerrainPass::destroy() {
+    // Las compresiones a BC7 de las capas (solo escriben la cache) paran ya;
+    // se esperan despues de drainTasks (una tarea aun podria lanzar otra, que
+    // ve `stop` y sale enseguida).
+    if (layer_bc7_) layer_bc7_->stop->store(true);
     // Las capas que se estaban leyendo en otro hilo crean recursos con el
     // dispositivo: que terminen antes de soltar nada.
     if (device_ != nullptr) device_->drainTasks();
+    if (layer_bc7_) {
+        layer_bc7_->stopAndJoin();
+        layer_bc7_.reset();
+    }
     pending_layers_.clear();
     terrains_.clear();
+    shadow_signature_ = 0;
     retired_.clear();
     layer_sets_.clear();
     grass_blocks_.clear();
@@ -1192,12 +1234,119 @@ void TerrainPass::setDesc(std::uint32_t id, const TerrainDesc& desc) {
     }
 }
 
+namespace {
+
+// --- Capas del terreno en BC7 (asset::compressBc7Layers, cache del usuario) ---
+// 8 capas de 512 de color y 8 de normales: 24 MB en RGBA8, 6 MB en BC7. Los
+// mips de la CPU son la media de 2x2, lo mismo que el blit lineal que hace la
+// GPU en el camino RGBA8.
+asset::MipLayers boxMipChains(const std::vector<std::vector<std::uint8_t>>& level0) {
+    asset::MipLayers chains(level0.size());
+    for (std::size_t l = 0; l < level0.size(); ++l) {
+        chains[l].push_back(level0[l]);
+        std::uint32_t side = kLayerSize;
+        while (side > 1) {
+            const std::vector<std::uint8_t>& src = chains[l].back();
+            const std::uint32_t next = side / 2;
+            std::vector<std::uint8_t> dst(static_cast<std::size_t>(next) * next * 4);
+            for (std::uint32_t y = 0; y < next; ++y) {
+                for (std::uint32_t x = 0; x < next; ++x) {
+                    for (std::uint32_t c = 0; c < 4; ++c) {
+                        const auto at = [&](std::uint32_t sx, std::uint32_t sy) {
+                            return static_cast<std::uint32_t>(src[(static_cast<std::size_t>(sy) * side + sx) * 4 + c]);
+                        };
+                        const std::uint32_t sum = at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) +
+                                                  at(2 * x + 1, 2 * y + 1);
+                        dst[(static_cast<std::size_t>(y) * next + x) * 4 + c] = static_cast<std::uint8_t>((sum + 2) / 4);
+                    }
+                }
+            }
+            chains[l].push_back(std::move(dst));
+            side = next;
+        }
+    }
+    return chains;
+}
+
+// Compresiones en marcha (una por juego de capas, en todo el proceso: dos
+// pases no escriben a la vez el mismo archivo de la cache). Los hilos y la
+// orden de parar, en TerrainPass::LayerBc7Jobs.
+std::mutex g_layer_bc7_mutex;
+std::unordered_set<std::uint64_t> g_layer_bc7_running;
+
+}  // namespace
+
 std::shared_ptr<GpuTicket> TerrainPass::createArrayTexture(const VulkanDevice& device, ArrayTexture& texture,
                                                            const std::vector<std::vector<std::uint8_t>>& layers,
-                                                           std::shared_ptr<const void> owner) {
+                                                           std::shared_ptr<const void> owner,
+                                                           const std::vector<std::vector<std::vector<std::uint8_t>>>* bc7) {
     const auto count = static_cast<std::uint32_t>(layers.size());
     const std::uint32_t mips = static_cast<std::uint32_t>(std::bit_width(kLayerSize));
     texture = ArrayTexture{};
+    if (bc7 != nullptr) {
+        // Ya comprimidas, con sus mips: solo una copia.
+        vk::ImageCreateInfo info{};
+        info.imageType = vk::ImageType::e2D;
+        info.format = vk::Format::eBc7UnormBlock;
+        info.extent = vk::Extent3D{kLayerSize, kLayerSize, 1};
+        info.mipLevels = mips;
+        info.arrayLayers = count;
+        info.samples = vk::SampleCountFlagBits::e1;
+        info.tiling = vk::ImageTiling::eOptimal;
+        info.usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
+        info.initialLayout = vk::ImageLayout::eUndefined;
+        texture.image = vk::raii::Image(device.handle(), info);
+        const vk::MemoryRequirements requirements = texture.image.getMemoryRequirements();
+        vk::MemoryAllocateInfo allocate{};
+        allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex =
+            device.findMemoryType(requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+        texture.memory = vk::raii::DeviceMemory(device.handle(), allocate);
+        texture.image.bindMemory(*texture.memory, 0);
+        vk::DeviceSize total = 0;
+        for (const auto& layer : *bc7) {
+            for (const auto& level : layer) total += level.size();
+        }
+        auto staging = std::make_shared<VulkanBuffer>();
+        staging->create(device, total, vk::BufferUsageFlagBits::eTransferSrc,
+                        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        std::vector<vk::BufferImageCopy> regions;
+        vk::DeviceSize offset = 0;
+        for (std::uint32_t l = 0; l < count && l < bc7->size(); ++l) {
+            std::uint32_t side = kLayerSize;
+            for (std::uint32_t m = 0; m < mips && m < (*bc7)[l].size(); ++m) {
+                staging->write((*bc7)[l][m].data(), (*bc7)[l][m].size(), offset);
+                vk::BufferImageCopy region{};
+                region.bufferOffset = offset;
+                region.imageSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, m, l, 1};
+                region.imageExtent = vk::Extent3D{side, side, 1};
+                regions.push_back(region);
+                offset += (*bc7)[l][m].size();
+                side = std::max(side / 2, 1u);
+            }
+        }
+        const vk::Image image = *texture.image;
+        const vk::Buffer source = *staging->handle();
+        std::shared_ptr<GpuTicket> ticket = device.submitAsync(
+            [&](const vk::raii::CommandBuffer& cmd) {
+                barrier(cmd, image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+                        vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                        vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite, 0, mips, count);
+                cmd.copyBufferToImage(source, image, vk::ImageLayout::eTransferDstOptimal, regions);
+                barrier(cmd, image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+                        vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderSampledRead, 0, mips,
+                        count);
+            },
+            {staging, std::move(owner)});
+        vk::ImageViewCreateInfo view{};
+        view.image = image;
+        view.viewType = vk::ImageViewType::e2DArray;
+        view.format = vk::Format::eBc7UnormBlock;
+        view.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mips, 0, count};
+        texture.view = vk::raii::ImageView(device.handle(), view);
+        return ticket;
+    }
     vk::ImageCreateInfo info{};
     info.imageType = vk::ImageType::e2D;
     info.format = kLayerFormat;
@@ -1280,7 +1429,8 @@ std::shared_ptr<GpuTicket> TerrainPass::createArrayTexture(const VulkanDevice& d
 std::shared_ptr<TerrainPass::LayerSet> TerrainPass::buildLayerSet(const VulkanDevice& device,
                                                                   const LayerPaths& albedo_paths,
                                                                   const LayerPaths& normal_paths,
-                                                                  std::vector<std::shared_ptr<GpuTicket>>& tickets) {
+                                                                  std::vector<std::shared_ptr<GpuTicket>>& tickets,
+                                                                  const std::shared_ptr<LayerBc7Jobs>& bc7_jobs) {
     auto set = std::make_shared<LayerSet>();
     std::vector<std::vector<std::uint8_t>> albedo(kMaxTerrainLayers);
     std::vector<std::vector<std::uint8_t>> normal(kMaxTerrainLayers);
@@ -1304,10 +1454,69 @@ std::shared_ptr<TerrainPass::LayerSet> TerrainPass::buildLayerSet(const VulkanDe
             normal[i] = solidLayer(128, 128, 255, 255);
         }
     }
+    // BC7 si ya estan en la cache del usuario; si no, RGBA8 (como siempre) y
+    // se comprimen en segundo plano para el arranque siguiente.
+    asset::Bc7ArrayCache cache;
+    bool cached = false;
+    std::filesystem::path cache_file;
+    std::uint64_t hash = 0;
+    std::shared_ptr<asset::MipLayers> albedo_mips;
+    std::shared_ptr<asset::MipLayers> normal_mips;
+    if (device.textureCompressionBcSupported()) {
+        albedo_mips = std::make_shared<asset::MipLayers>(boxMipChains(albedo));
+        normal_mips = std::make_shared<asset::MipLayers>(boxMipChains(normal));
+        hash = asset::hashMipLayers(*normal_mips, asset::hashMipLayers(*albedo_mips, kLayerSize));
+        cache_file = asset::userTextureCachePath("terreno_capas", hash);
+        cached = !cache_file.empty() &&
+                 asset::readBc7ArrayCache(cache_file, hash, kLayerSize, {albedo_mips.get(), normal_mips.get()}, cache);
+    }
     // `set` vive en los tickets hasta que la GPU termina: si algo falla
     // despues, sus imagenes no se destruyen con la copia en vuelo.
-    tickets.push_back(createArrayTexture(device, set->albedo, albedo, set));
-    tickets.push_back(createArrayTexture(device, set->normal, normal, set));
+    tickets.push_back(createArrayTexture(device, set->albedo, albedo, set, cached && cache.bc7[0] ? &cache.blocks[0] : nullptr));
+    tickets.push_back(createArrayTexture(device, set->normal, normal, set, cached && cache.bc7[1] ? &cache.blocks[1] : nullptr));
+    if (cached) {
+        std::cout << "[Terreno] Capas (cache " << cache_file.filename().string() << "): color "
+                  << (cache.bc7[0] ? "BC7" : "RGBA8") << ", normales " << (cache.bc7[1] ? "BC7" : "RGBA8") << "\n";
+    } else if (!cache_file.empty() && bc7_jobs != nullptr && !bc7_jobs->stop->load()) {
+        bool start = false;
+        {
+            const std::lock_guard<std::mutex> lock(g_layer_bc7_mutex);
+            start = g_layer_bc7_running.insert(hash).second;
+        }
+        if (start) {
+            std::shared_ptr<std::atomic<bool>> stop = bc7_jobs->stop;
+            // Guardado en `bc7_jobs` (no detach): TerrainPass::destroy lo para y lo espera.
+            bc7_jobs->add(std::thread([albedo_mips, normal_mips, hash, cache_file, stop] {
+                const auto begin = std::chrono::steady_clock::now();
+                const unsigned threads = std::max(std::thread::hardware_concurrency() / 4, 1u);
+                asset::Bc7ArrayCache result;
+                result.bc7.assign(2, 0);
+                result.blocks.assign(2, {});
+                double psnr[2] = {0.0, 0.0};
+                result.bc7[0] = asset::compressBc7Layers(*albedo_mips, kLayerSize, result.blocks[0], *stop, threads,
+                                                         /*premultiplied=*/false, psnr[0]) ? 1 : 0;
+                result.bc7[1] = !stop->load() && asset::compressBc7Layers(*normal_mips, kLayerSize, result.blocks[1],
+                                                                          *stop, threads, false, psnr[1]) ? 1 : 0;
+                bool written = false;
+                if (!stop->load()) {
+                    for (std::size_t a = 0; a < 2; ++a) {
+                        if (!result.bc7[a]) result.blocks[a].clear();
+                    }
+                    written = asset::writeBc7ArrayCache(cache_file, hash, kLayerSize, {albedo_mips.get(), normal_mips.get()},
+                                                        result);
+                }
+                {
+                    const std::lock_guard<std::mutex> lock(g_layer_bc7_mutex);
+                    g_layer_bc7_running.erase(hash);
+                }
+                if (!written) return;
+                const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - begin).count();
+                std::cout << "[Terreno] Capas comprimidas para el proximo arranque en " << seconds << " s: color "
+                          << (result.bc7[0] ? "BC7" : "RGBA8") << " (PSNR " << psnr[0] << " dB), normales "
+                          << (result.bc7[1] ? "BC7" : "RGBA8") << " (PSNR " << psnr[1] << " dB)\n";
+            }));
+        }
+    }
     // Color medio de cada capa (lo que se ve de lejos, y lo que ven los rayos).
     for (std::uint32_t i = 0; i < kMaxTerrainLayers; ++i) {
         double sum[3] = {0.0, 0.0, 0.0};
@@ -1345,10 +1554,12 @@ void TerrainPass::requestLayerTextures(Terrain& terrain) {
     terrain.pending_layers = key;
     if (pending_layers_.contains(key)) return;
 
+    if (!layer_bc7_) layer_bc7_ = std::make_shared<LayerBc7Jobs>();
     if (!async_layers_) {
         // Como antes: leer y subir ahora mismo (espera a la copia, no a toda la GPU).
         std::vector<std::shared_ptr<GpuTicket>> tickets;
-        std::shared_ptr<LayerSet> set = buildLayerSet(*device_, terrain.albedo_paths, terrain.normal_paths, tickets);
+        std::shared_ptr<LayerSet> set =
+            buildLayerSet(*device_, terrain.albedo_paths, terrain.normal_paths, tickets, layer_bc7_);
         for (const auto& ticket : tickets) ticket->wait();
         layer_sets_[key] = LayerEntry{set, 0};
         if (swapLayerSet(terrain, set)) terrain.pending_layers.clear();
@@ -1360,10 +1571,11 @@ void TerrainPass::requestLayerTextures(Terrain& terrain) {
     auto pending = std::make_shared<PendingLayers>();
     pending_layers_.emplace(key, pending);
     const VulkanDevice* device = device_;
-    device_->runTask([device, pending, albedo = terrain.albedo_paths, normal = terrain.normal_paths]() {
+    device_->runTask([device, pending, albedo = terrain.albedo_paths, normal = terrain.normal_paths,
+                      bc7_jobs = layer_bc7_]() {
         try {
             std::vector<std::shared_ptr<GpuTicket>> tickets;
-            std::shared_ptr<LayerSet> set = buildLayerSet(*device, albedo, normal, tickets);
+            std::shared_ptr<LayerSet> set = buildLayerSet(*device, albedo, normal, tickets, bc7_jobs);
             pending->set = std::move(set);
             pending->tickets = std::move(tickets);
             pending->state.store(1, std::memory_order_release);
@@ -1829,6 +2041,7 @@ void TerrainPass::prepare(std::uint32_t frame, const core::Vec3& camera_position
         }
         terrain->params[frame].write(&params, sizeof(params));
     }
+    updateShadowSignature();
 }
 
 void TerrainPass::prepareView(const core::Vec3& camera_position, const core::Mat4& view_projection,
@@ -1840,6 +2053,41 @@ void TerrainPass::prepareView(const core::Vec3& camera_position, const core::Mat
         }
         selectChunks(*terrain, camera_position, view_projection);
     }
+    updateShadowSignature();
+}
+
+void TerrainPass::updateShadowSignature() {
+    // FNV-1a por terreno; entre terrenos, suma (el orden de terrains_ no cuenta).
+    std::uint64_t total = 0x9e3779b97f4a7c15ull ^ static_cast<std::uint64_t>(terrains_.size());
+    for (const auto& [id, terrain] : terrains_) {
+        std::uint64_t hash = 1469598103934665603ull;
+        const auto mix = [&hash](std::uint64_t value) {
+            hash ^= value;
+            hash *= 1099511628211ull;
+        };
+        const TerrainDesc& d = terrain->desc;
+        mix(id);
+        mix(terrain->height_revision);
+        mix(d.cast_shadows ? 1u : 0u);
+        if (d.cast_shadows) {
+            // Donde esta y cuanto mide (mover una tesela tambien mueve su sombra).
+            mix(std::bit_cast<std::uint32_t>(d.origin.x));
+            mix(std::bit_cast<std::uint32_t>(d.origin.y));
+            mix(std::bit_cast<std::uint32_t>(d.origin.z));
+            mix(std::bit_cast<std::uint32_t>(d.size));
+            mix(std::bit_cast<std::uint32_t>(d.max_height));
+            // Los trozos elegidos (los que van a las cascadas), con su LOD.
+            mix(terrain->chunks.size());
+            for (const Chunk& chunk : terrain->chunks) {
+                mix(std::bit_cast<std::uint32_t>(chunk.u));
+                mix(std::bit_cast<std::uint32_t>(chunk.v));
+                mix(std::bit_cast<std::uint32_t>(chunk.size));
+                mix(std::bit_cast<std::uint32_t>(chunk.skirt));
+            }
+        }
+        total += hash * 0xff51afd7ed558ccdull + (hash >> 29);
+    }
+    shadow_signature_ = total;
 }
 
 void TerrainPass::recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
@@ -1904,7 +2152,16 @@ void TerrainPass::recordShadow(const vk::raii::CommandBuffer& cmd, std::uint32_t
                 },
                 draw);
         } else {
-            for (const Chunk& chunk : terrain->chunks) draw(chunk.u, chunk.v, chunk.size, chunk.skirt);
+            // Cascada del sol: los trozos de la camara que caen en ella. Antes
+            // iban todos a cada cascada (los de kilometros tambien a la de
+            // 10 m), y el vertex shader los procesaba para nada.
+            const TerrainDesc& d = terrain->desc;
+            for (const Chunk& chunk : terrain->chunks) {
+                const core::Vec3 lo{d.origin.x + chunk.u * d.size, d.origin.y - chunk.skirt, d.origin.z + chunk.v * d.size};
+                const core::Vec3 hi{lo.x + chunk.size * d.size, d.origin.y + d.max_height, lo.z + chunk.size * d.size};
+                if (!light_frustum.intersects(core::Aabb{lo, hi})) continue;
+                draw(chunk.u, chunk.v, chunk.size, chunk.skirt);
+            }
         }
     }
 }

@@ -22,16 +22,23 @@
 #include <CramionCore/ecs/SceneSerializer.h>
 #include <CramionCore/asset/SurfaceShader.h>
 #include <CramionCore/ecs/StaticBatching.h>
+#include <CramionCore/asset/BakedLightingFile.h>
+#include <CramionCore/lighting/ProbeBaker.h>
 #include <CramionFX/asset/TextureCompression.h>
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
 #include <algorithm>
+#include <iterator>
+#include <set>
 #include <cctype>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iostream>
+#include <unordered_set>
 
 #include <shellapi.h>
 
@@ -443,7 +450,20 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 const std::string id = std::to_string(i) + "_" + safeFolderName(scene_name);
                 const std::filesystem::path model = j->batch_cache / dialogs::fromUtf8(id + ".crdata");
                 ecs::StaticBatchReport report;
-                if (!ecs::buildStaticBatch(world, database, model, ecs::StaticBatchOptions{}, report)) {
+                // Lo que lleva lightmap se queda fuera del lote: el lote pierde su
+                // UV2 y crea UUID nuevos (PLAN-LIGHTMAPS 1.2). Solo los registros
+                // del .crbake de la escena (LMRC), sin las paginas.
+                ecs::StaticBatchOptions options;
+                std::vector<gfx::LightmapRecord> lightmap_records;
+                lighting::loadLightmapRecords(lighting::bakedLightingFile(j->pack[i].source), lightmap_records);
+                if (!lightmap_records.empty()) {
+                    auto lightmapped = std::make_shared<std::unordered_set<Uuid>>();
+                    for (const gfx::LightmapRecord& r : lightmap_records) {
+                        if (r.page != gfx::kLightmapNone) lightmapped->insert(Uuid{r.entity[0], r.entity[1]});
+                    }
+                    options.keep_out = [lightmapped](const Uuid& entity) { return lightmapped->contains(entity); };
+                }
+                if (!ecs::buildStaticBatch(world, database, model, options, report)) {
                     std::cout << "[Exportar] " << scene_name << ": " << report.message << '\n';
                     continue;
                 }
@@ -487,6 +507,99 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                                  std::to_string(j->material_textures.size()) + "): " + j->material_textures[i].name;
                 }
                 add(j->material_textures[i]);
+            }
+            // Imagenes de la interfaz (ImGuiLayer::uiImage): las que nombran
+            // los scripts, las escenas y los prefabs del proyecto ("UI/....png"),
+            // en BC7 si no pierden nitidez (loadUiTexture mide el PSNR).
+            {
+                std::set<std::filesystem::path> ui_images;
+                // Textos entre comillas (en una linea) que acaban en una
+                // extension de imagen. A mano y no con std::regex: la
+                // implementacion recursiva de MSVC puede reventar la pila
+                // con textos entre comillas muy largos.
+                const std::filesystem::path root_normal = j->assets_root.lexically_normal();
+                const auto scanQuoted = [&](const std::string& text) {
+                    static constexpr const char* kExtensions[] = {".png", ".jpg", ".jpeg", ".tga"};
+                    std::size_t open = text.find('"');
+                    while (open != std::string::npos) {
+                        std::size_t close = open + 1;
+                        while (close < text.size() && text[close] != '"' && text[close] != '\r' && text[close] != '\n') {
+                            ++close;
+                        }
+                        if (close >= text.size()) break;
+                        if (text[close] != '"') {  // fin de linea sin cerrar: la siguiente comilla
+                            open = text.find('"', close);
+                            continue;
+                        }
+                        std::string candidate = text.substr(open + 1, close - open - 1);
+                        std::string lower = candidate;
+                        std::transform(lower.begin(), lower.end(), lower.begin(),
+                                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                        bool image = false;
+                        for (const char* extension : kExtensions) {
+                            const std::size_t n = std::strlen(extension);
+                            if (lower.size() > n && lower.compare(lower.size() - n, n, extension) == 0) image = true;
+                        }
+                        if (!image) {
+                            // Como la regex: la comilla de cierre puede abrir el siguiente texto.
+                            open = close;
+                            continue;
+                        }
+                        // "UI\\icono.png" en un .cpp: la barra escapada.
+                        for (std::size_t p = candidate.find("\\\\"); p != std::string::npos;
+                             p = candidate.find("\\\\", p + 1)) {
+                            candidate.replace(p, 2, "/");
+                        }
+                        const std::filesystem::path relative(std::u8string(candidate.begin(), candidate.end()));
+                        if (relative.is_relative() && !relative.has_root_name()) {
+                            const std::filesystem::path file = (j->assets_root / relative).lexically_normal();
+                            // Solo lo que queda dentro de los assets del proyecto.
+                            const std::filesystem::path inside = file.lexically_relative(root_normal);
+                            std::error_code fe;
+                            if (!inside.empty() && *inside.begin() != ".." && std::filesystem::is_regular_file(file, fe)) {
+                                ui_images.insert(file);
+                            }
+                        }
+                        open = text.find('"', close + 1);
+                    }
+                };
+                std::error_code e;
+                for (auto it = std::filesystem::recursive_directory_iterator(
+                         j->assets_root, std::filesystem::directory_options::skip_permission_denied, e);
+                     it != std::filesystem::recursive_directory_iterator() && !j->cancel; it.increment(e)) {
+                    if (e || !it->is_regular_file(e)) continue;
+                    std::string ext = dialogs::utf8(it->path().extension());
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                    if (ext != ".cpp" && ext != ".h" && ext != ".hpp" && ext != ".crscene" && ext != ".crprefab") continue;
+                    // (Una escena enorme no se lee entera por unas rutas.)
+                    std::error_code se;
+                    const auto file_bytes = it->file_size(se);
+                    if (se || file_bytes > 64ull * 1024 * 1024) continue;
+                    std::ifstream in(it->path(), std::ios::binary);
+                    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                    scanQuoted(text);
+                }
+                std::size_t ui_count = 0;
+                for (const std::filesystem::path& file : ui_images) {
+                    if (j->cancel) break;
+                    {
+                        std::lock_guard lock(j->mutex);
+                        j->current = "Comprimiendo la interfaz: " + dialogs::utf8(file.filename());
+                    }
+                    std::filesystem::path dds;
+                    const std::uint64_t key = asset::prepareExportUiTexture(file, 2048, j->assets_root, dds);
+                    if (key == 0 || !added.insert(key).second) continue;
+                    const auto size = std::filesystem::file_size(dds, e);
+                    if (e) continue;
+                    char name[48];
+                    std::snprintf(name, sizeof(name), "TextureCache/%016llx.dds", static_cast<unsigned long long>(key));
+                    j->pack.push_back(project::PackInput{dds, name});
+                    j->total += size;
+                    bytes += size;
+                    ++ui_count;
+                }
+                std::cout << "[Exportar] Imagenes de interfaz en BC7: " << ui_count << " de " << ui_images.size() << '\n';
             }
             const std::size_t count = j->pack.size();
             for (std::size_t i = 0; i < count && !j->cancel; ++i) {

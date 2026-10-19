@@ -9,6 +9,12 @@
 // tablas de ellos. Una lista sale como tabla con claves 1..n y vuelve
 // como lista; un objeto, con sus claves de texto.
 // Una entidad viaja como su id de red (0 si no es de red).
+//
+// Posiciones: la sesion trabaja en absolutas (origen flotante + local, en
+// doble precision; cada equipo tiene su propio origen). Aqui se pasan a
+// locales al llegar y a absolutas al salir. Lo recibido que se guarda (la
+// ultima posicion, el bufer de interpolacion) es local: se mueve con el
+// mundo cuando el origen se desplaza (onOriginShift).
 
 #include "Modules.h"
 
@@ -16,6 +22,7 @@
 #include "CramionCore/cvar/CVar.h"
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/ecs/Prefab.h"
+#include "CramionCore/ecs/World.h"
 #include "CramionCore/net/NetworkObject.h"
 
 #include <algorithm>
@@ -46,6 +53,19 @@ struct NetState {
 
 net::NetworkObject* netObject(const ecs::Entity& e) {
     return e.valid() ? e.tryGet<net::NetworkObject>() : nullptr;
+}
+
+// Un punto local de este mundo como posicion absoluta (lo que va por la red)...
+net::NetPosition toAbsolute(const Runtime& rt, const Vec3& local) {
+    if (rt.world == nullptr) return net::NetPosition{local};
+    const ecs::DVec3 a = rt.world->absolute(local);
+    return net::NetPosition{a.x, a.y, a.z};
+}
+
+// ...y una absoluta como punto local de este mundo (con su origen de ahora).
+Vec3 toLocal(const Runtime& rt, const net::NetPosition& p) {
+    if (rt.world == nullptr) return p.toVec3();
+    return rt.world->local(ecs::DVec3{p.x, p.y, p.z});
 }
 
 NetValue toNet(const Runtime& rt, const api::Value& v, int depth = 0) {
@@ -254,7 +274,7 @@ void handleEvent(Runtime& rt, NetState& s, net::NetEvent& ev) {
         case net::NetEvent::Type::Spawn: {
             if (netEntity(rt, ev.net_id).valid()) break;
             const ecs::Entity e = instantiateNetPrefab(rt, ev.text);
-            attachNet(rt, e, ev.net_id, ev.owner, ev.position, ev.rotation);
+            attachNet(rt, e, ev.net_id, ev.owner, toLocal(rt, ev.position), ev.rotation);
             break;
         }
         case net::NetEvent::Type::Despawn: {
@@ -266,16 +286,18 @@ void handleEvent(Runtime& rt, NetState& s, net::NetEvent& ev) {
             const ecs::Entity e = netEntity(rt, ev.net_id);
             net::NetworkObject* n = netObject(e);
             if (n == nullptr) break;
+            // En local, con el origen de ahora (el dueno puede tener otro).
+            const Vec3 position = toLocal(rt, ev.position);
             // Velocidad del dueno entre las dos ultimas posiciones (la
             // prediccion sigue rodando entre envios).
             if (n->has_target) {
                 const float gap = std::max(n->target_age, 1.0f / 60.0f);
-                Vec3 v = (ev.position - n->target_position) * (1.0f / gap);
+                Vec3 v = (position - n->target_position) * (1.0f / gap);
                 if (core::length(v) > 50.0f || n->target_age > 0.5f) v = Vec3{};
                 n->target_velocity = v;
             }
             n->target_age = 0.0f;
-            n->target_position = ev.position;
+            n->target_position = position;
             n->target_rotation = ev.rotation;
             n->has_target = true;
             // Interpolacion con bufer: la hora del dueno pasada a la local (el
@@ -288,7 +310,7 @@ void handleEvent(Runtime& rt, NetState& s, net::NetEvent& ev) {
             n->has_offset = true;
             const double local_time = ev.time + n->clock_offset;
             if (n->snapshots.empty() || local_time > n->snapshots.back().time) {
-                n->snapshots.push_back(net::NetworkObject::Snapshot{local_time, ev.position, ev.rotation});
+                n->snapshots.push_back(net::NetworkObject::Snapshot{local_time, position, ev.rotation});
                 if (n->snapshots.size() > 32) n->snapshots.erase(n->snapshots.begin());
             }
             break;
@@ -301,16 +323,17 @@ void handleEvent(Runtime& rt, NetState& s, net::NetEvent& ev) {
             // El servidor rechazo un movimiento mio: vuelvo a donde dice.
             ecs::Entity e = netEntity(rt, ev.net_id);
             if (!e.valid()) break;
-            e.setWorldPosition(ev.position);
+            const Vec3 position = toLocal(rt, ev.position);
+            e.setWorldPosition(position);
             e.setLocalRotation(ev.rotation);
             if (rt.physics != nullptr) rt.physics->setLinearVelocity(e, Vec3{});
             if (net::NetworkObject* n = e.tryGet<net::NetworkObject>()) {
-                n->last_position = ev.position;
+                n->last_position = position;
                 n->last_rotation = ev.rotation;
             }
             // Y a los scripts de C++ del objeto (on("OnNetCorrection", ...)).
             if (rt.message_listener) {
-                rt.message_listener(e, "OnNetCorrection", rt.native.toJson(api::Value(ev.position)).dump());
+                rt.message_listener(e, "OnNetCorrection", rt.native.toJson(api::Value(position)).dump());
             }
             break;
         }
@@ -426,7 +449,7 @@ void sendNetworkTransforms(Runtime& rt, float dt) {
         const bool moved = core::length(p - n->last_position) > 0.001f || dq < 0.99999f;
         // Quieto: uno por segundo igualmente (por si se perdio el ultimo).
         if (!moved && n->since_sent < 1.0f) continue;
-        network.sendTransform(n->net_id, p, q);
+        network.sendTransform(n->net_id, toAbsolute(rt, p), q);
         n->last_position = p;
         n->last_rotation = q;
         n->since_sent = 0.0f;
@@ -448,6 +471,19 @@ void registerNetworkApi(Runtime& rt) {
     // Lo primero del frame: lo que llego. Lo ultimo: lo mio que se movio.
     rt.onFrame(Phase::Begin, [&rt, state](float dt) { pollNetwork(rt, *state, dt); });
     rt.onFrame(Phase::End, [&rt](float dt) { sendNetworkTransforms(rt, dt); });
+    // El origen flotante se desplazo: lo recibido que se guarda en local se
+    // mueve con las entidades (si no, los objetos de otros saltarian 1 km).
+    rt.onOriginShift([&rt](const Vec3& offset) {
+        if (rt.world == nullptr) return;
+        for (const auto& [id, handle] : rt.net_entities) {
+            if (!rt.world->registry().valid(handle)) continue;
+            net::NetworkObject* n = rt.world->registry().try_get<net::NetworkObject>(handle);
+            if (n == nullptr) continue;
+            n->target_position = n->target_position - offset;
+            n->last_position = n->last_position - offset;
+            for (net::NetworkObject::Snapshot& s : n->snapshots) s.position = s.position - offset;
+        }
+    });
     // Los callbacks son de los scripts que se van (la sesion sigue abierta).
     rt.onStop([state](bool) {
         state->handlers.clear();
@@ -571,7 +607,7 @@ void registerNetworkApi(Runtime& rt) {
         else if (c.has(3)) q = ecs::quatFromEulerDegrees(c.vec3(3));
         const ecs::Entity e = instantiateNetPrefab(rt, prefab);
         if (!e.valid()) return api::Value{};
-        const std::uint32_t id = rt.network->spawn(prefab, p, q, owner);
+        const std::uint32_t id = rt.network->spawn(prefab, toAbsolute(rt, p), q, owner);
         attachNet(rt, e, id, owner, p, q);
         return rt.entityValue(e);
     }, {"\"Prefabs/Jugador\", posicion, dueno, giro", "crea un objeto de red en todos (solo el servidor)", "Entity"});
@@ -621,10 +657,10 @@ void registerNetworkApi(Runtime& rt) {
         const auto id = static_cast<std::uint32_t>(c.integer(0));
         const auto seconds_ago = static_cast<float>(c.number(1));
         if (!rt.network) return api::Value{};
-        Vec3 p{};
+        net::NetPosition p{};
         Quat q{};
         if (!rt.network->positionAt(id, seconds_ago, p, q)) return api::Value{};
-        return api::Value(p);
+        return api::Value(toLocal(rt, p));
     }, {"netId, segundos", "donde estaba un objeto de red hace unos segundos (historia de 1,5 s)", "Vec3"});
     // Servidor: el disparo de `jugador` contra donde el veia a los demas (su
     // ping / 2 + el retraso de interpolacion). Devuelve id de red, punto y
@@ -645,10 +681,10 @@ void registerNetworkApi(Runtime& rt) {
             if (obj.owner == shooter) continue;
             float delay = 0.1f;
             if (const net::NetworkObject* no = netObject(netEntity(rt, id))) delay = no->interpolation_delay;
-            Vec3 p{};
+            net::NetPosition p{};
             Quat q{};
             if (!rt.network->positionAt(id, ping_s + delay, p, q)) continue;
-            const Vec3 center = p + Vec3{0.0f, up, 0.0f};
+            const Vec3 center = toLocal(rt, p) + Vec3{0.0f, up, 0.0f};
             const Vec3 oc = origin - center;
             const float b = core::dot(oc, dir);
             const float cc = core::dot(oc, oc) - r * r;

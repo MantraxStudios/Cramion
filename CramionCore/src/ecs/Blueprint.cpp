@@ -1,6 +1,6 @@
 // Blueprints de actor (ver Blueprint.h): el bloque "blueprint" de un
-// .crprefab, su Event Graph (.crgraph) al lado y la creacion desde un modelo,
-// un prefab o vacio.
+// .crprefab, su Event Graph (.crgraph) al lado, la creacion desde un modelo,
+// un prefab o vacio, y renombrarlo o moverlo (su .crgraph va con el).
 
 #include "CramionCore/ecs/Blueprint.h"
 
@@ -14,9 +14,12 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
+#include <vector>
 
 namespace cramion::ecs {
 
@@ -460,6 +463,101 @@ bool convertPrefabToBlueprint(const std::filesystem::path& prefab_file, const st
     if (!writeBlueprintInfo(prefab_file, info, error)) return false;
     if (add_component && applyInstance(world, root, prefab_file, error).empty()) return false;
     return true;
+}
+
+// --- Renombrar / mover ---------------------------------------------------------------
+
+int replaceGraphReferences(std::string& text, const std::string& from, const std::string& to) {
+    if (from.empty() || from == to) return 0;
+    // Como lo escribe nlohmann (con sus escapes; UTF-8 tal cual).
+    const std::string quoted_from = json(from).dump();
+    const std::string quoted_to = json(to).dump();
+    static const std::string kKey = "\"graph\"";
+    const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    int count = 0;
+    std::size_t at = 0;
+    while ((at = text.find(kKey, at)) != std::string::npos) {
+        std::size_t p = at + kKey.size();
+        while (p < text.size() && space(text[p])) ++p;
+        if (p >= text.size() || text[p] != ':') {
+            at = p;
+            continue;
+        }
+        ++p;
+        while (p < text.size() && space(text[p])) ++p;
+        if (text.compare(p, quoted_from.size(), quoted_from) == 0) {
+            text.replace(p, quoted_from.size(), quoted_to);
+            ++count;
+            at = p + quoted_to.size();
+        } else {
+            at = p;
+        }
+    }
+    return count;
+}
+
+bool relocateBlueprintGraph(const std::filesystem::path& old_prefab, const std::filesystem::path& new_prefab,
+                            const std::filesystem::path& assets_root, BlueprintRelocation& out, std::string* error) {
+    out = BlueprintRelocation{};
+    const std::string text = readPrefabFile(new_prefab);
+    BlueprintInfo info;
+    if (text.empty() || !blueprintInfo(text, info)) {
+        if (error) *error = utf8(new_prefab.filename()) + " no es un Blueprint";
+        return false;
+    }
+    out.old_graph = out.new_graph = info.graph_path;
+    if (info.graph_path.empty()) return true;
+    std::error_code ec;
+    const std::filesystem::path old_graph = assets_root / fromUtf8(info.graph_path);
+    if (!std::filesystem::exists(old_graph, ec)) return true;  // ya no esta: nada que mover
+    // Solo su propio grafo: el que estaba al lado del prefab viejo con su nombre.
+    std::filesystem::path expected = old_prefab;
+    expected.replace_extension(".crgraph");
+    if (!std::filesystem::exists(expected, ec) || !std::filesystem::equivalent(expected, old_graph, ec) || ec) return true;
+
+    std::filesystem::path target = new_prefab;
+    target.replace_extension(".crgraph");
+    const bool same_file = std::filesystem::exists(target, ec) && std::filesystem::equivalent(target, old_graph, ec) && !ec;
+    if (!same_file && std::filesystem::exists(target, ec)) {
+        target = uniqueAssetPath(target.parent_path(), utf8(new_prefab.stem()), ".crgraph");
+    }
+    // Mismo archivo y mismo nombre: no hay nada que hacer (solo cambio el caso en otro sitio).
+    if (same_file && target.filename() == old_graph.filename()) return true;
+    std::filesystem::create_directories(target.parent_path(), ec);
+    std::filesystem::rename(old_graph, target, ec);
+    if (ec) {
+        if (error) *error = "no se pudo mover " + utf8(old_graph) + ": " + ec.message();
+        return false;
+    }
+    out.moved = true;
+    const std::string new_rel = assetsRelative(target, assets_root);
+    if (new_rel == info.graph_path) return true;
+    out.new_graph = new_rel;
+
+    // Escenas y prefabs (este tambien: el VisualScript de su raiz) que lo usan.
+    std::vector<std::filesystem::path> files;
+    for (std::filesystem::recursive_directory_iterator it(assets_root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        std::string ext = utf8(it->path().extension());
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (ext == ".crscene" || ext == kPrefabExtension) files.push_back(it->path());
+    }
+    for (const std::filesystem::path& file : files) {
+        std::ifstream in(file, std::ios::binary);
+        if (!in) continue;
+        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        if (replaceGraphReferences(content, info.graph_path, new_rel) == 0) continue;
+        std::string problem;
+        if (writeText(file, content, &problem)) {
+            ++out.updated_files;
+        } else {
+            std::cerr << "[Blueprint] No se pudo actualizar " << utf8(file) << ": " << problem << "\n";
+        }
+    }
+    info.graph_path = new_rel;
+    return writeBlueprintInfo(new_prefab, info, error);
 }
 
 }  // namespace cramion::ecs

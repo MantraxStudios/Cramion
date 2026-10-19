@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <future>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -206,8 +208,44 @@ void VulkanRenderer::evictModel(std::uint32_t index) {
     }
     skinned_models_[index] = SkinnedModel{};
     model_evicted_[index] = true;
+    bumpModelRevision(index);
     // (La escena de rayos no se rehace: conserva su copia del modelo. Las
     // sombras cacheadas tampoco: no se veia, y rehacerlas todas era un tiron.)
+}
+
+// Un trabajo de subida de un modelo, compartido con su hilo. El hilo no toca
+// el renderizador ni la escena si al empezar lo encuentra cancelado.
+struct VulkanRenderer::ModelJobState {
+    enum class Stage { Queued, Running, Done, Cancelled };
+    std::mutex mutex;
+    std::condition_variable cv;
+    Stage stage = Stage::Queued;
+    std::unique_ptr<SkinnedModel> model;
+};
+
+bool VulkanRenderer::modelJobReady(const ModelJob& job) {
+    if (!job.state) return true;
+    ModelJobState& state = *job.state;
+    const std::lock_guard lock(state.mutex);
+    if (state.stage == ModelJobState::Stage::Cancelled) return true;
+    if (state.stage != ModelJobState::Stage::Done) return false;
+    // Ademas, sus copias en la GPU (el hilo no espera a la GPU: lo mira aqui
+    // el hilo principal, sin bloquear).
+    return !state.model || state.model->uploadReady();
+}
+
+std::unique_ptr<SkinnedModel> VulkanRenderer::takeModelJob(ModelJob& job) {
+    if (!job.state) return nullptr;
+    const std::lock_guard lock(job.state->mutex);
+    return std::move(job.state->model);
+}
+
+void VulkanRenderer::waitModelJob(const ModelJob& job) {
+    if (!job.state) return;
+    std::unique_lock lock(job.state->mutex);
+    job.state->cv.wait(lock, [&]() {
+        return job.state->stage == ModelJobState::Stage::Done || job.state->stage == ModelJobState::Stage::Cancelled;
+    });
 }
 
 bool VulkanRenderer::modelJobPending(std::uint32_t index) const {
@@ -230,17 +268,32 @@ void VulkanRenderer::launchModelJob(const scene::Scene& scene, std::uint32_t ind
     job.texture_lod = texture_lod;
     job.restore = restore;
     job.append = append;
-    // Lo lento (leer y convertir texturas, copiarlas, esperar a la GPU) va en
-    // este hilo; VulkanDevice::submitOneTime se puede usar desde cualquiera.
-    job.result = std::async(std::launch::async, [this, data, texture_lod]() -> std::unique_ptr<SkinnedModel> {
+    // Lo lento (leer y convertir texturas, grabar sus copias) va en los hilos
+    // de streaming del dispositivo (antes un std::async: un hilo del sistema
+    // nuevo por modelo). No se espera a la GPU: el modelo entra cuando su
+    // lote termina (modelJobReady).
+    auto state = std::make_shared<ModelJobState>();
+    job.state = state;
+    device_.runStreamingTask([this, state, data, texture_lod]() {
+        {
+            const std::lock_guard lock(state->mutex);
+            if (state->stage == ModelJobState::Stage::Cancelled) return;  // la escena cambio: no tocar `data`
+            state->stage = ModelJobState::Stage::Running;
+        }
+        std::unique_ptr<SkinnedModel> model;
         try {
-            auto model = std::make_unique<SkinnedModel>();
-            model->create(device_, *data, skinned_pass_, texture_lod);
-            return model;
+            model = std::make_unique<SkinnedModel>();
+            model->create(device_, *data, skinned_pass_, texture_lod, false);
         } catch (const std::exception& e) {
             std::cerr << "[Streaming] No se pudo subir un modelo: " << e.what() << "\n";
-            return nullptr;
+            model.reset();
         }
+        {
+            const std::lock_guard lock(state->mutex);
+            state->model = std::move(model);
+            state->stage = ModelJobState::Stage::Done;
+        }
+        state->cv.notify_all();
     });
     model_jobs_.push_back(std::move(job));
 }
@@ -251,7 +304,22 @@ void VulkanRenderer::finishModelJobs(std::uint32_t first, std::uint32_t last) {
             ++it;
             continue;
         }
-        if (it->result.valid()) it->result.get();  // se libera aqui (la GPU nunca lo uso)
+        if (it->state) {
+            // En cola: se cancela (el hilo ni lo empieza). En marcha: se
+            // espera a que termine. Lo que traiga se tira (la GPU nunca lo
+            // dibujo; si aun lo copia, su lote lo mantiene vivo).
+            std::unique_lock lock(it->state->mutex);
+            if (it->state->stage == ModelJobState::Stage::Queued) {
+                it->state->stage = ModelJobState::Stage::Cancelled;
+            } else {
+                it->state->cv.wait(lock, [&]() {
+                    return it->state->stage == ModelJobState::Stage::Done ||
+                           it->state->stage == ModelJobState::Stage::Cancelled;
+                });
+            }
+            std::unique_ptr<SkinnedModel> discarded = std::move(it->state->model);
+            lock.unlock();
+        }
         it = model_jobs_.erase(it);
     }
 }
@@ -305,11 +373,11 @@ void VulkanRenderer::streamModels(const scene::Scene& scene) {
     // Lo que terminaron los hilos entra ya (solo mover punteros: sin esperas).
     for (auto it = model_jobs_.begin(); it != model_jobs_.end();) {
         // (Los nuevos los mete uploadNewModels, en orden.)
-        if (it->append || it->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        if (it->append || !modelJobReady(*it)) {
             ++it;
             continue;
         }
-        std::unique_ptr<SkinnedModel> fresh = it->result.get();
+        std::unique_ptr<SkinnedModel> fresh = takeModelJob(*it);
         const std::uint32_t index = it->index;
         const bool restore = it->restore;
         it = model_jobs_.erase(it);
@@ -328,11 +396,18 @@ void VulkanRenderer::streamModels(const scene::Scene& scene) {
     constexpr std::size_t kMaxJobs = 2;
 
     // Vuelven los que se ven, con el detalle de texturas que ya piden.
+    // Un modelo "solo base de variantes" (Scene::variantBaseOnly) sin el
+    // streaming: vuelve (o sube por primera vez) solo si alguna instancia lo
+    // dibuja, y cuenta como visto mientras alguna lo dibuje.
     std::vector<std::pair<float, std::uint32_t>> wanted;
     for (std::uint32_t i = 0; i < count; ++i) {
         const float pixels = i < model_pixels_.size() ? model_pixels_[i] : 0.0f;
-        if (pixels >= streaming_min_pixels_) model_last_seen_[i] = now;
-        if (model_evicted_[i] && (pixels >= streaming_min_pixels_ || !model_streaming_) && !modelJobPending(i)) {
+        const bool base_only = scene.variantBaseOnly(i);
+        if (pixels >= streaming_min_pixels_ || (!model_streaming_ && base_only && pixels > 0.0f)) {
+            model_last_seen_[i] = now;
+        }
+        const bool want_back = pixels >= streaming_min_pixels_ || (!model_streaming_ && (!base_only || pixels > 0.0f));
+        if (model_evicted_[i] && want_back && !modelJobPending(i)) {
             wanted.emplace_back(pixels, i);
         }
     }
@@ -376,10 +451,11 @@ void VulkanRenderer::streamModels(const scene::Scene& scene) {
             model_lod_since_[static_cast<std::size_t>(best)] = now;
         }
     }
-    if (!model_streaming_) return;
-    // Salen los que llevan un rato sin verse (como mucho 8 por frame).
+    // Salen los que llevan un rato sin verse (como mucho 8 por frame). Sin el
+    // streaming, solo los "solo base de variantes" que nadie dibuja.
     std::uint32_t evicted = 0;
     for (std::uint32_t i = 0; i < count && evicted < 8; ++i) {
+        if (!model_streaming_ && !scene.variantBaseOnly(i)) continue;
         if (model_evicted_[i] || skinned_models_[i].submeshes().empty() || modelJobPending(i)) continue;
         if (std::chrono::duration<float>(now - model_last_seen_[i]).count() < streaming_idle_seconds_) continue;
         evictModel(i);

@@ -32,6 +32,13 @@ layout(set = 1, binding = 2) uniform sampler2D normal_map;
 layout(set = 1, binding = 3) uniform sampler2D occlusion_map;
 layout(set = 1, binding = 4) uniform sampler2D emissive_map;
 
+// Repeticion (xy) y desplazamiento (zw) de las UV del material (tiling del
+// .crmat): se aplican aqui en vez de hornearlos en los vertices, asi una
+// variante que solo cambia el tiling comparte la malla con su original.
+layout(set = 1, binding = 9) uniform MaterialUv {
+    vec4 material_uv;
+};
+
 // Debe coincidir con GpuSkinnedPush (y con skinned.vert).
 layout(push_constant) uniform PushConstants {
     mat4 model;
@@ -58,11 +65,20 @@ layout(location = 5) in vec4 v_previous_clip;
 // bloom los recoja.
 const float kEmissiveIntensity = 6.0;
 
+// false en la pipeline de los materiales opacos (sin recortes por alfa,
+// SkinnedModel::Material::opaque_albedo): sin el discard la GPU puede probar y
+// ESCRIBIR la profundidad antes del shader (early-Z), y lo tapado por lo que
+// ya se dibujo no se sombrea. Con un discard en el shader la escritura se
+// hace despues y cada fragmento oculto se sombreaba entero.
+layout(constant_id = 0) const bool kAlphaCutout = true;
+
 const uint kFlagSpecularMap = 1u << 2;
 const uint kFlagHeightMap = 1u << 3;
 const uint kFlagParallaxShadow = 1u << 5;
 
+#define CRAMION_LIGHTMAP 1
 #include "gbuffer_surface.glsl"
+#include "lightmap_common.glsl"
 const float kPi = 3.14159265;
 #include "disney_brdf.glsl"
 
@@ -83,15 +99,16 @@ void main() {
 
     // --- Parallax (mapa de alturas / displacement) ---
     // Se apaga con la distancia: de lejos no se nota y cuesta 8-32 lecturas.
-    vec2 uv = v_uv;
+    vec2 base_uv = v_uv * material_uv.xy + material_uv.zw;
+    vec2 uv = base_uv;
     // Derivadas fuera de cualquier if (dentro no estan definidas).
-    vec2 uv_dx = dFdx(v_uv);
-    vec2 uv_dy = dFdy(v_uv);
+    vec2 uv_dx = dFdx(base_uv);
+    vec2 uv_dy = dFdy(base_uv);
     vec3 pos_dx = dFdx(v_world_position);
     vec3 pos_dy = dFdy(v_world_position);
     if ((push.flags & kFlagHeightMap) != 0u && has_tangent) {
         uv = applyParallax(occlusion_map, vec4(0.0, 1.0, 0.0, 0.0), push.emissive.w,
-                           (push.flags & kFlagParallaxShadow) != 0u, v_uv, uv_dx, uv_dy, pos_dx, pos_dy,
+                           (push.flags & kFlagParallaxShadow) != 0u, base_uv, uv_dx, uv_dy, pos_dx, pos_dy,
                            v_world_position, t, b, n, surface_sun_shadow);
     }
 
@@ -185,6 +202,7 @@ void main() {
         surface_shading = vec4(float(model) / 255.0, params);
     }
 
+    setupLightmap(v_world_position, camera.position.xyz);
     writeSurface(albedo, n, normal, tangent_normal, aa_normal, metallic, roughness, occlusion, emissive,
                  reflectance, v_world_position);
     writeVelocity(v_current_clip, v_previous_clip);
@@ -192,5 +210,5 @@ void main() {
     // derivadas (dFdx/dFdy, texturas con mipmap) de los vecinos del cuadro 2x2
     // en los bordes recortados, y writeSurface las usa (antialiasing
     // especular, decals).
-    if (cut_out) discard;
+    if (kAlphaCutout && cut_out) discard;
 }

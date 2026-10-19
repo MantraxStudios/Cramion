@@ -15,7 +15,18 @@ namespace cramion::gfx {
 namespace {
 
 // Etapas de vfx_sim.comp.
-enum Stage : std::uint32_t { kReset = 0, kBegin = 1, kEmit = 2, kUpdate = 3 };
+enum Stage : std::uint32_t {
+    kReset = 0,
+    kBegin = 1,
+    kEmit = 2,
+    kUpdate = 3,
+    kSortLocal = 4,
+    kSortFlip = 5,
+    kSortDisperse = 6,
+    kSortLocalDisperse = 7,
+};
+// Bloque de la ordenacion en memoria compartida (2 x kGroup, vfx_sim.comp).
+constexpr std::uint32_t kSortBlock = 128;
 
 constexpr std::uint32_t kBindings = 10;
 constexpr std::uint32_t kCountersPerSlot = 8;
@@ -744,6 +755,65 @@ void VfxPass::recordSimulate(const vk::raii::CommandBuffer& cmd, std::uint32_t f
         if (it == slots_.end() || it->second.capacity == 0) continue;
         dispatch(kUpdate, it->second.index, it->second.capacity);
         it->second.simulated = true;
+    }
+
+    // SORT: dentro de cada efecto con mezcla alfa (o premultiplicada), las
+    // vivas de atras adelante (entre efectos ya las ordena prepare). La
+    // lista de UPDATE sale en el orden de los atomicos y cambia cada frame.
+    // Tamano: las vivas leidas (un par de frames tarde) mas lo que puede
+    // nacer mientras, sin pasar de la capacidad; si se queda corto, la cola
+    // va sin ordenar ese frame. Los pasos de todos los efectos comparten
+    // las barreras.
+    struct SortJob {
+        std::uint32_t slot = 0;
+        std::uint32_t size = 0;  // potencia de 2, >= kSortBlock
+    };
+    std::vector<SortJob> sorts;
+    std::uint32_t largest = 0;
+    for (const VfxInstanceDesc& d : instances_) {
+        if (!d.visible || d.blend == VfxBlend::Additive) continue;
+        const auto it = slots_.find(d.id);
+        if (it == slots_.end() || it->second.capacity == 0) continue;
+        const Slot& slot = it->second;
+        const std::uint64_t wanted = static_cast<std::uint64_t>(slot.alive) +
+                                     4ull * std::min(d.spawn_count, slot.capacity) + 256ull;
+        const auto bound = static_cast<std::uint32_t>(std::min<std::uint64_t>(wanted, slot.capacity));
+        std::uint32_t size = kSortBlock;
+        while (size < bound) size <<= 1u;
+        sorts.push_back(SortJob{slot.index, size});
+        largest = std::max(largest, size);
+    }
+    if (!sorts.empty()) {
+        computeBarrier(cmd);  // las vivas de UPDATE
+        const auto sort_step = [&](std::uint32_t stage, std::uint32_t height, const SortJob& job) {
+            Push push{};
+            push.stage = stage;
+            push.slot = job.slot;
+            push.count = height;
+            push.pad = job.size;
+            cmd.pushConstants<Push>(*layout_, kAllStages, 0, push);
+            // Un hilo por pareja (size / 2); en los locales, 64 hilos por
+            // bloque de 128: los mismos grupos.
+            cmd.dispatch(job.size / kSortBlock, 1, 1);
+        };
+        for (const SortJob& job : sorts) sort_step(kSortLocal, 0, job);
+        computeBarrier(cmd);
+        for (std::uint32_t h = kSortBlock * 2; h <= largest; h <<= 1u) {
+            for (const SortJob& job : sorts) {
+                if (h <= job.size) sort_step(kSortFlip, h, job);
+            }
+            computeBarrier(cmd);
+            for (std::uint32_t hh = h >> 1u; hh > kSortBlock; hh >>= 1u) {
+                for (const SortJob& job : sorts) {
+                    if (h <= job.size) sort_step(kSortDisperse, hh, job);
+                }
+                computeBarrier(cmd);
+            }
+            for (const SortJob& job : sorts) {
+                if (h <= job.size) sort_step(kSortLocalDisperse, 0, job);
+            }
+            computeBarrier(cmd);
+        }
     }
 
     // Lectura de los contadores (llega cuando este hueco de frame vuelva).

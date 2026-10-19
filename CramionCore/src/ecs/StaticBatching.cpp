@@ -255,6 +255,8 @@ private:
         h.pod(src.transparent);
         h.pod(src.surface_shader);
         h.pod(src.surface_params);
+        h.pod(src.uv_scale);
+        h.pod(src.uv_offset);
         for (const std::int32_t t : {src.albedo_texture, src.metallic_roughness_texture, src.normal_texture,
                                      src.occlusion_texture, src.emissive_texture}) {
             h.pod(textureHash(part, t));
@@ -338,6 +340,10 @@ bool buildStaticBatch(World& world, const assets::AssetDatabase& database, const
             ++report.kept_movable;
             return;
         }
+        if (options.keep_out && options.keep_out(e.uuid())) {
+            ++report.kept_lightmapped;
+            return;
+        }
         if (partitioned && in_streamed_cell(e)) {
             ++kept_streamed;
             return;
@@ -401,6 +407,9 @@ bool buildStaticBatch(World& world, const assets::AssetDatabase& database, const
             report.message += " (" + std::to_string(report.kept_instanced) + " repetidas y grandes, instanciadas; " +
                               std::to_string(report.kept_movable) + " que se pueden mover)";
         }
+        if (report.kept_lightmapped > 0) {
+            report.message += " (" + std::to_string(report.kept_lightmapped) + " con lightmap se quedan fuera del lote)";
+        }
         return false;
     }
 
@@ -459,6 +468,9 @@ bool buildStaticBatch(World& world, const assets::AssetDatabase& database, const
     }
     if (kept_streamed > 0) {
         report.message += "; " + std::to_string(kept_streamed) + " en celdas del World Partition se cargan por celda";
+    }
+    if (report.kept_lightmapped > 0) {
+        report.message += "; " + std::to_string(report.kept_lightmapped) + " con lightmap se quedan fuera del lote";
     }
     return true;
 }

@@ -39,6 +39,7 @@ void EditorApp::dispatchUiEvents() {
             case ui::UiEvent::Kind::Number: scripts_.callMethod(e.target, e.method, e.number); break;
             case ui::UiEvent::Kind::Text: scripts_.callMethod(e.target, e.method, e.text); break;
             case ui::UiEvent::Kind::Bool: scripts_.callMethod(e.target, e.method, e.flag); break;
+            case ui::UiEvent::Kind::Pointer: scripts_.callMethod(e.target, e.method, e.source); break;
         }
         // Y al script de C++ del objeto (Script::on("OnJugar", ...) / onMessage).
         switch (e.kind) {
@@ -46,6 +47,16 @@ void EditorApp::dispatchUiEvents() {
             case ui::UiEvent::Kind::Number: cpp_scripts_.sendMessage(e.target, e.method, nlohmann::json(e.number).dump()); break;
             case ui::UiEvent::Kind::Text: cpp_scripts_.sendMessage(e.target, e.method, nlohmann::json(e.text).dump()); break;
             case ui::UiEvent::Kind::Bool: cpp_scripts_.sendMessage(e.target, e.method, e.flag ? "true" : "false"); break;
+            case ui::UiEvent::Kind::Pointer: {
+                // UIEventTrigger: {entity, position, button, other}.
+                const nlohmann::json v{
+                    {"entity", nlohmann::json::parse(cpp_scripts_.entityJson(e.source))},
+                    {"position", {{"$v", {e.position.x, e.position.y, 0.0f}}}},
+                    {"button", e.button},
+                    {"other", e.other.valid() ? nlohmann::json::parse(cpp_scripts_.entityJson(e.other)) : nlohmann::json()}};
+                cpp_scripts_.sendMessage(e.target, e.method, v.dump());
+                break;
+            }
         }
     }
 }

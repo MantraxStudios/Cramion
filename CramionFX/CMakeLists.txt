@@ -205,6 +205,15 @@ set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/vendor/bc7enc/bc7enc.cp
     PROPERTIES COMPILE_OPTIONS "-O2;-w")
 target_include_directories(CramionFX SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/bc7enc")
 
+# Vulkan Memory Allocator (AMD, MIT, un solo archivo): reparte grandes bloques
+# de memoria de la GPU entre los buffers y las texturas (antes, una asignacion
+# de Vulkan por recurso). La implementacion se compila en
+# VulkanDeviceAllocator.cpp; codigo de terceros: sin avisos. Privado: las
+# cabeceras publicas solo ven los tipos opacos (VmaAllocation_T*).
+target_include_directories(CramionFX SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/vma")
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/vk/VulkanDeviceAllocator.cpp"
+    PROPERTIES COMPILE_OPTIONS "-w")
+
 target_compile_features(CramionFX PUBLIC cxx_std_20)
 
 # Publico: #include <CramionFX/...>. Las cabeceras de Vulkan tambien, porque

@@ -68,6 +68,10 @@ public:
     virtual void setBreakpoints(const std::string& graph, const std::vector<int>& nodes) = 0;
     virtual bool takeBreak(std::string& graph, int& node, entt::entity& entity) = 0;
     virtual std::vector<entt::entity> objects(const std::string& graph) const = 0;
+    virtual void setLive(bool on) = 0;
+    // Construction Script (fuera de Play, con `world` ya puesto).
+    virtual bool hasConstruction(const std::string& graph) = 0;
+    virtual bool construct(ecs::Entity entity, std::string& error) = 0;
 };
 
 // Pruebas automaticas del juego (las da su modulo).
@@ -99,6 +103,7 @@ struct ScriptSystem::Impl {
     ScreenHost screen;
     xr::XrSystem* xr_system = nullptr;
     const xr::XrRig* xr_rig = nullptr;
+    ui::UiSystem* ui = nullptr;  // tabla UI (InputApi.cpp) y Entity:uiScreenRect
     bool cursor_locked = false;
     LogCallback log;
     std::vector<ScriptError> errors;

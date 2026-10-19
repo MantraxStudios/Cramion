@@ -2,6 +2,7 @@
 #define CRAMION_VK_SKINNED_PASS_H
 
 #include "CramionFX/vk/TextureFiltering.h"
+#include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
 #include <array>
@@ -34,7 +35,10 @@ class VulkanDevice;
 //   set 1, binding 3 -> oclusion ambiental
 //   set 1, binding 4 -> emision
 //   set 1, 5..8      -> texturas propias de los shaders de superficie (blancas si no)
+//   set 1, binding 9 -> uniform: repeticion y desplazamiento de las UV (tiling)
 //   set 0, binding 5 -> propiedades de los shaders de superficie (storage, por frame)
+//   set 0, binding 7 -> atlas de lightmaps (array 2D), binding 8 -> sus registros
+//   set 1, binding 10 -> UV de lightmap del modelo (storage, una por vertice)
 //   push constant    -> modelo, color base y primer hueso de la instancia
 //
 // Hay tres pipelines: la de G-buffer y dos de sombras, una para las cascadas
@@ -60,11 +64,22 @@ public:
     // 5 texturas PBR (sin shaders de superficie del usuario: 16 texturas por
     // shader como mucho).
     static std::uint32_t materialBindingCount();
+    // Uniform buffer con la repeticion (xy) y el desplazamiento (zw) de las UV
+    // del material (tiling del .crmat): un vec4. Detras de las texturas y con
+    // el mismo numero tambien en el modo compatible (alli faltan 5..8).
+    static constexpr std::uint32_t kMaterialUvBinding = kMaterialBindingCount;
     // Bindings del set del vidrio: en el modo compatible, sin las sondas ni la
     // luz volumetrica (0..6).
     static std::uint32_t glassBindingCount();
     // Propiedades (vec4) de un material con shader propio.
     static constexpr std::uint32_t kSurfaceParamCount = 8;
+    // Set 0: 0..6 de siempre, 7 = atlas de lightmaps, 8 = sus registros.
+    static constexpr std::uint32_t kFrameBindingCount = 9;
+    // Set 1: las UV de lightmap del modelo (storage buffer, vertices y mesh shader).
+    static constexpr std::uint32_t kLightmapUvBinding = 10;  // (el 9 es el tiling del material: kMaterialUvBinding)
+    // Para los modelos sin UV2: un solo 0xFFFFFFFF (el shader no lo lee: su
+    // material no lleva kFlagLightmap; el binding tiene que existir).
+    const VulkanBuffer& dummyLightmapUvs() const { return dummy_lightmap_uvs_; }
 
     const vk::raii::DescriptorSetLayout& materialSetLayout() const { return material_set_layout_; }
     const vk::raii::Sampler& sampler() const { return sampler_; }
@@ -79,6 +94,11 @@ public:
     std::uint64_t samplerRevision() const { return sampler_revision_; }
 
     const vk::raii::Pipeline& geometryPipeline() const { return geometry_pipeline_; }
+    // La misma sin el recorte por alfa (skinned.frag sin discard: early-Z),
+    // para los materiales opacos. La de siempre si no se pudo crear.
+    const vk::raii::Pipeline& geometryOpaquePipeline() const {
+        return *geometry_opaque_pipeline_ ? geometry_opaque_pipeline_ : geometry_pipeline_;
+    }
     // Wireframe: la misma geometria en lineas (G-buffer). Sin soporte de la
     // GPU, la normal.
     const vk::raii::Pipeline& geometryWirePipeline() const {
@@ -166,7 +186,8 @@ private:
                                              const vk::raii::ShaderModule& fragment_module,
                                              GeometryVariant variant = GeometryVariant::Fill,
                                              const vk::raii::ShaderModule* tess_control = nullptr,
-                                             const vk::raii::ShaderModule* tess_evaluation = nullptr) const;
+                                             const vk::raii::ShaderModule* tess_evaluation = nullptr,
+                                             bool alpha_cutout = true) const;
     void createGlassPipeline(const VulkanDevice& device, vk::Format color_format,
                              vk::Format depth_format);
     vk::raii::Pipeline createOutlinePipeline(const VulkanDevice& device, vk::Format depth_format,
@@ -197,9 +218,11 @@ private:
     std::uint64_t sampler_revision_ = 0;
     vk::raii::DescriptorSetLayout frame_set_layout_{nullptr};
     vk::raii::DescriptorSetLayout material_set_layout_{nullptr};
+    VulkanBuffer dummy_lightmap_uvs_;
 
     vk::raii::PipelineLayout geometry_layout_{nullptr};
     vk::raii::Pipeline geometry_pipeline_{nullptr};
+    vk::raii::Pipeline geometry_opaque_pipeline_{nullptr};
     vk::raii::Pipeline geometry_wire_pipeline_{nullptr};
     vk::raii::Pipeline wire_overlay_pipeline_{nullptr};
     vk::Format hdr_format_ = vk::Format::eUndefined;

@@ -30,6 +30,9 @@
 
 #include <cmath>
 #include <cstdio>
+#include <array>
+#include <atomic>
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -773,12 +776,110 @@ void testLods() {
         std::filesystem::remove_all(folder);
     }
 
+    // Arrays de capas en BC7 con su cache (arboles y capas del terreno): un
+    // degradado pasa (>= 40 dB) y vuelve igual de la cache; el ruido puro no
+    // pasa y la cache lo apunta como RGBA8.
+    {
+        constexpr std::uint32_t kSide = 64;
+        const auto chain = [&](bool noise) {
+            asset::MipLayers layers(2);
+            std::uint32_t seed = 12345;
+            for (auto& layer : layers) {
+                for (std::uint32_t side = kSide; side >= 1; side /= 2) {
+                    std::vector<std::uint8_t> level(static_cast<std::size_t>(side) * side * 4);
+                    for (std::uint32_t i = 0; i < side * side; ++i) {
+                        for (std::uint32_t c = 0; c < 4; ++c) {
+                            seed = seed * 1664525u + 1013904223u;
+                            level[i * 4 + c] = noise ? static_cast<std::uint8_t>(seed >> 24)
+                                                     : static_cast<std::uint8_t>(c == 3 ? 255 : (i % side) * 255 / side);
+                        }
+                    }
+                    layer.push_back(std::move(level));
+                    if (side == 1) break;
+                }
+            }
+            return layers;
+        };
+        const asset::MipLayers smooth = chain(false);
+        const asset::MipLayers noise = chain(true);
+        std::atomic<bool> stop{false};
+        asset::Bc7ArrayCache cache;
+        cache.bc7.assign(2, 0);
+        cache.blocks.assign(2, {});
+        double psnr[2] = {0.0, 0.0};
+        cache.bc7[0] = asset::compressBc7Layers(smooth, kSide, cache.blocks[0], stop, 2, false, psnr[0]) ? 1 : 0;
+        cache.bc7[1] = asset::compressBc7Layers(noise, kSide, cache.blocks[1], stop, 2, false, psnr[1]) ? 1 : 0;
+        if (!cache.bc7[1]) cache.blocks[1].clear();
+        std::printf("    capas en BC7: degradado %.1f dB, ruido %.1f dB\n", psnr[0], psnr[1]);
+        check(cache.bc7[0] == 1 && psnr[0] >= asset::kMinUiPsnr, "capas: un degradado pasa a BC7 (>= 40 dB)");
+        check(cache.bc7[1] == 0, "capas: el ruido se queda en RGBA8 (pierde nitidez)");
+        const std::uint64_t hash = asset::hashMipLayers(noise, asset::hashMipLayers(smooth, kSide));
+        check(hash != asset::hashMipLayers(smooth, asset::hashMipLayers(noise, kSide)), "capas: el hash depende del orden");
+        const std::filesystem::path file = std::filesystem::temp_directory_path() / "cramion_capas_bc7.bc7";
+        check(asset::writeBc7ArrayCache(file, hash, kSide, {&smooth, &noise}, cache), "capas: se escribe la cache");
+        asset::Bc7ArrayCache back;
+        check(asset::readBc7ArrayCache(file, hash, kSide, {&smooth, &noise}, back) && back.bc7 == cache.bc7 &&
+                  back.blocks[0] == cache.blocks[0] && back.blocks[1].empty(),
+              "capas: la cache vuelve igual (BC7 y el apunte de RGBA8)");
+        check(!asset::readBc7ArrayCache(file, hash + 1, kSide, {&smooth, &noise}, back), "capas: otro hash no vale");
+        std::filesystem::remove(file);
+    }
+
     // Un modelo animado (o pequeno) no tiene LODs.
     asset::ModelData small{};
     small.vertices.resize(3);
     small.indices = {0, 1, 2};
     small.submeshes = {asset::SubMesh{0, 3, 0}};
     check(asset::generateLods(small) == 0 && small.lods.empty(), "un modelo pequeno no genera LODs");
+
+    // Orden para la cache de vertices: mismos triangulos en cada submalla,
+    // menos vertices transformados por triangulo, y lo transparente igual.
+    {
+        asset::ModelData grid;
+        constexpr std::uint32_t kSide = 64;
+        for (std::uint32_t y = 0; y <= kSide; ++y) {
+            for (std::uint32_t x = 0; x <= kSide; ++x) {
+                asset::SkinnedVertex v{};
+                v.position = Vec3{static_cast<float>(x), static_cast<float>(y), 0.0f};
+                grid.vertices.push_back(v);
+            }
+        }
+        std::vector<std::array<std::uint32_t, 3>> tris;
+        for (std::uint32_t y = 0; y < kSide; ++y) {
+            for (std::uint32_t x = 0; x < kSide; ++x) {
+                const std::uint32_t a = y * (kSide + 1) + x;
+                tris.push_back({a, a + 1, a + kSide + 1});
+                tris.push_back({a + 1, a + kSide + 2, a + kSide + 1});
+            }
+        }
+        // Desordenados (como tras los clusteres): un salto fijo por la lista.
+        std::vector<std::array<std::uint32_t, 3>> shuffled;
+        for (std::size_t i = 0, k = 0; i < tris.size(); ++i, k = (k + 2731) % tris.size()) shuffled.push_back(tris[k]);
+        for (const auto& t : shuffled) grid.indices.insert(grid.indices.end(), t.begin(), t.end());
+        const std::uint32_t half = static_cast<std::uint32_t>(grid.indices.size() / 2 / 3 * 3);
+        grid.materials.resize(2);
+        grid.materials[1].transparent = true;
+        grid.submeshes = {asset::SubMesh{0, half, 0}, asset::SubMesh{half, static_cast<std::uint32_t>(grid.indices.size()) - half, 1}};
+        const std::vector<std::uint32_t> original = grid.indices;
+        const asset::VertexCacheStats stats = asset::optimizeVertexCache(grid);
+        const auto sorted_tris = [](const std::vector<std::uint32_t>& idx, std::uint32_t first, std::uint32_t count) {
+            std::vector<std::array<std::uint32_t, 3>> out;
+            for (std::uint32_t i = first; i + 2 < first + count; i += 3) {
+                std::array<std::uint32_t, 3> t{idx[i], idx[i + 1], idx[i + 2]};
+                std::rotate(t.begin(), std::min_element(t.begin(), t.end()), t.end());  // mismo giro
+                out.push_back(t);
+            }
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        check(sorted_tris(grid.indices, 0, half) == sorted_tris(original, 0, half),
+              "cache de vertices: los mismos triangulos (y con el mismo giro) en la submalla");
+        check(std::equal(grid.indices.begin() + half, grid.indices.end(), original.begin() + half),
+              "cache de vertices: la submalla transparente no cambia de orden");
+        check(stats.acmr_after < stats.acmr_before * 0.7f && stats.acmr_after < 1.0f,
+              "cache de vertices: menos vertices transformados por triangulo");
+        std::printf("    ACMR de la rejilla desordenada: %.2f -> %.2f\n", stats.acmr_before, stats.acmr_after);
+    }
 
     // Modelos reales (opcional): CRAMION_LOD_FILES="a.crdata;b.crdata".
     if (const char* files = std::getenv("CRAMION_LOD_FILES")) {
@@ -1190,17 +1291,25 @@ void testFrameBudgetLevers() {
         // desenfoques, nubes a 64 pasos); Medio, sin desenfoques completos.
         gfx::FrameBudget low;
         low.setStartLevels(gfx::HardwareTier::Low);
-        check(low.level(Lever::Lod) == 1 && low.level(Lever::ShadowDetail) == 2 && low.level(Lever::Volumetric) == 1 &&
+        check(low.level(Lever::Lod) == 0 && low.level(Lever::ShadowDetail) == 2 && low.level(Lever::Volumetric) == 1 &&
                   low.level(Lever::ContactShadows) == 1 && low.level(Lever::Lighting) == 1 && low.level(Lever::Ssao) == 1 &&
                   low.level(Lever::Reflections) == 1 && low.level(Lever::Gi) == 0 &&
                   low.level(Lever::RenderScale) == 3 && low.level(Lever::CameraFx) == 2 && low.level(Lever::Clouds) == 1,
               "arranque Bajo: SSAO, reflejos, desenfoques y nubes incluidos");
         gfx::FrameBudget medium;
         medium.setStartLevels(gfx::HardwareTier::Medium);
-        check(medium.level(Lever::Lod) == 1 && medium.level(Lever::ShadowDetail) == 1 &&
+        check(medium.level(Lever::Lod) == 0 && medium.level(Lever::ShadowDetail) == 1 &&
                   medium.level(Lever::Volumetric) == 1 && medium.level(Lever::CameraFx) == 1 &&
-                  budgetLevelSum(medium) == 4,
-              "arranque Medio: LOD, sombras, volumetrica y desenfoques");
+                  budgetLevelSum(medium) == 3,
+              "arranque Medio: sombras, volumetrica y desenfoques");
+        // F2-8: el LOD y el alcance de las sombras van por gama (no por la
+        // palanca: no se cuentan dos veces).
+        check(gfx::lodScaleFor(gfx::HardwareTier::Low) == 2.0f && gfx::lodScaleFor(gfx::HardwareTier::Medium) == 1.5f &&
+                  gfx::lodScaleFor(gfx::HardwareTier::High) == 1.0f &&
+                  gfx::shadowDistanceFor(gfx::HardwareTier::Low) == 60.0f &&
+                  gfx::shadowDistanceFor(gfx::HardwareTier::Medium) == 80.0f &&
+                  gfx::shadowDistanceFor(gfx::HardwareTier::Ultra) == 100.0f,
+              "sesgo de LOD y alcance de sombras por gama");
         gfx::FrameBudget high;
         high.setStartLevels(gfx::HardwareTier::High);
         check(budgetLevelSum(high) == 0, "arranque Alto: a tope");

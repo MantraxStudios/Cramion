@@ -88,6 +88,7 @@
 #include <random>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace cramion::editor {
@@ -412,6 +413,22 @@ private:
     bool createActorBlueprintIn(const Uuid& source, assets::AssetType type, const std::string& name, int bones,
                                 bool collider, const std::filesystem::path& folder);
     BlueprintEditorState* activeBlueprint();  // la pestana Blueprint delante (o nullptr)
+    // Construction Script (EditorBlueprint.cpp): en flushCommit, los objetos con
+    // Visual Script cuyo grafo lo tiene y que se colocaron o cambiaron
+    // (transform, variables del Inspector, grafo) desde la ultima pasada.
+    void runConstructionScripts();
+    // Apunta el estado de ahora sin ejecutar nada (abrir escena, deshacer, rehacer).
+    void primeConstructionScripts();
+    std::string constructionKey(ecs::Entity e) const;
+    std::unordered_map<Uuid, std::string> construction_keys_;
+    // Se compilo / guardo un .crgraph: sus objetos vuelven a pasar el Construction Script.
+    void constructionGraphChanged(const std::string& graph);
+    // El editor .crgraph suelto (EditorGraphs.cpp) sigue al archivo si se movio.
+    void graphFileMoved(const std::string& from, const std::string& to);
+    // Tras mover o renombrar un .crprefab en el navegador: si es un Blueprint,
+    // su .crgraph va con el y se actualizan las rutas (archivos, escena abierta
+    // y pestanas abiertas).
+    void blueprintMoved(const Uuid& prefab, const std::filesystem::path& from, const std::filesystem::path& to);
     // Cambios sin guardar de una pestana Blueprint: su mundo, su grafo o los datos de la clase.
     bool blueprintDirty(int workspace_id) const;
     // Prefab o Blueprint con cambios sin guardar (para avisar y guardar al salir).
@@ -960,6 +977,9 @@ private:
     void drawUiCreateMenu();
     void drawRectTransformInspector(ecs::Entity entity);
     ui::UiSystem ui_;
+    // La entrada de los scripts en Play, sin los clics de la interfaz
+    // (UiSystem::filterGameInput).
+    dm::Input script_input_;
     struct UiDrag {
         bool active = false;
         Uuid entity{};
@@ -1035,6 +1055,15 @@ private:
     void drawWorldPartitionInspector(ecs::Entity entity);
     void drawWorldPartitionGrid();
     int buildHlods(const worldpart::WorldPartition& wp);  // celdas con HLOD creado
+    // Data Layers ocultas en el editor: sus objetos no se dibujan en la Escena
+    // (EntityInfo::editor_hidden, no se guarda). Cada frame; en Play, nada oculto.
+    void updateDataLayerVisibility();
+    std::unordered_set<entt::entity> data_layer_hidden_;  // raices ocultas ahora
+    std::uint64_t data_layer_structure_ = 0;              // structureVersion con la que se aplico
+    std::string data_layer_signature_;                    // capas ocultas con las que se aplico
+    int data_layer_frame_ = 0;                            // repaso completo de vez en cuando
+    // PartitionObject: su rejilla, su celda, sus capas y "carga la celda de...".
+    void drawPartitionObjectInspector(ecs::Entity entity);
 
     // --- Splines (EditorSplines.cpp) ---
     // shape: 0 carretera, 1 camino, 2 rio, 3 muro, 4 valla, 5 tuberia,
@@ -1691,7 +1720,14 @@ public:
     bool backgroundThrottleAllowed() const {
         return !playing() && !xrConnecting() && !cinema_ && self_test_step_ <= 0 && !testRunActive();
     }
+    // Segundos desde la ultima peticion MCP (una IA usando el editor: sus
+    // capturas y herramientas necesitan frames aunque la ventana este detras).
+    bool xrFrameOpen() const { return xr_frame_; }  // con casco: este frame se dibuja si o si
+    float secondsSinceMcp() const {
+        return std::chrono::duration<float>(std::chrono::steady_clock::now() - last_mcp_request_).count();
+    }
 private:
+    std::chrono::steady_clock::time_point last_mcp_request_{};
     bool cinema_ = false;
     float cinema_dt_ = 1.0f / 30.0f;
     int cinema_pending_ = 0;
@@ -2191,6 +2227,17 @@ private:
     // no hay Light direccional); surface_texel: 0 = sin lightmap de superficie.
     void configureLightingBake(int rays, int bounces, float spacing, int sun_mode = -1, float surface_texel = -1.0f,
                                int direct_samples = -1);
+    // Lightmaps (.crbake v4, PLAN-LIGHTMAPS Fase 2): ajustes del MCP
+    // (bake_lighting: lightmaps, texels_per_meter, preset...).
+    void configureLightmapBake(const std::string& args_json);
+    // MCP set_lighting_mode (mode, persist, exposure, debug_view).
+    std::string setLightingModeJson(const std::string& args_json);
+    // MCP generate_lightmap_uvs y el boton "Generar UV de lightmap" (en otro hilo).
+    std::string generateLightmapUvsJson(const std::string& args_json);
+    void startLightmapUvGeneration(float texels_per_meter);
+    // Vista de depuracion de los lightmaps en la vista Escena: 0 ninguna,
+    // 1 irradiancia, 2 visibilidad del sol, 3 UV de lightmap.
+    int lightmap_debug_view_ = 0;
     std::string lightingStateJson();
     // MCP de la 2.1 (EditorMcp21.cpp): pruebas, horneado, VFX, grafos y arboles.
     std::string mcpTools21(const std::string& name, const std::string& args_json, std::string& error);

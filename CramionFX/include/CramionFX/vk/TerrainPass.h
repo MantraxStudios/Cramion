@@ -174,6 +174,14 @@ public:
     // vez por frame). `include` = false: el terreno no se dibuja en esa vista.
     // El siguiente prepare() vuelve a elegir los de la camara de pantalla.
     void prepareView(const core::Vec3& camera_position, const core::Mat4& view_projection, bool include);
+    // Firma de lo que el terreno pinta en las cascadas del sol: un hash de
+    // (id, height_revision, desc.cast_shadows, sitio y tamano, y los trozos
+    // elegidos con su LOD) de todos los terrenos. Se calcula al final de
+    // prepare() y de prepareView(); si cambia, las cascadas cacheadas ya no
+    // coinciden con el terreno (una tesela entra o sale, se esculpe, cambia
+    // de LOD...) y hay que redibujarlas. El terreno ya no cuenta como "se
+    // mueve solo".
+    std::uint64_t shadowSignature() const { return shadow_signature_; }
 
     // Dentro del pase de geometria (G-buffer abierto, set 0 del frame).
     void recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
@@ -328,16 +336,26 @@ private:
     // Lo que llego de los hilos (capas leidas). Hilo principal, en prepare().
     void pollAsync();
     using LayerPaths = std::array<std::filesystem::path, kMaxTerrainLayers>;
-    // Desde cualquier hilo: lee, reescala y sube (submitAsync) las capas.
+    // Hilos que comprimen las capas a BC7 para la cache del usuario (definido
+    // en el .cpp). destroy() los para y los espera.
+    struct LayerBc7Jobs;
+    // Desde cualquier hilo: lee, reescala y sube (submitAsync) las capas. Si
+    // no estaban en la cache de BC7, lanza su compresion en `bc7_jobs`.
     static std::shared_ptr<LayerSet> buildLayerSet(const VulkanDevice& device, const LayerPaths& albedo_paths,
                                                    const LayerPaths& normal_paths,
-                                                   std::vector<std::shared_ptr<GpuTicket>>& tickets);
+                                                   std::vector<std::shared_ptr<GpuTicket>>& tickets,
+                                                   const std::shared_ptr<LayerBc7Jobs>& bc7_jobs);
     // `owner` (el LayerSet de la textura) vive hasta que la GPU termina la copia.
+    // `bc7`: las capas ya en BC7 con todos sus mips (de la cache del usuario);
+    // si no, RGBA8 y los mips con la GPU, como siempre.
     static std::shared_ptr<GpuTicket> createArrayTexture(const VulkanDevice& device, ArrayTexture& texture,
                                                          const std::vector<std::vector<std::uint8_t>>& layers,
-                                                         std::shared_ptr<const void> owner);
+                                                         std::shared_ptr<const void> owner,
+                                                         const std::vector<std::vector<std::vector<std::uint8_t>>>* bc7 = nullptr);
     void writeDescriptors(Terrain& terrain);
     void selectChunks(Terrain& terrain, const core::Vec3& camera, const core::Mat4& view_projection);
+    // Recalcula shadow_signature_ (final de prepare y prepareView).
+    void updateShadowSignature();
     void createGrassPipelines(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
                               std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats,
                               vk::Format depth_format);
@@ -369,6 +387,7 @@ private:
     VulkanBuffer patch_indices_;
     std::uint32_t patch_index_count_ = 0;
     std::unordered_map<std::uint32_t, std::unique_ptr<Terrain>> terrains_;
+    std::uint64_t shadow_signature_ = 0;  // ver shadowSignature()
     // Juegos de capas cargados. Se guardan aunque ya no los use ningun
     // terreno durante un rato (kLayerKeepFrames): las teselas que salen y
     // vuelven a entrar (streaming) no los vuelven a leer del disco.
@@ -385,6 +404,7 @@ private:
     };
     std::unordered_map<std::string, std::shared_ptr<PendingLayers>> pending_layers_;
     bool async_layers_ = true;
+    std::shared_ptr<LayerBc7Jobs> layer_bc7_;  // se crea con la primera peticion de capas
     // Lo quitado espera a que ningun frame en vuelo lo use (sin parar la GPU:
     // el streaming de teselas quita terrenos a menudo).
     struct Retired {

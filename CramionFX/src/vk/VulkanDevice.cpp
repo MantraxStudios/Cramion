@@ -1,8 +1,11 @@
 #include "CramionFX/vk/VulkanDevice.h"
 
 #include "CramionFX/vk/VulkanCompat.h"
+#include "CramionFX/vk/VulkanDeviceUpload.h"
 #include "CramionFX/vk/VulkanInstance.h"
 #include "CramionFX/vk/VulkanSurface.h"
+
+#include <vk_mem_alloc.h>
 
 #include <algorithm>
 #include <array>
@@ -102,6 +105,7 @@ void VulkanDevice::initialize(const VulkanInstance& instance, const VulkanSurfac
     queue_families_ = findQueueFamilies(physical_device_, surface.handle());
     createLogicalDevice();
     selectDepthFormat();
+    createAllocator(instance);
 }
 
 bool VulkanDevice::extensionAvailable(const std::string& name) const {
@@ -310,9 +314,13 @@ void VulkanDevice::createLogicalDevice() {
     compat_mode_ = false;
     compat_reason_.clear();
 
+    // Cola de transferencia dedicada (subidas por lotes, UploadBatch): solo en
+    // el camino completo (las barreras de propiedad van con synchronization2).
+    transfer_family_ = findTransferFamily(physical_device_, queue_families_.graphics, queue_families_.present);
+
     // Una DeviceQueueCreateInfo por familia distinta.
-    const std::set<std::uint32_t> unique_families = {queue_families_.graphics,
-                                                     queue_families_.present};
+    std::set<std::uint32_t> unique_families = {queue_families_.graphics, queue_families_.present};
+    if (transfer_family_ != UINT32_MAX) unique_families.insert(transfer_family_);
     const float priority = 1.0f;
 
     std::vector<vk::DeviceQueueCreateInfo> queue_infos;
@@ -509,6 +517,11 @@ void VulkanDevice::createLogicalDevice() {
 
     graphics_queue_ = vk::raii::Queue(device_, queue_families_.graphics, 0);
     present_queue_ = vk::raii::Queue(device_, queue_families_.present, 0);
+    if (transfer_family_ != UINT32_MAX) {
+        transfer_queue_ = vk::raii::Queue(device_, transfer_family_, 0);
+        std::cout << "[Vulkan] Cola de transferencia dedicada (familia " << transfer_family_
+                  << "): las subidas copian alli\n";
+    }
 
     // Pool aparte para los comandos de usar y tirar (copias de staging).
     vk::CommandPoolCreateInfo pool_info{};
@@ -538,6 +551,7 @@ void VulkanDevice::createLogicalDevice() {
 // indirectos generados en la GPU.
 void VulkanDevice::createCompatLogicalDevice(const char* reason) {
     compat_mode_ = true;
+    transfer_family_ = UINT32_MAX;  // todo en la cola de graficos
     compat_reason_ = reason != nullptr ? reason : "";
     const std::uint32_t api = api_version_;
     const auto available = physical_device_.enumerateDeviceExtensionProperties();
@@ -689,6 +703,97 @@ void VulkanDevice::createCompatLogicalDevice(const char* reason) {
               << limits_.maxColorAttachments << "\n";
 }
 
+std::uint32_t VulkanDevice::findTransferFamily(const vk::raii::PhysicalDevice& candidate, std::uint32_t graphics,
+                                              std::uint32_t present) {
+    const char* disabled = std::getenv("CRAMION_VK_NO_TRANSFER_QUEUE");
+    if (disabled != nullptr && disabled[0] != '\0' && disabled[0] != '0') return UINT32_MAX;
+    const auto families = candidate.getQueueFamilyProperties();
+    // La de solo copias (el motor DMA de las GPU de escritorio); si no, una de
+    // computo sin graficos. Con granularidad de 1x1x1: las copias de los mips
+    // pequenos (4x4, 1x1) no tienen que ser multiplos de nada.
+    std::uint32_t best = UINT32_MAX;
+    for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(families.size()); ++i) {
+        const vk::QueueFamilyProperties& family = families[i];
+        if (i == graphics || i == present || family.queueCount == 0) continue;
+        if (!(family.queueFlags & vk::QueueFlagBits::eTransfer) || (family.queueFlags & vk::QueueFlagBits::eGraphics)) {
+            continue;
+        }
+        const vk::Extent3D granularity = family.minImageTransferGranularity;
+        if (granularity.width != 1 || granularity.height != 1 || granularity.depth != 1) continue;
+        const bool pure = !(family.queueFlags & vk::QueueFlagBits::eCompute);
+        if (pure) return i;
+        if (best == UINT32_MAX) best = i;
+    }
+    return best;
+}
+
+void VulkanDevice::createAllocator(const VulkanInstance& instance) {
+    // VMA con las funciones del dispositivo (las de vulkan-hpp ya cargadas).
+    VmaVulkanFunctions functions{};
+    functions.vkGetInstanceProcAddr = &::vkGetInstanceProcAddr;
+    functions.vkGetDeviceProcAddr = device_.getDispatcher()->vkGetDeviceProcAddr;
+
+    VmaAllocatorCreateInfo info{};
+    info.physicalDevice = static_cast<VkPhysicalDevice>(*physical_device_);
+    info.device = static_cast<VkDevice>(*device_);
+    info.instance = static_cast<VkInstance>(*instance.handle());
+    info.pVulkanFunctions = &functions;
+    // La version que se usa de verdad (la menor entre GPU e instancia); VMA
+    // con 1.0 se apana sin las funciones *2.
+    info.vulkanApiVersion = std::min<std::uint32_t>(api_version_, VK_API_VERSION_1_3);
+    if (memory_budget_supported_ && api_version_ >= VK_API_VERSION_1_1) {
+        info.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+    }
+    if (ray_tracing_supported_) info.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    VmaAllocator allocator = nullptr;
+    if (vmaCreateAllocator(&info, &allocator) != VK_SUCCESS) {
+        throw std::runtime_error("No se pudo crear el asignador de memoria (VMA).");
+    }
+    allocator_ = allocator;
+
+    // Anillo de staging: 64 MB en escritorio, 16 MB en el modo compatible
+    // (moviles: la memoria es la misma que la del sistema).
+    const vk::DeviceSize ring_size = compat_mode_ ? (16ull << 20) : (64ull << 20);
+    try {
+        staging_ring_ = std::make_shared<StagingRing>(*this, ring_size);
+    } catch (const std::exception& e) {
+        // Sin anillo: cada lote usa su propio staging (como antes).
+        std::cerr << "[Vulkan] Sin anillo de staging: " << e.what() << "\n";
+        staging_ring_.reset();
+    }
+}
+
+void VulkanDevice::destroyAllocator() {
+    staging_ring_.reset();
+    if (allocator_ == nullptr) return;
+    // Con recursos aun vivos, destruir el asignador dejaria sus memorias
+    // colgando (y VMA lo trata como un fallo): se avisa y se deja (el proceso
+    // termina igual).
+    VmaTotalStatistics stats{};
+    vmaCalculateStatistics(allocator_, &stats);
+    if (stats.total.statistics.allocationCount > 0) {
+        std::cerr << "[Vulkan] Quedan " << stats.total.statistics.allocationCount
+                  << " recursos sin liberar al cerrar el dispositivo (no se destruye el asignador)\n";
+        allocator_ = nullptr;
+        return;
+    }
+    vmaDestroyAllocator(allocator_);
+    allocator_ = nullptr;
+}
+
+bool VulkanDevice::debugLog() {
+    static const bool enabled = []() {
+        const char* level = std::getenv("CRAMION_LOG_LEVEL");
+        if (level != nullptr) {
+            const std::string_view value(level);
+            if (value == "debug" || value == "DEBUG" || value == "trace" || value == "TRACE") return true;
+        }
+        const char* verbose = std::getenv("CRAMION_VK_VERBOSE");
+        return verbose != nullptr && verbose[0] != '\0' && verbose[0] != '0';
+    }();
+    return enabled;
+}
+
 void VulkanDevice::selectDepthFormat() {
     // De mas a menos preciso; D32 es el habitual en GPU de escritorio.
     // Primero los que no tienen stencil (el motor no lo usa): sin layouts
@@ -789,6 +894,66 @@ void VulkanDevice::waitIdle() const {
         const std::lock_guard lock(queue_mutex_);
         device_.waitIdle();
     }
+}
+
+std::shared_ptr<GpuTicket> VulkanDevice::submitUpload(vk::CommandBuffer transfer, vk::CommandBuffer graphics,
+                                                      std::shared_ptr<const void> keep_alive) const {
+    if (!transfer && !graphics) return nullptr;  // nada que enviar
+    if (transfer && *transfer_queue_ == VK_NULL_HANDLE) {
+        throw std::runtime_error("submitUpload: copias para una cola de transferencia que no existe.");
+    }
+    auto ticket = std::make_shared<GpuTicket>();
+    ticket->device_ = &device_;
+    ticket->fence_ = vk::raii::Fence(device_, vk::FenceCreateInfo{});
+
+    AsyncSubmit entry;
+    entry.ticket = ticket;
+    if (keep_alive) entry.keep_alive.push_back(std::move(keep_alive));
+
+    if (transfer && graphics) {
+        // Copias en la cola de transferencia -> semaforo -> la de graficos
+        // recibe la propiedad. La fence va en el ultimo envio.
+        auto semaphore = std::make_shared<vk::raii::Semaphore>(device_, vk::SemaphoreCreateInfo{});
+        const vk::Semaphore raw_semaphore = **semaphore;
+        vk::SubmitInfo copy_submit{};
+        copy_submit.commandBufferCount = 1;
+        copy_submit.pCommandBuffers = &transfer;
+        copy_submit.signalSemaphoreCount = 1;
+        copy_submit.pSignalSemaphores = &raw_semaphore;
+        {
+            const std::lock_guard queue_lock(transfer_queue_mutex_);
+            transfer_queue_.submit(copy_submit, nullptr);
+        }
+        const vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eAllCommands;
+        vk::SubmitInfo graphics_submit{};
+        graphics_submit.waitSemaphoreCount = 1;
+        graphics_submit.pWaitSemaphores = &raw_semaphore;
+        graphics_submit.pWaitDstStageMask = &wait_stage;
+        graphics_submit.commandBufferCount = 1;
+        graphics_submit.pCommandBuffers = &graphics;
+        {
+            const std::lock_guard queue_lock(queue_mutex_);
+            graphics_queue_.submit(graphics_submit, *ticket->fence_);
+        }
+        // El semaforo vive hasta que termina la espera de la cola de graficos.
+        entry.keep_alive.push_back(std::move(semaphore));
+    } else if (transfer) {
+        vk::SubmitInfo copy_submit{};
+        copy_submit.commandBufferCount = 1;
+        copy_submit.pCommandBuffers = &transfer;
+        const std::lock_guard queue_lock(transfer_queue_mutex_);
+        transfer_queue_.submit(copy_submit, *ticket->fence_);
+    } else {
+        vk::SubmitInfo graphics_submit{};
+        graphics_submit.commandBufferCount = 1;
+        graphics_submit.pCommandBuffers = &graphics;
+        const std::lock_guard queue_lock(queue_mutex_);
+        graphics_queue_.submit(graphics_submit, *ticket->fence_);
+    }
+
+    const std::lock_guard lock(async_mutex_);
+    async_.push_back(std::move(entry));
+    return ticket;
 }
 
 // -----------------------------------------------------------------------------
@@ -976,6 +1141,76 @@ void VulkanDevice::drainTasks() const {
     }
 }
 
+void VulkanDevice::runStreamingTask(std::function<void()> task) const {
+    if (!task) return;
+    tasks_in_flight_.fetch_add(1);
+    // Como runTask: la tarea (y lo que captura) se suelta antes de avisar a
+    // drainTasks.
+    auto holder = std::make_shared<std::function<void()>>(std::move(task));
+    std::function<void()> wrapped = [this, holder]() {
+        try {
+            std::function<void()> run = std::move(*holder);
+            *holder = nullptr;
+            if (run) run();
+        } catch (const std::exception& e) {
+            std::cerr << "[Vulkan] Una tarea de streaming fallo: " << e.what() << "\n";
+        } catch (...) {
+            std::cerr << "[Vulkan] Una tarea de streaming fallo.\n";
+        }
+        const std::lock_guard lock(task_mutex_);
+        tasks_in_flight_.fetch_sub(1);
+        task_done_cv_.notify_all();
+    };
+    {
+        const std::lock_guard lock(stream_mutex_);
+        if (stream_threads_.empty()) {
+            // Pocos hilos: cada tarea es un modelo entero en memoria.
+            int count = 3;
+            if (const char* value = std::getenv("CRAMION_STREAM_THREADS")) {
+                const int wanted = std::atoi(value);
+                if (wanted > 0) count = std::min(wanted, 16);
+            }
+            const unsigned hardware = std::thread::hardware_concurrency();
+            if (hardware > 1) count = std::min(count, static_cast<int>(hardware - 1));
+            count = std::max(count, 1);
+            stream_stop_ = false;
+            for (int i = 0; i < count; ++i) {
+                stream_threads_.emplace_back([this]() {
+                    for (;;) {
+                        std::function<void()> next;
+                        {
+                            std::unique_lock wait_lock(stream_mutex_);
+                            stream_cv_.wait(wait_lock, [this]() { return stream_stop_ || !stream_tasks_.empty(); });
+                            if (stream_tasks_.empty()) return;  // stream_stop_
+                            next = std::move(stream_tasks_.front());
+                            stream_tasks_.pop_front();
+                        }
+                        next();
+                    }
+                });
+            }
+        }
+        stream_tasks_.push_back(std::move(wrapped));
+    }
+    stream_cv_.notify_one();
+}
+
+void VulkanDevice::stopStreamingThreads() {
+    std::vector<std::thread> threads;
+    {
+        const std::lock_guard lock(stream_mutex_);
+        stream_stop_ = true;
+        threads.swap(stream_threads_);
+    }
+    stream_cv_.notify_all();
+    // (Los hilos terminan lo que quede en la cola antes de salir.)
+    for (std::thread& thread : threads) {
+        if (thread.joinable()) thread.join();
+    }
+    const std::lock_guard lock(stream_mutex_);
+    stream_stop_ = false;
+}
+
 void VulkanDevice::stopTaskThread() {
     {
         const std::lock_guard lock(task_mutex_);
@@ -988,6 +1223,7 @@ void VulkanDevice::stopTaskThread() {
 }
 
 VulkanDevice::~VulkanDevice() {
+    stopStreamingThreads();
     stopTaskThread();
 }
 
@@ -1066,6 +1302,7 @@ void VulkanDevice::shutdown() {
     // Primero las tareas en segundo plano (pueden estar creando recursos o
     // enviando copias), despues la GPU y lo que quedaba de los envios sin espera.
     drainTasks();
+    stopStreamingThreads();
     stopTaskThread();
     waitIdle();
     {
@@ -1076,11 +1313,15 @@ void VulkanDevice::shutdown() {
         }
         releaseAsync(finished);
     }
+    // Despues de soltar los lotes de subida (devuelven sus tramos del anillo).
+    destroyAllocator();
     savePipelineCache();
     pipeline_cache_ = nullptr;
     compat::shutdown();  // sus render passes y framebuffers, antes que el dispositivo
 
     transient_pool_ = nullptr;
+    transfer_queue_ = nullptr;
+    transfer_family_ = UINT32_MAX;
     present_queue_ = nullptr;
     graphics_queue_ = nullptr;
     device_ = nullptr;

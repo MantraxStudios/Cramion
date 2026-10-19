@@ -37,6 +37,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <string>
 
 namespace cramion::ecs {
@@ -48,12 +49,16 @@ struct StaticBatchOptions {
     std::size_t max_copied_vertices = 32768;
     // Vertices por pieza del lote (mas, y se parte en otra).
     std::size_t max_vertices = std::size_t{4} << 20;
+    // Objetos que se quedan fuera del lote aunque sean Static (los que llevan
+    // lightmap: el lote pierde su UV2 y crea UUID nuevos, PLAN-LIGHTMAPS 1.2).
+    std::function<bool(const Uuid& entity)> keep_out;
 };
 
 struct StaticBatchReport {
     std::size_t combined = 0;          // objetos dentro del lote
     std::size_t kept_instanced = 0;    // Static pero repetidos y grandes: instanciados
     std::size_t kept_movable = 0;      // Static con Animator/Script/Rigidbody
+    std::size_t kept_lightmapped = 0;  // Static con lightmap (keep_out)
     std::size_t draws_before = 0;      // lotes (malla x material) que habia
     std::size_t draws_after = 0;       // materiales del lote
     std::size_t triangles = 0;

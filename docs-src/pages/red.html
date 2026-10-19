@@ -115,6 +115,24 @@ void Jugador::update(float dt) {
   los personajes déjala apagada.
 </p>
 
+<h3 id="lejos">Lejos del origen (mundos grandes)</h3>
+<p>
+  A más de 2 km de la cámara el mundo se desplaza (origen flotante), y cada jugador tiene el suyo. Por eso la red no manda
+  posiciones locales sino absolutas: <code>Network.spawn</code>, las posiciones de los objetos de red, las correcciones del
+  servidor y <code>Network.positionAt</code> se convierten solas (tú sigues usando las posiciones del mundo de siempre).
+  Viajan relativas a un sector de 1024 m, con unos 0,06 mm de precisión en cualquier sitio hasta 33.000 km.
+</p>
+<p>
+  Los <code>Vec3</code> que mandas tú en un mensaje (<code>Network.send</code>) van tal cual: si es un punto del mundo y el
+  mapa es grande, mándalo como <code>Scene.toAbsolute(p)</code> (tres números en doble precisión) y léelo con
+  <code>Scene.toLocal(x, y, z)</code>.
+</p>
+<p>
+  Esto cambió el protocolo (versión 2): un juego o un <code>CramionServer</code> de una versión anterior no puede jugar con
+  uno nuevo. El que intenta entrar recibe <em>onDisconnected</em> con el motivo («el servidor usa otra versión de la red»):
+  actualiza los dos.
+</p>
+
 <h3 id="probar">Probar en un solo PC</h3>
 <ul>
   <li>Dale a Play en el editor y crea la partida; abre el juego exportado (o un segundo editor con el mismo proyecto) y únete a <code>127.0.0.1</code>.</li>

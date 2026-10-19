@@ -15,6 +15,8 @@
 namespace cramion::gfx {
 
 class SkinnedPass;
+class UploadBatch;
+class UploadFence;
 class VulkanDevice;
 
 // Modelo con esqueleto ya en la GPU: vertices e indices, las texturas y un
@@ -43,12 +45,24 @@ public:
         std::uint32_t metallic_roughness_texture = 0;
         std::uint32_t emissive_texture = 0;
         // El color base tiene alfa: recortado por alfa (follaje, rejas). Los
-        // rayos tienen que probarlo en cada candidato.
+        // rayos tienen que probarlo en cada candidato. Tambien si el alfa del
+        // color base (el factor) baja de 0.5: el pase principal lo recorta.
         bool alpha_masked = false;
+        // La textura del color base tiene alfa (para rehacer alpha_masked si
+        // el factor cambia en vivo).
+        bool texture_alpha = false;
+        // El color base no tiene recortes (sin alfa en su textura ni Render
+        // Texture de alfa desconocido): con base_color.w = 1 se dibuja con
+        // la pipeline sin recorte (SkinnedPass::geometryOpaquePipeline, early-Z).
+        bool opaque_albedo = false;
         // Shader de superficie del usuario (-1 = el estandar) y sus
         // propiedades; editables en vivo como el color.
         std::int32_t surface_shader = -1;
         std::array<core::Vec4, 8> surface_params{};
+        // Tiling de las UV: xy = repeticion, zw = desplazamiento (lo mismo que
+        // el binding SkinnedPass::kMaterialUvBinding de su set). Lo leen los
+        // rayos.
+        core::Vec4 uv_transform{1.0f, 1.0f, 0.0f, 0.0f};
     };
 
     // Submallas opacas de un mismo material: el culling en GPU escribe sus
@@ -63,8 +77,19 @@ public:
 
     // `texture_lod`: mips grandes que no se suben (0 = todo; 1 = la mitad de
     // lado, 2 = un cuarto...): streaming de texturas por distancia.
-    void create(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass, int texture_lod = 0);
+    // Todas las copias del modelo (mallas, texturas, meshlets) van en un solo
+    // lote (UploadBatch: un command buffer y una fence; con cola de
+    // transferencia si la GPU la tiene). `wait_for_gpu`: esperar aqui a que
+    // termine (como antes); false = no bloquear y mirar uploadReady() antes de
+    // dibujarlo (hilos del streaming).
+    void create(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass, int texture_lod = 0,
+                bool wait_for_gpu = true);
     int textureLod() const { return texture_lod_; }
+    // La GPU termino de copiar todo lo suyo (y lo compartido que subio otro
+    // modelo). No bloquea. Un modelo vacio o ya esperado: true.
+    bool uploadReady() const;
+    // Bloquea hasta uploadReady().
+    void waitUpload() const;
 
     // Bits del relieve en GpuSkinnedPush::flags (parallax o teselado,
     // auto-sombra y teselacion maxima) sobre `flags`. `has_height`: el
@@ -99,6 +124,9 @@ public:
 
     // Sin animaciones: la pose no cambia y las cajas de las submallas valen.
     bool rigid() const { return rigid_; }
+    // Tiene UV de lightmap (set 1, binding 10; sus materiales llevan
+    // GpuSkinnedPush::kFlagLightmap).
+    bool hasLightmapUvs() const { return lightmap_uvs_ != nullptr; }
     const std::vector<Material>& materials() const { return materials_; }
     // Editable en vivo: color, emision y parametros se leen al dibujar
     // (push constants), asi que un cambio se ve en el frame siguiente.
@@ -154,8 +182,13 @@ public:
     std::uint32_t maxClusterMeshlets() const { return max_cluster_meshlets_; }
 
 private:
-    void buildMeshlets(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass);
+    void buildMeshlets(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass,
+                       UploadBatch& batch);
     static const VulkanBuffer& emptyBuffer();
+
+    // Fin de las copias del modelo (nulo: ya terminaron). Se suelta al
+    // comprobarlo (mutable: uploadReady es const).
+    mutable std::shared_ptr<UploadFence> upload_;
 
     // Compartidos entre modelos con la misma geometria (cache por contenido en
     // SkinnedModel.cpp): las variantes de material (.crmat) de un modelo usan
@@ -163,6 +196,7 @@ private:
     // su copia y una escena con materiales propios ocupaba el doble de VRAM.
     std::shared_ptr<VulkanBuffer> vertices_;
     std::shared_ptr<VulkanBuffer> indices_;
+    std::shared_ptr<VulkanBuffer> lightmap_uvs_;  // unorm16x2 por vertice (o nada)
     std::uint32_t index_count_ = 0;
     bool rigid_ = false;
 
@@ -184,6 +218,9 @@ private:
     std::size_t black_index_ = 0;
     std::vector<RenderTextureRef> render_texture_refs_;
 
+    // Tiling de las UV de cada material (un vec4 alineado por material; el de
+    // identidad, compartido por todos los modelos sin tiling).
+    std::shared_ptr<VulkanBuffer> uv_buffer_;
     // El pool debe sobrevivir a los sets: se declara antes.
     vk::raii::DescriptorPool pool_{nullptr};
     std::vector<vk::raii::DescriptorSet> material_sets_;
@@ -191,9 +228,11 @@ private:
     std::vector<std::vector<vk::ImageView>> material_views_;
     std::uint64_t material_sampler_revision_ = 0;
 
-    VulkanBuffer meshlets_;
-    VulkanBuffer meshlet_vertices_;
-    VulkanBuffer meshlet_triangles_;
+    // (Compartidos con el lote de subida, que los mantiene vivos hasta que la
+    // GPU termina de copiarlos aunque el modelo se descarte antes.)
+    std::shared_ptr<VulkanBuffer> meshlets_;
+    std::shared_ptr<VulkanBuffer> meshlet_vertices_;
+    std::shared_ptr<VulkanBuffer> meshlet_triangles_;
     std::vector<std::vector<MeshletRange>> meshlet_ranges_;  // [lod][submalla]
     std::vector<bool> closed_;                               // [lod]
     std::uint32_t max_cluster_meshlets_ = 0;

@@ -605,6 +605,7 @@ void EditorApp::drawInspectorContents() {
             if (type.name == "WaterBody") drawWaterInspector(entity);
             if (type.name == "Spline") drawSplineInspector(entity);
             if (type.name == "WorldPartition") drawWorldPartitionInspector(entity);
+            if (type.name == "PartitionObject") drawPartitionObjectInspector(entity);
             if (type.name == "Fire") drawFireInspector(entity);
             if (type.name == "Environment") drawEnvironmentInspector(entity);
             if (type.name == "NavMeshBounds") drawNavMeshBoundsInspector(entity);

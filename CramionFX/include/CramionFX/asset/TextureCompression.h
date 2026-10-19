@@ -31,8 +31,10 @@
 #include "CramionFX/asset/Model.h"
 
 #include <cstddef>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace cramion::asset {
@@ -80,6 +82,41 @@ bool prepareLazyTexture(const TextureData& lazy);
 // Lee la textura comprimida de la cache (BC con sus mips). false si no esta.
 bool loadCachedTexture(std::uint64_t key, TextureData& out);
 
+// Un nivel RGBA8 a bloques BC7 (16 bytes por bloque de 4x4), en `threads`
+// hilos, sin cache ni mips: para texturas que el motor genera con sus propios
+// mips (p. ej. las de los arboles procedurales).
+std::vector<std::uint8_t> encodeBc7Level(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height,
+                                         unsigned threads);
+
+// --- Arrays de capas que genera o reescala el motor (los arboles, las capas
+// del terreno) en BC7, con una cache por usuario ---
+// Las capas son cuadradas y traen ya sus mips ([capa][mip], RGBA8 o bloques
+// BC7). Comprimirlas cuesta segundos de CPU: se hace una vez, en segundo
+// plano, y se guarda en %LOCALAPPDATA%/Cramion/Cache (el juego exportado no
+// puede escribir en su TextureCache); el arranque siguiente las sube ya en
+// BC7. La clave es un hash del contenido: si cambia lo generado o la imagen
+// de origen, la cache no vale. Un array solo pasa a BC7 si el nivel 0 de cada
+// capa da >= kMinUiPsnr dB; si no, la cache lo apunta y se queda en RGBA8.
+using MipLayers = std::vector<std::vector<std::vector<std::uint8_t>>>;
+std::uint64_t hashMipLayers(const MipLayers& layers, std::uint64_t seed);
+// Vacio si no hay carpeta del usuario (o no es Windows).
+std::filesystem::path userTextureCachePath(const std::string& stem, std::uint64_t hash);
+struct Bc7ArrayCache {
+    std::vector<std::uint8_t> bc7;  // por array: 1 = en BC7, 0 = se queda en RGBA8
+    std::vector<MipLayers> blocks;  // por array (vacio si se queda en RGBA8)
+};
+// `like`: los arrays RGBA8 (para comprobar capas, mips y lado).
+bool readBc7ArrayCache(const std::filesystem::path& file, std::uint64_t hash, std::uint32_t size,
+                       const std::vector<const MipLayers*>& like, Bc7ArrayCache& out);
+bool writeBc7ArrayCache(const std::filesystem::path& file, std::uint64_t hash, std::uint32_t size,
+                        const std::vector<const MipLayers*>& like, const Bc7ArrayCache& cache);
+// Comprime un array entero. false si una capa pierde nitidez o si `stop`.
+// `premultiplied`: el color se compara multiplicado por su alfa (lo
+// recortado no cuenta); si no, los cuatro canales tal cual (el alfa es un
+// dato, como en las normales de los arboles).
+bool compressBc7Layers(const MipLayers& rgba, std::uint32_t size, MipLayers& blocks, const std::atomic<bool>& stop,
+                       unsigned threads, bool premultiplied, double& worst_psnr);
+
 // RGBA8 -> BC1 o BC7 (segun su uso y su alfa) con todos sus mips (en varios
 // hilos) y la guarda en la cache. Deja en `texture.alpha` si tiene recortes.
 // false si no se pudo (se queda en RGBA8).
@@ -97,6 +134,30 @@ void endTextureCompression(std::uint64_t key);
 // en `dds`. 0 si no se comprime (DDS, muy pequena, sin cache).
 std::uint64_t prepareExportTexture(const TextureData& texture, const std::filesystem::path& assets_root,
                                    std::filesystem::path& dds);
+
+// --- Imagenes de la interfaz (ImGuiLayer::image) ---
+// Se comprimen a BC7 (4 veces menos memoria que RGBA8) solo si no pierden
+// nitidez: el nivel 0 descomprimido tiene que dar al menos kMinUiPsnr dB de
+// PSNR (sobre RGBA premultiplicado: lo transparente no cuenta) frente al
+// original; si no, la imagen se queda en RGBA8 y se apunta (<clave>.rgba en la
+// cache) para no volver a intentarlo.
+constexpr double kMinUiPsnr = 40.0;
+// Clave de una imagen de interfaz (con el lado maximo con que se carga). Con
+// `portable_root`, la portable (la del juego exportado). 0 si no se comprime.
+std::uint64_t uiTextureKey(const std::filesystem::path& file, std::uint32_t max_size,
+                           const std::filesystem::path& portable_root);
+// La imagen de interfaz comprimida: de la cache o, si se puede escribir en
+// ella, comprimiendola ahora (con el control de PSNR). false = usar RGBA8.
+// `psnr` (opcional) recibe el PSNR medido (0 si venia de la cache).
+bool loadUiTexture(const std::filesystem::path& file, std::uint32_t max_size, TextureData& out,
+                   double* psnr = nullptr);
+// Exportar: deja la imagen de interfaz comprimida en la cache del editor y
+// devuelve la clave portable y su .dds. 0 si se queda en RGBA8.
+std::uint64_t prepareExportUiTexture(const std::filesystem::path& file, std::uint32_t max_size,
+                                     const std::filesystem::path& assets_root, std::filesystem::path& dds);
+// PSNR (dB) entre dos imagenes RGBA8 del mismo tamano, con el color
+// premultiplicado por su alfa. 99 si son iguales.
+double premultipliedPsnr(const std::uint8_t* a, const std::uint8_t* b, std::size_t pixels);
 
 // Escribe una textura BC (con sus mips) como .dds (DX10).
 std::vector<std::uint8_t> writeDds(const TextureData& texture);

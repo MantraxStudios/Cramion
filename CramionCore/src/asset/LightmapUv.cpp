@@ -1,17 +1,13 @@
 #include "CramionCore/asset/LightmapUv.h"
 
+#include <zstd.h>
+
 #include <algorithm>
-#include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
-#include <deque>
 #include <fstream>
 #include <iostream>
-#include <map>
-#include <mutex>
-#include <numeric>
-#include <unordered_map>
-#include <utility>
 
 namespace cramion::lighting {
 
@@ -21,10 +17,10 @@ using core::Vec3;
 namespace {
 
 constexpr char kMagic[4] = {'C', 'R', 'U', 'V'};
-constexpr std::uint32_t kVersion = 1;
-
-float cross2(const Vec2& a, const Vec2& b) { return a.x * b.y - a.y * b.x; }
-Vec2 sub2(const Vec2& a, const Vec2& b) { return Vec2{a.x - b.x, a.y - b.y}; }
+constexpr std::uint32_t kFileVersion = 2;  // 1: el generador antiguo (sin comprimir); 2: compacta + zstd
+// Commit de xatlas vendorizado (CramionCore/vendor/xatlas): entra en el hash
+// de los ajustes, asi otro commit no reutiliza disposiciones viejas.
+constexpr std::uint64_t kXatlasCommit = 0xf700c7790aaa030eull;
 
 std::uint64_t fnv(std::uint64_t hash, const void* data, std::size_t size) {
     const auto* bytes = static_cast<const std::uint8_t*>(data);
@@ -32,649 +28,265 @@ std::uint64_t fnv(std::uint64_t hash, const void* data, std::size_t size) {
     return hash;
 }
 
-// Id comun para los vertices que estan en la misma posicion (los que separan
-// las costuras de normales o de UV de la textura): asi las cartas cruzan esas
-// costuras si la superficie sigue.
-std::vector<std::uint32_t> weldPositions(const std::vector<asset::SkinnedVertex>& vertices) {
-    const std::size_t count = vertices.size();
-    std::vector<std::uint32_t> canonical(count);
-    if (count == 0) return canonical;
-    Vec3 lo = vertices[0].position;
-    Vec3 hi = lo;
-    for (const asset::SkinnedVertex& v : vertices) {
-        lo = Vec3{std::min(lo.x, v.position.x), std::min(lo.y, v.position.y), std::min(lo.z, v.position.z)};
-        hi = Vec3{std::max(hi.x, v.position.x), std::max(hi.y, v.position.y), std::max(hi.z, v.position.z)};
+// Escritura y lectura de valores sueltos en un buffer de bytes.
+struct Writer {
+    std::vector<std::uint8_t> bytes;
+    template <typename T>
+    void put(const T& value) {
+        const auto* p = reinterpret_cast<const std::uint8_t*>(&value);
+        bytes.insert(bytes.end(), p, p + sizeof(T));
     }
-    const float diagonal = std::max(core::length(hi - lo), 1e-6f);
-    const double cell = static_cast<double>(diagonal) * 1e-6;
-    struct Key {
-        std::int64_t x, y, z;
-        std::uint32_t index;
-    };
-    std::vector<Key> keys(count);
-    for (std::size_t i = 0; i < count; ++i) {
-        const Vec3& p = vertices[i].position;
-        keys[i] = Key{static_cast<std::int64_t>(std::llround(p.x / cell)), static_cast<std::int64_t>(std::llround(p.y / cell)),
-                      static_cast<std::int64_t>(std::llround(p.z / cell)), static_cast<std::uint32_t>(i)};
+    void putArray(const std::vector<std::uint32_t>& values) {
+        const auto* p = reinterpret_cast<const std::uint8_t*>(values.data());
+        bytes.insert(bytes.end(), p, p + values.size() * sizeof(std::uint32_t));
     }
-    std::sort(keys.begin(), keys.end(), [](const Key& a, const Key& b) {
-        if (a.x != b.x) return a.x < b.x;
-        if (a.y != b.y) return a.y < b.y;
-        if (a.z != b.z) return a.z < b.z;
-        return a.index < b.index;
-    });
-    std::uint32_t current = keys[0].index;
-    for (std::size_t i = 0; i < count; ++i) {
-        if (i > 0 && (keys[i].x != keys[i - 1].x || keys[i].y != keys[i - 1].y || keys[i].z != keys[i - 1].z)) {
-            current = keys[i].index;
-        }
-        canonical[keys[i].index] = current;
-    }
-    return canonical;
-}
-
-// Envolvente convexa (cadena monotona de Andrew), en sentido antihorario.
-std::vector<Vec2> convexHull(std::vector<Vec2> points) {
-    std::sort(points.begin(), points.end(), [](const Vec2& a, const Vec2& b) {
-        return a.x < b.x || (a.x == b.x && a.y < b.y);
-    });
-    points.erase(std::unique(points.begin(), points.end(),
-                             [](const Vec2& a, const Vec2& b) { return a.x == b.x && a.y == b.y; }),
-                 points.end());
-    if (points.size() < 3) return points;
-    std::vector<Vec2> hull(points.size() * 2);
-    std::size_t k = 0;
-    for (const Vec2& p : points) {
-        while (k >= 2 && cross2(sub2(hull[k - 1], hull[k - 2]), sub2(p, hull[k - 2])) <= 0.0f) --k;
-        hull[k++] = p;
-    }
-    for (std::size_t i = points.size() - 1, lower = k + 1; i-- > 0;) {
-        const Vec2& p = points[i];
-        while (k >= lower && cross2(sub2(hull[k - 1], hull[k - 2]), sub2(p, hull[k - 2])) <= 0.0f) --k;
-        hull[k++] = p;
-    }
-    hull.resize(k > 0 ? k - 1 : 0);
-    return hull;
-}
-
-struct ChartBuild {
-    std::vector<std::uint32_t> triangles;
 };
 
-// Cartas: crecimiento de regiones desde los triangulos mas grandes. Un vecino
-// entra si su cara no se dobla mas de `cos_hard` respecto a la que lo toca y
-// no se aparta mas de `cos_max` de la normal media de la carta (asi la
-// proyeccion en su plano nunca da la vuelta a un triangulo).
-// Solo crece sobre los triangulos con label == -1; los etiqueta con el
-// indice de su carta en `charts`.
-void growCharts(const std::vector<std::uint32_t>& candidates, const std::vector<std::array<std::int32_t, 3>>& adjacency,
-                const std::vector<Vec3>& unit_normals, const std::vector<Vec3>& area_normals,
-                const std::vector<bool>& degenerate, float cos_hard, float cos_max, std::vector<std::int32_t>& label,
-                std::vector<ChartBuild>& charts) {
-    std::vector<std::uint32_t> order;
-    order.reserve(candidates.size());
-    for (std::uint32_t t : candidates) {
-        if (!degenerate[t]) order.push_back(t);
+struct Reader {
+    const std::uint8_t* data;
+    std::size_t size;
+    std::size_t at = 0;
+    template <typename T>
+    bool get(T& value) {
+        if (at + sizeof(T) > size) return false;
+        std::memcpy(&value, data + at, sizeof(T));
+        at += sizeof(T);
+        return true;
     }
-    std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
-        const float aa = core::dot(area_normals[a], area_normals[a]);
-        const float bb = core::dot(area_normals[b], area_normals[b]);
-        return aa != bb ? aa > bb : a < b;
-    });
-    std::deque<std::uint32_t> queue;
-    for (std::uint32_t seed : order) {
-        if (label[seed] != -1) continue;
-        const auto id = static_cast<std::int32_t>(charts.size());
-        charts.emplace_back();
-        ChartBuild& chart = charts.back();
-        Vec3 sum = area_normals[seed];
-        label[seed] = id;
-        chart.triangles.push_back(seed);
-        queue.clear();
-        queue.push_back(seed);
-        while (!queue.empty()) {
-            const std::uint32_t t = queue.front();
-            queue.pop_front();
-            const Vec3 average = core::normalize(sum);
-            for (int e = 0; e < 3; ++e) {
-                const std::int32_t nb = adjacency[t][static_cast<std::size_t>(e)];
-                if (nb < 0 || label[static_cast<std::size_t>(nb)] != -1) continue;
-                const auto n = static_cast<std::uint32_t>(nb);
-                if (degenerate[n]) continue;  // se reparten al final
-                if (core::dot(unit_normals[n], unit_normals[t]) < cos_hard) continue;
-                if (core::dot(unit_normals[n], average) < cos_max) continue;
-                label[n] = id;
-                sum += area_normals[n];
-                chart.triangles.push_back(n);
-                queue.push_back(n);
-            }
-        }
+    bool getArray(std::vector<std::uint32_t>& values, std::uint32_t count) {
+        const std::size_t bytes = static_cast<std::size_t>(count) * sizeof(std::uint32_t);
+        if (at + bytes > size) return false;
+        values.resize(count);
+        if (bytes > 0) std::memcpy(values.data(), data + at, bytes);
+        at += bytes;
+        return true;
     }
-}
-
-// Coordenadas 2D de cada esquina de la carta proyectada en su plano.
-struct ChartPlane {
-    Vec3 axis_u{};
-    Vec3 axis_v{};
 };
 
-ChartPlane chartPlane(const Vec3& normal) {
-    const Vec3 n = core::length(normal) > 1e-8f ? core::normalize(normal) : Vec3{0.0f, 1.0f, 0.0f};
-    const Vec3 helper = std::abs(n.y) < 0.99f ? Vec3{0.0f, 1.0f, 0.0f} : Vec3{1.0f, 0.0f, 0.0f};
-    ChartPlane plane;
-    plane.axis_u = core::normalize(core::cross(helper, n));
-    plane.axis_v = core::cross(n, plane.axis_u);
-    return plane;
-}
-
-// true si dos triangulos distintos de la carta (ya en 2D) se pisan: se
-// rasteriza en una rejilla y se busca una celda dentro de dos a la vez.
-bool chartOverlaps(const std::vector<std::array<Vec2, 3>>& triangles) {
-    if (triangles.size() < 3) return false;
-    Vec2 lo = triangles[0][0];
-    Vec2 hi = lo;
-    for (const auto& tri : triangles) {
-        for (const Vec2& p : tri) {
-            lo = Vec2{std::min(lo.x, p.x), std::min(lo.y, p.y)};
-            hi = Vec2{std::max(hi.x, p.x), std::max(hi.y, p.y)};
-        }
-    }
-    const float width = hi.x - lo.x;
-    const float height = hi.y - lo.y;
-    if (width <= 0.0f || height <= 0.0f) return false;
-    const int grid = std::clamp(static_cast<int>(std::sqrt(static_cast<float>(triangles.size())) * 3.0f), 8, 256);
-    const float cell = std::max(width, height) / static_cast<float>(grid);
-    const int nx = std::max(1, static_cast<int>(std::ceil(width / cell)));
-    const int ny = std::max(1, static_cast<int>(std::ceil(height / cell)));
-    std::vector<std::int32_t> owner(static_cast<std::size_t>(nx) * static_cast<std::size_t>(ny), -1);
-    std::size_t covered = 0;
-    std::size_t overlapped = 0;
-    for (std::size_t t = 0; t < triangles.size(); ++t) {
-        const Vec2& a = triangles[t][0];
-        const Vec2& b = triangles[t][1];
-        const Vec2& c = triangles[t][2];
-        const float area2 = cross2(sub2(b, a), sub2(c, a));
-        if (std::abs(area2) < 1e-12f) continue;
-        const float sign = area2 > 0.0f ? 1.0f : -1.0f;
-        const float epsilon = 1e-5f * std::abs(area2);
-        const int x0 = std::clamp(static_cast<int>(std::floor((std::min({a.x, b.x, c.x}) - lo.x) / cell)), 0, nx - 1);
-        const int x1 = std::clamp(static_cast<int>(std::floor((std::max({a.x, b.x, c.x}) - lo.x) / cell)), 0, nx - 1);
-        const int y0 = std::clamp(static_cast<int>(std::floor((std::min({a.y, b.y, c.y}) - lo.y) / cell)), 0, ny - 1);
-        const int y1 = std::clamp(static_cast<int>(std::floor((std::max({a.y, b.y, c.y}) - lo.y) / cell)), 0, ny - 1);
-        for (int y = y0; y <= y1; ++y) {
-            for (int x = x0; x <= x1; ++x) {
-                const Vec2 q{lo.x + (static_cast<float>(x) + 0.5f) * cell, lo.y + (static_cast<float>(y) + 0.5f) * cell};
-                const float w0 = cross2(sub2(b, a), sub2(q, a)) * sign;
-                const float w1 = cross2(sub2(c, b), sub2(q, b)) * sign;
-                const float w2 = cross2(sub2(a, c), sub2(q, c)) * sign;
-                if (w0 <= epsilon || w1 <= epsilon || w2 <= epsilon) continue;
-                std::int32_t& slot = owner[static_cast<std::size_t>(y) * static_cast<std::size_t>(nx) + static_cast<std::size_t>(x)];
-                if (slot < 0) {
-                    slot = static_cast<std::int32_t>(t);
-                    ++covered;
-                } else if (slot != static_cast<std::int32_t>(t)) {
-                    ++overlapped;
-                }
-            }
-        }
-    }
-    return overlapped > std::max<std::size_t>(1, covered / 200);
+bool readBytes(const std::filesystem::path& file, std::uint64_t offset, std::uint64_t size, std::vector<std::uint8_t>& out) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return false;
+    in.seekg(static_cast<std::streamoff>(offset));
+    out.resize(static_cast<std::size_t>(size));
+    if (size > 0) in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(size));
+    return static_cast<bool>(in);
 }
 
 }  // namespace
 
+std::uint64_t LightmapUvSettings::hash() const {
+    std::uint64_t h = 1469598103934665603ull;
+    // Densidad redondeada a 1/64: la misma escala calculada por dos caminos
+    // (una suma en otro orden) reutiliza la cache.
+    const auto density = static_cast<std::int64_t>(std::llround(static_cast<double>(texels_per_unit) * 64.0));
+    h = fnv(h, &density, sizeof(density));
+    h = fnv(h, &padding, sizeof(padding));
+    const auto min_texels = static_cast<std::int64_t>(std::llround(static_cast<double>(min_component_texels) * 64.0));
+    h = fnv(h, &min_texels, sizeof(min_texels));
+    h = fnv(h, &max_size, sizeof(max_size));
+    h = fnv(h, &chart_iterations, sizeof(chart_iterations));
+    const std::uint32_t version = kUnwrapVersion;
+    h = fnv(h, &version, sizeof(version));
+    h = fnv(h, &kXatlasCommit, sizeof(kXatlasCommit));
+    return h;
+}
+
 std::uint64_t lightmapMeshHash(const asset::ModelData& model) {
     std::uint64_t hash = 1469598103934665603ull;
-    hash = fnv(hash, model.indices.data(), model.indices.size() * sizeof(std::uint32_t));
-    for (const asset::SkinnedVertex& v : model.vertices) hash = fnv(hash, &v.position, sizeof(Vec3));
+    const std::vector<std::uint32_t>& indices = model.indices.get();
+    const std::vector<asset::SkinnedVertex>& vertices = model.vertices.get();
+    hash = fnv(hash, indices.data(), indices.size() * sizeof(std::uint32_t));
+    for (const asset::SkinnedVertex& v : vertices) hash = fnv(hash, &v.position, sizeof(Vec3));
     return hash;
 }
 
 float meshSurfaceArea(const asset::ModelData& model) {
+    const std::vector<std::uint32_t>& indices = model.indices.get();
+    const std::vector<asset::SkinnedVertex>& vertices = model.vertices.get();
     double area = 0.0;
-    for (std::size_t i = 0; i + 2 < model.indices.size(); i += 3) {
-        const std::uint32_t a = model.indices[i];
-        const std::uint32_t b = model.indices[i + 1];
-        const std::uint32_t c = model.indices[i + 2];
-        if (a >= model.vertices.size() || b >= model.vertices.size() || c >= model.vertices.size()) continue;
-        const Vec3& pa = model.vertices[a].position;
-        area += 0.5 * static_cast<double>(core::length(
-                          core::cross(model.vertices[b].position - pa, model.vertices[c].position - pa)));
+    for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
+        const std::uint32_t a = indices[i];
+        const std::uint32_t b = indices[i + 1];
+        const std::uint32_t c = indices[i + 2];
+        if (a >= vertices.size() || b >= vertices.size() || c >= vertices.size()) continue;
+        const Vec3& pa = vertices[a].position;
+        area += 0.5 * static_cast<double>(core::length(core::cross(vertices[b].position - pa, vertices[c].position - pa)));
     }
     return static_cast<float>(area);
 }
 
-bool generateLightmapUvs(const asset::ModelData& model, LightmapUvLayout& out, const LightmapUvSettings& settings) {
-    out = LightmapUvLayout{};
+bool applyLightmapUvs(asset::ModelData& model, const LightmapUvLayout& layout) {
     const std::size_t vertex_count = model.vertices.size();
-    const std::size_t triangle_count = model.indices.size() / 3;
-    if (vertex_count == 0 || triangle_count == 0) return false;
-    for (std::uint32_t index : model.indices) {
-        if (index >= vertex_count) return false;  // malla rota
+    const std::size_t index_count = model.indices.size();
+    const std::size_t added = layout.duplicates.size();
+    if (layout.source_vertices != vertex_count || layout.source_indices != index_count ||
+        layout.uv.size() != vertex_count + added || layout.patch_corner.size() != layout.patch_vertex.size()) {
+        return false;
     }
+    for (const std::uint32_t v : layout.duplicates) {
+        if (v >= vertex_count) return false;
+    }
+    for (std::size_t j = 0; j < layout.patch_corner.size(); ++j) {
+        if (layout.patch_corner[j] >= index_count || layout.patch_vertex[j] < vertex_count ||
+            layout.patch_vertex[j] >= vertex_count + added) {
+            return false;
+        }
+    }
+    // El hash al final: es lo mas caro (recorre toda la malla).
+    if (layout.source_hash != lightmapMeshHash(model)) return false;
 
-    out.source_vertices = static_cast<std::uint32_t>(vertex_count);
-    out.source_indices = static_cast<std::uint32_t>(model.indices.size());
-    out.source_hash = lightmapMeshHash(model);
-    out.surface_area = meshSurfaceArea(model);
-
-    // --- Caras: normal, area y vecinas (por aristas con la posicion soldada) ---
-    const std::vector<std::uint32_t> canonical = weldPositions(model.vertices);
-    std::vector<Vec3> area_normals(triangle_count);
-    std::vector<Vec3> unit_normals(triangle_count);
-    std::vector<bool> degenerate(triangle_count, false);
-    float max_area = 0.0f;
-    for (std::size_t t = 0; t < triangle_count; ++t) {
-        const Vec3& a = model.vertices[model.indices[t * 3]].position;
-        const Vec3& b = model.vertices[model.indices[t * 3 + 1]].position;
-        const Vec3& c = model.vertices[model.indices[t * 3 + 2]].position;
-        area_normals[t] = core::cross(b - a, c - a) * 0.5f;
-        max_area = std::max(max_area, core::length(area_normals[t]));
+    std::vector<asset::SkinnedVertex>& vertices = model.vertices.mut();
+    vertices.reserve(vertex_count + added);
+    for (std::size_t i = 0; i < added; ++i) {
+        const asset::SkinnedVertex copy = vertices[layout.duplicates[i]];
+        vertices.push_back(copy);
     }
-    for (std::size_t t = 0; t < triangle_count; ++t) {
-        const float area = core::length(area_normals[t]);
-        degenerate[t] = area <= max_area * 1e-9f || area <= 1e-14f;
-        unit_normals[t] = degenerate[t] ? Vec3{} : area_normals[t] * (1.0f / area);
+    if (!layout.patch_corner.empty()) {
+        std::vector<std::uint32_t>& indices = model.indices.mut();
+        for (std::size_t j = 0; j < layout.patch_corner.size(); ++j) indices[layout.patch_corner[j]] = layout.patch_vertex[j];
     }
-
-    std::vector<std::array<std::int32_t, 3>> adjacency(triangle_count, {-1, -1, -1});
-    {
-        std::unordered_map<std::uint64_t, std::uint64_t> edges;  // arista -> triangulo * 4 + lado (+1)
-        edges.reserve(triangle_count * 2);
-        for (std::size_t t = 0; t < triangle_count; ++t) {
-            for (int e = 0; e < 3; ++e) {
-                const std::uint32_t a = canonical[model.indices[t * 3 + static_cast<std::size_t>(e)]];
-                const std::uint32_t b = canonical[model.indices[t * 3 + static_cast<std::size_t>((e + 1) % 3)]];
-                if (a == b) continue;
-                const std::uint64_t key = (static_cast<std::uint64_t>(std::min(a, b)) << 32) | std::max(a, b);
-                const std::uint64_t mine = static_cast<std::uint64_t>(t) * 4 + static_cast<std::uint64_t>(e) + 1;
-                auto [it, inserted] = edges.try_emplace(key, mine);
-                if (inserted) continue;
-                if (it->second == 0) continue;  // ya tenia dos: no variedad, no se une
-                const std::uint64_t other = it->second - 1;
-                const std::size_t other_t = static_cast<std::size_t>(other / 4);
-                const std::size_t other_e = static_cast<std::size_t>(other % 4);
-                if (other_t != t) {
-                    adjacency[t][static_cast<std::size_t>(e)] = static_cast<std::int32_t>(other_t);
-                    adjacency[other_t][other_e] = static_cast<std::int32_t>(t);
-                }
-                it->second = 0;
-            }
-        }
+    model.lightmap_uvs.resize(layout.uv.size());
+    for (std::size_t i = 0; i < layout.uv.size(); ++i) model.lightmap_uvs[i] = unpackLightmapUv(layout.uv[i]);
+    model.lightmap_layout_hash = layout.layout_hash;
+    // Los LODs apuntaban a los vertices viejos: se rehacen sobre los nuevos
+    // (cada esquina con la UV de su carta; MeshLod no usa el simplificado
+    // "sloppy" con UV2).
+    if (!model.lods.empty() || !model.lod_indices.empty()) {
+        model.lods.clear();
+        model.lod_indices.clear();
+        asset::generateLods(model);
     }
-
-    // --- Cartas ---
-    const float cos_hard = std::cos(core::radians(std::clamp(settings.hard_angle, 1.0f, 89.0f)));
-    const float cos_max = std::cos(core::radians(75.0f));
-    std::vector<std::int32_t> label(triangle_count, -1);
-    std::vector<ChartBuild> charts;
-    {
-        std::vector<std::uint32_t> all(triangle_count);
-        std::iota(all.begin(), all.end(), 0u);
-        growCharts(all, adjacency, unit_normals, area_normals, degenerate, cos_hard, cos_max, label, charts);
-    }
-    // Triangulos degenerados: a la carta de un vecino (no ocupan nada).
-    for (bool changed = true; changed;) {
-        changed = false;
-        for (std::size_t t = 0; t < triangle_count; ++t) {
-            if (label[t] != -1) continue;
-            for (int e = 0; e < 3; ++e) {
-                const std::int32_t nb = adjacency[t][static_cast<std::size_t>(e)];
-                if (nb >= 0 && label[static_cast<std::size_t>(nb)] >= 0) {
-                    label[t] = label[static_cast<std::size_t>(nb)];
-                    charts[static_cast<std::size_t>(label[t])].triangles.push_back(static_cast<std::uint32_t>(t));
-                    changed = true;
-                    break;
-                }
-            }
-        }
-    }
-    for (std::size_t t = 0; t < triangle_count; ++t) {
-        if (label[t] != -1) continue;
-        label[t] = static_cast<std::int32_t>(charts.size());
-        charts.push_back(ChartBuild{{static_cast<std::uint32_t>(t)}});
-    }
-
-    // --- Proyeccion de cada carta; si se pisa a si misma, se parte ---
-    struct FinalChart {
-        std::vector<std::uint32_t> triangles;
-        ChartPlane plane;
-    };
-    std::vector<FinalChart> finals;
-    finals.reserve(charts.size());
-    std::vector<std::pair<ChartBuild, int>> work;
-    work.reserve(charts.size());
-    for (ChartBuild& chart : charts) work.emplace_back(std::move(chart), 0);
-    charts.clear();
-    while (!work.empty()) {
-        auto [chart, depth] = std::move(work.back());
-        work.pop_back();
-        Vec3 sum{};
-        for (std::uint32_t t : chart.triangles) sum += area_normals[t];
-        const ChartPlane plane = chartPlane(sum);
-        bool split = false;
-        if (chart.triangles.size() > 2 && depth < 3) {
-            std::vector<std::array<Vec2, 3>> flat;
-            flat.reserve(chart.triangles.size());
-            for (std::uint32_t t : chart.triangles) {
-                std::array<Vec2, 3> tri{};
-                for (int c = 0; c < 3; ++c) {
-                    const Vec3& p = model.vertices[model.indices[t * 3 + static_cast<std::size_t>(c)]].position;
-                    tri[static_cast<std::size_t>(c)] = Vec2{core::dot(p, plane.axis_u), core::dot(p, plane.axis_v)};
-                }
-                flat.push_back(tri);
-            }
-            split = chartOverlaps(flat);
-        } else if (chart.triangles.size() > 2) {
-            split = true;  // ultimo recurso: cada triangulo por su lado
-        }
-        if (!split) {
-            finals.push_back(FinalChart{std::move(chart.triangles), plane});
-            continue;
-        }
-        if (depth >= 3) {
-            for (std::uint32_t t : chart.triangles) {
-                finals.push_back(FinalChart{{t}, chartPlane(degenerate[t] ? sum : area_normals[t])});
-            }
-            continue;
-        }
-        // Otra vez, mas estricto, solo con estos triangulos.
-        for (std::uint32_t t : chart.triangles) label[t] = -1;
-        std::vector<ChartBuild> parts;
-        const float stricter_hard = std::cos(core::radians(std::clamp(settings.hard_angle, 1.0f, 89.0f) /
-                                                           static_cast<float>(2 << depth)));
-        const float stricter_max = std::cos(core::radians(45.0f / static_cast<float>(depth + 1)));
-        growCharts(chart.triangles, adjacency, unit_normals, area_normals, degenerate, stricter_hard, stricter_max,
-                   label, parts);
-        std::vector<std::uint32_t> left;
-        for (std::uint32_t t : chart.triangles) {
-            if (label[t] == -1) left.push_back(t);
-            label[t] = -2;  // ya no se toca desde fuera
-        }
-        for (std::uint32_t t : left) parts.push_back(ChartBuild{{t}});
-        if (parts.size() <= 1) {
-            // No se pudo partir: triangulo a triangulo.
-            for (std::uint32_t t : chart.triangles) {
-                finals.push_back(FinalChart{{t}, chartPlane(degenerate[t] ? sum : area_normals[t])});
-            }
-            continue;
-        }
-        for (ChartBuild& part : parts) work.emplace_back(std::move(part), depth + 1);
-    }
-
-    // --- Vertices nuevos (uno por vertice original y carta) en 2D ---
-    struct Placed {
-        std::uint32_t first_vertex = 0;
-        std::uint32_t vertex_count = 0;
-        Vec2 size{};
-    };
-    std::vector<Placed> placed(finals.size());
-    std::vector<Vec2> coords;  // 2D de cada vertice nuevo (unidades del modelo)
-    out.remap.reserve(vertex_count + vertex_count / 4);
-    coords.reserve(vertex_count + vertex_count / 4);
-    out.indices.assign(model.indices.size(), 0);
-    std::vector<std::uint32_t> stamp(vertex_count, UINT32_MAX);
-    std::vector<std::uint32_t> local(vertex_count, 0);
-    for (std::size_t c = 0; c < finals.size(); ++c) {
-        const FinalChart& chart = finals[c];
-        Placed& p = placed[c];
-        p.first_vertex = static_cast<std::uint32_t>(out.remap.size());
-        for (std::uint32_t t : chart.triangles) {
-            for (int k = 0; k < 3; ++k) {
-                const std::size_t slot = static_cast<std::size_t>(t) * 3 + static_cast<std::size_t>(k);
-                const std::uint32_t v = model.indices[slot];
-                if (stamp[v] != static_cast<std::uint32_t>(c)) {
-                    stamp[v] = static_cast<std::uint32_t>(c);
-                    local[v] = static_cast<std::uint32_t>(out.remap.size());
-                    out.remap.push_back(v);
-                    const Vec3& pos = model.vertices[v].position;
-                    coords.push_back(Vec2{core::dot(pos, chart.plane.axis_u), core::dot(pos, chart.plane.axis_v)});
-                }
-                out.indices[slot] = local[v];
-            }
-        }
-        p.vertex_count = static_cast<std::uint32_t>(out.remap.size()) - p.first_vertex;
-
-        // Giro de menor caja (un lado de la envolvente convexa va en un eje) y
-        // la carta tumbada (mas ancha que alta) para el empaquetado en estantes.
-        std::vector<Vec2> points(coords.begin() + p.first_vertex, coords.begin() + p.first_vertex + p.vertex_count);
-        const std::vector<Vec2> hull = convexHull(points);
-        float best_area = std::numeric_limits<float>::max();
-        float best_cos = 1.0f;
-        float best_sin = 0.0f;
-        for (std::size_t i = 0; i < hull.size(); ++i) {
-            const Vec2 edge = sub2(hull[(i + 1) % hull.size()], hull[i]);
-            const float length = std::sqrt(edge.x * edge.x + edge.y * edge.y);
-            if (length <= 1e-12f) continue;
-            const float cs = edge.x / length;
-            const float sn = edge.y / length;
-            float min_x = std::numeric_limits<float>::max(), max_x = -min_x, min_y = min_x, max_y = -min_x;
-            for (const Vec2& h : hull) {
-                const float x = h.x * cs + h.y * sn;
-                const float y = -h.x * sn + h.y * cs;
-                min_x = std::min(min_x, x);
-                max_x = std::max(max_x, x);
-                min_y = std::min(min_y, y);
-                max_y = std::max(max_y, y);
-            }
-            const float area = (max_x - min_x) * (max_y - min_y);
-            if (area < best_area) {
-                best_area = area;
-                best_cos = cs;
-                best_sin = sn;
-            }
-        }
-        Vec2 lo{std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
-        Vec2 hi{-lo.x, -lo.y};
-        for (std::uint32_t i = p.first_vertex; i < p.first_vertex + p.vertex_count; ++i) {
-            const Vec2 q = coords[i];
-            coords[i] = Vec2{q.x * best_cos + q.y * best_sin, -q.x * best_sin + q.y * best_cos};
-            lo = Vec2{std::min(lo.x, coords[i].x), std::min(lo.y, coords[i].y)};
-            hi = Vec2{std::max(hi.x, coords[i].x), std::max(hi.y, coords[i].y)};
-        }
-        const bool rotate = (hi.y - lo.y) > (hi.x - lo.x);
-        for (std::uint32_t i = p.first_vertex; i < p.first_vertex + p.vertex_count; ++i) {
-            const Vec2 q{coords[i].x - lo.x, coords[i].y - lo.y};
-            coords[i] = rotate ? Vec2{q.y, (hi.x - lo.x) - q.x} : q;
-        }
-        p.size = rotate ? Vec2{hi.y - lo.y, hi.x - lo.x} : Vec2{hi.x - lo.x, hi.y - lo.y};
-    }
-
-    // --- Empaquetado en estantes dentro de [0, 1]^2 ---
-    // Las cartas, de mas alta a mas baja; se busca la escala mayor que cabe.
-    std::vector<std::uint32_t> order(placed.size());
-    std::iota(order.begin(), order.end(), 0u);
-    std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
-        return placed[a].size.y != placed[b].size.y ? placed[a].size.y > placed[b].size.y : a < b;
-    });
-    double total_area = 0.0;
-    for (const Placed& p : placed) total_area += static_cast<double>(p.size.x) * static_cast<double>(p.size.y);
-    std::vector<Vec2> position(placed.size());
-    float padding = std::clamp(settings.padding, 0.0f, 0.25f);
-    const auto pack = [&](float scale, bool write) {
-        float cursor_x = 0.0f;
-        float shelf_y = 0.0f;
-        float shelf_h = 0.0f;
-        for (std::uint32_t c : order) {
-            const float w = placed[c].size.x * scale + padding;
-            const float h = placed[c].size.y * scale + padding;
-            if (w > 1.0f) return false;
-            if (cursor_x + w > 1.0f) {
-                shelf_y += shelf_h;
-                cursor_x = 0.0f;
-                shelf_h = 0.0f;
-            }
-            if (shelf_y + h > 1.0f) return false;
-            if (write) position[c] = Vec2{cursor_x + padding * 0.5f, shelf_y + padding * 0.5f};
-            cursor_x += w;
-            shelf_h = std::max(shelf_h, h);
-        }
-        return true;
-    };
-    // Con muchas cartas el hueco solo ya no cabe: se reduce.
-    while (padding > 1e-5f && !pack(1e-9f, false)) padding *= 0.7f;
-    if (!pack(1e-9f, false)) padding = 0.0f;
-    float low = 0.0f;
-    float high = total_area > 0.0 ? static_cast<float>(1.0 / std::sqrt(total_area)) : 1.0f;
-    // high puede caber (cartas con 0 de area): se sube hasta que no quepa.
-    for (int i = 0; i < 40 && pack(high, false); ++i) {
-        low = high;
-        high *= 2.0f;
-    }
-    for (int i = 0; i < 24; ++i) {
-        const float mid = 0.5f * (low + high);
-        if (pack(mid, false)) {
-            low = mid;
-        } else {
-            high = mid;
-        }
-    }
-    const float scale = low;
-    pack(scale, true);
-
-    out.uvs.resize(out.remap.size());
-    double uv_area = 0.0;
-    for (std::size_t c = 0; c < placed.size(); ++c) {
-        const Placed& p = placed[c];
-        for (std::uint32_t i = p.first_vertex; i < p.first_vertex + p.vertex_count; ++i) {
-            out.uvs[i] = Vec2{std::clamp(position[c].x + coords[i].x * scale, 0.0f, 1.0f),
-                              std::clamp(position[c].y + coords[i].y * scale, 0.0f, 1.0f)};
-        }
-        uv_area += static_cast<double>(p.size.x * scale) * static_cast<double>(p.size.y * scale);
-    }
-    out.charts = static_cast<std::uint32_t>(placed.size());
-    out.uv_area = static_cast<float>(std::clamp(uv_area, 0.0, 1.0));
     return true;
 }
 
-bool applyLightmapUvs(asset::ModelData& model, const LightmapUvLayout& layout) {
-    if (layout.source_vertices != model.vertices.size() || layout.source_indices != model.indices.size() ||
-        layout.uvs.size() != layout.remap.size() || layout.indices.size() != model.indices.size() ||
-        layout.source_hash != lightmapMeshHash(model)) {
+std::vector<std::uint8_t> encodeLightmapUvLayout(const LightmapUvLayout& l) {
+    Writer w;
+    w.bytes.reserve(96 + (l.duplicates.size() + l.patch_corner.size() * 2 + l.uv.size()) * 4);
+    w.put(l.source_hash);
+    w.put(l.source_vertices);
+    w.put(l.source_indices);
+    w.put(l.settings_hash);
+    w.put(l.layout_hash);
+    w.put(l.width);
+    w.put(l.height);
+    w.put(l.texels_per_unit);
+    w.put(l.charts);
+    w.put(l.ignored_triangles);
+    w.put(l.utilization);
+    w.put(l.lightmapped_area);
+    w.put(static_cast<std::uint32_t>(l.duplicates.size()));
+    w.put(static_cast<std::uint32_t>(l.patch_corner.size()));
+    w.put(static_cast<std::uint32_t>(l.uv.size()));
+    w.putArray(l.duplicates);
+    w.putArray(l.patch_corner);
+    w.putArray(l.patch_vertex);
+    w.putArray(l.uv);
+    return std::move(w.bytes);
+}
+
+bool decodeLightmapUvLayout(const std::uint8_t* data, std::size_t size, LightmapUvLayout& out) {
+    Reader r{data, size};
+    LightmapUvLayout l;
+    std::uint32_t duplicates = 0, patches = 0, uvs = 0;
+    if (!r.get(l.source_hash) || !r.get(l.source_vertices) || !r.get(l.source_indices) || !r.get(l.settings_hash) ||
+        !r.get(l.layout_hash) || !r.get(l.width) || !r.get(l.height) || !r.get(l.texels_per_unit) || !r.get(l.charts) ||
+        !r.get(l.ignored_triangles) || !r.get(l.utilization) || !r.get(l.lightmapped_area) || !r.get(duplicates) ||
+        !r.get(patches) || !r.get(uvs)) {
         return false;
     }
-    for (std::uint32_t v : layout.remap) {
-        if (v >= model.vertices.size()) return false;
+    // Limites de cordura (un archivo danado no reserva gigas) y coherencia.
+    if (duplicates > (1u << 28) || patches > (1u << 30) || uvs > (1u << 29) ||
+        static_cast<std::uint64_t>(uvs) != static_cast<std::uint64_t>(l.source_vertices) + duplicates) {
+        return false;
     }
-    for (std::uint32_t i : layout.indices) {
-        if (i >= layout.remap.size()) return false;
+    if (!r.getArray(l.duplicates, duplicates) || !r.getArray(l.patch_corner, patches) ||
+        !r.getArray(l.patch_vertex, patches) || !r.getArray(l.uv, uvs)) {
+        return false;
     }
-    std::vector<asset::SkinnedVertex> vertices(layout.remap.size());
-    for (std::size_t i = 0; i < layout.remap.size(); ++i) vertices[i] = model.vertices[layout.remap[i]];
-    model.vertices = std::move(vertices);
-    model.indices = layout.indices;
-    model.lightmap_uvs = layout.uvs;
-    // Los LODs apuntaban a los vertices viejos: se rehacen sobre los nuevos
-    // (cada esquina con la UV de su carta).
-    if (!model.lods.empty() || !model.lod_indices.empty()) asset::generateLods(model);
+    out = std::move(l);
     return true;
 }
 
 bool saveLightmapUvLayout(const std::filesystem::path& file, const LightmapUvLayout& layout) {
+    const std::vector<std::uint8_t> raw = encodeLightmapUvLayout(layout);
+    std::vector<std::uint8_t> packed(ZSTD_compressBound(raw.size()));
+    const std::size_t stored = ZSTD_compress(packed.data(), packed.size(), raw.data(), raw.size(), 6);
+    if (ZSTD_isError(stored)) return false;
     std::error_code error;
     std::filesystem::create_directories(file.parent_path(), error);
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    if (!out) return false;
-    const auto put = [&](const void* data, std::size_t size) { out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size)); };
-    put(kMagic, sizeof(kMagic));
-    put(&kVersion, sizeof(kVersion));
-    put(&layout.source_vertices, sizeof(layout.source_vertices));
-    put(&layout.source_indices, sizeof(layout.source_indices));
-    put(&layout.source_hash, sizeof(layout.source_hash));
-    put(&layout.charts, sizeof(layout.charts));
-    put(&layout.uv_area, sizeof(layout.uv_area));
-    put(&layout.surface_area, sizeof(layout.surface_area));
-    const auto vertices = static_cast<std::uint32_t>(layout.remap.size());
-    const auto indices = static_cast<std::uint32_t>(layout.indices.size());
-    put(&vertices, sizeof(vertices));
-    put(&indices, sizeof(indices));
-    put(layout.remap.data(), layout.remap.size() * sizeof(std::uint32_t));
-    put(layout.indices.data(), layout.indices.size() * sizeof(std::uint32_t));
-    put(layout.uvs.data(), layout.uvs.size() * sizeof(Vec2));
-    return static_cast<bool>(out);
+    // A un temporal y renombrar: dos hilos (o el editor y una herramienta)
+    // escribiendo la misma pieza no dejan un archivo a medias.
+    std::filesystem::path temporary = file;
+    temporary += ".tmp";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        const std::uint64_t raw_size = raw.size();
+        out.write(kMagic, sizeof(kMagic));
+        out.write(reinterpret_cast<const char*>(&kFileVersion), sizeof(kFileVersion));
+        out.write(reinterpret_cast<const char*>(&raw_size), sizeof(raw_size));
+        out.write(reinterpret_cast<const char*>(packed.data()), static_cast<std::streamsize>(stored));
+        if (!out) return false;
+    }
+    std::filesystem::rename(temporary, file, error);
+    if (error) {
+        std::filesystem::remove(temporary, error);
+        return false;
+    }
+    return true;
 }
 
 bool loadLightmapUvLayout(const std::filesystem::path& file, LightmapUvLayout& out) {
-    std::ifstream in(file, std::ios::binary);
-    if (!in) return false;
-    const auto get = [&](void* data, std::size_t size) {
-        in.read(static_cast<char*>(data), static_cast<std::streamsize>(size));
-        return static_cast<bool>(in);
-    };
-    char magic[4] = {};
+    std::error_code error;
+    const std::uintmax_t size = std::filesystem::file_size(file, error);
+    if (error || size < 16) return false;
+    std::vector<std::uint8_t> bytes;
+    if (!readBytes(file, 0, size, bytes)) return false;
     std::uint32_t version = 0;
-    if (!get(magic, sizeof(magic)) || std::memcmp(magic, kMagic, sizeof(kMagic)) != 0) return false;
-    if (!get(&version, sizeof(version)) || version != kVersion) return false;
-    LightmapUvLayout layout;
-    std::uint32_t vertices = 0;
-    std::uint32_t indices = 0;
-    if (!get(&layout.source_vertices, sizeof(layout.source_vertices)) ||
-        !get(&layout.source_indices, sizeof(layout.source_indices)) ||
-        !get(&layout.source_hash, sizeof(layout.source_hash)) || !get(&layout.charts, sizeof(layout.charts)) ||
-        !get(&layout.uv_area, sizeof(layout.uv_area)) || !get(&layout.surface_area, sizeof(layout.surface_area)) ||
-        !get(&vertices, sizeof(vertices)) || !get(&indices, sizeof(indices))) {
+    std::uint64_t raw_size = 0;
+    std::memcpy(&version, bytes.data() + 4, sizeof(version));
+    std::memcpy(&raw_size, bytes.data() + 8, sizeof(raw_size));
+    if (std::memcmp(bytes.data(), kMagic, sizeof(kMagic)) != 0 || version != kFileVersion || raw_size > (1ull << 32)) {
         return false;
     }
-    // Limites de cordura (un archivo danado no reserva gigas).
-    if (vertices > (1u << 28) || indices > (1u << 30)) return false;
-    layout.remap.resize(vertices);
-    layout.indices.resize(indices);
-    layout.uvs.resize(vertices);
-    if (!get(layout.remap.data(), layout.remap.size() * sizeof(std::uint32_t)) ||
-        !get(layout.indices.data(), layout.indices.size() * sizeof(std::uint32_t)) ||
-        !get(layout.uvs.data(), layout.uvs.size() * sizeof(Vec2))) {
-        return false;
+    std::vector<std::uint8_t> raw(static_cast<std::size_t>(raw_size));
+    const std::size_t got = ZSTD_decompress(raw.data(), raw.size(), bytes.data() + 16, bytes.size() - 16);
+    if (ZSTD_isError(got) || got != raw.size()) return false;
+    return decodeLightmapUvLayout(raw.data(), raw.size(), out);
+}
+
+std::shared_ptr<const LightmapUvLayout> LightmapUvSet::load(const Uuid& model, int part) const {
+    const auto it = parts.find(LightmapUvPartKey{model, part});
+    if (it == parts.end()) return nullptr;
+    const Source& source = it->second;
+    if (source.layout) return source.layout;
+    auto layout = std::make_shared<LightmapUvLayout>();
+    if (source.stored == 0) {
+        // Un .cruv de Library/Cache/LightmapUV.
+        if (!loadLightmapUvLayout(source.file, *layout)) return nullptr;
+        return layout;
     }
-    out = std::move(layout);
-    return true;
-}
-
-// --- Registro -------------------------------------------------------------------
-
-namespace {
-
-std::mutex& registryMutex() {
-    static std::mutex mutex;
-    return mutex;
-}
-
-std::map<std::pair<Uuid, int>, std::shared_ptr<const LightmapUvLayout>>& registry() {
-    static std::map<std::pair<Uuid, int>, std::shared_ptr<const LightmapUvLayout>> map;
-    return map;
-}
-
-}  // namespace
-
-void registerLightmapUvs(const Uuid& model, int part, std::shared_ptr<const LightmapUvLayout> layout) {
-    std::lock_guard lock(registryMutex());
-    if (layout) {
-        registry()[{model, part}] = std::move(layout);
-    } else {
-        registry().erase({model, part});
+    // Un trozo UVLY de un .crbake: [offset, offset + stored).
+    std::vector<std::uint8_t> stored;
+    if (!readBytes(source.file, source.offset, source.stored, stored)) return nullptr;
+    if (!source.zstd) {
+        if (!decodeLightmapUvLayout(stored.data(), stored.size(), *layout)) return nullptr;
+        return layout;
     }
+    if (source.raw > (1ull << 32)) return nullptr;
+    std::vector<std::uint8_t> raw(static_cast<std::size_t>(source.raw));
+    const std::size_t got = ZSTD_decompress(raw.data(), raw.size(), stored.data(), stored.size());
+    if (ZSTD_isError(got) || got != raw.size()) return nullptr;
+    if (!decodeLightmapUvLayout(raw.data(), raw.size(), *layout)) return nullptr;
+    return layout;
 }
 
-void clearLightmapUvRegistry() {
-    std::lock_guard lock(registryMutex());
-    registry().clear();
-}
-
-std::shared_ptr<const LightmapUvLayout> registeredLightmapUvs(const Uuid& model, int part) {
-    std::lock_guard lock(registryMutex());
-    const auto it = registry().find({model, part});
-    return it != registry().end() ? it->second : nullptr;
-}
-
-bool applyRegisteredLightmapUvs(const Uuid& model, int part, asset::ModelData& data) {
-    if (!data.lightmap_uvs.empty()) return true;  // ya las tiene
-    const std::shared_ptr<const LightmapUvLayout> layout = registeredLightmapUvs(model, part);
-    if (!layout) return false;
-    if (!applyLightmapUvs(data, *layout)) {
-        std::cerr << "[Lightmap] Las UV de lightmap de " << data.name
-                  << " son de otra version de la malla: vuelve a hornear la iluminacion\n";
-        return false;
-    }
-    return true;
+std::filesystem::path lightmapUvCacheFile(const std::filesystem::path& cache_folder, std::uint64_t source_hash,
+                                          std::uint64_t settings_hash) {
+    char name[64];
+    std::snprintf(name, sizeof(name), "%016llx_%016llx.cruv", static_cast<unsigned long long>(source_hash),
+                  static_cast<unsigned long long>(settings_hash));
+    return cache_folder / name;
 }
 
 }  // namespace cramion::lighting

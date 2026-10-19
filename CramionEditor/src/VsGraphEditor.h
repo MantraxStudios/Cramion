@@ -2,8 +2,10 @@
 #define CRAMION_EDITOR_VS_GRAPH_EDITOR_H
 
 // Edicion de un grafo de Visual Script sin ventana propia: lienzo, Mi
-// Blueprint (variables), Detalles y resultados de compilacion. Lo usan la
-// pestana Blueprint (EditorBlueprint.cpp) y el editor .crgraph suelto.
+// Blueprint (grafos, funciones, macros y variables), Detalles y resultados de
+// compilacion. Lo usan la pestana Blueprint (EditorBlueprint.cpp) y el editor
+// .crgraph suelto. El lienzo ensena un grafo cada vez (Document::active): el
+// Event Graph, el Construction Script o una funcion / macro.
 
 #include "NodeGraph.h"
 
@@ -15,8 +17,11 @@
 #include <deque>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -89,6 +94,13 @@ struct Document {
     core::Vec2 var_drop_at{};
     std::optional<EntityDrop> entity_drop;  // objeto soltado con Ctrl (menu de sus componentes)
     core::Vec2 entity_drop_at{};
+    // Fase 2: el grafo que se ve ("" Event Graph, "construction", "fn:X",
+    // "macro:X"), la funcion/macro en Detalles y los pines vigilados en Play
+    // (nodo, pin, salida): burbuja fija con su valor.
+    std::string active;
+    std::string details_function;
+    std::set<std::tuple<int, int, bool>> watches;
+    std::map<std::string, std::pair<core::Vec2, float>> views;  // pan y zoom de cada grafo al dejarlo
 };
 
 bool open(Document& doc, const std::filesystem::path& file, const std::filesystem::path& assets_root,
@@ -99,6 +111,13 @@ bool compile(Document& doc, const Host& host);
 Status status(const Document& doc);
 bool undo(Document& doc);
 bool redo(Document& doc);
+// Ensena otro grafo del documento ("" Event Graph, "construction", "fn:X",
+// "macro:X"). El Construction Script se crea con su nodo la primera vez.
+void showGraph(Document& doc, const std::string& key);
+// Lleva la vista a un nodo (cambia de grafo si hace falta), lo elige y lo ensena en Detalles.
+void focusNode(Document& doc, int id);
+// Nombre del grafo para la interfaz ("Event Graph", "Funcion: Danar"...).
+std::string graphLabel(const std::string& key);
 
 // save/compile: el usuario lo pidio con el lienzo enfocado (Ctrl+S / F7); lo hace quien llama.
 struct DrawResult { bool changed = false; bool save = false; bool compile = false; };

@@ -55,7 +55,9 @@ std::size_t mipByteSize(TextureFormat format, std::uint32_t width, std::uint32_t
 // Unreal). Color (albedo, emisivo) y datos (metal, rugosidad, oclusion)
 // opacos van a BC1 (4 bits por pixel); los normal maps, lo que tiene alfa,
 // los datos finos (la altura del parallax) y lo que no se sabe, a BC7 (8).
-enum class TextureUsage : std::uint8_t { Unknown, Color, Normal, Data, PreciseData };
+// Ui: imagenes de la interfaz (ImGui): BC7 y mips sin pasar a lineal, como
+// los hacia la GPU con un blit sobre RGBA8 UNORM.
+enum class TextureUsage : std::uint8_t { Unknown, Color, Normal, Data, PreciseData, Ui };
 
 // Imagen del modelo. Mientras se carga guarda el archivo tal cual (`encoded`,
 // PNG/JPG/TGA/DDS) o solo su ruta (`source_path`); al final todas se leen y
@@ -158,6 +160,14 @@ struct MaterialData {
     // emision; -1 = la textura normal. Los pone RenderSync.
     std::int32_t albedo_render_texture = -1;
     std::int32_t emissive_render_texture = -1;
+
+    // Tiling del .crmat: la UV de todas sus texturas es uv * uv_scale +
+    // uv_offset. Lo aplican los shaders (set 1 del material; rayos: su
+    // material), no los vertices: una variante que solo cambia el tiling
+    // comparte la malla con su original. Lo pone RenderSync; no se guarda en
+    // la cache del modelo.
+    core::Vec2 uv_scale{1.0f, 1.0f};
+    core::Vec2 uv_offset{0.0f, 0.0f};
 };
 
 // Tramo del buffer de indices que se dibuja con un material. Los escenarios
@@ -258,8 +268,13 @@ struct ModelData {
 
     // UV de lightmap (UV2) por vertice, en [0, 1]: las pone la iluminacion
     // horneada al cargar (CramionCore lighting::applyLightmapUvs). Vacio = sin
-    // lightmap. Como los LODs, no se guardan en la cache ni en el .crdata.
+    // lightmap; (-1, -1) = ese vertice no lo tiene (pieza diminuta: sondas).
+    // Como los LODs, no se guardan en la cache ni en el .crdata.
     std::vector<core::Vec2> lightmap_uvs;
+    // Huella de la disposicion aplicada (LightmapUvLayout::layout_hash; 0 =
+    // ninguna): RenderSync solo usa un registro del lightmap si coincide. Solo
+    // en memoria: no se guarda nunca.
+    std::uint64_t lightmap_layout_hash = 0;
 };
 
 // Genera los LODs de un modelo estatico (sin animaciones, un hueso) con
@@ -267,6 +282,20 @@ struct ModelData {
 // quitando las piezas sueltas que ya no se ven (hojas, briznas). No hace nada
 // con modelos animados o de pocos triangulos. Devuelve los niveles creados.
 std::size_t generateLods(ModelData& model);
+
+// Ordena los triangulos de cada submalla para que la GPU reutilice los
+// vertices ya transformados (meshopt_optimizeVertexCache): mismos triangulos
+// y en la misma submalla, solo en otro orden. Las de materiales transparentes
+// no se tocan (el orden cambia la mezcla). Devuelve los vertices transformados
+// por triangulo (ACMR, modelo de cache de 16) antes y despues.
+struct VertexCacheStats {
+    float acmr_before = 0.0f;
+    float acmr_after = 0.0f;
+};
+VertexCacheStats optimizeVertexCache(std::vector<std::uint32_t>& indices, const std::vector<SubMesh>& submeshes,
+                                     const std::vector<MaterialData>& materials, std::size_t vertex_count);
+// La de LOD0 (model.indices); generateLods la aplica tambien a cada nivel.
+VertexCacheStats optimizeVertexCache(ModelData& model);
 
 // Parte en clusteres unas submallas cualesquiera (como clusterSubmeshes) y
 // calcula sus cajas. Para los LODs, que tienen sus propios indices.

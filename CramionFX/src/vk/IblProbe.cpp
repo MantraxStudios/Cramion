@@ -119,8 +119,10 @@ void IblProbe::create(const VulkanDevice& device, const VulkanImage& sky_lut) {
 
     // --- Irradiancia (9 coeficientes vec4) ---
     const std::array<core::Vec4, 9> zero{};
+    // (+ origen de copia: el horneado lee el cielo, VulkanRenderer::readSkyIrradianceSh.)
     irradiance_ = VulkanBuffer::createDeviceLocal(device, zero.data(), sizeof(zero),
-                                                  vk::BufferUsageFlagBits::eStorageBuffer);
+                                                  vk::BufferUsageFlagBits::eStorageBuffer |
+                                                      vk::BufferUsageFlagBits::eTransferSrc);
 
     // Trilineal: la rugosidad elige un mip fraccionario del cubo.
     vk::SamplerCreateInfo sampler_info{};

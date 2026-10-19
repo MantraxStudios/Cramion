@@ -1,6 +1,7 @@
 // Decodificador vacio: las plataformas sin backend de video (servidor de
-// Linux; Android hasta la Fase 2 con AMediaCodec). open() falla con un motivo
-// claro y el reproductor pasa a PlayerState::Error sin bloquear nada.
+// Linux sin FFmpeg) y lo que necesita FFmpeg sin compilarlo (RTSP, DASH).
+// open() falla con un motivo claro y el reproductor pasa a
+// PlayerState::Error sin bloquear nada.
 
 #include "DecoderInternal.h"
 
@@ -45,9 +46,10 @@ std::string platformUnsupportedReason() {
 #if defined(_WIN32)
     return "Media Foundation no esta disponible";
 #elif defined(__ANDROID__)
-    return "La reproduccion de video en Android llega en la Fase 2 (AMediaCodec)";
+    return "Este movil no puede reproducir el video (MediaCodec)";
 #else
-    return "Esta plataforma no reproduce video (el servidor de Linux ignora los VideoPlayer)";
+    return "Esta plataforma no reproduce video (el servidor de Linux ignora los VideoPlayer; con "
+           "CRAMION_WITH_FFMPEG si los reproduce)";
 #endif
 }
 

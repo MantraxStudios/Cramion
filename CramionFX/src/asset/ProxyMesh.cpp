@@ -1,6 +1,7 @@
 #include "CramionFX/asset/ProxyMesh.h"
 
 #include "CramionFX/asset/Dds.h"
+#include "CramionFX/asset/TextureStats.h"
 
 #include <meshoptimizer.h>
 
@@ -27,35 +28,6 @@ core::Vec3 transformNormal(const core::Mat4& m, const core::Vec3& n) {
 
 float toLinear(float c) { return std::pow(std::clamp(c, 0.0f, 1.0f), 2.2f); }
 float toSrgb(float c) { return std::pow(std::clamp(c, 0.0f, 1.0f), 1.0f / 2.2f); }
-
-// Color medio (lineal) de la textura de albedo (muestreo disperso).
-bool averageTexture(const TextureData& t, core::Vec3& out) {
-    std::vector<std::uint8_t> decoded;
-    const std::uint8_t* px = nullptr;
-    if (t.format == TextureFormat::Rgba8) {
-        if (t.pixels.size() < static_cast<std::size_t>(t.width) * t.height * 4) return false;
-        px = t.pixels.data();
-    } else {
-        decoded = decodeBlockCompressed(t);
-        if (decoded.size() < static_cast<std::size_t>(t.width) * t.height * 4) return false;
-        px = decoded.data();
-    }
-    const std::size_t count = static_cast<std::size_t>(t.width) * t.height;
-    if (count == 0) return false;
-    const std::size_t step = std::max<std::size_t>(count / 2048, 1);
-    double r = 0.0, g = 0.0, b = 0.0, n = 0.0;
-    for (std::size_t i = 0; i < count; i += step) {
-        const std::uint8_t* p = px + i * 4;
-        if (p[3] < 64) continue;  // recortado (hojas): no cuenta
-        r += toLinear(p[0] / 255.0f);
-        g += toLinear(p[1] / 255.0f);
-        b += toLinear(p[2] / 255.0f);
-        n += 1.0;
-    }
-    if (n <= 0.0) return false;
-    out = core::Vec3{static_cast<float>(r / n), static_cast<float>(g / n), static_cast<float>(b / n)};
-    return true;
-}
 
 }  // namespace
 
@@ -84,7 +56,7 @@ bool buildProxyMesh(const std::vector<ProxyPart>& parts, float ratio, std::size_
                 core::Vec3 c{toLinear(mat.base_color.x), toLinear(mat.base_color.y), toLinear(mat.base_color.z)};
                 core::Vec3 tex{1.0f, 1.0f, 1.0f};
                 if (mat.albedo_texture >= 0 && mat.albedo_texture < static_cast<std::int32_t>(m->textures.size())) {
-                    averageTexture(m->textures[static_cast<std::size_t>(mat.albedo_texture)], tex);
+                    averageTextureLinear(m->textures[static_cast<std::size_t>(mat.albedo_texture)], tex);
                 }
                 colors.push_back(c * tex);
             }

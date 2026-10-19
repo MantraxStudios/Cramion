@@ -189,10 +189,13 @@ vk::PresentModeKHR VulkanSwapchain::choosePresentMode(
     // VSync: FIFO (siempre esta garantizado).
     if (vsync_) return vk::PresentModeKHR::eFifo;
     // Mailbox = triple buffer sin tearing.
-    const bool has_mailbox = std::find(available.begin(), available.end(),
-                                       vk::PresentModeKHR::eMailbox) != available.end();
-
-    return has_mailbox ? vk::PresentModeKHR::eMailbox : vk::PresentModeKHR::eFifo;
+    const auto has = [&](vk::PresentModeKHR mode) {
+        return std::find(available.begin(), available.end(), mode) != available.end();
+    };
+    if (has(vk::PresentModeKHR::eMailbox)) return vk::PresentModeKHR::eMailbox;
+    // Sin Mailbox (p. ej. integradas AMD), Immediate: si no, vsync=0 seguiria atado al refresco de la pantalla.
+    if (has(vk::PresentModeKHR::eImmediate)) return vk::PresentModeKHR::eImmediate;
+    return vk::PresentModeKHR::eFifo;
 }
 
 vk::Extent2D VulkanSwapchain::chooseExtent(const vk::SurfaceCapabilitiesKHR& capabilities,

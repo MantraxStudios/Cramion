@@ -625,6 +625,13 @@ template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typenam
 Value setTile(const T0& x = {}, const T1& y = {}, const T2& id = {}, const T3& capa = {}) const {
     return call("setTile", Values{Value(x), Value(y), Value(id), Value(capa)});
 }
+/// entity().setUvRect(x, y, ancho, alto)
+/// parte de la textura de su UIImage (atlas de iconos), 0..1 desde arriba a la izquierda
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+Value setUvRect(const T0& x = {}, const T1& y = {}, const T2& ancho = {}, const T3& alto = {}) const {
+    return call("setUvRect", Values{Value(x), Value(y), Value(ancho), Value(alto)});
+}
 /// entity().setVehicleInput(acelerador, direccion, freno, freno de mano)
 /// conduce su Vehicle
 template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
@@ -769,9 +776,23 @@ Value translateLocal(const T0& vec = {}) const {
 /// entity.uiPosition: Vec3 posicion de su RectTransform (Vec3)
 Value uiPosition() const { return get("uiPosition"); }
 void setUiPosition(const Value& v) const { set("uiPosition", v); }
+/// entity().uiScreenRect()
+/// rectangulo en pantalla (pixeles de la vista, ultimo frame): {x, y, width, height} o nil si no se ve
+/// Devuelve: objeto
+template <typename... Mas>
+Value uiScreenRect(Mas&&... mas) const {
+    return call("uiScreenRect", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity.uiSize: Vec3 tamano de su RectTransform (Vec3)
 Value uiSize() const { return get("uiSize"); }
 void setUiSize(const Value& v) const { set("uiSize", v); }
+/// entity().uvRect()
+/// parte de la textura de su UIImage: {x, y, width, height} (0..1)
+/// Devuelve: objeto
+template <typename... Mas>
+Value uvRect(Mas&&... mas) const {
+    return call("uvRect", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity.value: valor de su Slider o Casilla (numero)
 Value value() const { return get("value"); }
 void setValue(const Value& v) const { set("value", v); }

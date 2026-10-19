@@ -51,6 +51,15 @@ struct GpuSpotLight {
                                        // z = fuerza, w = radio de la fuente (m)
 };
 
+// Teselas de las luces puntuales: como mucho 64 x 36 (la pantalla 16:9 en
+// teselas de 30 px a 1080p; de 18 px a 1129x624). Medido en la Vega 7: en el
+// UBO de las luces y con 64 x 36 la iluminacion va mas rapida (5,3 -> 4,9 ms)
+// que en un binding aparte o con 32 x 18 (5,2 ms).
+inline constexpr std::uint32_t kMaxLightTileColumns = 64;
+inline constexpr std::uint32_t kMaxLightTileRows = 36;
+inline constexpr std::uint32_t kMaxLightTiles = kMaxLightTileColumns * kMaxLightTileRows;
+static_assert(scene::kMaxPointLights <= 32, "un bit por luz puntual en cada tesela");
+
 struct GpuLights {
     core::Vec4 sun_direction_intensity{};
     core::Vec4 sun_color_ambient{};
@@ -100,7 +109,17 @@ struct GpuLights {
     // que falta lo pone el cielo. (El vidrio, el agua y los liquidos usan solo
     // el fundido: su entorno no sabe del techo y daba destellos de cielo.)
     core::Vec4 probe_trust{1.0f, 1.0f, 0.0f, 0.0f};
+    // Luces puntuales por teselas (solo lighting.frag): la imagen, a la
+    // resolucion interna, en light_tiles[2] x light_tiles[3] teselas de
+    // light_tiles[0] x light_tiles[1] pixeles. Cada tesela tiene un bit por
+    // luz puntual (indice en points[]) cuya esfera puede caer en ella; el
+    // shader solo recorre esas. light_tiles[2] = 0: sin teselas (todas las
+    // luces en todos los pixeles, como antes). En std140, uvec4 light_tiles y
+    // uvec4 point_tiles[kMaxLightTiles / 4].
+    std::uint32_t light_tiles[4]{};
+    std::uint32_t point_tiles[kMaxLightTiles]{};
 };
+static_assert(kMaxLightTiles % 4 == 0, "point_tiles va en uvec4 en lighting.frag");
 
 // Constante de push de los modelos con esqueleto (pasada de geometria). Son
 // exactamente 128 bytes, el minimo que garantiza Vulkan.
@@ -129,6 +148,10 @@ struct GpuSkinnedPush {
     static constexpr std::uint32_t kFlagTessellation = 1u << 4;
     // Auto-sombra del parallax hacia el sol.
     static constexpr std::uint32_t kFlagParallaxShadow = 1u << 5;
+    // El modelo tiene UV de lightmap (set 1, binding 10: una por vertice). Solo
+    // en los dibujos de lo estatico (lotes y per_submesh): el hueco de la
+    // instancia es el de su matriz en el buffer de huesos.
+    static constexpr std::uint32_t kFlagLightmap = 1u << 6;
     // Bits 8-15: teselacion maxima del material (1..64).
     static constexpr std::uint32_t kTessFactorShift = 8;
     static constexpr std::uint32_t kTessFactorMask = 0xFFu << kTessFactorShift;
@@ -168,6 +191,9 @@ struct GpuSkinnedShadowPush {
     std::uint32_t flags = 0;
     core::Vec4 camera_model{};
     core::Vec4 model_scale{1.0f, 1.0f, 1.0f, 0.0f};
+    // Alfa del color base del material (skinned_shadow.frag): el recorte de
+    // la sombra usa textura x factor, como el pase principal.
+    float alpha_factor = 1.0f;
 };
 
 // Un meshlet (mesh shaders): esfera, cono de normales (meshoptimizer) y
@@ -195,7 +221,7 @@ struct GpuMeshletShadowPush {
 static_assert(sizeof(GpuMeshletShadowPush) == 96, "GpuMeshletShadowPush debe coincidir con shadow_meshlet.task");
 
 static_assert(sizeof(GpuSkinnedPush) == 128, "GpuSkinnedPush debe coincidir con skinned.vert");
-static_assert(sizeof(GpuSkinnedShadowPush) == 112,
+static_assert(sizeof(GpuSkinnedShadowPush) == 116,
               "GpuSkinnedShadowPush debe coincidir con skinned_shadow.vert");
 
 // Constante de push del post-proceso (fxaa.frag): tamano de pixel,
@@ -318,8 +344,25 @@ struct GpuWeather {
     // geometria, FirePass) es la zona N.
     core::Vec4 fire_zones[4]{};
     GpuDecal decals[kMaxDecals]{};
+    // Lightmaps (gbuffer_surface.glsl; al final: los shaders que leen solo el
+    // principio del bloque no cambian). x = 0 sin lightmaps, 1 solo la
+    // visibilidad del sol, 2 con irradiancia (Fase 3); y = fuerza de la
+    // sombra horneada del sol (0 = sin sombras del sol); z = vista de
+    // depuracion (1 irradiancia, 2 visibilidad del sol, 3 UV2/densidad).
+    // (PLAN-LIGHTMAPS 2.5 lo ponia en decal_info.yzw, que ya usa el parallax.)
+    core::Vec4 lightmap{};
 };
 inline constexpr std::uint32_t kMaxFireZones = 4;
+
+// Registro de lightmap de una instancia (set 0, binding 8, std430): mismo
+// hueco que su matriz en el buffer de huesos. layer = capa del atlas
+// (0xFFFFFFFF = sin lightmap); uv_atlas = uv2 * scale_offset.xy + .zw.
+struct GpuLightmapRecord {
+    core::Vec4 scale_offset{1.0f, 1.0f, 0.0f, 0.0f};
+    std::uint32_t layer = 0xFFFFFFFFu;
+    std::uint32_t pad[3] = {0, 0, 0};
+};
+static_assert(sizeof(GpuLightmapRecord) == 32, "GpuLightmapRecord debe coincidir con lightmap_common.glsl");
 
 // Constante de push de las nubes volumetricas (clouds.frag).
 // Constante de push de la luz volumetrica (volumetric.frag).

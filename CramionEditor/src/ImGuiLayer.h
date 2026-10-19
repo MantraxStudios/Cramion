@@ -135,6 +135,12 @@ public:
     // primera vez (el atlas dinamico de ImGui la rasteriza a cada tamano, asi
     // que se ve nitida a cualquier escala). nullptr si no se pudo.
     ImFont* uiFont(const std::filesystem::path& file);
+    // Lo mismo con la ruta de la UI tal cual (relativa a `assets_root`): la
+    // ruta completa y la clave se calculan una vez por imagen o fuente y se
+    // guardan, en vez de construir un std::filesystem::path (y pasarlo a
+    // UTF-16 o normalizarlo) en cada comando de dibujo de cada frame.
+    ImTextureID uiImage(const std::filesystem::path& assets_root, const std::string& relative, ImVec2* size = nullptr);
+    ImFont* uiFont(const std::filesystem::path& assets_root, const std::string& relative);
     // Una vez por frame: sube las miniaturas decodificadas y libera las que
     // hace tiempo que no se usan.
     void updateThumbnails();
@@ -164,9 +170,15 @@ private:
             std::uint32_t width = 0;
             std::uint32_t height = 0;
             std::vector<std::uint8_t> rgba;
+            // Imagen de la interfaz ya en BC7 (cache de texturas): se sube
+            // tal cual, con sus mips, en vez de `rgba`.
+            asset::TextureData compressed;
         };
         std::shared_ptr<Pixels> pixels;
         std::filesystem::file_time_type stamp{};
+        // Ultima vez que se miro la fecha del archivo en disco (no en cada
+        // frame: con muchos iconos eran muchas llamadas al sistema).
+        std::chrono::steady_clock::time_point stamp_checked{};
         std::uint32_t texture = 0;
         VkDescriptorSet set = VK_NULL_HANDLE;
         ImVec2 size{1.0f, 1.0f};
@@ -175,7 +187,16 @@ private:
         std::uint32_t max_size = 128;
     };
     ImTextureID loadTexture(const std::filesystem::path& file, ImVec2* size, std::uint32_t max_size);
+    ImTextureID loadTexture(const std::filesystem::path& file, const std::wstring& key, ImVec2* size, std::uint32_t max_size);
     std::unordered_map<std::wstring, Thumbnail> thumbnails_;
+    // Rutas de la UI ya resueltas (uiImage/uiFont): la de Assets de la que salen.
+    struct UiImageRef {
+        std::filesystem::path file;
+        std::wstring key;  // la de thumbnails_
+    };
+    std::filesystem::path ui_refs_root_;
+    std::unordered_map<std::string, UiImageRef> ui_image_refs_;
+    std::unordered_map<std::string, ImFont*> ui_font_refs_;
     std::uint64_t frame_ = 0;
     std::string ini_path_;
     bool initialized_ = false;

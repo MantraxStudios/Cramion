@@ -27,6 +27,22 @@
 // Para depurar, cada nodo que se ejecuta deja su hora y los pines su ultimo
 // valor (el editor los ilumina y los ensena al pasar el raton), y los puntos
 // de ruptura pausan el Play.
+//
+// Fase 2 (como Unreal):
+//   Construction Script  nodos en el grafo "construction" que empiezan en
+//                        "event.construction": el editor los ejecuta al
+//                        colocar o cambiar el objeto (fuera de Play).
+//   Funciones            subgrafos "fn:Nombre" con su entrada (fn.entry) y
+//                        sus Return (fn.return); se llaman con fn.call (puras
+//                        o con ejecucion). No pueden esperar (Delay, Timeline).
+//   Macros               subgrafos "macro:Nombre" (macro.entry, macro.exit y
+//                        macro.call) con varios pines exec de entrada y de
+//                        salida; si pueden esperar (Delay).
+//   Timeline             nodo flow.timeline con pistas de float o vector
+//                        (claves con curva), Play / Reverse / Stop y las
+//                        salidas Update y Finished.
+// Todos los nodos estan en Graph::nodes; Node::graph dice en que grafo
+// estan. Un .crgraph sin nada de esto se guarda igual que antes.
 
 #include "CramionCore/Uuid.h"
 #include "CramionCore/scripting/Scripting.h"
@@ -66,9 +82,38 @@ struct Pin {
     std::vector<std::string> options;  // valores de un pin tipo enum (los pone el catalogo; no se guardan)
 };
 
+// --- Timeline (nodo flow.timeline) ---------------------------------------------
+enum class CurveInterp : int { Linear = 0, Constant = 1, Smooth = 2 };
+
+struct TimelineKey {
+    float time = 0.0f;
+    core::Vec3 value{};  // pista float: solo x
+    CurveInterp interp = CurveInterp::Linear;  // hasta la clave siguiente
+};
+
+struct TimelineTrack {
+    std::string name = "Alpha";
+    PinType type = PinType::Float;  // Float o Vector
+    std::vector<TimelineKey> keys;  // ordenadas por tiempo
+};
+
+struct Timeline {
+    float length = 1.0f;   // segundos
+    bool loop = false;
+    bool autoplay = false;  // empieza solo al empezar Play
+    std::vector<TimelineTrack> tracks;
+};
+
+// Valor de una pista en un tiempo (antes de la primera clave, la primera;
+// despues de la ultima, la ultima; sin claves, 0).
+core::Vec3 evaluateTrack(const TimelineTrack& track, float time);
+// Salidas fijas de un Timeline antes de las pistas (Update, Finished, Direccion, Tiempo).
+inline constexpr int kTimelineFixedOutputs = 4;
+
 struct Node {
     int id = 0;
     std::string kind;     // "event.start", "flow.branch", "call", "var.get"...
+    std::string graph;    // "" Event Graph, "construction", "fn:Nombre" o "macro:Nombre"
     core::Vec2 position{};
     std::string fn;       // call: "Audio.playOneShot" / "Entity:translate" / "Entity.position"; var.*: la variable
     bool pure = false;    // call: sin pines de ejecucion (se calcula al usarse)
@@ -80,6 +125,7 @@ struct Node {
     // Se guardan solo si no son el valor por defecto.
     bool disabled = false;            // desactivado: deja pasar la ejecucion (primera salida exec)
     std::uint32_t comment_color = 0;  // RGBA, 0 = defecto
+    Timeline timeline;                // solo flow.timeline
 
     int input(const std::string& name) const;   // indice o -1
     int output(const std::string& name) const;
@@ -101,12 +147,35 @@ struct Variable {
     std::string tooltip;
 };
 
+// --- Funciones y macros ------------------------------------------------------------
+inline constexpr const char* kConstructionGraph = "construction";
+
+enum class SubgraphKind : int { Function = 0, Macro = 1 };
+
+struct Subgraph {
+    std::string name;
+    SubgraphKind kind = SubgraphKind::Function;
+    std::vector<Pin> inputs;   // parametros (macro: tambien pines exec)
+    std::vector<Pin> outputs;  // resultados (macro: tambien pines exec)
+    bool pure = false;         // funcion: sus llamadas no tienen pines exec
+    std::string description;
+    std::string key() const;   // Node::graph de sus nodos ("fn:Nombre")
+};
+std::string functionKey(const std::string& name);  // "fn:Nombre"
+std::string macroKey(const std::string& name);     // "macro:Nombre"
+// Nodos de los subgrafos: fn.entry, fn.return, fn.call, macro.entry, macro.exit, macro.call.
+bool isSubgraphNode(const std::string& kind);
+
 struct Graph {
     Uuid uuid{};
     std::vector<Variable> variables;
     std::vector<Node> nodes;
     std::vector<Link> links;
+    std::vector<Subgraph> functions;  // funciones y macros
     int next_id = 1;
+    // Lo usa el editor: Node::graph de los nodos sin grafo que entran con add()
+    // (el grafo que se esta viendo). No se guarda.
+    std::string editing;
 
     Node* find(int id);
     const Node* find(int id) const;
@@ -123,7 +192,31 @@ struct Graph {
     void renameVariable(const std::string& from, const std::string& to);
     // Nodo nuevo con id (lo devuelve ya dentro del grafo).
     Node& add(Node node);
+
+    // Funcion o macro por su key ("fn:X") o por nombre y tipo (nullptr si no hay).
+    const Subgraph* findSubgraph(const std::string& key) const;
+    Subgraph* findSubgraph(const std::string& key);
+    const Subgraph* findFunction(const std::string& name, SubgraphKind kind) const;
+    // Funcion (o macro) nueva con su nodo de entrada y su Return / salida.
+    // El nombre se hace unico ("MiFuncion", "MiFuncion2"...).
+    Subgraph& addSubgraph(const std::string& name, SubgraphKind kind);
+    // Tras cambiar la firma: rehace los pines de su entrada, sus Return / salida
+    // y sus llamadas (valores y enlaces por nombre de pin).
+    void syncSubgraph(const std::string& key);
+    // Renombra (sus nodos y sus llamadas tambien). false si el nombre esta usado.
+    bool renameSubgraph(const std::string& key, const std::string& name);
+    // Quita la funcion / macro con sus nodos y sus llamadas.
+    void removeSubgraph(const std::string& key);
+    // Cambia los pines de un nodo conservando valores y enlaces por nombre.
+    void setPins(int id, std::vector<Pin> inputs, std::vector<Pin> outputs);
+    // Timeline: rehace sus salidas (una por pista) tras cambiar sus pistas.
+    void syncTimeline(int id);
 };
+
+// Pines de los nodos de una funcion / macro segun su firma.
+void subgraphNodePins(const Subgraph& sub, const std::string& kind, std::vector<Pin>& inputs, std::vector<Pin>& outputs);
+// Las salidas de un Timeline (las fijas y una por pista).
+std::vector<Pin> timelineOutputs(const Timeline& timeline);
 
 // --- Catalogo de nodos ---------------------------------------------------------
 struct NodeInfo {
@@ -262,6 +355,15 @@ struct VisualScript {
     std::string graph;   // ruta del .crgraph dentro de Assets
     bool enabled = true;
     std::vector<scripting::ScriptProperty> properties;  // valores de este objeto (por nombre)
+
+    void reflect(ecs::PropertyVisitor& v);
+};
+
+// Objeto que creo el Construction Script de `owner` (Spawn): se borra y se
+// vuelve a crear cada vez que el script corre, como los componentes que
+// anade el Construction Script de Unreal. No sale en "Add Component".
+struct ConstructionOwned {
+    Uuid owner{};
 
     void reflect(ecs::PropertyVisitor& v);
 };

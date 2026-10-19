@@ -1,99 +1,180 @@
 <p>
-  La <strong>iluminación horneada</strong> calcula una vez la luz que rebota entre las superficies (en la CPU, con todos los
-  núcleos) y la guarda en <strong>volúmenes de sondas</strong> (irradiance volumes, como los Light Probe Groups de Unity o el
-  Volumetric Lightmap de Unreal). En el juego cuesta casi nada: sustituye a la luz rebotada en tiempo real (SSGI o trazado de
-  rayos), así que es la forma de tener luz rebotada en <strong>Android</strong> y en PCs <strong>sin trazado de rayos</strong>.
+  La <strong>iluminación horneada</strong> calcula una vez la luz de la escena (en la CPU, con todos los núcleos) y la guarda
+  junto a ella. Desde esta versión hay dos partes, como en el Progressive Lightmapper de Unity:
+</p>
+<ul>
+  <li><strong>Lightmaps</strong>: una textura de luz por texel de UV2 en los objetos <strong>Static</strong> que no se mueven.
+    Llevan las <strong>sombras del sol</strong> (nítidas, iguales a las de tiempo real), la luz de las luces Horneadas y la
+    <strong>luz rebotada</strong>.</li>
+  <li><strong>Sondas</strong> (volúmenes de sondas, como los Light Probe Groups de Unity): la luz rebotada para todo lo demás
+    (lo que se mueve, el terreno, el follaje, lo pequeño).</li>
+</ul>
+<p>
+  En el juego cuesta casi nada: sustituye a la luz rebotada en tiempo real (SSGI o trazado de rayos) y, con el sol Horneado,
+  a las sombras del sol en cascada. Es la forma de tener luz rebotada en <strong>Android</strong> y en PCs <strong>sin trazado
+  de rayos</strong>.
 </p>
 
 <h3 id="generar">Generar</h3>
 <ol>
-  <li>Marca como <strong>Static</strong> (Inspector) los objetos que no se mueven y deben aportar luz rebotada. Basta con marcar
-    el padre: la raíz de un modelo importado o de una instancia de prefab cubre a todos sus hijos. Si no hay ninguno marcado,
-    cuentan todas las mallas que no se mueven. El terreno cuenta siempre (desde su mapa de alturas, tenga o no colisión).</li>
+  <li>Marca como <strong>Static</strong> (Inspector) los objetos que no se mueven. Basta con marcar el padre: la raíz de un
+    modelo importado o de una instancia de prefab cubre a todos sus hijos. Si no hay ninguno marcado, cuentan todas las mallas
+    que no se mueven (pero solo lo Static lleva lightmap). El terreno cuenta siempre (desde su mapa de alturas).</li>
   <li>Opcional: pon uno o varios <strong>Light Probe Volume</strong> (componente o el botón de la ventana): una caja centrada en
-    el objeto llena de sondas cada <em>Separación</em> metros. Más juntas = más detalle (y más tiempo). Si no hay ninguno, se
-    usa uno automático que cubre las mallas y el terreno (como mucho 400 × 60 × 400 m, desde el suelo; con un terreno más
-    grande, alrededor de las mallas); si con la <em>Separación automática</em> pasarían de 200 000 sondas (una ciudad), las
-    separa más y lo dice en el informe.</li>
+    el objeto llena de sondas cada <em>Separación</em> metros. Si no hay ninguno, se usa uno automático que cubre las mallas y
+    el terreno; si los tuyos dejan fuera más del 5 % de lo Static, se añade otro automático alrededor de lo que falta (el
+    informe dice cuánto quedaba fuera).</li>
   <li><em>Ventana &gt; Iluminación (horneado)</em> &gt; <strong>Generar iluminación</strong> (fuera de Play). Corre en otro hilo
     con barra de progreso; se puede cancelar.</li>
 </ol>
 <p>
-  El resultado se guarda junto a la escena (<code>Nivel1.crbake</code>), se carga solo al abrirla y va con el juego
-  exportado. <em>Borrar la iluminación horneada</em> vuelve al tiempo real.
+  El resultado se guarda junto a la escena (<code>Nivel1.crbake</code>), se carga solo al abrirla y va con el juego exportado.
+  <em>Borrar la iluminación horneada</em> vuelve al tiempo real.
 </p>
 
-<h3 id="que-entra">Qué entra en el horneado</h3>
+<h3 id="lightmaps">Lightmaps</h3>
 <p>
-  Si sale <em>Nada que hornear</em>, el aviso dice cuántas mallas se miraron y por qué no entró ninguna. Lo mismo, entero, en
-  la ventana (<em>Último horneado: qué entró</em>) y en el MCP (<code>lighting_state.gather_report</code>). No entran:
+  Llevan lightmap los <strong>MeshRenderer Static rígidos</strong>: de un modelo importado (no las mallas creadas por código),
+  sin esqueleto que se deforme, sin Rigidbody Dynamic ni un Animator que reproduzca, y con algún material opaco. Lo demás
+  Static tapa la luz igual, pero lo iluminan las sondas; el informe cuenta cuántos van de cada forma.
 </p>
 <ul>
-  <li>los objetos desactivados o con el MeshRenderer invisible;</li>
-  <li>los que tienen un <strong>Rigidbody Dynamic</strong> y no son Static (si son Static entran igual, con un aviso: pon el
-    Rigidbody en Kinematic);</li>
-  <li>las mallas que mueve un <strong>Animator</strong> que reproduce. Los modelos con animaciones (FBX, GLB) sin Animator sí
-    entran, en su pose de reposo, como se ven en el editor;</li>
-  <li>si hay objetos Static, los que no lo son;</li>
-  <li>los materiales <strong>transparentes</strong> (vidrio, agua): dejan pasar la luz y el sol, como en tiempo real (no
-    proyectan sombra);</li>
-  <li>las mallas de las que no se puede leer ningún triángulo (por ejemplo, el <code>.crdata</code> ya no está): salen como
-    <em>sin geometría</em>, con su nombre; las que no tienen ninguno, como <em>malla vacía</em>.</li>
+  <li><strong>Escala en lightmap</strong> (MeshRenderer): resolución de su lightmap respecto a la de la escena. 2 = el doble de
+    texeles por metro; <strong>0 = sin lightmap</strong> (lo iluminan las sondas). Útil para lo pequeño o lo que no se ve de
+    cerca, y para la geometría de una sola cara (cortinas, hojas).</li>
+  <li><strong>Piezas pequeñas</strong>: las piezas sueltas de menos de <em>Tamaño mínimo de pieza</em> texeles (2 por defecto:
+    10 cm a 20 texeles/m) y las caras degeneradas no llevan lightmap: las iluminan las sondas y el sol en tiempo real. En una
+    casa típica son muchos triángulos pero casi nada de superficie.</li>
+  <li><strong>UV automáticas</strong>: no hace falta preparar UV2 en Blender: el motor las genera (ver abajo).</li>
+  <li>El <strong>terreno, el follaje y los vóxeles</strong> no llevan lightmap: sondas y sol en tiempo real.</li>
 </ul>
 
-<h3 id="luces">Luz directa y sombras horneadas</h3>
+<h3 id="uv2">UV de lightmap (automáticas)</h3>
 <p>
-  Cada luz tiene un <strong>Modo (horneado)</strong> en el Inspector, como el Mode de las luces de Unity:
+  Las UV de lightmap (UV2) se generan solas al hornear con <strong>xatlas</strong> (como el <em>Generate Lightmap UVs</em> de
+  Unity): cada pieza se parte en cartas sin solapes, con un hueco entre ellas, a la densidad de la escena. Los vértices que una
+  costura parte en dos se duplican al cargar el modelo; el <code>.crdata</code> y tus assets no cambian nunca.
+</p>
+<ul>
+  <li>Se guardan en <code>Library/Cache/LightmapUV</code> (por malla y ajustes): el siguiente horneado las reutiliza al momento.
+    Dentro del <code>.crbake</code> va una copia compacta, así el juego exportado las tiene.</li>
+  <li><em>Generar UV de lightmap</em> (en la sección Lightmaps) las genera sin hornear, para verlas con la vista
+    <em>UV de lightmap</em> de la vista Escena: un tablero sobre cada carta; en magenta lo que no lleva lightmap.</li>
+  <li>Si reimportas un modelo y cambia su malla, sus UV2 viejas no valen: esa pieza pasa a sondas y la consola dice
+    <em>vuelve a hornear</em>.</li>
+</ul>
+
+<h3 id="luces">Qué hace cada modo de luz</h3>
+<p>
+  Cada luz tiene un <strong>Modo (horneado)</strong> en el Inspector, como el Mode de las luces de Unity. El sol toma el modo
+  de su Light direccional; si la escena no tiene, el de <em>Sol</em> en la ventana.
 </p>
 <table>
-  <thead><tr><th>Modo</th><th>Luz directa y sombras</th><th>Rebote</th></tr></thead>
+  <thead><tr><th>Modo</th><th>Luz directa sobre lo Static</th><th>Sombras sobre lo Static</th><th>Lo que se mueve</th><th>Rebote</th></tr></thead>
   <tbody>
-    <tr><td>Mixta (por defecto)</td><td>En tiempo real (mapas de sombra)</td><td>Horneado</td></tr>
-    <tr><td>Horneada</td><td>Horneadas, con sombras suaves (el <em>Radio de la fuente</em> da la penumbra). En modo Horneada
-      la luz deja de dibujarse en tiempo real: no cuesta nada en el juego.</td><td>Horneado</td></tr>
-    <tr><td>Solo tiempo real</td><td>En tiempo real</td><td>No aporta</td></tr>
+    <tr><td>Tiempo real</td><td>Tiempo real</td><td>Cascadas o mapas de sombra</td><td>Tiempo real</td><td>No se hornea</td></tr>
+    <tr><td>Mixta (por defecto)</td><td>Tiempo real (misma luz)</td><td>Cascadas cada frame</td><td>Tiempo real</td><td>Lightmap y sondas</td></tr>
+    <tr><td>Horneada (sol)</td><td>Tiempo real con la misma luz, especular y normal maps</td><td>Horneadas en el lightmap
+      (y sombras de contacto en PC)</td><td>Sol en tiempo real con cascadas</td><td>Lightmap y sondas</td></tr>
+    <tr><td>Horneada (puntual o foco)</td><td>Difusa horneada en el lightmap (sin especular, como en Unity)</td><td>Horneadas,
+      suaves (el <em>Radio de la fuente</em> da la penumbra)</td><td>Desde las sondas</td><td>Lightmap y sondas</td></tr>
   </tbody>
 </table>
 <p>
-  El sol toma el modo de su Light direccional; si la escena no tiene, el de <em>Sol</em> en la ventana. La luz horneada va a
-  las sondas y al <strong>lightmap de superficie</strong> (texeles en el mundo pegados a la geometría, sin UV2), que se enciende
-  solo a 0.5 m si hay luces horneadas; con texeles más pequeños las sombras salen más nítidas (y el horneado tarda más). El
-  lightmap cubre lo que hay dentro de los Light Probe Volume y, con luces horneadas, también lo que alcanza su luz fuera de
-  ellos (con el sol horneado, toda la escena), porque esas luces ya no se dibujan en tiempo real. Lo de fuera entra si el
-  lightmap no pasa de un millón de texeles; si no, se queda sin esa luz y el informe lo dice. Si lo de dentro no cabe (más de
-  2 millones de texeles), el texel encendido solo crece; puesto a mano, el horneado avisa al momento. Lo que se mueve recibe
-  la luz horneada de las sondas (con su sombra), pero no proyecta sombra de las luces horneadas.
+  La luz directa del sol <strong>no se hornea nunca</strong>: siempre se dibuja en tiempo real y del lightmap solo sale su
+  sombra. Por eso <em>Horneada</em> se ve igual que el tiempo real, y el modo del sol se puede cambiar sin volver a hornear. Si
+  la hora del día mueve el sol más de 2 grados, vuelven las cascadas hasta que vuelvas a hornear (la ventana lo avisa). Las
+  puntuales y los focos Horneados dejan de dibujarse en tiempo real en modo Horneada: no cuestan nada en el juego.
 </p>
-<div class="note">
-  Al aire libre conviene el sol <strong>Mixto</strong>: un sol horneado deja de valer en cuanto la hora del día lo mueve (más
-  de 2 grados): entonces vuelve a tiempo real y hay que volver a hornear. Las luces de interior que no cambian (lámparas,
-  antorchas fijas) son las candidatas a <strong>Horneada</strong>.
-</div>
+<p>
+  Con un <code>.crbake</code> antiguo (sin lightmaps, solo sondas) el sol Horneado sí va entero en las sondas y deja de
+  sumarse en tiempo real en lo opaco. Aun así no es gratis si algo más lee sus mapas de sombra: el agua, el vidrio, la luz
+  volumétrica y los fluidos siguen recibiendo el sol en tiempo real con su sombra, así que con alguno en la escena sus
+  cascadas (y su sombra por rayos) se siguen dibujando. Sin ninguno, ni cascadas ni sombra del sol por rayos.
+</p>
+
+<h3 id="rebote">Luz rebotada</h3>
+<p>
+  Cada texel del lightmap recoge la luz que le llega de la escena (el sol, las luces y el cielo que rebotan en lo que tiene
+  alrededor, varias veces) y un filtro le quita el ruido sin cruzar aristas ni objetos. El albedo y la emisión de cada
+  superficie salen de sus <strong>texturas</strong> (su color medio) y el cielo es el mismo que dibuja el render. La sombra del
+  sol y la luz de las luces Horneadas no se filtran: van nítidas. <em>SSAO sobre lo horneado</em> dice cuánto oscurece el SSAO
+  la luz de los lightmaps (1 = como en tiempo real).
+</p>
 
 <h3 id="ajustes">Ajustes</h3>
 <table>
   <thead><tr><th>Ajuste</th><th>Qué hace</th></tr></thead>
   <tbody>
-    <tr><td>Modo</td><td><em>Tiempo real</em> (SSGI / rayos) u <em>Horneada</em> (las sondas). Se guarda con la escena.</td></tr>
-    <tr><td>Rayos por sonda</td><td>Más = menos ruido</td></tr>
-    <tr><td>Rebotes</td><td>Rebotes además del primero</td></tr>
-    <tr><td>Intensidad del cielo</td><td>Cuánto ilumina el cielo a las superficies (y lo que rebota de ellas)</td></tr>
-    <tr><td>Separación automática</td><td>De las sondas del volumen automático</td></tr>
-    <tr><td>Lightmap de superficie</td><td>Texeles de luz en el mundo; su tamaño fija el detalle de las sombras horneadas</td></tr>
-    <tr><td>Sol</td><td>Modo del sol si no hay Light direccional</td></tr>
-    <tr><td>Rayos de sombra por luz</td><td>Más = penumbras más suaves y menos ruido en las luces horneadas</td></tr>
+    <tr><td>Modo</td><td><em>Tiempo real</em> (SSGI / rayos) u <em>Horneada</em> (lightmaps y sondas). Se guarda con la escena.</td></tr>
+    <tr><td>Lightmaps (objetos Static)</td><td>Apagado: solo sondas</td></tr>
+    <tr><td>Calidad</td><td>Ajustes predefinidos (tabla de abajo) o <em>Personalizada</em></td></tr>
+    <tr><td>Texeles por metro</td><td>Resolución de los lightmaps (20 = un texel cada 5 cm)</td></tr>
+    <tr><td>Tamaño máximo de página</td><td>Lado de cada página del atlas (1024, 2048 o 4096)</td></tr>
+    <tr><td>Presupuesto (millones de texeles)</td><td>Si la escena pide más, baja la densidad de toda la escena y lo avisa con la cifra</td></tr>
+    <tr><td>Muestras de sombra del sol</td><td>Rayos por texel hacia el disco del sol (penumbras más limpias)</td></tr>
+    <tr><td>Muestras de luz rebotada · Rebotes · Quitar ruido</td><td>Calidad de la luz rebotada</td></tr>
+    <tr><td>Tamaño mínimo de pieza</td><td>Piezas sueltas más pequeñas: sin lightmap</td></tr>
+    <tr><td>Rayos por sonda · Rebotes de las sondas · Separación automática</td><td>Las sondas</td></tr>
+    <tr><td>Intensidad del cielo</td><td>Cuánto ilumina el cielo (multiplica el del render)</td></tr>
+    <tr><td>Rayos de sombra por luz</td><td>Penumbras de las puntuales y focos Horneados</td></tr>
   </tbody>
 </table>
+<table>
+  <thead><tr><th>Calidad</th><th>Texeles/m</th><th>Sombra del sol</th><th>Luz rebotada</th><th>Tiempo orientativo (una casa)</th></tr></thead>
+  <tbody>
+    <tr><td>Vista previa</td><td>8</td><td>16 muestras</td><td>1 × 32</td><td>unos segundos</td></tr>
+    <tr><td>Media</td><td>20</td><td>64 muestras</td><td>2 × 128</td><td>medio minuto a un minuto</td></tr>
+    <tr><td>Alta</td><td>40</td><td>128 muestras</td><td>3 × 512</td><td>varios minutos</td></tr>
+  </tbody>
+</table>
+<p>
+  La primera vez se suman las UV2 de cada malla (de segundos a unos minutos en modelos de millones de triángulos); después
+  salen de la caché.
+</p>
+
+<h3 id="vistas">Vistas de depuración</h3>
+<p>
+  En la vista Escena, el botón <strong>LM</strong> junto a los modos de sombreado: <em>Lightmap (irradiancia)</em>,
+  <em>Visibilidad del sol</em> y <em>UV de lightmap (densidad)</em>, un cuadro por texel con un color por objeto. Lo que no
+  lleva lightmap sale en magenta oscuro.
+</p>
+
+<h3 id="problemas">Problemas típicos</h3>
+<ul>
+  <li><strong>Líneas en las costuras</strong> de las cartas: sube los <em>Texeles por metro</em> o la <em>Escala en lightmap</em>
+    del objeto.</li>
+  <li><strong>Sangrado</strong> de luz o sombra entre cartas en un objeto pequeño: si otra copia de la misma malla tiene mucha
+    más resolución (el informe lo avisa), sube su <em>Escala en lightmap</em>.</li>
+  <li><strong>Texeles no válidos</strong> (manchas oscuras en rincones): son texeles dentro de otra geometría; mira la vista
+    <em>Visibilidad del sol</em> y el porcentaje del informe. Suele ser geometría que se cruza o caras invertidas.</li>
+  <li><strong>Objetos movidos</strong> desde el horneado: siguen usando su lightmap (como en Unity) y la ventana avisa; vuelve a
+    hornear.</li>
+  <li><strong>Sol movido</strong>: vuelven las cascadas hasta que vuelvas a hornear.</li>
+</ul>
+
+<h3 id="juego">Qué va con el juego</h3>
+<p>
+  El <code>.crbake</code> de cada escena (sondas, páginas de los lightmaps y las UV2 compactas) va dentro del paquete con
+  <code>Assets/</code>. Lo que lleva lightmap <strong>se queda fuera del lote estático</strong> al exportar (el lote perdería su
+  UV2); el informe de la exportación dice cuántos.
+</p>
+<div class="note">
+  <strong>Android</strong>: los lightmaps se dibujan igual (RGBA16F, una textura y dos buffers más, dentro de los mínimos de
+  Vulkan). El horneado y las UV automáticas son del editor de PC. Una casa a calidad Media ocupa unos 17 MB de atlas.
+</div>
 
 <h3 id="como">Cómo funciona</h3>
 <p>
-  Cada sonda guarda la luz rebotada que le llega (armónicos esféricos L2) y cuánto cielo ve en cada dirección. En el render,
-  un pase a media resolución interpola las 8 sondas de alrededor de cada píxel (con pesos que evitan fugas a través de las
-  paredes) y escribe la misma imagen de luz rebotada que leería la iluminación. Sirve igual para lo estático y para lo que se
-  mueve (personajes, objetos con física). La luz directa de las luces Mixtas sigue siendo en tiempo real; la de las
-  Horneadas va dentro de la misma imagen, ya con sus sombras.
+  Cada texel del lightmap se coloca sobre la superficie con 16 submuestras, se descartan las que caen dentro de otra geometría
+  y desde las demás se trazan rayos hacia el disco del sol (su visibilidad, en el canal alfa) y en todas las direcciones (la
+  luz rebotada, por recolección sobre el propio atlas). El albedo y la emisión vienen de las texturas de los materiales y el
+  cielo es el del render, así que la luz horneada coincide con la de tiempo real. En el render, el lightmap se lee en el
+  G-buffer: su sombra del sol va con la sombra propia del material y su luz con la emisión. Las sondas guardan la luz rebotada
+  (armónicos esféricos L2) y cuánto cielo ve cada dirección; un pase a resolución media las interpola para lo que no tiene
+  lightmap. Los <code>.crbake</code> de versiones anteriores se siguen leyendo y se ven como antes; la ventana propone volver a
+  generar.
 </p>
 <div class="note">
-  Vuelve a generar si cambias la escena, la hora del sol o las luces: lo horneado no se entera. Las sondas que caen dentro de
-  la geometría se descartan solas.
+  Vuelve a generar si cambias la escena o las luces: lo horneado no se entera.
 </div>

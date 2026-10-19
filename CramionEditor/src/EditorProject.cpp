@@ -676,8 +676,12 @@ void EditorApp::moveBrowserItems(const std::filesystem::path& folder, const std:
         const std::filesystem::path to = folder / from.filename();
         std::error_code error;
         if (item.kind == Kind::Asset) {
-            if (database_->move(item.info.uuid, to)) ++moved;
-            else ++skipped;
+            if (database_->move(item.info.uuid, to)) {
+                ++moved;
+                blueprintMoved(item.info.uuid, from, to);  // un Blueprint se lleva su .crgraph
+            } else {
+                ++skipped;
+            }
             continue;
         }
         if (item.kind == Kind::Folder) {
@@ -1225,8 +1229,10 @@ void EditorApp::drawProject() {
         if (done || ImGui::IsItemDeactivated()) {
             std::error_code error;
             if (asset && !buffer.empty() && buffer != item.info.name) {
-                database_->move(item.info.uuid, item.info.path.parent_path() /
-                                                    (dialogs::fromUtf8(buffer).wstring() + item.info.path.extension().wstring()));
+                const std::filesystem::path renamed =
+                    item.info.path.parent_path() / (dialogs::fromUtf8(buffer).wstring() + item.info.path.extension().wstring());
+                // Un Blueprint renombrado se lleva su .crgraph (y las rutas que lo usan).
+                if (database_->move(item.info.uuid, renamed)) blueprintMoved(item.info.uuid, item.info.path, renamed);
                 refreshDatabase();
             } else if (folder && !buffer.empty()) {
                 const std::filesystem::path renamed = item.path.parent_path() / dialogs::fromUtf8(buffer);

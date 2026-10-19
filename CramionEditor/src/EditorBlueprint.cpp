@@ -165,7 +165,10 @@ vsedit::Host EditorApp::blueprintHost() {
         if (objects.empty()) return false;
         return scripts_.visualScriptDebug(world_.wrap(objects.front()), out);
     };
-    host.reload = [this](const std::string& relative) { scripts_.reloadFile(relative); };
+    host.reload = [this](const std::string& relative) {
+        scripts_.reloadFile(relative);
+        constructionGraphChanged(relative);
+    };
     host.breakpoints = [this](const std::string& file, const std::vector<int>& nodes) { scripts_.setVisualScriptBreakpoints(file, nodes); };
     host.notify = [this](const std::string& toast_title, const std::string& text) { pushToast(toast_title, text, 2); };
     host.entity_names = [this] {
@@ -334,6 +337,7 @@ bool EditorApp::saveBlueprintWorkspace() {
         std::string error;
         if (vsedit::save(bp.graph, &error)) {
             scripts_.reloadFile(bp.graph.relative);
+            constructionGraphChanged(bp.graph.relative);
         } else {
             std::cerr << "[Blueprint] No se pudo guardar " << bp.graph.relative << ": " << error << "\n";
             ok = false;
@@ -736,20 +740,23 @@ void EditorApp::drawBlueprintToolbar(BlueprintEditorState& bp) {
         const std::string needle = lowerText(bp.find_filter);
         ImGui::BeginChild("##bp_find_list", ImVec2(280.0f, 240.0f));
         int shown = 0;
+        int found = 0;
         for (const vscript::Node& node : bp.graph.graph.nodes) {
-            const std::string title = vscript::nodeTitle(node);
+            // Tambien en las funciones, macros y el Construction Script ("Función: X > Branch").
+            const std::string title =
+                node.graph.empty() ? vscript::nodeTitle(node) : vsedit::graphLabel(node.graph) + " > " + vscript::nodeTitle(node);
             const std::string haystack = lowerText(title + " " + node.kind + " " + node.fn + " " + node.comment);
             if (!needle.empty() && haystack.find(needle) == std::string::npos) continue;
             ImGui::PushID(node.id);
             if (ImGui::Selectable(title.c_str())) {
                 bp.show_graph = true;
-                bp.graph.details_node = node.id;
-                bp.graph.canvas.frameNode(node.id);
+                found = node.id;
                 ImGui::CloseCurrentPopup();
             }
             ImGui::PopID();
             ++shown;
         }
+        if (found != 0) vsedit::focusNode(bp.graph, found);  // fuera del bucle: puede cambiar de grafo
         if (shown == 0) ImGui::TextDisabled("Ningún nodo");
         ImGui::EndChild();
         ImGui::EndPopup();
@@ -1276,6 +1283,131 @@ void EditorApp::drawVisualScriptVariables(ecs::Entity entity) {
         if (finished || (changed && def.type == scripting::PropertyType::Bool)) commit();
         ImGui::PopID();
     }
+}
+
+// -----------------------------------------------------------------------------
+// Construction Script (como Unreal): corre en el editor, fuera de Play, al
+// colocar o cambiar un objeto. Se mira en flushCommit (una vez por accion):
+// cada objeto con Visual Script cuyo grafo tiene Construction Script y cuya
+// clave (grafo, transform, variables del Inspector) cambio desde la ultima
+// pasada. Lo que crea queda dentro del mismo paso de deshacer.
+// -----------------------------------------------------------------------------
+
+std::string EditorApp::constructionKey(ecs::Entity e) const {
+    const vscript::VisualScript& vs = e.get<vscript::VisualScript>();
+    std::string key = vs.graph + (vs.enabled ? "|on|" : "|off|");
+    const core::Mat4& m = e.worldMatrix();
+    char number[32];
+    for (int c = 0; c < 4; ++c) {
+        for (int r = 0; r < 4; ++r) {
+            std::snprintf(number, sizeof(number), "%.5g,", m.m[c][r]);
+            key += number;
+        }
+    }
+    for (const scripting::ScriptProperty& p : vs.properties) key += "|" + p.name + "=" + p.value;
+    return key;
+}
+
+void EditorApp::runConstructionScripts() {
+    if (playing() || !has_project_) return;
+    std::vector<entt::entity> list;
+    for (const entt::entity h : world_.registry().view<vscript::VisualScript>()) list.push_back(h);
+    for (const entt::entity h : list) {
+        if (!world_.registry().valid(h)) continue;
+        const ecs::Entity e = world_.wrap(h);
+        const vscript::VisualScript* vs = e.tryGet<vscript::VisualScript>();
+        if (vs == nullptr) continue;
+        const Uuid uuid = e.uuid();
+        // Lo que creo otro Construction Script no lanza el suyo (no se multiplica).
+        if (!vs->enabled || vs->graph.empty() || e.has<vscript::ConstructionOwned>() || !scripts_.hasConstructionScript(vs->graph)) {
+            construction_keys_.erase(uuid);
+            continue;
+        }
+        const std::string key = constructionKey(e);
+        const auto it = construction_keys_.find(uuid);
+        if (it != construction_keys_.end() && it->second == key) continue;
+        std::string error;
+        if (!scripts_.runConstructionScript(world_, e, &error) && !error.empty()) {
+            std::cerr << "[Construction Script] " << e.name() << ": " << error << "\n";
+        }
+        // Despues de correr (el script pudo mover o escalar el objeto): esa es la clave.
+        if (world_.registry().valid(h) && world_.registry().try_get<vscript::VisualScript>(h) != nullptr) {
+            construction_keys_[uuid] = constructionKey(world_.wrap(h));
+        } else {
+            construction_keys_.erase(uuid);
+        }
+    }
+}
+
+void EditorApp::primeConstructionScripts() {
+    construction_keys_.clear();
+    if (!has_project_) return;
+    for (const entt::entity h : world_.registry().view<vscript::VisualScript>()) {
+        const ecs::Entity e = world_.wrap(h);
+        const vscript::VisualScript& vs = e.get<vscript::VisualScript>();
+        if (!vs.enabled || vs.graph.empty() || !scripts_.hasConstructionScript(vs.graph)) continue;
+        construction_keys_[e.uuid()] = constructionKey(e);
+    }
+}
+
+void EditorApp::constructionGraphChanged(const std::string& graph) {
+    if (playing()) return;
+    bool any = false;
+    for (const entt::entity h : world_.registry().view<vscript::VisualScript>()) {
+        if (world_.registry().get<vscript::VisualScript>(h).graph != graph) continue;
+        construction_keys_.erase(world_.wrap(h).uuid());
+        any = true;
+    }
+    if (any) commit();  // al final del frame, en flushCommit
+}
+
+// -----------------------------------------------------------------------------
+// Renombrar / mover un Blueprint: su Event Graph va con el
+// -----------------------------------------------------------------------------
+
+void EditorApp::blueprintMoved(const Uuid& prefab, const std::filesystem::path& from, const std::filesystem::path& to) {
+    if (!has_project_ || lowerText(dialogs::utf8(to.extension())) != ecs::kPrefabExtension) return;
+    if (!ecs::isBlueprint(ecs::readPrefabFile(to))) return;
+    ecs::BlueprintRelocation moved;
+    std::string error;
+    if (!ecs::relocateBlueprintGraph(from, to, project_.assetsFolder(), moved, &error)) {
+        std::cerr << "[Blueprint] No se pudo mover su Event Graph: " << error << "\n";
+        pushToast("Blueprint", "No se pudo mover su Event Graph: " + error, 2);
+        return;
+    }
+    const std::string stem = dialogs::utf8(to.stem());
+    for (Workspace& ws : workspaces_) {
+        if (ws.kind == WorkspaceKind::Blueprint && ws.prefab == prefab) ws.name = stem;
+        // Mundos de otras pestanas guardados en JSON (la escena no cargada...).
+        if (ws.stashed && moved.old_graph != moved.new_graph) ecs::replaceGraphReferences(ws.world, moved.old_graph, moved.new_graph);
+    }
+    for (auto& [id, bp] : blueprint_editors_) {
+        (void)id;
+        if (!(bp.prefab == prefab)) continue;
+        bp.prefab_path = to;
+        if (bp.info.graph_path == moved.old_graph) bp.info.graph_path = moved.new_graph;
+        if (bp.graph.relative == moved.old_graph) {
+            bp.graph.relative = moved.new_graph;
+            bp.graph.path = project_.assetsFolder() / dialogs::fromUtf8(moved.new_graph);
+        }
+    }
+    if (moved.old_graph == moved.new_graph) return;
+    graphFileMoved(moved.old_graph, moved.new_graph);
+    // La escena abierta: sus VisualScript con la ruta vieja (ya cambio en el archivo).
+    int changed = 0;
+    for (const entt::entity h : world_.registry().view<vscript::VisualScript>()) {
+        vscript::VisualScript& vs = world_.registry().get<vscript::VisualScript>(h);
+        if (vs.graph != moved.old_graph) continue;
+        vs.graph = moved.new_graph;
+        ++changed;
+    }
+    if (changed > 0) {
+        dirty_ = true;
+        commit();
+    }
+    std::cout << "[Blueprint] Event Graph: " << moved.old_graph << " -> " << moved.new_graph << " (" << moved.updated_files
+              << " archivo(s) actualizados)\n";
+    pushToast("Blueprint", "Su Event Graph ahora es " + moved.new_graph, 0);
 }
 
 }  // namespace cramion::editor

@@ -30,6 +30,12 @@
 
 layout(set = 1, binding = 0) uniform sampler2D albedo_map;
 
+// Repeticion (xy) y desplazamiento (zw) de las UV del material (tiling del
+// .crmat; ver skinned.frag).
+layout(set = 1, binding = 9) uniform MaterialUv {
+    vec4 material_uv;
+};
+
 // Debe coincidir con GpuSkinnedPush (y con skinned.vert).
 layout(push_constant) uniform PushConstants {
     mat4 model;
@@ -281,7 +287,7 @@ float slabReflectance(float cosine) {
 void main() {
     // Tinte del vidrio (casi siempre blanco): el factor es lineal, la
     // textura sRGB.
-    vec3 tint = toLinear(texture(albedo_map, v_uv).rgb) * push.base_color.rgb;
+    vec3 tint = toLinear(texture(albedo_map, v_uv * material_uv.xy + material_uv.zw).rgb) * push.base_color.rgb;
 
     vec3 to_camera = camera.position.xyz - v_world_position;
     vec3 view_direction = normalize(to_camera);

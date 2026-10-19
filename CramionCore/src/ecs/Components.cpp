@@ -38,6 +38,9 @@ void MeshRenderer::reflect(PropertyVisitor& v) {
     enumField(v, {"cast_shadows", "Proyecta sombras",
                   "Solo sombras: la camara no lo ve, pero su sombra si"},
               cast_shadows, kShadows);
+    v.field({"lightmap_scale", "Escala en lightmap",
+             "Resolución de su lightmap respecto a la de la escena. 0 = sin lightmap (lo iluminan las sondas)"},
+            lightmap_scale, FloatRange{0.0f, 8.0f, 0.05f, "%.2f"});
     // El Inspector los dibuja aparte (con el nombre de cada hueco).
     if (v.wantsAllFields()) {
         listField(v, {"materials", "Materiales"}, materials, [](assets::AssetRef& ref, PropertyVisitor& item) {
@@ -94,9 +97,9 @@ void Light::reflect(PropertyVisitor& v) {
     static constexpr std::array<const char*, 3> kBakeModes = {"Mixta", "Horneada", "Solo tiempo real"};
     enumField(v,
               {"bake_mode", "Modo (horneado)",
-               "Mixta: luz y sombras en tiempo real, rebote horneado. Horneada: luz directa, sombras y rebote "
-               "horneados (Ventana > Iluminacion > Generar); no cuesta nada en el juego. Solo tiempo real: el "
-               "horneado la ignora"},
+               "Mixta: luz y sombras en tiempo real, rebote horneado. Horneada: el sol se dibuja en tiempo real "
+               "con sus sombras horneadas en el lightmap (sin coste de sombras); las puntuales y los focos, con "
+               "su luz y sus sombras horneadas (no se dibujan). Solo tiempo real: el horneado la ignora"},
               bake_mode, kBakeModes);
 }
 

@@ -506,6 +506,114 @@ void stageUpdate(uint slot) {
     atomicAdd(counters[base + 1u], 1);
 }
 
+// ---------------------------------------------------------------------------
+// SORT: las vivas de un efecto con mezcla alfa, de atras adelante. La lista
+// de vivas sale de UPDATE en el orden de los atomicos (cambia cada frame): sin
+// ordenar, las de delante quedaban tapadas por las de detras a saltos.
+//
+// Ordenacion bitonica con pasos "flip" y "disperse" (todas las comparaciones
+// en el mismo sentido): las posiciones desde `count` (vivas) se tratan como
+// infinitas y nunca se tocan, asi que vale para cualquier numero de vivas.
+// Los pasos cortos (alturas <= 128) van en memoria compartida, un bloque de
+// 128 por grupo de 64 hilos.
+// ---------------------------------------------------------------------------
+
+const uint SORT_BLOCK = 128u;  // 2 x local_size_x
+const float SORT_FAR = 3.0e38;  // fuera de las vivas: al final
+
+shared float sort_key[SORT_BLOCK];
+shared uint sort_item[SORT_BLOCK];
+
+// Menor = antes: la mas lejana primero.
+float sortKey(uint slot, uint p) {
+    vec3 d = simToWorld(slot, particles[p * 4u + 0u].xyz) - frame.camera.xyz;
+    return -dot(d, d);
+}
+
+// Vivas que entran en la ordenacion (como mucho su tamano).
+uint sortCount(uint slot) {
+    uint base = instances[slot].range.z * 8u;
+    uint alive = uint(max(counters[base + 1u], 0));
+    return min(min(alive, instances[slot].range.y), push.pad);
+}
+
+// Pareja (i, l) de un paso para el hilo t: flip (espejo dentro del bloque de
+// altura h) o disperse (separadas h/2).
+uvec2 sortPair(uint t, uint h, bool flip) {
+    uint half_h = h >> 1u;
+    uint q = ((2u * t) / h) * h;
+    uint i = q + t % half_h;
+    uint l = flip ? q + h - 1u - t % half_h : i + half_h;
+    return uvec2(i, l);
+}
+
+void sortGlobalStep(uint slot, bool flip) {
+    uint t = gl_GlobalInvocationID.x;
+    if (t >= push.pad / 2u) return;
+    uvec2 pair = sortPair(t, push.count, flip);
+    if (pair.y >= sortCount(slot)) return;  // la otra es "infinita": ya en orden
+    uint offset = instances[slot].range.x;
+    uint a = alive_list[offset + pair.x];
+    uint b = alive_list[offset + pair.y];
+    if (sortKey(slot, a) > sortKey(slot, b)) {
+        alive_list[offset + pair.x] = b;
+        alive_list[offset + pair.y] = a;
+    }
+}
+
+void sortLocalCompare(uint t, uint h, bool flip) {
+    uvec2 pair = sortPair(t, h, flip);
+    if (sort_key[pair.x] > sort_key[pair.y]) {
+        float k = sort_key[pair.x];
+        sort_key[pair.x] = sort_key[pair.y];
+        sort_key[pair.y] = k;
+        uint item = sort_item[pair.x];
+        sort_item[pair.x] = sort_item[pair.y];
+        sort_item[pair.y] = item;
+    }
+}
+
+// Sin return antes de los barrier(): todos los hilos del grupo los pasan.
+void sortLocal(uint slot, bool full) {
+    uint t = gl_LocalInvocationID.x;
+    uint block = gl_WorkGroupID.x * SORT_BLOCK;
+    uint count = sortCount(slot);
+    uint offset = instances[slot].range.x;
+    for (uint k = 0u; k < 2u; ++k) {
+        uint local_index = t + k * (SORT_BLOCK / 2u);
+        uint g = block + local_index;
+        if (g < count) {
+            uint p = alive_list[offset + g];
+            sort_item[local_index] = p;
+            sort_key[local_index] = sortKey(slot, p);
+        } else {
+            sort_item[local_index] = 0u;
+            sort_key[local_index] = SORT_FAR;
+        }
+    }
+    barrier();
+    if (full) {
+        for (uint h = 2u; h <= SORT_BLOCK; h <<= 1u) {
+            sortLocalCompare(t, h, true);
+            barrier();
+            for (uint hh = h >> 1u; hh > 1u; hh >>= 1u) {
+                sortLocalCompare(t, hh, false);
+                barrier();
+            }
+        }
+    } else {
+        for (uint hh = SORT_BLOCK; hh > 1u; hh >>= 1u) {
+            sortLocalCompare(t, hh, false);
+            barrier();
+        }
+    }
+    for (uint k = 0u; k < 2u; ++k) {
+        uint local_index = t + k * (SORT_BLOCK / 2u);
+        uint g = block + local_index;
+        if (g < count) alive_list[offset + g] = sort_item[local_index];
+    }
+}
+
 void main() {
     if (push.stage == STAGE_RESET) {
         stageReset(push.slot);
@@ -513,7 +621,13 @@ void main() {
         stageBegin();
     } else if (push.stage == STAGE_EMIT) {
         stageEmit(push.slot);
-    } else {
+    } else if (push.stage == STAGE_UPDATE) {
         stageUpdate(push.slot);
+    } else if (push.stage == STAGE_SORT_LOCAL) {
+        sortLocal(push.slot, true);
+    } else if (push.stage == STAGE_SORT_LOCAL_DISPERSE) {
+        sortLocal(push.slot, false);
+    } else {
+        sortGlobalStep(push.slot, push.stage == STAGE_SORT_FLIP);
     }
 }

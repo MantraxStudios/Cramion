@@ -15,6 +15,8 @@ Cramion uses the following libraries, each under its own license. Exported games
 | Recast & Detour | zlib | https://github.com/recastnavigation/recastnavigation |
 | meshoptimizer | MIT | https://github.com/zeux/meshoptimizer |
 | bc7enc (compresión de texturas BC7, `CramionFX/vendor/bc7enc`) | MIT o dominio público (Unlicense) | https://github.com/richgel999/bc7enc_rdo |
+| Vulkan Memory Allocator 3.3.0 (asignador de memoria de la GPU, `CramionFX/vendor/vma`) | MIT | https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator |
+| xatlas (UV de lightmap automáticas, solo el editor; `CramionCore/vendor/xatlas`, commit f700c7790aaa030e794b52ba7791a05c085faf0c) | MIT | https://github.com/jpcy/xatlas |
 | zstd | BSD-3-Clause | https://github.com/facebook/zstd |
 | nlohmann/json | MIT | https://github.com/nlohmann/json |
 | assimp | BSD-3-Clause | https://github.com/assimp/assimp |
@@ -60,4 +62,62 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
 OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
 OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+## Vulkan Memory Allocator
+
+Asigna la memoria de la GPU (buffers y texturas) y lleva el anillo de staging. Va en el editor y en los juegos exportados (lo usa el Runtime).
+
+Allocates GPU memory (buffers and textures) and runs the staging ring. It ships with the editor and with exported games (the Runtime uses it).
+
+```
+Copyright (c) 2017-2025 Advanced Micro Devices, Inc. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+## xatlas
+
+Genera las UV de lightmap (UV2) en el editor al hornear la iluminación. No va en los juegos exportados (el Runtime no lo usa).
+
+Generates the lightmap UVs (UV2) in the editor when baking lighting. It is not shipped with exported games (the Runtime does not use it).
+
+```
+MIT License
+
+Copyright (c) 2018-2020 Jonathan Young
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```

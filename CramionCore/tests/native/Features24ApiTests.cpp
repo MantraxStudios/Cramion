@@ -51,6 +51,7 @@ void testRegistered(ApiFixture& t) {
         "Entity:getDropdownOptions", "Entity:scrollY", "Entity:scrollX", "Entity:scrollToFraction",
         "Entity:scrollContentHeight", "Entity:spawnCrowd", "Entity:despawnCrowd", "Text.strip",
         "WorldPartition.active", "WorldPartition.loadAll", "WorldPartition.isLoaded", "WorldPartition.stats",
+        "WorldPartition.setDataLayer", "WorldPartition.isDataLayerActive", "WorldPartition.dataLayers",
         "Accessibility.get", "Accessibility.set", "Accessibility.save", "Accessibility.load", "Accessibility.reset",
         "Accessibility.colorblindName", "Camera.shake", "Camera.stopShake", "Voice.start", "Voice.stop",
         "Voice.setMode", "Voice.setTalking", "Voice.setThreshold", "Voice.setVolume", "Voice.setMicGain",
@@ -261,7 +262,20 @@ void testWorldPartition(ApiFixture& t) {
     check(!t.call("WorldPartition.active").truthy() && t.call("WorldPartition.isLoaded", {Value(Vec3{})}).truthy(),
           "particion sin empezar: inactiva y todo cargado");
     t.call("WorldPartition.loadAll");
+    // Data Layers: sin tocar, activas; apagar y volver a encender.
+    check(t.call("WorldPartition.isDataLayerActive", {Value("Ruinas")}).truthy(), "una capa sin declarar esta activa");
+    t.call("WorldPartition.setDataLayer", {Value("Ruinas"), Value(false)});
+    check(!t.call("WorldPartition.isDataLayerActive", {Value("Ruinas")}).truthy() && !partition.dataLayerActive("Ruinas"),
+          "setDataLayer la apaga (en el sistema)");
+    const Value layers = t.call("WorldPartition.dataLayers");
+    check(layers.isObject() && layers.size() == 1 && layers["Ruinas"].isBool() && !layers["Ruinas"].truthy(),
+          "dataLayers con su estado");
+    t.call("WorldPartition.setDataLayer", {Value("Ruinas")});
+    check(t.call("WorldPartition.isDataLayerActive", {Value("Ruinas")}).truthy(), "setDataLayer sin valor la enciende");
     worldpart::setActivePartition(nullptr);
+    check(t.call("WorldPartition.isDataLayerActive", {Value("Ruinas")}).truthy() &&
+              t.call("WorldPartition.dataLayers").size() == 0,
+          "sin particion: todas activas y ninguna listada");
     check(throwsApiError([&] { t.call("WorldPartition.isLoaded"); }), "isLoaded sin posicion = error");
 }
 

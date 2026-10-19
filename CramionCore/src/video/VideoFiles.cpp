@@ -180,9 +180,25 @@ bool isVideoUrl(const std::string& text) {
 bool checkVideoUrl(const std::string& url, std::string* error) {
     const std::string l = lower(url);
     if (l.rfind("cramion://test", 0) == 0) return true;  // decodificador sintetico (pruebas)
+    // Directos (camaras IP, servidores RTMP): solo con el backend FFmpeg. Sin
+    // politica de dominio: casi siempre son de la red local.
+    if (l.rfind("rtsp://", 0) == 0 || l.rfind("rtsps://", 0) == 0 || l.rfind("rtmp://", 0) == 0 ||
+        l.rfind("rtmps://", 0) == 0) {
+        if (!streamingProtocolsAvailable()) {
+            if (error != nullptr) {
+                *error = "Video: RTSP y RTMP necesitan el backend FFmpeg (opcion CRAMION_WITH_FFMPEG al compilar el motor)";
+            }
+            return false;
+        }
+        if (url.find("://") + 3 >= url.size()) {
+            if (error != nullptr) *error = "Video: falta el servidor en la URL";
+            return false;
+        }
+        return true;
+    }
     if (l.rfind("https://", 0) != 0 && l.rfind("http://", 0) != 0) {
         if (error != nullptr) {
-            *error = isVideoUrl(url) ? "Video: solo URL https:// (o http:// a este PC); RTSP, RTMP y DASH llegan mas adelante"
+            *error = isVideoUrl(url) ? "Video: solo URL https:// (o http:// a este PC); rtsp:// y rtmp:// con el backend FFmpeg"
                                      : "Video: la URL tiene que empezar por https://";
         }
         return false;

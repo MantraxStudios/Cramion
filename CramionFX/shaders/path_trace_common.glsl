@@ -302,7 +302,9 @@ void pathTracePixel(ivec2 pixel, ivec2 size) {
         s.reflectance = normal_sample.a;
         s.albedo = toLinear(texelFetch(g_albedo, pixel, 0).rgb);
         // Alfa = metalicidad + 2 x sombra propia del relieve (gbuffer_surface.glsl).
-        s.metallic = material_sample.a - 2.0 * floor(material_sample.a * 0.5);
+        // Negativo = con lightmap (gbuffer_surface.glsl): mismo empaquetado.
+        float packed_a = material_sample.a < 0.0 ? -material_sample.a - 0.5 : material_sample.a;
+        s.metallic = packed_a - 2.0 * floor(packed_a * 0.5);
         s.emission = material_sample.rgb;
         s.model = decodeShading(texelFetch(g_shading, pixel, 0), s.normal);
         s.geometric = gbufferGeometricNormal(pixel, position, s.normal);

@@ -24,6 +24,23 @@
 // (ScriptSystem::callMethod) y Send Event de otros grafos.
 // Un error (una funcion de la API que falla...) sale en la Consola con el
 // nodo y para esa instancia hasta que se recargue el grafo.
+//
+// Fase 2:
+//   - Funciones (fn.call): los parametros van a las salidas de su entrada, el
+//     cuerpo corre hasta un Return (que lanza Returned con los resultados) y
+//     la llamada los pone en sus salidas. Recursivas: los valores de los nodos
+//     de la llamada de fuera se guardan y se devuelven. No pueden esperar.
+//   - Macros (macro.call): Exec::macros lleva las llamadas en marcha; las
+//     entradas de datos de la macro se leen de su llamada (desde fuera) y su
+//     salida (macro.exit) sigue por la salida exec de la llamada. Si un Delay
+//     corta la cadena dentro, cada Frame guarda en que macros estaba. El estado
+//     de los nodos de una macro (Do Once...) es de la instancia, no de cada llamada.
+//   - Timeline: su estado (tiempo, Play / Reverse) va en Instance::timelines y
+//     avanza antes de los Update (Update cada frame, Finished al final).
+//   - Construction Script: construct() lo corre fuera de Play con una
+//     instancia de un solo uso (ScriptSystem::runConstructionScript).
+//   - Depuracion en vivo (live): por que salidas exec pasa la ejecucion
+//     (flowed) y lo ultimo que leyo cada entrada (read).
 
 #include "Modules.h"
 
@@ -36,6 +53,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <random>
@@ -90,6 +108,14 @@ struct Loaded {
     std::map<std::string, std::vector<const Node*>> events;  // por tipo ("event.update")
     std::map<std::string, const Node*> custom;               // Custom Event por nombre
     std::set<int> breakpoints;  // los guardados en el archivo
+    // Funciones y macros por su key ("fn:X", "macro:X"): su entrada y sus nodos.
+    struct Sub {
+        const vscript::Subgraph* def = nullptr;
+        const Node* entry = nullptr;
+        std::set<int> nodes;
+    };
+    std::map<std::string, Sub> subs;
+    std::vector<const Node*> timelines;  // los del Event Graph (activos)
 
     const Node* node(int id) const {
         const auto it = nodes.find(id);
@@ -125,8 +151,15 @@ std::shared_ptr<Loaded> prepare(const std::string& file, Graph graph) {
             if (t != PinType::Exec) out->literals[{n.id, static_cast<int>(i)}] = vscript::parseLiteral(n.inputs[i].value, t);
         }
         if (n.breakpoint) out->breakpoints.insert(n.id);
+        if (!n.graph.empty()) {
+            Loaded::Sub& sub = out->subs[n.graph];
+            sub.nodes.insert(n.id);
+            if (n.kind == "fn.entry" || n.kind == "macro.entry") sub.entry = &n;
+        }
         if (n.disabled) continue;  // un evento desactivado no se lanza
+        if (n.kind == "flow.timeline" && n.graph.empty()) out->timelines.push_back(&n);
         const vscript::NodeInfo* info = vscript::findNodeInfo(n.kind);
+        // Los eventos del Event Graph (y Construction Script, del suyo): compileGraph no deja otros.
         if (info != nullptr && info->event) out->events[n.kind].push_back(&n);
         if (n.kind == "event.custom" && !n.inputs.empty()) {
             const std::string name = trimText(n.inputs[0].value);
@@ -141,6 +174,7 @@ std::shared_ptr<Loaded> prepare(const std::string& file, Graph graph) {
             out->output_links[{l.from_node, l.from_pin}] = {l.to_node, l.to_pin};
         }
     }
+    for (const vscript::Subgraph& s : g.functions) out->subs[s.key()].def = &s;
     return out;
 }
 
@@ -152,6 +186,7 @@ struct Frame {
     long long next = 0;   // Sequence: siguiente salida; For / For Each: siguiente vuelta; While: vueltas
     long long last = 0;   // For: hasta; While: limite
     api::Value list;      // For Each
+    std::vector<int> macros;  // las llamadas a macro en marcha en ese nodo (Exec::macros)
 };
 
 struct Pending {
@@ -173,6 +208,15 @@ struct Instance {
     std::map<PinKey, api::Value> slots;   // ultimo valor de cada salida
     std::map<int, api::Value> state;      // Do Once, Do N, Flip Flop, Gate
     std::map<int, double> executed;       // nodo -> Time.time
+    std::map<PinKey, double> flowed;      // salida exec -> Time.time (depuracion en vivo)
+    std::map<PinKey, api::Value> read;    // ultimo valor de cada entrada (depuracion en vivo)
+    std::map<std::string, int> calling;   // funcion -> llamadas en marcha (recursion)
+    struct TimelineState {
+        double time = 0.0;
+        bool playing = false;
+        bool reverse = false;
+    };
+    std::map<int, TimelineState> timelines;
     std::vector<Pending> pending;
     std::map<std::string, Timer> timers;
     std::vector<long long> bindings;      // Input.bindAction
@@ -183,6 +227,10 @@ struct Instance {
 struct Suspend {};
 // Un evento llamado desde la cadena (Call Event) fallo y ya lo dijo: se deshace sin repetirlo.
 struct Abort {};
+// Un Return de una funcion: sale de su cuerpo con sus resultados (lo recoge la llamada).
+struct Returned {
+    api::Value::Array values;
+};
 
 // Una ejecucion: la instancia, el nodo que corre (para los errores) y, si se
 // corta, por donde iba.
@@ -192,6 +240,10 @@ struct Exec {
     int depth = 0;
     std::vector<Frame> frames;  // al cortarse: de dentro afuera
     double wait = 0.0;
+    // Llamadas a macro en marcha (ids de sus macro.call; la de dentro al final):
+    // las entradas de una macro se leen de su llamada y sus salidas siguen por ella.
+    std::vector<int> macros;
+    int calls = 0;  // funciones anidadas (recursion)
 };
 
 struct Host final : VisualScriptDebugHost {
@@ -203,6 +255,13 @@ struct Host final : VisualScriptDebugHost {
     std::map<entt::entity, Instance> instances;
     std::map<std::string, std::set<int>> editor_breakpoints;
     bool debugging = false;
+    bool live_view = false;  // depuracion en vivo: cables por donde pasa la ejecucion y valor de las entradas
+    // Construction Script: si un .crgraph lo tiene (por fecha del archivo).
+    struct ConstructionInfo {
+        std::filesystem::file_time_type stamp{};
+        bool has = false;
+    };
+    std::unordered_map<std::string, ConstructionInfo> construction_cache;
     struct Break {
         bool pending = false;
         std::string graph;
@@ -442,7 +501,7 @@ struct Host final : VisualScriptDebugHost {
     void trace(Exec& x, int node) {
         x.node = node;
         x.inst.executed[node] = rt.time;
-        if (!debugging || brk.pending) return;
+        if (!debugging || brk.pending || !rt.running) return;  // fuera de Play (Construction Script) no hay pausa
         const std::string& file = x.inst.graph->file;
         const auto editor = editor_breakpoints.find(file);  // las del editor mandan
         const std::set<int>& points = editor != editor_breakpoints.end() ? editor->second : x.inst.graph->breakpoints;
@@ -567,7 +626,9 @@ struct Host final : VisualScriptDebugHost {
         const auto link = g.input_links.find({n.id, index});
         if (link == g.input_links.end()) {
             const auto lit = g.literals.find({n.id, index});
-            return lit == g.literals.end() ? api::Value{} : literal(x.inst, lit->second);
+            api::Value v = lit == g.literals.end() ? api::Value{} : literal(x.inst, lit->second);
+            if (live_view) x.inst.read[{n.id, index}] = v;
+            return v;
         }
         const Node* src = g.node(link->second.first);
         if (src == nullptr) return {};
@@ -576,10 +637,35 @@ struct Host final : VisualScriptDebugHost {
             const PinType have = vscript::nodePinType(g.graph, *src, true, link->second.second);
             if (have != PinType::String && have != PinType::Any) v = api::Value(text(v));
         }
+        if (live_view) x.inst.read[{n.id, index}] = v;
         return v;
     }
 
+    // Una entrada de una macro (salida de su macro.entry): el valor de esa
+    // entrada en la llamada que esta en marcha, leido desde fuera de la macro.
+    api::Value macroInput(Exec& x, const Node& entry, int pin) {
+        const Loaded& g = *x.inst.graph;
+        for (std::size_t i = x.macros.size(); i-- > 0;) {
+            const Node* call = g.node(x.macros[i]);
+            if (call == nullptr || call->fn != entry.fn) continue;
+            const std::vector<int> saved = x.macros;
+            x.macros.resize(i);
+            api::Value v;
+            try {
+                v = input(x, *call, pin);
+            } catch (...) {
+                x.macros = saved;
+                throw;
+            }
+            x.macros = saved;
+            x.inst.slots[{entry.id, pin}] = v;  // para verlo al depurar
+            return v;
+        }
+        return {};
+    }
+
     api::Value output(Exec& x, const Node& n, int pin) {
+        if (n.kind == "macro.entry") return macroInput(x, n, pin);
         const auto meta = x.inst.graph->meta.find(n.id);
         const bool is_pure = meta != x.inst.graph->meta.end() ? meta->second.pure : vscript::isPureNode(n);
         if (!is_pure) {
@@ -622,6 +708,86 @@ struct Host final : VisualScriptDebugHost {
         return rt.native.call(n.fn, args, target);
     }
 
+    // Llama a una funcion del grafo: sus parametros salen por su nodo de
+    // entrada, su cuerpo corre hasta un Return y devuelve sus resultados (en
+    // el orden de la firma; nil los que no llegaron). Recursiva: los valores
+    // de sus nodos de la llamada de fuera se guardan y se devuelven.
+    api::Value::Array invoke(Exec& x, const Node& call) {
+        Instance& inst = x.inst;
+        const std::shared_ptr<const Loaded> g = inst.graph;
+        const std::string key = vscript::functionKey(call.fn);
+        const auto it = g->subs.find(key);
+        if (it == g->subs.end() || it->second.def == nullptr || it->second.entry == nullptr) {
+            throw api::Error("no existe la funcion " + call.fn);
+        }
+        const Loaded::Sub& sub = it->second;
+        const Node& entry = *sub.entry;
+        api::Value::Array args;
+        for (const int k : dataInputs(call)) args.push_back(input(x, call, k));
+        if (x.calls >= 200) throw api::Error("demasiadas llamadas a funciones anidadas (recursion sin fin?)");
+        int& running = inst.calling[key];
+        const bool nested = running > 0;
+        std::map<PinKey, api::Value> saved;
+        if (nested) {
+            for (const auto& [k, v] : inst.slots) {
+                if (sub.nodes.contains(k.first)) saved.emplace(k, v);
+            }
+        }
+        std::size_t arg = 0;
+        for (std::size_t o = 0; o < entry.outputs.size(); ++o) {
+            if (entry.outputs[o].type == PinType::Exec) continue;
+            inst.slots[{entry.id, static_cast<int>(o)}] = arg < args.size() ? args[arg] : api::Value{};
+            ++arg;
+        }
+        const int previous_node = x.node;
+        const int previous_depth = x.depth;
+        const std::vector<int> macros = x.macros;
+        x.macros.clear();  // el cuerpo de la funcion no esta dentro de ninguna macro
+        ++running;
+        ++x.calls;
+        const auto restore = [&] {
+            --running;
+            --x.calls;
+            x.macros = macros;
+            x.depth = previous_depth;
+            x.node = previous_node;
+            if (nested) {
+                for (const auto& [k, v] : saved) inst.slots[k] = v;
+            }
+        };
+        api::Value::Array results;
+        try {
+            trace(x, entry.id);
+            follow(x, entry, 0);
+        } catch (Returned& r) {
+            results = std::move(r.values);
+        } catch (const Suspend&) {
+            x.frames.clear();
+            restore();
+            throw api::Error("la funcion " + call.fn + " no puede esperar (Delay)");
+        } catch (...) {
+            restore();
+            throw;
+        }
+        restore();
+        std::size_t count = 0;
+        for (const vscript::Pin& p : sub.def->outputs) {
+            if (p.type != PinType::Exec) ++count;
+        }
+        results.resize(count);
+        return results;
+    }
+
+    // Resultados de una llamada a funcion en sus salidas de datos.
+    static void storeResults(Instance& inst, const Node& n, const api::Value::Array& results) {
+        std::size_t d = 0;
+        for (std::size_t o = 0; o < n.outputs.size(); ++o) {
+            if (n.outputs[o].type == PinType::Exec) continue;
+            inst.slots[{n.id, static_cast<int>(o)}] = d < results.size() ? results[d] : api::Value{};
+            ++d;
+        }
+    }
+
     // call.get / call.set: Tabla.prop u objeto:prop.
     api::Value propertyTarget(Exec& x, const Node& n) {
         if (n.fn.find(':') == std::string::npos) return {};
@@ -646,6 +812,12 @@ struct Host final : VisualScriptDebugHost {
             return it == x.inst.vars.end() ? api::Value{} : it->second;
         }
         if (k == "call") return callNode(x, n);
+        if (k == "fn.call") {
+            // Funcion pura: se llama cada vez que se usa su valor (como Unreal).
+            storeResults(x.inst, n, invoke(x, n));
+            const auto it = x.inst.slots.find({n.id, pin});
+            return it == x.inst.slots.end() ? api::Value{} : it->second;
+        }
         if (k == "call.get") return rt.native.get(n.fn, propertyTarget(x, n));
         if (k == "math.add") return arith('+', a(0), a(1));
         if (k == "math.sub") return arith('-', a(0), a(1));
@@ -1024,6 +1196,7 @@ struct Host final : VisualScriptDebugHost {
         if (it == g.output_links.end()) return;
         const Node* next = g.node(it->second.first);
         if (next == nullptr) return;
+        if (live_view) x.inst.flowed[{n.id, out}] = rt.time;  // el editor ilumina el cable
         if (++x.depth > 2000) throw api::Error("demasiados nodos seguidos (un bucle de ejecucion sin Delay?)");
         run(x, *next, it->second.second);
         --x.depth;
@@ -1035,6 +1208,7 @@ struct Host final : VisualScriptDebugHost {
             follow(x, n, out);
         } catch (const Suspend&) {
             x.frames.push_back(frame);
+            x.frames.back().macros = x.macros;
             throw;
         }
     }
@@ -1077,6 +1251,7 @@ struct Host final : VisualScriptDebugHost {
         } else if (k == "flow.delay") {
             x.wait = lenient(a(1));
             x.frames.push_back(Frame{n.id});
+            x.frames.back().macros = x.macros;
             throw Suspend{};
         } else if (k == "flow.do_once") {
             if (in == 0) {
@@ -1178,8 +1353,145 @@ struct Host final : VisualScriptDebugHost {
             const api::Value value = data.empty() ? api::Value{} : input(x, n, data.back());
             rt.native.set(n.fn, value, propertyTarget(x, n));
             follow(x, n, 0);
-        } else if (!runMore(x, n, in)) {
+        } else if (!runSubgraph(x, n, in) && !runMore(x, n, in)) {
             throw api::Error("el nodo " + vscript::nodeTitle(n) + " no se puede ejecutar");
+        }
+    }
+
+    // Funciones, macros y Timeline (false = no es de aqui).
+    bool runSubgraph(Exec& x, const Node& n, int in) {
+        Instance& inst = x.inst;
+        const std::string& k = n.kind;
+        if (k == "fn.call") {
+            storeResults(inst, n, invoke(x, n));
+            follow(x, n, 0);
+        } else if (k == "fn.return") {
+            Returned r;
+            for (const int i : dataInputs(n)) r.values.push_back(input(x, n, i));
+            throw r;
+        } else if (k == "macro.call") {
+            // Entra en la macro por la entrada exec `in` (la misma posicion en su nodo Entradas).
+            const auto it = inst.graph->subs.find(vscript::macroKey(n.fn));
+            if (it == inst.graph->subs.end() || it->second.entry == nullptr) throw api::Error("no existe la macro " + n.fn);
+            const Node& entry = *it->second.entry;
+            x.macros.push_back(n.id);
+            try {
+                trace(x, entry.id);
+                follow(x, entry, in);
+            } catch (...) {
+                x.macros.pop_back();
+                throw;
+            }
+            x.macros.pop_back();
+        } else if (k == "macro.exit") {
+            // Sale de la macro: sus datos van a las salidas de la llamada y la
+            // ejecucion sigue fuera, por la salida exec de la llamada en la misma posicion.
+            std::size_t at = x.macros.size();
+            const Node* call = nullptr;
+            while (at > 0) {
+                --at;
+                const Node* c = inst.graph->node(x.macros[at]);
+                if (c != nullptr && c->kind == "macro.call" && c->fn == n.fn) {
+                    call = c;
+                    break;
+                }
+            }
+            if (call == nullptr) return true;  // fuera de una llamada (no deberia pasar)
+            for (std::size_t i = 0; i < n.inputs.size(); ++i) {
+                if (n.inputs[i].type != PinType::Exec) inst.slots[{call->id, static_cast<int>(i)}] = input(x, n, static_cast<int>(i));
+            }
+            const std::vector<int> saved = x.macros;
+            x.macros.resize(at);
+            try {
+                follow(x, *call, in);
+            } catch (...) {
+                x.macros = saved;
+                throw;
+            }
+            x.macros = saved;
+        } else if (k == "fn.entry" || k == "macro.entry") {
+            // Solo se entra por su llamada (invoke / macro.call).
+        } else if (k == "flow.timeline") {
+            Instance::TimelineState& t = inst.timelines[n.id];
+            const double length = std::max(0.001, static_cast<double>(n.timeline.length));
+            switch (in) {
+                case 0: t.playing = true; t.reverse = false; break;                  // Play
+                case 1: t.time = 0.0; t.playing = true; t.reverse = false; break;    // Play desde el inicio
+                case 2: t.playing = false; break;                                     // Stop
+                case 3: t.playing = true; t.reverse = true; break;                   // Reverse
+                case 4: t.time = length; t.playing = true; t.reverse = true; break;  // Reverse desde el final
+                case 5: t.time = std::clamp(lenient(input(x, n, 6)), 0.0, length); break;  // Set New Time
+                default: break;
+            }
+            timelineSlots(inst, n, t);
+        } else {
+            return false;
+        }
+        return true;
+    }
+
+    // Salidas de un Timeline en su tiempo: Direccion, Tiempo y una por pista.
+    static void timelineSlots(Instance& inst, const Node& n, const Instance::TimelineState& t) {
+        inst.slots[{n.id, 2}] = api::Value(std::string(t.reverse ? "Backward" : "Forward"));
+        inst.slots[{n.id, 3}] = api::Value(t.time);
+        for (std::size_t i = 0; i < n.timeline.tracks.size(); ++i) {
+            const vscript::TimelineTrack& track = n.timeline.tracks[i];
+            const core::Vec3 v = vscript::evaluateTrack(track, static_cast<float>(t.time));
+            const int pin = vscript::kTimelineFixedOutputs + static_cast<int>(i);
+            inst.slots[{n.id, pin}] = track.type == PinType::Vector ? api::Value(v) : api::Value(static_cast<double>(v.x));
+        }
+    }
+
+    // Una cadena que empieza en la salida exec `out` de `n` (Timeline: Update / Finished).
+    void chain(Instance& inst, const Node& n, int out) {
+        if (inst.failed) return;
+        Exec x{inst};
+        try {
+            trace(x, n.id);
+            follow(x, n, out);
+        } catch (const Suspend&) {
+            inst.pending.push_back(Pending{std::move(x.frames), x.wait});
+        } catch (const Abort&) {
+        } catch (const Returned&) {
+        } catch (const api::Error& e) {
+            fault(inst, x.node, e.what());
+        } catch (const std::exception& e) {
+            fault(inst, x.node, e.what());
+        }
+    }
+
+    // Los Timeline que corren avanzan (antes de los Update): Update cada frame y Finished al llegar al final.
+    void timelines(Instance& inst, double dt) {
+        if (inst.timelines.empty()) return;
+        const std::shared_ptr<const Loaded> g = inst.graph;
+        for (const Node* n : g->timelines) {
+            if (inst.failed) return;
+            const auto it = inst.timelines.find(n->id);
+            if (it == inst.timelines.end() || !it->second.playing) continue;
+            Instance::TimelineState& t = it->second;
+            const double length = std::max(0.001, static_cast<double>(n->timeline.length));
+            bool finished = false;
+            t.time += t.reverse ? -dt : dt;
+            if (!t.reverse && t.time >= length) {
+                if (n->timeline.loop) {
+                    t.time = std::fmod(t.time, length);
+                } else {
+                    t.time = length;
+                    finished = true;
+                }
+            } else if (t.reverse && t.time <= 0.0) {
+                if (n->timeline.loop) {
+                    t.time = std::fmod(t.time, length) + length;
+                    if (t.time >= length) t.time -= length;
+                } else {
+                    t.time = 0.0;
+                    finished = true;
+                }
+            }
+            if (finished) t.playing = false;
+            timelineSlots(inst, *n, t);
+            chain(inst, *n, 0);
+            if (finished) chain(inst, *n, 1);
         }
     }
 
@@ -1290,6 +1602,7 @@ struct Host final : VisualScriptDebugHost {
             std::erase_if(inst.pending, [&](const Pending& p) { return !p.frames.empty() && p.frames.front().node == n.id; });
             x.wait = lenient(a(1));
             x.frames.push_back(Frame{n.id, static_cast<long long>(generation)});
+            x.frames.back().macros = x.macros;
             throw Suspend{};
         } else if (k == "flow.is_valid") {
             const api::Value o = a(1);
@@ -1414,6 +1727,11 @@ struct Host final : VisualScriptDebugHost {
             if (n == nullptr) return;  // el grafo cambio y ese nodo ya no esta
             try {
                 x.node = n->id;
+                x.macros = f.macros;  // dentro de las macros en las que estaba
+                // Una macro que ya no esta (recarga): esa cadena no puede seguir.
+                for (const int call : x.macros) {
+                    if (x.inst.graph->node(call) == nullptr) return;
+                }
                 if (n->kind == "flow.delay") follow(x, *n, 0);
                 else if (n->kind == "flow.retrig_delay") {
                     // Una espera que se volvio a lanzar: esta cadena ya no sigue (la nueva si).
@@ -1472,6 +1790,7 @@ struct Host final : VisualScriptDebugHost {
         } catch (const Suspend&) {
             inst.pending.push_back(Pending{std::move(x.frames), x.wait});
         } catch (const Abort&) {
+        } catch (const Returned&) {
         } catch (const api::Error& e) {
             fault(inst, x.node, e.what());
         } catch (const std::exception& e) {
@@ -1506,6 +1825,7 @@ struct Host final : VisualScriptDebugHost {
                 } catch (const Suspend&) {
                     inst.pending.push_back(Pending{std::move(x.frames), x.wait});
                 } catch (const Abort&) {
+                } catch (const Returned&) {
                 } catch (const api::Error& e) {
                     fault(inst, x.node, e.what());
                 } catch (const std::exception& e) {
@@ -1597,11 +1917,20 @@ struct Host final : VisualScriptDebugHost {
                 return;
             }
         }
+        // Timeline con Autoplay: empiezan desde 0.
+        for (const Node* n : g->timelines) {
+            if (!n->timeline.autoplay) continue;
+            Instance::TimelineState& t = inst.timelines[n->id];
+            t = Instance::TimelineState{0.0, true, false};
+            timelineSlots(inst, *n, t);
+        }
         events(inst, "event.start");
     }
 
     void update(Instance& inst, float dt) {
         tick(inst, dt);
+        timelines(inst, dt);
+        if (inst.failed) return;
         const std::shared_ptr<const Loaded> g = inst.graph;
         for (const Node* n : g->eventsOf("event.key")) {
             if (inst.failed) return;
@@ -1698,7 +2027,7 @@ struct Host final : VisualScriptDebugHost {
 
     // Lo que define un nodo para su estado guardado (tipo, funcion y pines).
     static std::string signature(const Node& n) {
-        std::string s = n.kind + "|" + n.fn + "|" + (n.disabled ? "off" : "on");
+        std::string s = n.kind + "|" + n.graph + "|" + n.fn + "|" + (n.disabled ? "off" : "on");
         for (const vscript::Pin& p : n.inputs) s += "|i" + std::to_string(static_cast<int>(p.type)) + p.name;
         for (const vscript::Pin& p : n.outputs) s += "|o" + std::to_string(static_cast<int>(p.type)) + p.name;
         return s;
@@ -1716,6 +2045,9 @@ struct Host final : VisualScriptDebugHost {
         if (changed.empty()) return;
         std::erase_if(inst.state, [&](const auto& item) { return changed.contains(item.first); });
         std::erase_if(inst.slots, [&](const auto& item) { return changed.contains(item.first.first); });
+        std::erase_if(inst.timelines, [&](const auto& item) { return changed.contains(item.first); });
+        std::erase_if(inst.read, [&](const auto& item) { return changed.contains(item.first.first); });
+        std::erase_if(inst.flowed, [&](const auto& item) { return changed.contains(item.first.first); });
         std::erase_if(inst.pending, [&](const Pending& p) {
             return std::any_of(p.frames.begin(), p.frames.end(), [&](const Frame& f) { return changed.contains(f.node); });
         });
@@ -1727,6 +2059,7 @@ struct Host final : VisualScriptDebugHost {
         if (lowerText(std::filesystem::path(file).extension().string()) != vscript::kGraphExtension) return false;
         failed.erase(file);
         graphs.erase(file);
+        construction_cache.erase(file);
         if (!rt.running) return true;
         std::string error;
         std::shared_ptr<const Loaded> g = load(file, error);
@@ -1779,9 +2112,96 @@ struct Host final : VisualScriptDebugHost {
             out.values[std::to_string(key.first) + ":" + std::to_string(key.second)] = debugText(value);
         }
         for (const auto& [name, value] : inst.vars) out.variables[name] = debugText(value);
+        for (const auto& [key, time] : inst.flowed) out.flows[std::to_string(key.first) + ":" + std::to_string(key.second)] = time;
+        for (const auto& [key, value] : inst.read) {
+            out.inputs[std::to_string(key.first) + ":" + std::to_string(key.second)] = debugText(value);
+        }
         return true;
     }
     void setDebugging(bool on) override { debugging = on; }
+    void setLive(bool on) override {
+        live_view = on;
+        if (on) return;
+        for (auto& [h, inst] : instances) {
+            inst.flowed.clear();
+            inst.read.clear();
+        }
+    }
+
+    // --- Construction Script (en el editor, fuera de Play) ---
+    bool hasConstruction(const std::string& file) override {
+        if (file.empty()) return false;
+        std::error_code ec;
+        const std::filesystem::path path = rt.root / pathFromUtf8(file);
+        const std::filesystem::file_time_type stamp = std::filesystem::last_write_time(path, ec);
+        if (ec) return false;
+        const auto it = construction_cache.find(file);
+        if (it != construction_cache.end() && it->second.stamp == stamp) return it->second.has;
+        bool has = false;
+        Graph graph;
+        if (vscript::loadGraph(path, graph)) {
+            has = std::any_of(graph.nodes.begin(), graph.nodes.end(),
+                              [](const Node& n) { return n.kind == "event.construction" && !n.disabled; });
+        }
+        construction_cache[file] = ConstructionInfo{stamp, has};
+        return has;
+    }
+
+    // Corre el Construction Script de `e` con una instancia de un solo uso
+    // (sus variables con lo del Inspector). Lo que creo la pasada anterior se
+    // borra y lo nuevo queda marcado (ConstructionOwned) para la siguiente.
+    bool construct(ecs::Entity e, std::string& error) override {
+        if (rt.world == nullptr || !e.valid() || !e.has<vscript::VisualScript>()) return false;
+        const vscript::VisualScript component = e.get<vscript::VisualScript>();
+        if (!component.enabled || component.graph.empty()) return false;
+        std::shared_ptr<const Loaded> g = load(component.graph, error);  // siempre el archivo de ahora
+        if (!g) return false;
+        const std::vector<const Node*> list = g->eventsOf("event.construction");
+        if (list.empty()) return true;
+        ecs::World& world = *rt.world;
+        const Uuid owner = e.uuid();
+        std::vector<entt::entity> old;
+        for (const entt::entity h : world.registry().view<vscript::ConstructionOwned>()) {
+            if (world.registry().get<vscript::ConstructionOwned>(h).owner == owner && h != e.handle()) old.push_back(h);
+        }
+        for (const entt::entity h : old) {
+            if (world.valid(h)) world.destroy(world.wrap(h));
+        }
+        if (!e.valid()) return false;
+        std::set<entt::entity> before;
+        world.forEachDepthFirst([&](const ecs::Entity& x) { before.insert(x.handle()); });
+
+        Instance inst;
+        inst.graph = g;
+        inst.entity = e.handle();
+        for (const ScriptProperty& p : component.properties) {
+            if (!p.name.empty()) inst.vars[p.name] = propertyValue(p);
+        }
+        init(inst);
+        for (const Node* n : list) {
+            if (inst.failed) break;
+            event(inst, *n, {});
+        }
+        // Lo nuevo (solo sus raices: los hijos se van con ellas) es de este objeto.
+        std::vector<entt::entity> fresh;
+        world.forEachDepthFirst([&](const ecs::Entity& x) {
+            if (!before.contains(x.handle())) fresh.push_back(x.handle());
+        });
+        for (const entt::entity h : fresh) {
+            if (!world.valid(h) || h == inst.entity) continue;
+            ecs::Entity x = world.wrap(h);
+            const ecs::Entity parent = x.parent();
+            if (parent.valid() && !before.contains(parent.handle())) continue;
+            vscript::ConstructionOwned& mark = x.has<vscript::ConstructionOwned>() ? x.get<vscript::ConstructionOwned>()
+                                                                                  : x.add<vscript::ConstructionOwned>();
+            mark.owner = owner;
+        }
+        if (inst.failed) {
+            error = !rt.errors.empty() ? rt.errors.back().message : std::string("el Construction Script fallo");
+            return false;
+        }
+        return true;
+    }
     void setBreakpoints(const std::string& graph, const std::vector<int>& nodes) override {
         editor_breakpoints[graph] = std::set<int>(nodes.begin(), nodes.end());
     }

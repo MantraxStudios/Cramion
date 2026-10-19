@@ -30,6 +30,7 @@
 
 #include <array>
 #include <atomic>
+#include <thread>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -71,6 +72,12 @@ struct FoliageStats {
 
 class FoliagePass {
 public:
+    FoliagePass() = default;
+    // Por si no se llamo a destroy(): un std::thread sin join al destruirse
+    // termina el proceso (la compresion a BC7 de las texturas de los arboles).
+    ~FoliagePass() { stopTextureCompression(); }
+    FoliagePass(const FoliagePass&) = delete;
+    FoliagePass& operator=(const FoliagePass&) = delete;
     // Dibujar el G-buffer en lineas (vista Wireframe del editor).
     void setWireframe(bool wireframe) { wireframe_ = wireframe; }
     static constexpr std::uint32_t kSpecies = 3;
@@ -150,6 +157,9 @@ public:
     // Array de colores de los arboles (SRGB, creado con formato mutable: se
     // puede ver como UNORM, como leen las texturas los rayos).
     vk::Image albedoImage() const { return *albedo_array_.image; }
+    // R8G8B8A8_SRGB o, si ya estan en la cache de BC7 (ver createTextures),
+    // BC7_SRGB.
+    vk::Format albedoFormat() const { return albedo_format_; }
     std::uint32_t albedoMips() const { return albedo_mips_; }
     std::uint32_t albedoLayers() const { return albedo_layers_; }
 
@@ -164,6 +174,9 @@ private:
                          vk::Format depth_format, vk::Format shadow_format);
     void buildMeshes();
     void createTextures();
+    // Las texturas de los arboles a BC7 en segundo plano, a la cache del
+    // usuario (las usa el siguiente arranque).
+    void stopTextureCompression();
     struct TextureArray {
         vk::raii::DeviceMemory memory{nullptr};
         vk::raii::Image image{nullptr};
@@ -241,6 +254,9 @@ private:
     std::array<asset::TreeSpecies, kSpecies> species_{};
     TextureArray albedo_array_;
     TextureArray normal_array_;
+    vk::Format albedo_format_ = vk::Format::eR8G8B8A8Srgb;
+    std::thread bc7_thread_;
+    std::shared_ptr<std::atomic<bool>> bc7_stop_;
     vk::raii::Sampler texture_sampler_{nullptr};
     TextureFiltering filtering_{};
     void createTextureSampler();

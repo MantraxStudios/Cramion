@@ -719,7 +719,9 @@ std::vector<std::string> androidScriptCompileArgs(const AndroidPackageInput& inp
                                      "-I" + utf8(input.cpp_scripts.sdk),
                                      "-I" + utf8(input.cpp_scripts.assets_root)};
     for (const fs::path& source : input.cpp_scripts.sources) args.push_back(utf8(source));
-    args.push_back(utf8(input.cpp_scripts.sdk / "cramion" / "ScriptMain.cpp"));
+    // Con / (generic): sdk / "cramion" en Windows mezclaria / y \.
+    const std::u8string script_main = (input.cpp_scripts.sdk / "cramion" / "ScriptMain.cpp").generic_u8string();
+    args.emplace_back(script_main.begin(), script_main.end());
     args.push_back("-o");
     args.push_back(utf8(out));
     return args;

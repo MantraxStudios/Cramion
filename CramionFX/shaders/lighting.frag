@@ -79,8 +79,12 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     vec4 cloud_shadow;             // xy = centro del mapa de sombra de las nubes (x, z), z = lado (m; 0 = no), w = fuerza
     vec4 rt_shadows;               // x = 1 luces locales + 2 sol si rt_shadow_mask vale, y = vision nocturna (0..0.9)
     vec4 sky_map;                  // oclusion del cielo desde arriba: xy esquina (x, z), z lado (m), w = 1 si vale
-    vec4 sky_map_depth;            // x = altura desde la que se mira (m), y = profundidad que cubre (m)
-    vec4 probe_trust;              // x/y = confianza en el cubo 0/1 de la sonda (0..1)
+    vec4 sky_map_depth;            // x = altura desde la que se mira (m), y = profundidad que cubre (m),
+                                   // w = sombras del sol: 0 cascadas, 1 sol en las sondas, 2 lightmap
+    vec4 probe_trust;              // x/y = confianza en el cubo 0/1 de la sonda (0..1), z = 1 los lightmaps
+                                   // llevan la irradiancia, w = SSAO sobre lo horneado (0..1)
+    uvec4 light_tiles;             // luces puntuales por teselas: xy = pixeles de una tesela, zw = columnas y filas (z = 0: sin teselas)
+    uvec4 point_tiles[576];        // un bit por luz puntual en cada tesela (64 x 36 teselas, 4 por uvec4; GpuTypes.h)
 } lights;
 
 // Mapa de sombras en cascada. El muestreador compara por hardware: devuelve
@@ -1069,9 +1073,28 @@ vec3 geometricNormal(float depth, vec3 world_position, vec3 view_direction) {
         // salia casi nulo y la normal, ruido. En la primera y la ultima fila
         // (y columna) quedaban pixeles sueltos en sombra: una linea de rayas
         // oscuras en el borde. Se usa el vecino que existe.
-        bool use_forward = forward != pixel &&
-                           (backward == pixel || abs(linearDepth(depth_forward) - center_z) <=
-                                                     abs(linearDepth(depth_backward) - center_z));
+        //
+        // En una arista (esquina de una pared, pared con suelo) el vecino mas
+        // parecido en profundidad podia ser el de la OTRA cara: la normal
+        // salia girada, el desplazamiento de la sombra iba hacia dentro y el
+        // horizonte de los reflejos cortaba la luz. Una linea oscura de un
+        // pixel en los bordes de las paredes (con el jitter del TAA/FSR, en
+        // pixeles distintos cada frame: la acumulacion la dejaba fina y
+        // fija). Con dos vecinos por lado se elige el lado PLANO: en una
+        // cara plana el depth (z/w) es lineal en pantalla, asi que
+        // 2 d(1) - d(2) = d(0); el lado que cruza la arista no lo cumple.
+        ivec2 forward2 = clamp(pixel + 2 * step_offset, ivec2(0), size - 1);
+        ivec2 backward2 = clamp(pixel - 2 * step_offset, ivec2(0), size - 1);
+        bool use_forward;
+        if (forward == pixel || backward == pixel) {
+            use_forward = forward != pixel;
+        } else if (forward2 != forward && backward2 != backward) {
+            float error_forward = abs(2.0 * depth_forward - texelFetch(g_depth, forward2, 0).r - depth);
+            float error_backward = abs(2.0 * depth_backward - texelFetch(g_depth, backward2, 0).r - depth);
+            use_forward = error_forward <= error_backward;
+        } else {
+            use_forward = abs(linearDepth(depth_forward) - center_z) <= abs(linearDepth(depth_backward) - center_z);
+        }
         ivec2 neighbor = use_forward ? forward : backward;
         float neighbor_depth = use_forward ? depth_forward : depth_backward;
         vec3 neighbor_position =
@@ -1417,10 +1440,17 @@ void main() {
         float reflectance = normal_sample.a;
         vec4 material_sample = texelFetch(g_material, frag_pixel, 0);
         vec3 emission = material_sample.rgb;
-        // Alfa = metalicidad + 2 x sombra propia del relieve (gbuffer_surface.glsl).
-        float self_shadow_level = floor(material_sample.a * 0.5);
-        float metallic = material_sample.a - 2.0 * self_shadow_level;
-        float relief_shadow = 1.0 - self_shadow_level / 7.0;
+        // Alfa = metalicidad + 2 x nivel de sombra del sol (32 niveles: la
+        // propia del relieve por la horneada del lightmap); negativo = el pixel
+        // lleva lightmap (gbuffer_surface.glsl).
+        bool lightmapped = material_sample.a < 0.0;
+        float packed_a = lightmapped ? -material_sample.a - 0.5 : material_sample.a;
+        float self_shadow_level = floor(packed_a * 0.5);
+        float metallic = packed_a - 2.0 * self_shadow_level;
+        float relief_shadow = 1.0 - self_shadow_level / 31.0;
+        // Los lightmaps llevan la luz rebotada, el cielo y las luces Horneadas
+        // (Fase 3): ni el cielo ni la GI se suman otra vez.
+        bool lm_irradiance = lightmapped && lights.probe_trust.z > 0.5;
         vec3 albedo = toLinear(albedo_sample.rgb);
 
         vec3 to_camera = camera.position.xyz - world_position;
@@ -1442,9 +1472,14 @@ void main() {
         vec3 sun_radiance = toLinear(lights.sun_color_ambient.rgb) *
                             lights.sun_direction_intensity.w;
         vec3 sun_direction = normalize(-lights.sun_direction_intensity.xyz);
-        // Sol horneado entero (Ventana > Iluminacion, modo Horneado): su luz
-        // directa y sus sombras ya vienen en la GI horneada (gi.rgb).
-        bool sun_baked = lights.sky_map_depth.w > 0.5;
+        // De donde salen las sombras del sol (VulkanRenderer::sunShadowSource):
+        // 1 = sol horneado entero en un .crbake antiguo (su luz directa y sus
+        // sombras ya vienen en la GI horneada, gi.rgb); 2 = .crbake con
+        // lightmaps: el sol en tiempo real y su sombra horneada (relief_shadow)
+        // en lo que lleva lightmap.
+        int sun_mode = int(lights.sky_map_depth.w + 0.5);
+        bool sun_baked = sun_mode == 1;
+        bool sun_from_lightmap = sun_mode == 2 && lightmapped;
         if (sun_baked) {
             sun_radiance = vec3(0.0);
         }
@@ -1491,9 +1526,8 @@ void main() {
             float luminance_sky = dot(sky_irradiance, vec3(0.2126, 0.7152, 0.0722));
             sky_irradiance = mix(sky_irradiance, vec3(luminance_sky * 1.15), overcast * 0.85);
         }
-        vec3 diffuse_light = sky_irradiance * sky_visibility + gi.rgb +
-                             toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a *
-                                 (1.0 - lights.sky_sun.w) * 0.25;
+        vec3 night_fill = toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a * (1.0 - lights.sky_sun.w) * 0.25;
+        vec3 diffuse_light = lm_irradiance ? night_fill : sky_irradiance * sky_visibility + gi.rgb + night_fill;
         // Destello de un rayo (sistema de ambiente): luz blanca azulada de
         // todo el cielo, mas en lo que mira hacia arriba y ve el cielo.
         if (lights.rt_shadows.z > 0.0) {
@@ -1503,7 +1537,7 @@ void main() {
         vec3 diffuse_ibl = diffuse_light * albedo * (1.0 - env_fresnel) * (1.0 - metallic);
         // Hojas y demas subsurface: la luz del cielo que les llega por detras
         // tambien las atraviesa (contra el cielo, una copa no se ve negra).
-        if (translucent) {
+        if (translucent && !lm_irradiance) {
             diffuse_ibl += irradianceSh(-normal) * sky_visibility * translucencyColor(surface_model, albedo) *
                            shadingTranslucency(surface_model) * 0.5 * (1.0 - metallic);
         }
@@ -1617,7 +1651,18 @@ void main() {
                        (sun_n_dot_l > 0.0 ||
                         (surface_model.model == kShadingHair && dot(normal, sun_direction) > -0.34) ||
                         (surface_model.model == kShadingGrass && dot(normal, sun_direction) > -0.35));
-        if (sun_lit) {
+        if (sun_lit && sun_from_lightmap) {
+            // La sombra horneada ya va en relief_shadow (con su fuerza): sin
+            // cascadas ni rayos; en PC, las sombras de contacto para el detalle
+            // que el texel no resuelve.
+            float geometric_n_dot_l = max(dot(geometric_normal, sun_direction), 0.0);
+            shadow = 1.0;
+            if (!kLite) {
+                shadow = mix(1.0, contactShadow(viewFromDepth(v_uv, depth), mat3(camera.view) * geometric_normal,
+                                                mat3(camera.view) * sun_direction, geometric_n_dot_l, 0.02),
+                             shadows.params.y);
+            }
+        } else if (sun_lit) {
             float geometric_n_dot_l = max(dot(geometric_normal, sun_direction), 0.0);
             // Con rayos: la mas oscura de las dos. Los rayos ven el escenario y
             // el terreno con su forma exacta (sin acne ni sombras despegadas) y
@@ -1672,7 +1717,7 @@ void main() {
         // la tiene iluminada; un muro, no, y no deja pasar nada.
         // La hierba envuelve mas (grassBrdf): su translucidez entra antes.
         float translucent_gate = surface_model.model == kShadingGrass ? 0.35 : 0.2;
-        if (!sun_baked && translucent && dot(normal, sun_direction) < translucent_gate) {
+        if (!sun_baked && !sun_from_lightmap && translucent && dot(normal, sun_direction) < translucent_gate) {
             int back_cascade = 0;
             vec3 back_position = world_position - geometric_normal * translucent_thickness;
             float back_shadow = shadowFactor(back_position, -geometric_normal,
@@ -1688,8 +1733,20 @@ void main() {
         color = rodVision(color);
 
         // --- Luces puntuales ---
+        // Solo las de esta tesela de pantalla (las que la CPU ve caer en ella);
+        // las demas no llegan a este pixel (estan fuera de su alcance).
         int point_count = min(lights.counts.x, kMaxPointLights);
+        uint point_mask = point_count >= 32 ? 0xFFFFFFFFu : (1u << uint(point_count)) - 1u;
+        if (lights.light_tiles.z != 0u) {
+            uvec2 tile = min(uvec2(gl_FragCoord.xy) / max(lights.light_tiles.xy, uvec2(1u)),
+                             lights.light_tiles.zw - uvec2(1u));
+            uint t = tile.y * lights.light_tiles.z + tile.x;
+            point_mask &= lights.point_tiles[t >> 2u][t & 3u];
+        }
         for (int i = 0; i < point_count; ++i) {
+            if ((point_mask & (1u << uint(i))) == 0u) {
+                continue;
+            }
             vec3 to_light = lights.points[i].position_range.xyz - world_position;
             float distance_to_light = length(to_light);
             if (distance_to_light > lights.points[i].position_range.w) {
@@ -1797,7 +1854,9 @@ void main() {
         }
 
         // --- Emision propia (bloques luminosos, materiales emisivos) ---
-        color += emission;
+        // Con lightmap lleva tambien su luz horneada: el SSAO la oscurece (lo
+        // que diga "SSAO sobre lo horneado").
+        color += lm_irradiance ? emission * mix(vec3(1.0), multiBounceAo(ssao, albedo), lights.probe_trust.w) : emission;
 
         // --- Visualizacion de cascadas ---
         // Se sustituye el color, no se multiplica: mezclado con el albedo y las
@@ -1810,6 +1869,11 @@ void main() {
         bool flat_view = shadows.params.z > 1.5;
         if (flat_view) {
             color = shadows.params.z > 2.5 ? vec3(0.75, 0.78, 0.82) : albedo + emission;
+        }
+        // Vistas de depuracion de los lightmaps (4): lo que escribio el G-buffer
+        // (irradiancia, visibilidad del sol o las UV2); magenta oscuro = sin lightmap.
+        if (shadows.params.z > 3.5) {
+            color = lightmapped ? emission : vec3(0.25, 0.0, 0.25);
         }
 
         // --- Niebla por altura hacia el color del cielo ---

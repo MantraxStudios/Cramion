@@ -5,6 +5,13 @@
 //
 // Nada se guarda solo: Compilar (F7) valida, guarda y recarga; Guardar
 // (Ctrl+S) solo escribe el archivo.
+//
+// Fase 2: el lienzo ensena un grafo cada vez (Document::active): Event
+// Graph, Construction Script, una funcion o una macro (Mi Blueprint > Grafos,
+// Funciones, Macros; doble clic en una llamada la abre). Detalles edita la
+// firma de una funcion / macro y las pistas de un Timeline. En Play los cables
+// por los que pasa la ejecucion se iluminan (VisualScriptDebug::flows) y los
+// pines vigilados o de los nodos elegidos llevan su valor en una burbuja.
 
 #include "VsGraphEditor.h"
 
@@ -18,6 +25,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -92,6 +100,12 @@ bool validPin(const vscript::Node& n, int pin, bool output) {
     return pin >= 0 && pin < static_cast<int>(output ? n.outputs.size() : n.inputs.size());
 }
 
+// La entrada de una funcion / macro: una por grafo (ni se borra ni se copia).
+bool isEntryKind(const std::string& kind) { return kind == "fn.entry" || kind == "macro.entry"; }
+
+// Clave de VisualScriptDebug::values / inputs / flows: "nodo:pin".
+std::string debugKey(int node, std::size_t pin) { return std::to_string(node) + ":" + std::to_string(pin); }
+
 // --- Paleta (catalogo + API), una vez ---------------------------------------------------
 struct PaletteCache {
     std::vector<PaletteEntry> entries;
@@ -149,6 +163,10 @@ bool applyState(Document& doc, const std::string& state) {
     vscript::Graph graph;
     if (!vscript::graphFromJson(state, graph, nullptr)) return false;
     doc.graph = std::move(graph);
+    // El grafo que se veia puede no existir ya (deshacer "Nueva funcion").
+    if (!doc.active.empty() && doc.active != vscript::kConstructionGraph && doc.graph.findSubgraph(doc.active) == nullptr) doc.active.clear();
+    if (!doc.details_function.empty() && doc.graph.findSubgraph(doc.details_function) == nullptr) doc.details_function.clear();
+    doc.graph.editing = doc.active;
     // Mismo texto que dara graphToJson: la siguiente instantanea no cuenta como cambio (no borra rehacer).
     doc.history.current = vscript::graphToJson(doc.graph);
     std::set<int> keep;
@@ -200,20 +218,43 @@ void buildViews(Document& doc, const scripting::ScriptSystem::VisualScriptDebug*
         linked_in.insert({l.to_node, l.to_pin});
         linked_out.insert({l.from_node, l.from_pin});
     }
-    const auto debugValue = [&](int node, const std::string& pin) -> const std::string* {
+    // Valores en vivo por indice de pin: salidas (values) y entradas (inputs).
+    const auto debugValue = [&](int node, std::size_t pin, bool output) -> const std::string* {
         if (debug == nullptr) return nullptr;
-        const auto it = debug->values.find(std::to_string(node) + ":" + pin);
-        return it != debug->values.end() ? &it->second : nullptr;
+        const std::map<std::string, std::string>& values = output ? debug->values : debug->inputs;
+        const auto it = values.find(debugKey(node, pin));
+        return it != values.end() ? &it->second : nullptr;
+    };
+    const auto fade = [&](double when) {
+        return std::clamp(1.0f - static_cast<float>(debug->now - when) / 0.6f, 0.0f, 1.0f);
     };
     const auto recency = [&](int node) {
         if (debug == nullptr) return 0.0f;
         const auto it = debug->executed.find(node);
-        if (it == debug->executed.end()) return 0.0f;
-        return std::clamp(1.0f - static_cast<float>(debug->now - it->second) / 0.6f, 0.0f, 1.0f);
+        return it == debug->executed.end() ? 0.0f : fade(it->second);
+    };
+    // Un cable exec: por donde paso la ejecucion de verdad (flows); sin
+    // depuracion en vivo, cuando corrio el nodo al que llega.
+    const auto linkFlow = [&](const vscript::Link& l) {
+        if (debug == nullptr) return 0.0f;
+        if (debug->flows.empty()) return recency(l.to_node);
+        const auto it = debug->flows.find(debugKey(l.from_node, static_cast<std::size_t>(l.from_pin)));
+        return it == debug->flows.end() ? 0.0f : fade(it->second);
+    };
+    // Burbuja fija: pines vigilados y, en Play, los de los nodos elegidos.
+    const auto watchText = [&](int node, std::size_t pin, bool output, const std::string* value) -> std::string {
+        if (debug == nullptr) return {};
+        const bool watched = doc.watches.contains(std::make_tuple(node, static_cast<int>(pin), output));
+        if (!watched && !doc.canvas.selection.contains(node)) return {};
+        if (value != nullptr) return *value;
+        return watched ? std::string("(sin valor)") : std::string();
     };
 
+    std::set<int> shown;  // nodos del grafo que se ve
     out.nodes.reserve(g.nodes.size());
     for (vscript::Node& n : g.nodes) {
+        if (n.graph != doc.active) continue;
+        shown.insert(n.id);
         nodegraph::NodeView v;
         v.id = n.id;
         v.position = &n.position;
@@ -262,7 +303,11 @@ void buildViews(Document& doc, const scripting::ScriptSystem::VisualScriptDebug*
             pin.inline_value = !pin.exec && !reroute;
             pin.hide_label = compact || reroute;
             pin.tooltip = vscript::pinTypeLabel(type);
-            if (const std::string* value = debugValue(n.id, p.name)) pin.tooltip += " = " + *value;
+            if (!pin.exec) {
+                const std::string* value = debugValue(n.id, k, false);
+                if (value != nullptr) pin.tooltip += " = " + *value;
+                pin.watch = watchText(n.id, k, false, value);
+            }
             v.inputs.push_back(std::move(pin));
         }
         for (std::size_t k = 0; k < n.outputs.size(); ++k) {
@@ -277,9 +322,16 @@ void buildViews(Document& doc, const scripting::ScriptSystem::VisualScriptDebug*
             pin.connected = linked_out.count({n.id, static_cast<int>(k)}) != 0;
             pin.hide_label = compact || reroute || child_ref;
             pin.tooltip = vscript::pinTypeLabel(type);
-            if (const std::string* value = debugValue(n.id, p.name)) pin.tooltip += " = " + *value;
+            if (!pin.exec) {
+                const std::string* value = debugValue(n.id, k, true);
+                if (value != nullptr) pin.tooltip += " = " + *value;
+                pin.watch = watchText(n.id, k, true, value);
+            }
             v.outputs.push_back(std::move(pin));
         }
+        if (n.kind == "fn.call") v.subtitle = n.pure ? "Funcion pura" : "Funcion";
+        else if (n.kind == "macro.call") v.subtitle = "Macro";
+        else if (n.kind == "flow.timeline") v.subtitle = std::to_string(n.timeline.tracks.size()) + " pista(s)";
         v.highlight = recency(n.id);
         out.nodes.push_back(std::move(v));
     }
@@ -287,6 +339,7 @@ void buildViews(Document& doc, const scripting::ScriptSystem::VisualScriptDebug*
     out.links.reserve(g.links.size());
     for (std::size_t i = 0; i < g.links.size(); ++i) {
         const vscript::Link& l = g.links[i];
+        if (!shown.contains(l.from_node) || !shown.contains(l.to_node)) continue;
         nodegraph::LinkView lv;
         lv.id = static_cast<int>(i) + 1;
         lv.from_node = l.from_node;
@@ -298,7 +351,7 @@ void buildViews(Document& doc, const scripting::ScriptSystem::VisualScriptDebug*
                                                                                  : PinType::Any;
         lv.exec = type == PinType::Exec;
         lv.color = vsPinColor(type);
-        if (lv.exec) lv.flow = recency(l.to_node);
+        if (lv.exec) lv.flow = linkFlow(l);
         out.links.push_back(lv);
     }
 }
@@ -383,7 +436,8 @@ void copySelection(Document& doc) {
     doc.clipboard.clear();
     doc.clipboard_links.clear();
     for (const int id : doc.canvas.selection) {
-        if (const vscript::Node* n = doc.graph.find(id)) doc.clipboard.push_back(*n);
+        const vscript::Node* n = doc.graph.find(id);
+        if (n != nullptr && !isEntryKind(n->kind)) doc.clipboard.push_back(*n);
     }
     for (const vscript::Link& l : doc.graph.links) {
         if (doc.canvas.selection.contains(l.from_node) && doc.canvas.selection.contains(l.to_node)) doc.clipboard_links.push_back(l);
@@ -404,6 +458,7 @@ void pasteClipboard(Document& doc, core::Vec2 at, bool offset_from_original) {
         const int old = n.id;
         n.position = core::Vec2{at.x + (n.position.x - min_x), at.y + (n.position.y - min_y)};
         n.breakpoint = false;
+        n.graph = doc.active;  // se pega en el grafo que se ve
         const int id = g.add(std::move(n)).id;
         remap[old] = id;
         doc.canvas.selection.insert(id);
@@ -415,6 +470,8 @@ void pasteClipboard(Document& doc, core::Vec2 at, bool offset_from_original) {
 
 void eraseNodes(Document& doc, const std::vector<int>& ids) {
     for (const int id : ids) {
+        // La entrada de una funcion / macro se va solo con ella (Mi Blueprint > Borrar).
+        if (const vscript::Node* n = doc.graph.find(id); n != nullptr && isEntryKind(n->kind)) continue;
         doc.graph.removeNode(id);
         doc.canvas.selection.erase(id);
         if (doc.details_node == id) doc.details_node = 0;
@@ -715,7 +772,427 @@ bool editDynamicPins(vscript::Graph& g, vscript::Node& n) {
     return changed;
 }
 
+// --- Fase 2: funciones, macros, Construction Script y Timeline -----------------------------
+
+// Una llamada a una funcion / macro en el grafo que se ve.
+int addSubgraphCall(Document& doc, const vscript::Subgraph& s, core::Vec2 at) {
+    vscript::Node n;
+    n.kind = s.kind == vscript::SubgraphKind::Macro ? "macro.call" : "fn.call";
+    n.fn = s.name;
+    n.position = at;
+    n.pure = s.kind == vscript::SubgraphKind::Function && s.pure;
+    vscript::subgraphNodePins(s, n.kind, n.inputs, n.outputs);
+    const int id = doc.graph.add(std::move(n)).id;
+    doc.canvas.select(id);
+    return id;
+}
+
+// Lo que el buscador ofrece en cada grafo: los eventos solo en el Event Graph
+// (Construction Script en el suyo), el Timeline solo en el Event Graph y nada
+// que espere (Delay) en una funcion ni en el Construction Script.
+bool paletteFits(const Document& doc, const vscript::Node& node) {
+    const vscript::NodeInfo* info = vscript::findNodeInfo(node.kind);
+    if (info == nullptr) return true;
+    const bool construction = doc.active == vscript::kConstructionGraph;
+    const bool function = doc.active.rfind("fn:", 0) == 0;
+    if (node.kind == "event.construction") return construction;
+    if (info->event || node.kind == "flow.timeline") return doc.active.empty();
+    if (info->latent && (construction || function)) return false;
+    return true;
+}
+
+// Cambia el nombre de un pin de la firma tambien en los nodos de la funcion /
+// macro (asi syncSubgraph conserva sus enlaces).
+void applyPinRenames(vscript::Graph& g, const vscript::Subgraph& s, bool inputs_side,
+                     const std::vector<std::pair<std::string, std::string>>& renames) {
+    if (renames.empty()) return;
+    const bool macro = s.kind == vscript::SubgraphKind::Macro;
+    for (vscript::Node& n : g.nodes) {
+        if (!vscript::isSubgraphNode(n.kind) || (n.kind.rfind("macro.", 0) == 0) != macro || n.fn != s.name) continue;
+        const bool entry = n.kind == "fn.entry" || n.kind == "macro.entry";
+        const bool exit = n.kind == "fn.return" || n.kind == "macro.exit";
+        const bool call = n.kind == "fn.call" || n.kind == "macro.call";
+        std::vector<vscript::Pin>* pins = nullptr;
+        if (inputs_side) pins = entry ? &n.outputs : (call ? &n.inputs : nullptr);
+        else pins = exit ? &n.inputs : (call ? &n.outputs : nullptr);
+        if (pins == nullptr) continue;
+        for (const auto& [from, to] : renames) {
+            for (vscript::Pin& p : *pins) {
+                if (p.name == from) p.name = to;
+            }
+        }
+    }
+}
+
+// Lista de pines de una firma (nombre, tipo, valor por defecto, subir, quitar).
+// `exec`: una macro tambien tiene pines de ejecucion.
+bool drawPinList(const char* label, std::vector<vscript::Pin>& pins, bool exec, const Host& host,
+                 std::vector<std::pair<std::string, std::string>>& renames) {
+    bool changed = false;
+    ImGui::SeparatorText(label);
+    ImGui::PushID(label);
+    int remove = -1;
+    int up = -1;
+    for (std::size_t i = 0; i < pins.size(); ++i) {
+        vscript::Pin& p = pins[i];
+        if (!exec && p.type == PinType::Exec) continue;  // una funcion no usa exec en su firma
+        ImGui::PushID(static_cast<int>(i));
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(at.x + 6.0f, at.y + ImGui::GetFrameHeight() * 0.5f), 4.5f, vsPinColor(p.type));
+        ImGui::SetCursorScreenPos(ImVec2(at.x + 16.0f, at.y));
+        std::string name = p.name;
+        ImGui::SetNextItemWidth(110.0f);
+        if (ImGui::InputText("##pin_name", &name, ImGuiInputTextFlags_EnterReturnsTrue) && !name.empty() && name != p.name) {
+            const bool used = std::any_of(pins.begin(), pins.end(), [&](const vscript::Pin& other) { return other.name == name; });
+            if (used) {
+                notify(host, "Renombrar", "Ya hay un pin con ese nombre");
+            } else {
+                renames.emplace_back(p.name, name);
+                p.name = name;
+                changed = true;
+            }
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(100.0f);
+        if (ImGui::BeginCombo("##pin_type", vscript::pinTypeLabel(p.type))) {
+            for (int t = exec ? 0 : 1; t < vscript::kPinTypeCount; ++t) {
+                const PinType type = static_cast<PinType>(t);
+                if (ImGui::Selectable(vscript::pinTypeLabel(type), p.type == type) && p.type != type) {
+                    p.type = type;
+                    p.value = defaultValueFor(type);
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("^") && i > 0) up = static_cast<int>(i);
+        ImGui::SetItemTooltip("Subir");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ImGui::SetItemTooltip("Quitar (sus enlaces se van)");
+        if (p.type != PinType::Exec) {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 16.0f);
+            ImGui::TextDisabled("por defecto");
+            ImGui::SameLine();
+            if (drawPinValueEditor(p, std::max(60.0f, ImGui::GetContentRegionAvail().x), true, host)) changed = true;
+        }
+        ImGui::PopID();
+    }
+    if (up > 0) {
+        std::swap(pins[static_cast<std::size_t>(up)], pins[static_cast<std::size_t>(up) - 1]);
+        changed = true;
+    }
+    if (remove >= 0) {
+        pins.erase(pins.begin() + remove);
+        changed = true;
+    }
+    if (ImGui::Button("Añadir pin")) {
+        std::string name = "Valor";
+        for (int i = 2; std::any_of(pins.begin(), pins.end(), [&](const vscript::Pin& p) { return p.name == name; }); ++i) {
+            name = "Valor" + std::to_string(i);
+        }
+        pins.push_back(vscript::Pin{name, PinType::Float, "0", {}});
+        changed = true;
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+// Firma de una funcion / macro en Detalles.
+bool drawSignature(Document& doc, const Host& host, vscript::Subgraph& s) {
+    vscript::Graph& g = doc.graph;
+    bool changed = false;
+    bool signature = false;
+    const bool macro = s.kind == vscript::SubgraphKind::Macro;
+    ImGui::SeparatorText(macro ? "Macro" : "Función");
+    if (beginDetailsTable("##vs_fn_details")) {
+        detailsLabel("Nombre");
+        std::string name = s.name;
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::InputText("##fn_name", &name, ImGuiInputTextFlags_EnterReturnsTrue) && !name.empty() && name != s.name) {
+            const std::string old_key = s.key();
+            if (name.find(':') == std::string::npos && g.renameSubgraph(old_key, name)) {
+                const std::string new_key = s.key();
+                if (doc.active == old_key) doc.active = new_key;
+                doc.details_function = new_key;
+                if (const auto view = doc.views.find(old_key); view != doc.views.end()) {
+                    doc.views[new_key] = view->second;
+                    doc.views.erase(old_key);
+                }
+                changed = true;
+            } else {
+                notify(host, "Renombrar", macro ? "Ya hay una macro con ese nombre (o lleva ':')" : "Ya hay una función con ese nombre (o lleva ':')");
+            }
+        }
+        detailsLabel("Descripción");
+        ImGui::SetNextItemWidth(-1.0f);
+        changed |= ImGui::InputText("##fn_desc", &s.description);
+        if (!macro) {
+            detailsLabel("Pura");
+            if (ImGui::Checkbox("##fn_pure", &s.pure)) signature = true;
+            ImGui::SetItemTooltip("Sus llamadas no tienen pines de ejecución (como un Get):\nse calcula cada vez que se usa su valor");
+        }
+        detailsLabel("Usos");
+        int uses = 0;
+        for (const vscript::Node& n : g.nodes) {
+            if ((n.kind == (macro ? "macro.call" : "fn.call")) && n.fn == s.name) ++uses;
+        }
+        ImGui::Text("%d llamada(s)", uses);
+        ImGui::EndTable();
+    }
+    std::vector<std::pair<std::string, std::string>> in_renames;
+    std::vector<std::pair<std::string, std::string>> out_renames;
+    signature |= drawPinList(macro ? "Entradas" : "Parámetros", s.inputs, macro, host, in_renames);
+    signature |= drawPinList(macro ? "Salidas" : "Resultados", s.outputs, macro, host, out_renames);
+    if (macro && std::none_of(s.inputs.begin(), s.inputs.end(), [](const vscript::Pin& p) { return p.type == PinType::Exec; })) {
+        ImGui::TextColored(colorVec(theme::kYellow), "Una macro necesita al menos una entrada de ejecución");
+    }
+    if (signature) {
+        applyPinRenames(g, s, true, in_renames);
+        applyPinRenames(g, s, false, out_renames);
+        g.syncSubgraph(s.key());
+        changed = true;
+    }
+    ImGui::Spacing();
+    if (doc.active != s.key() && ImGui::Button(macro ? "Abrir la macro" : "Abrir la función")) showGraph(doc, s.key());
+    ImGui::SameLine();
+    if (ImGui::Button("Añadir llamada")) {
+        // En el grafo que se ve (si es el suyo y es una macro, compileGraph lo avisa).
+        addSubgraphCall(doc, s, doc.canvas.viewCenter());
+        changed = true;
+    }
+    return changed;
+}
+
+// Curva de una pista (cada componente de un color) con sus claves y, en Play, el tiempo actual.
+void drawCurve(const vscript::TimelineTrack& track, float length, double playhead) {
+    const float w = std::max(60.0f, ImGui::GetContentRegionAvail().x);
+    const float h = 70.0f;
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(p0, p1, IM_COL32(28, 28, 32, 255), 3.0f);
+    const int components = track.type == PinType::Vector ? 3 : 1;
+    constexpr int kSamples = 64;
+    const auto component = [](const core::Vec3& v, int c) { return c == 0 ? v.x : (c == 1 ? v.y : v.z); };
+    float lo = 1e30f, hi = -1e30f;
+    for (int s = 0; s < kSamples; ++s) {
+        const core::Vec3 v = vscript::evaluateTrack(track, length * static_cast<float>(s) / (kSamples - 1));
+        for (int c = 0; c < components; ++c) {
+            lo = std::min(lo, component(v, c));
+            hi = std::max(hi, component(v, c));
+        }
+    }
+    if (hi - lo < 1e-4f) {
+        lo -= 0.5f;
+        hi += 0.5f;
+    }
+    const auto toY = [&](float v) { return p1.y - 4.0f - (v - lo) / (hi - lo) * (h - 8.0f); };
+    const ImU32 colors[3] = {theme::kAxisX, theme::kAxisY, theme::kAxisZ};
+    for (int c = 0; c < components; ++c) {
+        ImVec2 points[kSamples];
+        for (int s = 0; s < kSamples; ++s) {
+            const float t = static_cast<float>(s) / (kSamples - 1);
+            points[s] = ImVec2(p0.x + w * t, toY(component(vscript::evaluateTrack(track, length * t), c)));
+        }
+        draw->AddPolyline(points, kSamples, components == 1 ? IM_COL32(240, 200, 80, 255) : colors[c], ImDrawFlags_None, 1.5f);
+    }
+    for (const vscript::TimelineKey& k : track.keys) {
+        if (length <= 0.0f) break;
+        const float x = p0.x + w * std::clamp(k.time / length, 0.0f, 1.0f);
+        draw->AddCircleFilled(ImVec2(x, toY(k.value.x)), 3.5f, IM_COL32(235, 235, 235, 255));
+    }
+    if (playhead >= 0.0 && length > 0.0f) {
+        const float x = p0.x + w * std::clamp(static_cast<float>(playhead) / length, 0.0f, 1.0f);
+        draw->AddLine(ImVec2(x, p0.y), ImVec2(x, p1.y), IM_COL32(230, 60, 60, 255), 1.5f);
+    }
+    ImGui::Dummy(ImVec2(w, h));
+}
+
+// Detalles de un Timeline: duracion, bucle, autoplay y sus pistas con sus claves.
+bool drawTimelineEditor(vscript::Graph& g, vscript::Node& n, const scripting::ScriptSystem::VisualScriptDebug* debug) {
+    vscript::Timeline& t = n.timeline;
+    bool changed = false;
+    bool pins = false;
+    ImGui::SeparatorText("Timeline");
+    if (beginDetailsTable("##vs_timeline")) {
+        detailsLabel("Duración (s)");
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::DragFloat("##length", &t.length, 0.05f, 0.01f, 3600.0f, "%.3g")) {
+            t.length = std::max(0.01f, t.length);
+            changed = true;
+        }
+        detailsLabel("Bucle");
+        changed |= ImGui::Checkbox("##loop", &t.loop);
+        detailsLabel("Autoplay");
+        changed |= ImGui::Checkbox("##autoplay", &t.autoplay);
+        ImGui::SetItemTooltip("Empieza solo al empezar Play");
+        ImGui::EndTable();
+    }
+    double playhead = -1.0;
+    if (debug != nullptr) {
+        if (const auto it = debug->values.find(debugKey(n.id, 3)); it != debug->values.end()) playhead = std::atof(it->second.c_str());
+    }
+    static const char* const kInterp[] = {"Lineal", "Constante", "Suave"};
+    int remove_track = -1;
+    for (std::size_t i = 0; i < t.tracks.size(); ++i) {
+        vscript::TimelineTrack& track = t.tracks[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Separator();
+        std::string name = track.name;
+        ImGui::SetNextItemWidth(130.0f);
+        if (ImGui::InputText("##track_name", &name, ImGuiInputTextFlags_EnterReturnsTrue) && !name.empty() && name != track.name) {
+            const bool used = n.output(name) >= 0;
+            if (!used) {
+                // La salida se renombra antes (syncTimeline conserva sus enlaces por nombre).
+                if (const int k = n.output(track.name); k >= vscript::kTimelineFixedOutputs) n.outputs[static_cast<std::size_t>(k)].name = name;
+                track.name = name;
+                pins = true;
+            }
+        }
+        ImGui::SameLine();
+        int type = track.type == PinType::Vector ? 1 : 0;
+        ImGui::SetNextItemWidth(90.0f);
+        if (ImGui::Combo("##track_type", &type, "Float\0Vector\0")) {
+            track.type = type == 1 ? PinType::Vector : PinType::Float;
+            pins = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) remove_track = static_cast<int>(i);
+        ImGui::SetItemTooltip("Quitar la pista (y los enlaces de su salida)");
+        drawCurve(track, t.length, playhead);
+        int remove_key = -1;
+        bool reorder = false;
+        for (std::size_t k = 0; k < track.keys.size(); ++k) {
+            vscript::TimelineKey& key = track.keys[k];
+            ImGui::PushID(static_cast<int>(k));
+            ImGui::SetNextItemWidth(60.0f);
+            if (ImGui::DragFloat("##t", &key.time, 0.01f, 0.0f, t.length, "%.3g")) {
+                key.time = std::clamp(key.time, 0.0f, t.length);
+                changed = reorder = true;
+            }
+            ImGui::SetItemTooltip("Tiempo (s)");
+            ImGui::SameLine();
+            if (track.type == PinType::Vector) {
+                float v[3] = {key.value.x, key.value.y, key.value.z};
+                ImGui::SetNextItemWidth(150.0f);
+                if (ImGui::DragFloat3("##v", v, 0.05f)) {
+                    key.value = core::Vec3{v[0], v[1], v[2]};
+                    changed = true;
+                }
+            } else {
+                ImGui::SetNextItemWidth(70.0f);
+                changed |= ImGui::DragFloat("##v", &key.value.x, 0.05f);
+            }
+            ImGui::SameLine();
+            int interp = static_cast<int>(key.interp);
+            ImGui::SetNextItemWidth(85.0f);
+            if (ImGui::Combo("##i", &interp, kInterp, 3)) {
+                key.interp = static_cast<vscript::CurveInterp>(interp);
+                changed = true;
+            }
+            ImGui::SetItemTooltip("Como llega a la clave siguiente");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) remove_key = static_cast<int>(k);
+            ImGui::PopID();
+        }
+        if (remove_key >= 0) {
+            track.keys.erase(track.keys.begin() + remove_key);
+            changed = true;
+        }
+        if (ImGui::SmallButton("+ Clave")) {
+            vscript::TimelineKey key;
+            if (!track.keys.empty()) {
+                key = track.keys.back();
+                key.time = std::min(t.length, key.time + t.length * 0.25f);
+            }
+            track.keys.push_back(key);
+            changed = reorder = true;
+        }
+        if (reorder) {
+            std::stable_sort(track.keys.begin(), track.keys.end(),
+                             [](const vscript::TimelineKey& a, const vscript::TimelineKey& b) { return a.time < b.time; });
+        }
+        ImGui::PopID();
+    }
+    if (remove_track >= 0) {
+        t.tracks.erase(t.tracks.begin() + remove_track);
+        pins = true;
+    }
+    if (ImGui::Button("Añadir pista")) {
+        vscript::TimelineTrack track;
+        track.name = "Pista";
+        for (int i = 2; n.output(track.name) >= 0; ++i) track.name = "Pista" + std::to_string(i);
+        track.keys = {vscript::TimelineKey{0.0f, core::Vec3{0.0f, 0.0f, 0.0f}, vscript::CurveInterp::Linear},
+                      vscript::TimelineKey{t.length, core::Vec3{1.0f, 1.0f, 1.0f}, vscript::CurveInterp::Linear}};
+        t.tracks.push_back(std::move(track));
+        pins = true;
+    }
+    if (pins) g.syncTimeline(n.id);
+    return changed || pins;
+}
+
 }  // namespace
+
+// --- Grafos del documento --------------------------------------------------------------------
+
+std::string graphLabel(const std::string& key) {
+    if (key.empty()) return "Event Graph";
+    if (key == vscript::kConstructionGraph) return "Construction Script";
+    if (key.rfind("fn:", 0) == 0) return "Función: " + key.substr(3);
+    if (key.rfind("macro:", 0) == 0) return "Macro: " + key.substr(6);
+    return key;
+}
+
+void showGraph(Document& doc, const std::string& key) {
+    vscript::Graph& g = doc.graph;
+    if (!key.empty() && key != vscript::kConstructionGraph && g.findSubgraph(key) == nullptr) return;
+    // El Construction Script empieza con su nodo (como Unreal).
+    if (key == vscript::kConstructionGraph &&
+        std::none_of(g.nodes.begin(), g.nodes.end(), [](const vscript::Node& n) { return n.kind == "event.construction"; })) {
+        vscript::Node start = vscript::makeNode("event.construction", core::Vec2{0.0f, 0.0f});
+        start.graph = vscript::kConstructionGraph;
+        g.add(std::move(start));
+        markChanged(doc);
+    }
+    if (key == doc.active) return;
+    doc.views[doc.active] = {doc.canvas.pan, doc.canvas.zoom};
+    doc.active = key;
+    g.editing = key;
+    doc.canvas.selection.clear();
+    doc.canvas.link_selection.clear();
+    doc.details_node = 0;
+    doc.create_from.reset();
+    doc.pin_menu.reset();
+    if (const auto it = doc.views.find(key); it != doc.views.end()) {
+        doc.canvas.pan = it->second.first;
+        doc.canvas.zoom = it->second.second;
+        return;
+    }
+    std::vector<nodegraph::NodeView> views;
+    for (vscript::Node& n : g.nodes) {
+        if (n.graph != key) continue;
+        nodegraph::NodeView v;
+        v.id = n.id;
+        v.position = &n.position;
+        views.push_back(v);
+    }
+    if (!views.empty()) doc.canvas.frame(views);
+}
+
+void focusNode(Document& doc, int id) {
+    const vscript::Node* n = doc.graph.find(id);
+    if (n == nullptr) return;
+    const std::string graph = n->graph;  // showGraph puede anadir nodos (n deja de valer)
+    if (graph != doc.active) showGraph(doc, graph);
+    if (graph != doc.active) return;  // su grafo ya no existe
+    doc.canvas.select(id);
+    doc.canvas.frameNode(id);
+    doc.details_node = id;
+    doc.details_variable.clear();
+    doc.details_function.clear();
+}
 
 // --- Colores ---------------------------------------------------------------------------------
 
@@ -787,6 +1264,11 @@ bool open(Document& doc, const std::filesystem::path& file, const std::filesyste
     doc.create_from.reset();
     doc.pin_menu.reset();
     doc.var_drop.clear();
+    doc.active.clear();  // empieza en el Event Graph
+    doc.details_function.clear();
+    doc.watches.clear();
+    doc.views.clear();
+    doc.graph.editing.clear();
     doc.saved_state = vscript::graphToJson(doc.graph);
     doc.history.reset(doc.saved_state);
     doc.snapshot_pending = false;
@@ -798,6 +1280,7 @@ bool open(Document& doc, const std::filesystem::path& file, const std::filesyste
     doc.breakpoints_changed = true;
     std::vector<nodegraph::NodeView> views;
     for (vscript::Node& n : doc.graph.nodes) {
+        if (!n.graph.empty()) continue;  // solo el Event Graph
         nodegraph::NodeView v;
         v.id = n.id;
         v.position = &n.position;
@@ -976,6 +1459,7 @@ DrawResult drawGraph(Document& doc, const Host& host, ImVec2 size) {
     vscript::Graph& g = doc.graph;
     bool changed = false;
     ImGuiIO& io = ImGui::GetIO();
+    g.editing = doc.active;  // los nodos nuevos van al grafo que se ve
 
     scripting::ScriptSystem::VisualScriptDebug debug;
     const bool has_debug = host.debug && host.debug(doc.relative, debug);
@@ -1039,6 +1523,12 @@ DrawResult drawGraph(Document& doc, const Host& host, ImVec2 size) {
         return result;
     }
     const nodegraph::Events ev = doc.canvas.draw("vs_canvas", view.nodes, view.links, ImVec2(0.0f, 0.0f), options);
+    {
+        // Que grafo se ve (arriba a la izquierda, como la ruta de Unreal).
+        const ImVec2 corner = ImGui::GetWindowPos();
+        const std::string label = graphLabel(doc.active) + (has_debug ? "  ·  en vivo" : "");
+        ImGui::GetWindowDrawList()->AddText(ImVec2(corner.x + 12.0f, corner.y + 8.0f), IM_COL32(200, 200, 210, 170), label.c_str());
+    }
 
     // Soltar una variable de Mi Blueprint: Ctrl = Get, Alt = Set, sin nada = menu.
     if (ImGui::BeginDragDropTarget()) {
@@ -1107,7 +1597,9 @@ DrawResult drawGraph(Document& doc, const Host& host, ImVec2 size) {
     if (ev.moved) changed = true;
     if (ev.select_all) {
         doc.canvas.selection.clear();
-        for (const vscript::Node& n : g.nodes) doc.canvas.selection.insert(n.id);
+        for (const vscript::Node& n : g.nodes) {
+            if (n.graph == doc.active) doc.canvas.selection.insert(n.id);
+        }
     }
     if (ev.copy || ev.duplicate) copySelection(doc);
     if ((ev.paste || ev.duplicate) && !doc.clipboard.empty()) {
@@ -1117,11 +1609,19 @@ DrawResult drawGraph(Document& doc, const Host& host, ImVec2 size) {
     if (ev.clicked != 0) {
         doc.details_node = ev.clicked;
         doc.details_variable.clear();
+        doc.details_function.clear();
     }
+    std::string open_graph;  // doble clic en una llamada: su funcion / macro (al final del frame)
     if (ev.double_clicked != 0) {
         if (const vscript::Node* n = g.find(ev.double_clicked); n != nullptr && (n->kind == "var.get" || n->kind == "var.set")) {
             doc.details_variable = n->fn;
             doc.details_node = 0;
+        } else if (n != nullptr && (n->kind == "fn.call" || n->kind == "macro.call")) {
+            open_graph = n->kind == "fn.call" ? vscript::functionKey(n->fn) : vscript::macroKey(n->fn);
+        } else if (n != nullptr && vscript::isSubgraphNode(n->kind)) {
+            doc.details_function = n->graph;  // entrada / Return / salidas: la firma
+            doc.details_node = 0;
+            doc.details_variable.clear();
         }
     }
     if (ev.wrap_comment) changed |= commentAround(doc);
@@ -1202,6 +1702,15 @@ DrawResult drawGraph(Document& doc, const Host& host, ImVec2 size) {
             const nodegraph::PinRef pin = *doc.pin_menu;
             if (ImGui::MenuItem("Romper enlaces")) changed |= breakPinLinks(g, pin);
             vscript::Node* n = g.find(pin.node);
+            // Vigilar: en Play su valor sale en una burbuja fija (no se guarda en el archivo).
+            if (n != nullptr && validPin(*n, pin.pin, pin.output) && vscript::nodePinType(g, *n, pin.output, pin.pin) != PinType::Exec) {
+                const auto key = std::make_tuple(pin.node, pin.pin, pin.output);
+                const bool watched = doc.watches.contains(key);
+                if (ImGui::MenuItem(watched ? "Dejar de vigilar" : "Vigilar este valor")) {
+                    if (watched) doc.watches.erase(key);
+                    else doc.watches.insert(key);
+                }
+            }
             if (n != nullptr && !pin.output && validPin(*n, pin.pin, false) &&
                 vscript::nodePinType(g, *n, false, pin.pin) != PinType::Exec) {
                 if (ImGui::MenuItem("Restablecer valor")) {
@@ -1240,9 +1749,20 @@ DrawResult drawGraph(Document& doc, const Host& host, ImVec2 size) {
                 else notify(host, "Actualizar nodo", "La función ya no existe en la API");
             }
             changed |= editDynamicPins(g, *n);
+            if ((n->kind == "fn.call" || n->kind == "macro.call") && ImGui::MenuItem(n->kind == "fn.call" ? "Abrir la función" : "Abrir la macro")) {
+                open_graph = n->kind == "fn.call" ? vscript::functionKey(n->fn) : vscript::macroKey(n->fn);
+            }
+            if (vscript::isSubgraphNode(n->kind) && ImGui::MenuItem("Editar la firma")) {
+                doc.details_function = n->kind == "fn.call" ? vscript::functionKey(n->fn)
+                                       : n->kind == "macro.call" ? vscript::macroKey(n->fn)
+                                                                 : n->graph;
+                doc.details_node = 0;
+                doc.details_variable.clear();
+            }
             if (ImGui::MenuItem("Detalles")) {
                 doc.details_node = id;
                 doc.details_variable.clear();
+                doc.details_function.clear();
             }
         }
         if (!doc.canvas.selection.empty() && ImGui::BeginMenu("Alinear")) {
@@ -1288,8 +1808,42 @@ DrawResult drawGraph(Document& doc, const Host& host, ImVec2 size) {
     // Buscador "Crear nodo" (por contexto si se arrastro desde un pin).
     if (ImGui::IsPopupOpen("vs_create")) {
         const PaletteCache& cache = paletteCache();
-        std::vector<nodegraph::SearchItem> items = cache.items;
+        std::vector<nodegraph::SearchItem> items;
+        items.reserve(cache.items.size() + g.variables.size() * 2 + g.functions.size() + 1);
+        for (const nodegraph::SearchItem& item : cache.items) {
+            if (paletteFits(doc, cache.entries[static_cast<std::size_t>(item.index)].node)) items.push_back(item);
+        }
         const int base = static_cast<int>(cache.entries.size());
+        // Despues de las variables: llamadas a las funciones y macros y, dentro de una funcion, Return.
+        const int calls_base = base + static_cast<int>(g.variables.size()) * 2;
+        const int return_index = calls_base + static_cast<int>(g.functions.size());
+        for (std::size_t i = 0; i < g.functions.size(); ++i) {
+            const vscript::Subgraph& s = g.functions[i];
+            const bool macro = s.kind == vscript::SubgraphKind::Macro;
+            vscript::Node probe;
+            probe.kind = macro ? "macro.call" : "fn.call";
+            vscript::subgraphNodePins(s, probe.kind, probe.inputs, probe.outputs);
+            nodegraph::SearchItem item;
+            item.category = macro ? "Macros" : "Funciones";
+            item.title = s.name;
+            item.keywords = std::string(macro ? "macro " : "funcion function llamar ") + s.name;
+            item.description = s.description;
+            item.index = calls_base + static_cast<int>(i);
+            item.in_types = vscript::inputTypeMask(probe);
+            item.out_types = vscript::outputTypeMask(probe);
+            items.push_back(std::move(item));
+        }
+        const vscript::Subgraph* active_fn = doc.active.rfind("fn:", 0) == 0 ? g.findSubgraph(doc.active) : nullptr;
+        if (active_fn != nullptr) {
+            nodegraph::SearchItem item;
+            item.category = "Funciones";
+            item.title = "Return";
+            item.keywords = "return devolver salir resultado";
+            item.description = "Sale de la función con sus resultados";
+            item.index = return_index;
+            item.in_types = 1u << static_cast<int>(PinType::Exec);
+            items.push_back(std::move(item));
+        }
         for (std::size_t i = 0; i < g.variables.size(); ++i) {
             const vscript::Variable& v = g.variables[i];
             const std::uint32_t type_bit = 1u << static_cast<int>(v.type);
@@ -1334,7 +1888,7 @@ DrawResult drawGraph(Document& doc, const Host& host, ImVec2 size) {
                 doc.recent.erase(std::remove(doc.recent.begin(), doc.recent.end(), chosen), doc.recent.end());
                 doc.recent.insert(doc.recent.begin(), chosen);
                 if (doc.recent.size() > kMaxRecent) doc.recent.resize(kMaxRecent);
-            } else {
+            } else if (chosen < calls_base) {
                 const std::size_t var = static_cast<std::size_t>(chosen - base) / 2;
                 if (var < g.variables.size()) {
                     n = vscript::makeNode((chosen - base) % 2 == 1 ? "var.set" : "var.get");
@@ -1342,6 +1896,18 @@ DrawResult drawGraph(Document& doc, const Host& host, ImVec2 size) {
                 } else {
                     valid = false;
                 }
+            } else if (chosen < return_index) {
+                const vscript::Subgraph& s = g.functions[static_cast<std::size_t>(chosen - calls_base)];
+                n.kind = s.kind == vscript::SubgraphKind::Macro ? "macro.call" : "fn.call";
+                n.fn = s.name;
+                n.pure = s.kind == vscript::SubgraphKind::Function && s.pure;
+                vscript::subgraphNodePins(s, n.kind, n.inputs, n.outputs);
+            } else if (chosen == return_index && active_fn != nullptr) {
+                n.kind = "fn.return";
+                n.fn = active_fn->name;
+                vscript::subgraphNodePins(*active_fn, n.kind, n.inputs, n.outputs);
+            } else {
+                valid = false;
             }
             if (valid) {
                 n.position = doc.create_at;
@@ -1358,6 +1924,7 @@ DrawResult drawGraph(Document& doc, const Host& host, ImVec2 size) {
 
     ImGui::EndChild();
 
+    if (!open_graph.empty()) showGraph(doc, open_graph);
     if (changed) markChanged(doc);
     syncBreakpoints(doc, host);
     flushSnapshot(doc, false);
@@ -1374,21 +1941,81 @@ bool drawMyBlueprint(Document& doc, const Host& host) {
     const bool has_debug = host.debug && host.debug(doc.relative, debug);
     ImDrawList* draw = ImGui::GetWindowDrawList();
 
+    g.editing = doc.active;
     if (ImGui::CollapsingHeader("Grafos", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TreeNodeEx("Event Graph", ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_Selected);
+        if (ImGui::Selectable("Event Graph", doc.active.empty())) showGraph(doc, {});
         ImGui::Indent();
+        int focus = 0;
         for (const vscript::Node& n : g.nodes) {
-            if (vscript::nodeLook(n) != vscript::NodeLook::Event) continue;
+            if (!n.graph.empty() || vscript::nodeLook(n) != vscript::NodeLook::Event) continue;
             ImGui::PushID(n.id);
-            if (ImGui::Selectable(vscript::nodeTitle(n).c_str(), doc.canvas.selection.contains(n.id))) {
-                doc.canvas.select(n.id);
-                doc.canvas.frameNode(n.id);
-                doc.details_node = n.id;
-                doc.details_variable.clear();
-            }
+            if (ImGui::Selectable(vscript::nodeTitle(n).c_str(), doc.canvas.selection.contains(n.id))) focus = n.id;
             ImGui::PopID();
         }
         ImGui::Unindent();
+        if (focus != 0) focusNode(doc, focus);
+        if (ImGui::Selectable("Construction Script", doc.active == vscript::kConstructionGraph)) showGraph(doc, vscript::kConstructionGraph);
+        ImGui::SetItemTooltip("Corre en el editor al colocar o cambiar el objeto (fuera de Play)");
+    }
+
+    // Funciones y macros: + crea una (con su entrada y su salida) y la abre.
+    for (const vscript::SubgraphKind kind : {vscript::SubgraphKind::Function, vscript::SubgraphKind::Macro}) {
+        const bool macro = kind == vscript::SubgraphKind::Macro;
+        const bool section = ImGui::CollapsingHeader(macro ? "Macros" : "Funciones",
+                                                     ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight());
+        if (ImGui::SmallButton(macro ? "+##vs_add_macro" : "+##vs_add_fn")) {
+            const std::string key = g.addSubgraph({}, kind).key();
+            showGraph(doc, key);
+            doc.details_function = key;
+            doc.details_node = 0;
+            doc.details_variable.clear();
+            changed = true;
+        }
+        ImGui::SetItemTooltip(macro ? "Macro nueva" : "Función nueva");
+        if (!section) continue;
+        std::string remove;
+        std::string open_key;
+        for (const vscript::Subgraph& s : g.functions) {
+            if (s.kind != kind) continue;
+            const std::string key = s.key();
+            ImGui::PushID(key.c_str());
+            if (ImGui::Selectable(s.name.c_str(), doc.active == key)) open_key = key;
+            if (!s.description.empty()) ImGui::SetItemTooltip("%s", s.description.c_str());
+            if (ImGui::BeginPopupContextItem("##fn_menu")) {
+                if (ImGui::MenuItem("Añadir llamada")) {
+                    addSubgraphCall(doc, s, doc.canvas.viewCenter());
+                    changed = true;
+                }
+                if (ImGui::MenuItem("Editar la firma")) {
+                    doc.details_function = key;
+                    doc.details_node = 0;
+                    doc.details_variable.clear();
+                }
+                if (ImGui::MenuItem("Borrar")) remove = key;
+                ImGui::EndPopup();
+            }
+            ImGui::PopID();
+        }
+        if (!open_key.empty()) {
+            showGraph(doc, open_key);
+            doc.details_function = open_key;
+            doc.details_node = 0;
+            doc.details_variable.clear();
+        }
+        if (!remove.empty()) {
+            // Como Unreal: sus nodos y sus llamadas se van con ella (Ctrl+Z la devuelve).
+            if (doc.active == remove) showGraph(doc, {});
+            g.removeSubgraph(remove);
+            if (doc.details_function == remove) doc.details_function.clear();
+            std::erase_if(doc.canvas.selection, [&](int id) { return g.find(id) == nullptr; });
+            if (doc.details_node != 0 && g.find(doc.details_node) == nullptr) doc.details_node = 0;
+            doc.views.erase(remove);
+            changed = true;
+        }
+        if (std::none_of(g.functions.begin(), g.functions.end(), [&](const vscript::Subgraph& s) { return s.kind == kind; })) {
+            ImGui::TextDisabled(macro ? "Sin macros. Pulsa + para crear una." : "Sin funciones. Pulsa + para crear una.");
+        }
     }
 
     const bool open = ImGui::CollapsingHeader("Variables", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
@@ -1484,8 +2111,12 @@ bool drawDetails(Document& doc, const Host& host) {
 
     if (!doc.details_variable.empty() && g.findVariable(doc.details_variable) == nullptr) doc.details_variable.clear();
     if (doc.details_node != 0 && g.find(doc.details_node) == nullptr) doc.details_node = 0;
+    if (!doc.details_function.empty() && g.findSubgraph(doc.details_function) == nullptr) doc.details_function.clear();
+    g.editing = doc.active;
 
-    if (!doc.details_variable.empty()) {
+    if (vscript::Subgraph* fn = doc.details_variable.empty() && !doc.details_function.empty() ? g.findSubgraph(doc.details_function) : nullptr) {
+        changed |= drawSignature(doc, host, *fn);
+    } else if (!doc.details_variable.empty()) {
         vscript::Variable* v = g.findVariable(doc.details_variable);
         ImGui::SeparatorText("Variable");
         if (beginDetailsTable("##vs_var_details")) {
@@ -1620,12 +2251,29 @@ bool drawDetails(Document& doc, const Host& host) {
                     }
                 }
                 if (has_debug) {
-                    const auto it = debug.values.find(std::to_string(id) + ":" + p.name);
-                    if (it != debug.values.end()) ImGui::TextColored(colorVec(theme::kAccentHover), "= %s", it->second.c_str());
+                    // Lo ultimo que leyo esa entrada (depuracion en vivo).
+                    const auto it = debug.inputs.find(debugKey(id, k));
+                    if (it != debug.inputs.end()) ImGui::TextColored(colorVec(theme::kAccentHover), "= %s", it->second.c_str());
                 }
                 ImGui::PopID();
             }
             if (any_input) ImGui::EndTable();
+            if (has_debug) {
+                // Salidas con su ultimo valor (Play).
+                bool any_output = false;
+                for (std::size_t k = 0; k < n->outputs.size(); ++k) {
+                    if (vscript::nodePinType(g, *n, true, static_cast<int>(k)) == PinType::Exec) continue;
+                    const auto it = debug.values.find(debugKey(id, k));
+                    if (it == debug.values.end()) continue;
+                    if (!any_output) {
+                        ImGui::SeparatorText("Salidas (en vivo)");
+                        any_output = true;
+                    }
+                    ImGui::TextDisabled("%s", n->outputs[k].name.empty() ? "(valor)" : n->outputs[k].name.c_str());
+                    ImGui::SameLine();
+                    ImGui::TextColored(colorVec(theme::kAccentHover), "= %s", it->second.c_str());
+                }
+            }
             if (n->kind == "call" || n->kind == "call.get" || n->kind == "call.set") {
                 if (ImGui::Button("Actualizar nodo")) {
                     if (refreshApiNode(doc, id)) changed = true;
@@ -1633,11 +2281,29 @@ bool drawDetails(Document& doc, const Host& host) {
                 }
                 ImGui::SetItemTooltip("Toma los pines actuales de la API (con tipos) sin perder valores ni enlaces");
             }
+            if (vscript::isSubgraphNode(n->kind)) {
+                const std::string key = n->kind == "fn.call"      ? vscript::functionKey(n->fn)
+                                        : n->kind == "macro.call" ? vscript::macroKey(n->fn)
+                                                                  : n->graph;
+                if (ImGui::Button("Editar la firma")) {
+                    doc.details_function = key;
+                    doc.details_node = 0;
+                }
+                if (n->kind == "fn.call" || n->kind == "macro.call") {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Abrir")) showGraph(doc, key);
+                }
+            }
+            if (n->kind == "flow.timeline") changed |= drawTimelineEditor(g, *n, has_debug ? &debug : nullptr);
         }
     } else {
-        ImGui::SeparatorText("Event Graph");
-        ImGui::TextDisabled("%zu nodo(s), %zu enlace(s), %zu variable(s)", g.nodes.size(), g.links.size(), g.variables.size());
-        ImGui::TextDisabled("Elige un nodo en el grafo o una variable en Mi Blueprint.");
+        ImGui::SeparatorText(graphLabel(doc.active).c_str());
+        std::size_t nodes = 0;
+        for (const vscript::Node& node : g.nodes) {
+            if (node.graph == doc.active) ++nodes;
+        }
+        ImGui::TextDisabled("%zu nodo(s) aquí; %zu variable(s), %zu función(es) y macro(s)", nodes, g.variables.size(), g.functions.size());
+        ImGui::TextDisabled("Elige un nodo en el grafo, o una variable o función en Mi Blueprint.");
     }
 
     if (changed) markChanged(doc);
@@ -1672,13 +2338,12 @@ void drawCompilerResults(Document& doc) {
         std::string text = e.message;
         if (e.node != 0) {
             const vscript::Node* n = doc.graph.find(e.node);
-            text = (n != nullptr ? vscript::nodeTitle(*n) : "Nodo " + std::to_string(e.node)) + ": " + text;
+            text = (n != nullptr ? (n->graph.empty() ? std::string() : graphLabel(n->graph) + " > ") + vscript::nodeTitle(*n)
+                                 : "Nodo " + std::to_string(e.node)) +
+                   ": " + text;
         }
         if (ImGui::Selectable(text.c_str(), false) && e.node != 0 && doc.graph.find(e.node) != nullptr) {
-            doc.canvas.select(e.node);
-            doc.canvas.frameNode(e.node);
-            doc.details_node = e.node;
-            doc.details_variable.clear();
+            focusNode(doc, e.node);  // en su grafo (funcion, macro...)
         }
         ImGui::PopID();
     }

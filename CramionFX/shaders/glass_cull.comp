@@ -1,0 +1,94 @@
+#version 450
+
+// Oclusion del vidrio (las submallas transparentes): cada una que la CPU ve en
+// el campo de vision se prueba contra la piramide Hi-Z del G-buffer de este
+// mismo frame (la de cull.comp). Su comando de dibujo indirecto queda con sus
+// indices si puede verse y con 0 instancias si esta tapada: la CPU las sigue
+// dibujando en su orden y con su material (vkCmdDrawIndexedIndirect de 1
+// comando), pero la GPU no transforma ni rasteriza las tapadas. En una ciudad
+// casi todas las ventanas quedan detras de otras casas.
+//
+// La piramide solo tiene lo de la fase temprana del G-buffer: lo que aparece en
+// la tardia no tapa aqui. Es conservador (nunca quita vidrio que se vea).
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform CameraBuffer {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    vec4 position;
+} camera;
+
+struct GlassItem {
+    vec4 bounds_min;  // caja en el mundo
+    vec4 bounds_max;
+    uint first_index;
+    uint index_count;
+    uint pad0;
+    uint pad1;
+};
+
+struct DrawCommand {  // VkDrawIndexedIndirectCommand
+    uint index_count;
+    uint instance_count;
+    uint first_index;
+    int vertex_offset;
+    uint first_instance;
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer Items { GlassItem items[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer Commands { DrawCommand commands[]; };
+layout(set = 0, binding = 3) uniform sampler2D hiz;
+
+layout(push_constant) uniform PushConstants {
+    uint count;
+} push;
+
+// La misma prueba que cull.comp.
+bool occluded(vec3 low, vec3 high) {
+    vec2 uv_min = vec2(1.0);
+    vec2 uv_max = vec2(0.0);
+    float nearest = 1.0;
+    for (int i = 0; i < 8; ++i) {
+        vec3 corner = vec3((i & 1) != 0 ? high.x : low.x, (i & 2) != 0 ? high.y : low.y,
+                           (i & 4) != 0 ? high.z : low.z);
+        vec4 clip = camera.view_projection * vec4(corner, 1.0);
+        if (clip.w <= 0.001) {
+            return false;
+        }
+        vec3 ndc = clip.xyz / clip.w;
+        vec2 uv = ndc.xy * 0.5 + 0.5;
+        uv_min = min(uv_min, uv);
+        uv_max = max(uv_max, uv);
+        nearest = min(nearest, ndc.z);
+    }
+    if (nearest <= 0.0) {
+        return false;
+    }
+    uv_min = clamp(uv_min, vec2(0.0), vec2(1.0));
+    uv_max = clamp(uv_max, vec2(0.0), vec2(1.0));
+
+    vec2 size0 = vec2(textureSize(hiz, 0));
+    vec2 extent = (uv_max - uv_min) * size0;
+    int levels = textureQueryLevels(hiz);
+    int level = clamp(int(ceil(log2(max(max(extent.x, extent.y), 1.0)))), 0, levels - 1);
+
+    ivec2 level_size = textureSize(hiz, level);
+    ivec2 p0 = clamp(ivec2(uv_min * vec2(level_size)), ivec2(0), level_size - 1);
+    ivec2 p1 = clamp(ivec2(uv_max * vec2(level_size)), ivec2(0), level_size - 1);
+    float farthest = max(max(texelFetch(hiz, p0, level).r, texelFetch(hiz, ivec2(p1.x, p0.y), level).r),
+                         max(texelFetch(hiz, ivec2(p0.x, p1.y), level).r, texelFetch(hiz, p1, level).r));
+    return nearest > farthest;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= push.count) {
+        return;
+    }
+    GlassItem item = items[i];
+    bool hidden = occluded(item.bounds_min.xyz, item.bounds_max.xyz);
+    commands[i] = DrawCommand(item.index_count, hidden ? 0u : 1u, item.first_index, 0, 0u);
+}

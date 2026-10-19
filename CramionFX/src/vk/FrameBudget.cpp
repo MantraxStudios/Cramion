@@ -138,6 +138,30 @@ float tinyObjectPixelsFor(HardwareTier tier) {
     return 0.75f;
 }
 
+// Sombras del sol: hasta donde llegan (antes 100 m en todos los PC). En una
+// GPU floja las cascadas son lo mas caro del frame; a 60 m apenas se nota
+// (lo lejano lo tapa la niebla y el detalle) y cada cascada cubre menos.
+float shadowDistanceFor(HardwareTier tier) {
+    switch (tier) {
+        case HardwareTier::Low: return 60.0f;
+        case HardwareTier::Medium: return 80.0f;
+        case HardwareTier::High: return 100.0f;
+        case HardwareTier::Ultra: return 100.0f;
+    }
+    return 100.0f;
+}
+
+// LODs antes en Bajo y Medio: 10-20 % menos triangulos (tambien en sombras).
+float lodScaleFor(HardwareTier tier) {
+    switch (tier) {
+        case HardwareTier::Low: return 2.0f;
+        case HardwareTier::Medium: return 1.5f;
+        case HardwareTier::High: return 1.0f;
+        case HardwareTier::Ultra: return 1.0f;
+    }
+    return 1.0f;
+}
+
 GraphicsSettings shippedGraphics(const GraphicsSettings& project, HardwareTier tier, float display_hz, bool locked) {
     GraphicsSettings g = project;
     if (locked) return g;
@@ -179,7 +203,7 @@ std::array<std::uint8_t, kLeverCount> startLevelsFor(HardwareTier tier) {
         // tope tardaba muchos segundos en bajar (y se jugaba a tirones). Lo
         // que sobre lo vuelve a subir el gobernador. Tambien lo mas caro que
         // antes no se tocaba: SSAO, reflejos, desenfoques de camara y nubes.
-        set(Lever::Lod, 1);
+        // (El LOD no: ya va mas bajo por la gama, lodScaleFor.)
         set(Lever::ShadowDetail, 2);
         set(Lever::Volumetric, 1);
         set(Lever::ContactShadows, 1);
@@ -190,7 +214,6 @@ std::array<std::uint8_t, kLeverCount> startLevelsFor(HardwareTier tier) {
         set(Lever::CameraFx, 2);
         set(Lever::Clouds, 1);
     } else if (tier == HardwareTier::Medium) {
-        set(Lever::Lod, 1);
         set(Lever::ShadowDetail, 1);
         set(Lever::Volumetric, 1);
         set(Lever::CameraFx, 1);

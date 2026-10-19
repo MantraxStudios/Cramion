@@ -32,7 +32,8 @@ std::string lower(std::string s) {
 constexpr std::array<const char*, 5> kUpscalerNames = {"off", "taa", "fsr1", "fsr3", "dlss"};
 constexpr std::array<const char*, 6> kResolutionNames = {"native", "quality", "balanced",
                                                          "performance", "ultra_performance", "custom"};
-constexpr std::array<const char*, 3> kWindowModeNames = {"maximized", "fullscreen", "windowed"};
+constexpr std::array<const char*, kWindowModeCount> kWindowModeNames = {"maximized", "fullscreen", "windowed",
+                                                                        "borderless"};
 
 // Calidad de texturas y sombras por nombre: tamano (0 = segun el PC).
 struct SizeLevel {
@@ -178,6 +179,15 @@ int loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& rend
         if (key == "reflection_probe") renderer.setReflectionProbeEnabled(value != 0.0f);
         if (key == "sky_occlusion") renderer.setSkyOcclusionEnabled(value != 0.0f);
         if (key == "occlusion_culling") renderer.setOcclusionCullingEnabled(value != 0.0f);
+        // Iluminacion: 0 = la decide el presupuesto adaptativo (como antes),
+        // 1 = completa, 2 = ligera (sin sombras suaves de contacto del sol,
+        // sin oclusion del cielo desde arriba ni sombras de contacto).
+        if (key == "lighting_quality") {
+            const int q = static_cast<int>(value);
+            if (q == 1) renderer.setLiteLightingForced(false);
+            else if (q == 2) renderer.setLiteLightingForced(true);
+            else renderer.clearLiteLightingForced();
+        }
     }
     renderer.setGraphicsSettings(g);
     return version;
@@ -207,6 +217,8 @@ bool saveGraphicsIni(const std::filesystem::path& file, const gfx::VulkanRendere
     out << "reflection_probe=" << (renderer.reflectionProbeEnabled() ? 1 : 0) << "\n";
     out << "sky_occlusion=" << (renderer.skyOcclusionEnabled() ? 1 : 0) << "\n";
     out << "occlusion_culling=" << (renderer.occlusionCullingEnabled() ? 1 : 0) << "\n";
+    out << "lighting_quality=" << (renderer.liteLightingForced() < 0 ? 0 : renderer.liteLightingForced() == 0 ? 1 : 2)
+        << "\n";
     return static_cast<bool>(out);
 }
 
@@ -222,13 +234,30 @@ bool readWindowSettings(const std::filesystem::path& file, WindowMode& mode, int
         const std::string key = line.substr(0, eq);
         const int value = std::atoi(line.c_str() + eq + 1);
         if (key == "window_mode") {
-            mode = static_cast<WindowMode>(std::clamp(value, 0, 2));
+            mode = static_cast<WindowMode>(std::clamp(value, 0, kWindowModeCount - 1));
             found = true;
         }
         if (key == "window_width" && value >= 320) width = std::min(value, 16384);
         if (key == "window_height" && value >= 240) height = std::min(value, 16384);
     }
     return found;
+}
+
+int clampFpsLimit(double fps) {
+    if (!std::isfinite(fps) || fps < 1.0) return 0;
+    return std::clamp(static_cast<int>(std::lround(fps)), kFpsLimitMin, kFpsLimitMax);
+}
+
+int readFpsLimit(const std::filesystem::path& file) {
+    std::ifstream in(file);
+    if (!in) return 0;
+    int limit = 0;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("fps_limit=", 0) == 0) limit = clampFpsLimit(std::strtod(line.c_str() + 10, nullptr));
+    }
+    return limit;
 }
 
 // -----------------------------------------------------------------------------
@@ -260,6 +289,61 @@ void applyQualityPreset(gfx::VulkanRenderer& renderer, int level) {
 // Ventana
 // -----------------------------------------------------------------------------
 
+#if defined(_WIN32)
+namespace {
+
+// Lo que anade el marco de Windows (WS_OVERLAPPEDWINDOW) al tamano de dentro,
+// con el DPI de la ventana (el proceso es "per monitor").
+SIZE windowFrameExtra(HWND hwnd) {
+    RECT r{0, 0, 0, 0};
+    const UINT dpi = hwnd != nullptr ? GetDpiForWindow(hwnd) : 0;
+    if (dpi > 0) {
+        AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
+    } else {
+        AdjustWindowRectEx(&r, WS_OVERLAPPEDWINDOW, FALSE, 0);
+    }
+    return SIZE{r.right - r.left, r.bottom - r.top};
+}
+
+bool monitorInfo(HWND hwnd, MONITORINFOEXW& info) {
+    info = MONITORINFOEXW{};
+    info.cbSize = sizeof(info);
+    const HMONITOR monitor = hwnd != nullptr ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+                                             : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    return monitor != nullptr && GetMonitorInfoW(monitor, &info) != FALSE;
+}
+
+// Sin marco, w x h (como mucho el monitor), centrada en el monitor.
+void showBorderless(HWND hwnd, const RECT& monitor, int width, int height) {
+    const int w = std::min<int>(width, monitor.right - monitor.left);
+    const int h = std::min<int>(height, monitor.bottom - monitor.top);
+    const int x = monitor.left + (monitor.right - monitor.left - w) / 2;
+    const int y = monitor.top + (monitor.bottom - monitor.top - h) / 2;
+    ShowWindow(hwnd, SW_RESTORE);
+    SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+    SetWindowPos(hwnd, HWND_TOP, x, y, w, h, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+}
+
+}  // namespace
+#endif
+
+bool monitorSize(HWND hwnd, MonitorSize& out) {
+#if !defined(_WIN32)
+    (void)hwnd;
+    out = MonitorSize{};
+    return false;
+#else
+    MONITORINFOEXW info{};
+    if (!monitorInfo(hwnd, info)) return false;
+    const SIZE frame = windowFrameExtra(hwnd);
+    out.width = static_cast<int>(info.rcMonitor.right - info.rcMonitor.left);
+    out.height = static_cast<int>(info.rcMonitor.bottom - info.rcMonitor.top);
+    out.windowed_max_width = std::max(0, static_cast<int>(info.rcWork.right - info.rcWork.left - frame.cx));
+    out.windowed_max_height = std::max(0, static_cast<int>(info.rcWork.bottom - info.rcWork.top - frame.cy));
+    return true;
+#endif
+}
+
 void applyWindowMode(HWND hwnd, WindowMode mode, int width, int height) {
 #if !defined(_WIN32)
     // Android: siempre a pantalla completa.
@@ -270,16 +354,30 @@ void applyWindowMode(HWND hwnd, WindowMode mode, int width, int height) {
 }
 #else
     if (hwnd == nullptr) return;
-    MONITORINFO monitor{};
-    monitor.cbSize = sizeof(monitor);
-    GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor);
+    MONITORINFOEXW monitor{};
+    if (!monitorInfo(hwnd, monitor)) return;
+    const RECT& screen = monitor.rcMonitor;
     if (mode == WindowMode::Fullscreen) {
         // Sin bordes, del tamano del monitor (como el "Borderless" de los juegos).
-        ShowWindow(hwnd, SW_RESTORE);
-        SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
-        const RECT& r = monitor.rcMonitor;
-        SetWindowPos(hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top,
-                     SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        showBorderless(hwnd, screen, screen.right - screen.left, screen.bottom - screen.top);
+        return;
+    }
+    width = std::max(width, 320);
+    height = std::max(height, 240);
+    if (mode == WindowMode::Borderless) {
+        showBorderless(hwnd, screen, width, height);
+        return;
+    }
+    const RECT& work = monitor.rcWork;
+    const SIZE frame = windowFrameExtra(hwnd);
+    const int framed_w = width + frame.cx;
+    const int framed_h = height + frame.cy;
+    const bool fits_framed = framed_w <= work.right - work.left && framed_h <= work.bottom - work.top;
+    const bool fits_monitor = width <= screen.right - screen.left && height <= screen.bottom - screen.top;
+    if (mode == WindowMode::Windowed && !fits_framed && fits_monitor) {
+        // Con el marco no cabe (Windows la recortaria: 1920x1080 quedaba en
+        // 1920x1061 en un monitor de 1920x1080). Sin marco, el tamano pedido.
+        showBorderless(hwnd, screen, width, height);
         return;
     }
     SetWindowLongPtrW(hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
@@ -290,11 +388,8 @@ void applyWindowMode(HWND hwnd, WindowMode mode, int width, int height) {
     }
     // Ventana con ese tamano de dentro, centrada en el area de trabajo.
     ShowWindow(hwnd, SW_RESTORE);
-    RECT rect{0, 0, std::max(width, 320), std::max(height, 240)};
-    AdjustWindowRectEx(&rect, WS_OVERLAPPEDWINDOW, FALSE, 0);
-    const RECT& work = monitor.rcWork;
-    const int w = std::min<int>(rect.right - rect.left, work.right - work.left);
-    const int h = std::min<int>(rect.bottom - rect.top, work.bottom - work.top);
+    const int w = std::min<int>(framed_w, work.right - work.left);
+    const int h = std::min<int>(framed_h, work.bottom - work.top);
     const int x = work.left + (work.right - work.left - w) / 2;
     const int y = work.top + (work.bottom - work.top - h) / 2;
     SetWindowPos(hwnd, HWND_NOTOPMOST, x, y, w, h, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
@@ -346,6 +441,9 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
     add("vsync", g.vsync, "Sincronizar con la pantalla");
     add("adaptive", g.adaptive, "Presupuesto adaptativo: baja la calidad sola para llegar a target_fps");
     add("target_fps", number(g.target_fps), "FPS objetivo del presupuesto adaptativo (15..360)");
+    add("fps_limit", number(fps_limit_),
+        "Tope de FPS del juego exportado: 0 = sin tope, 15..360 (espera al final de cada frame; con vsync manda "
+        "tambien la pantalla). Se guarda con Graphics.save(). En el editor no se aplica");
     // Sombras y texturas
     add("shadows", renderer_.shadowsEnabled(), "Sombras");
     add("shadow_resolution", number(g.shadow_resolution),
@@ -375,14 +473,41 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
     add("sky_occlusion", renderer_.skyOcclusionEnabled(),
         "Oclusion del cielo vista desde arriba (sin trazado de rayos): bajo los arboles y los tejados llega menos cielo");
     add("occlusion_culling", renderer_.occlusionCullingEnabled(), "No dibujar lo que queda tapado (GPU)");
+    add("lighting_quality",
+        std::string(renderer_.liteLightingForced() < 0 ? "auto" : renderer_.liteLightingForced() == 0 ? "full" : "lite"),
+        "Iluminacion: auto (la decide el presupuesto adaptativo), full (completa) o lite (ligera: sin sombras suaves "
+        "de contacto del sol, sin oclusion del cielo desde arriba ni sombras de contacto; mas barata en GPU "
+        "integradas). Se aplica al momento",
+        {"auto", "full", "lite"});
     add("cascade_debug", renderer_.cascadeDebug(), "Colorear las cascadas de sombra (depurar)");
     // Ventana (solo en el juego exportado)
     const bool game_window = window_ != nullptr;
     add("window_mode", std::string(kWindowModeNames[static_cast<std::size_t>(window_mode_)]),
-        "Ventana: maximized, fullscreen (pantalla completa sin bordes) o windowed (window_width x window_height)",
+        "Ventana: maximized, fullscreen (pantalla completa sin bordes), windowed (window_width x window_height con "
+        "marco; sin marco si con el no cabe en la pantalla) o borderless (window_width x window_height sin marco, "
+        "centrada)",
         names(kWindowModeNames), game_window);
-    add("window_width", number(window_width_), "Ancho de la ventana en modo windowed", {}, game_window);
-    add("window_height", number(window_height_), "Alto de la ventana en modo windowed", {}, game_window);
+    add("window_width", number(window_width_), "Ancho de la ventana en modo windowed o borderless", {}, game_window);
+    add("window_height", number(window_height_), "Alto de la ventana en modo windowed o borderless", {}, game_window);
+    add("window_size", std::to_string(window_width_) + "x" + std::to_string(window_height_),
+        "Ancho y alto a la vez (\"1280x720\"): un solo cambio de tamano. Desde maximized o fullscreen pasa a windowed",
+        {}, game_window);
+    {
+        MonitorSize monitor;
+        monitorSize(window_, monitor);
+        add("monitor_width", number(monitor.width), "Ancho del monitor de la ventana (0 si no se sabe)", {}, false);
+        add("monitor_height", number(monitor.height), "Alto del monitor de la ventana (0 si no se sabe)", {}, false);
+        add("windowed_max_width", number(monitor.windowed_max_width),
+            "Mayor ancho de dentro que cabe con el marco de Windows en el area de trabajo", {}, false);
+        add("windowed_max_height", number(monitor.windowed_max_height),
+            "Mayor alto de dentro que cabe con el marco de Windows en el area de trabajo", {}, false);
+#if defined(_WIN32)
+        const bool framed = window_ != nullptr && (GetWindowLongPtrW(window_, GWL_STYLE) & WS_CAPTION) == WS_CAPTION;
+#else
+        const bool framed = false;
+#endif
+        add("window_framed", framed, "La ventana tiene ahora el marco de Windows (lectura)", {}, false);
+    }
     // Solo lectura: el PC y lo que se esta dibujando
     const vk::Extent2D render = renderer_.renderExtent();
     const vk::Extent2D screen = renderer_.sceneExtent();
@@ -486,6 +611,11 @@ bool RendererGraphicsHost::set(const std::string& key, const GraphicsValue& valu
         if (!need_number(15.0, 360.0)) return false;
         g.target_fps = static_cast<float>(n);
         settings_changed = true;
+    } else if (key == "fps_limit") {
+        // No es del renderizador: lo aplica el bucle del reproductor.
+        if (!need_number(0.0, static_cast<double>(kFpsLimitMax))) return false;
+        fps_limit_ = clampFpsLimit(n);
+        return true;
     } else if (key == "shadow_resolution") {
         if (!need_number(0.0, 8192.0)) return false;
         const int size = static_cast<int>(n);
@@ -546,13 +676,19 @@ bool RendererGraphicsHost::set(const std::string& key, const GraphicsValue& valu
     } else if (key == "sky_occlusion") {
         if (!need_bool()) return false;
         renderer_.setSkyOcclusionEnabled(flag);
+    } else if (key == "lighting_quality") {
+        if (!need_choice({"auto", "full", "lite"})) return false;
+        if (text == "auto") renderer_.clearLiteLightingForced();
+        else if (text == "full") renderer_.setLiteLightingForced(false);
+        else if (text == "lite") renderer_.setLiteLightingForced(true);
+        else return bad_choice({"auto", "full", "lite"});
     } else if (key == "occlusion_culling") {
         if (!need_bool()) return false;
         renderer_.setOcclusionCullingEnabled(flag);
     } else if (key == "cascade_debug") {
         if (!need_bool()) return false;
         renderer_.setCascadeDebug(flag);
-    } else if (key == "window_mode" || key == "window_width" || key == "window_height") {
+    } else if (key == "window_mode" || key == "window_width" || key == "window_height" || key == "window_size") {
         if (window_ == nullptr) {
             error = "la ventana solo se cambia en el juego exportado (en el editor es la del editor)";
             return false;
@@ -563,10 +699,28 @@ bool RendererGraphicsHost::set(const std::string& key, const GraphicsValue& valu
             if (i < 0) return bad_choice(names(kWindowModeNames));
             window_mode_ = static_cast<WindowMode>(i);
         } else {
-            if (!need_number(key == "window_width" ? 320.0 : 240.0, 16384.0)) return false;
-            (key == "window_width" ? window_width_ : window_height_) = static_cast<int>(n);
-            // Dar un tamano pasa a ventana con ese tamano (como Screen.SetResolution).
-            window_mode_ = WindowMode::Windowed;
+            if (key == "window_size") {
+                // "1280x720": los dos lados a la vez (un solo cambio de tamano).
+                if (!asText(value, text)) {
+                    error = "debe ser un texto como \"1280x720\"";
+                    return false;
+                }
+                const std::size_t x = lower(text).find('x');
+                const int w = x == std::string::npos ? 0 : std::atoi(text.c_str());
+                const int h = x == std::string::npos ? 0 : std::atoi(text.c_str() + x + 1);
+                if (w < 320 || h < 240) {
+                    error = "debe ser un texto como \"1280x720\" (minimo 320x240)";
+                    return false;
+                }
+                window_width_ = std::min(w, 16384);
+                window_height_ = std::min(h, 16384);
+            } else {
+                if (!need_number(key == "window_width" ? 320.0 : 240.0, 16384.0)) return false;
+                (key == "window_width" ? window_width_ : window_height_) = static_cast<int>(n);
+            }
+            // Dar un tamano pasa a ventana con ese tamano (como Screen.SetResolution);
+            // sin bordes sigue sin bordes.
+            if (window_mode_ != WindowMode::Borderless) window_mode_ = WindowMode::Windowed;
         }
         applyWindowMode(window_, window_mode_, window_width_, window_height_);
         return true;
@@ -606,9 +760,12 @@ bool RendererGraphicsHost::setQuality(const std::string& level, std::string& err
 std::vector<std::pair<int, int>> RendererGraphicsHost::resolutions() const {
     std::set<std::pair<int, int>, std::greater<>> sizes;
 #if defined(_WIN32)
+    // Los modos del monitor en el que esta la ventana (sin ventana, el principal).
+    MONITORINFOEXW monitor{};
+    const wchar_t* device = monitorInfo(window_, monitor) ? monitor.szDevice : nullptr;
     DEVMODEW mode{};
     mode.dmSize = sizeof(mode);
-    for (DWORD i = 0; EnumDisplaySettingsW(nullptr, i, &mode) != 0; ++i) {
+    for (DWORD i = 0; EnumDisplaySettingsW(device, i, &mode) != 0; ++i) {
         if (mode.dmPelsWidth >= 640 && mode.dmPelsHeight >= 480) {
             sizes.insert({static_cast<int>(mode.dmPelsWidth), static_cast<int>(mode.dmPelsHeight)});
         }

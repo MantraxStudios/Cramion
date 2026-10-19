@@ -51,6 +51,15 @@ layout(location = 5) out vec4 v_previous_clip;
 // Relieve teselado (skinned.tese): la posicion del frame anterior, para
 // desplazarla igual que la de este.
 layout(location = 6) out vec3 v_previous_world;
+// UV de lightmap del modelo (set 1, binding 10; PLAN-LIGHTMAPS 1.6; el 9 es el tiling del material): una por
+// vertice, unorm16x2 (u en los 16 bits bajos); 0xFFFFFFFF = sin lightmap.
+// Solo con kFlagLightmap (lo estatico rigido con UV2).
+layout(std430, set = 1, binding = 10) readonly buffer LightmapUvs {
+    uint lightmap_uvs[];
+};
+layout(location = 7) out vec2 v_lightmap_uv;
+layout(location = 8) flat out uint v_lightmap_slot;
+const uint kFlagLightmap = 1u << 6;
 
 void main() {
     // Instanciado: push.model es la identidad y la matriz de mundo del actor
@@ -101,4 +110,16 @@ void main() {
     vec4 previous_world = previous_skin * vec4(in_position, 1.0);
     v_previous_clip = camera.previous_view_projection * previous_world;
     v_previous_world = previous_world.xyz;
+
+    // Lightmap: su UV2 y el hueco de la instancia (el de su matriz en el
+    // buffer de huesos: ahi esta su registro, lightmap_common.glsl).
+    v_lightmap_uv = vec2(-1.0);
+    v_lightmap_slot = 0xFFFFFFFFu;
+    if ((push.flags & kFlagLightmap) != 0u) {
+        uint packed = lightmap_uvs[gl_VertexIndex];
+        if (packed != 0xFFFFFFFFu) {
+            v_lightmap_uv = unpackUnorm2x16(packed);
+            v_lightmap_slot = (push.flags & 1u) != 0u ? uint(gl_InstanceIndex) : push.bone_offset + 1u;
+        }
+    }
 }

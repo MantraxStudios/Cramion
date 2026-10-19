@@ -167,6 +167,11 @@ file(GLOB_RECURSE CRAMION_ASSETS_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/asset/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/project/*.cpp"
 )
+# El desenvuelto de las UV de lightmap (xatlas) es solo del editor: Android
+# no lo compila (PLAN-LIGHTMAPS.md 1.1).
+if(ANDROID)
+    list(FILTER CRAMION_ASSETS_SOURCES EXCLUDE REGEX "LightmapUnwrap\\.cpp$")
+endif()
 add_library(CramionAssets STATIC ${CRAMION_ASSETS_SOURCES})
 add_library(Cramion::Assets ALIAS CramionAssets)
 target_include_directories(CramionAssets PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -176,6 +181,17 @@ target_link_libraries(CramionAssets
 )
 target_include_directories(CramionAssets PRIVATE "${zstd_SOURCE_DIR}/lib")
 target_compile_options(CramionAssets PRIVATE -Wall -Wextra)
+
+# xatlas (Jonathan Young, MIT; vendor/xatlas, commit f700c77 de Godot): las UV
+# de lightmap automaticas. Codigo de terceros: sin avisos, siempre optimizado y
+# sin sus hilos (el paralelismo lo pone el horneado). Mismo patron que bc7enc.
+if(NOT ANDROID)
+    target_sources(CramionAssets PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/xatlas/xatlas.cpp")
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/vendor/xatlas/xatlas.cpp"
+        PROPERTIES COMPILE_OPTIONS "-O2;-w" COMPILE_DEFINITIONS "XA_MULTITHREADED=0")
+    target_include_directories(CramionAssets SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/xatlas")
+    target_compile_definitions(CramionAssets PUBLIC CRAMION_HAS_LIGHTMAP_UNWRAP=1)
+endif()
 
 # Herramienta de consola de los assets: crea un proyecto temporal, importa
 # modelos y un cielo, y los vuelve a cargar (cramion_asset_tool --help).
@@ -192,6 +208,10 @@ endif()
 
 file(GLOB_RECURSE CRAMION_CORE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 list(FILTER CRAMION_CORE_SOURCES EXCLUDE REGEX "/src/(asset|project|crwpack)/")
+# El lightmapper (horneado por texel de UV2) es del editor: en Android no.
+if(ANDROID)
+    list(FILTER CRAMION_CORE_SOURCES EXCLUDE REGEX "/src/lighting/Lightmapper")
+endif()
 
 # Los objetos del ECS se compilan aparte (OBJECT) y solo con las cabeceras de
 # los assets: asi se pueden compilar aunque CramionAssets este a medias.
@@ -204,6 +224,11 @@ target_include_directories(CramionCoreObjects PRIVATE "${enet_SOURCE_DIR}/includ
 # SDK de los scripts de C++ (cramion/CppProtocol.h lo comparten motor y juegos).
 target_include_directories(CramionCoreObjects PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/sdk")
 target_compile_options(CramionCoreObjects PRIVATE -Wall -Wextra)
+# Los objetos solo ven las cabeceras de los assets (no enlazan CramionAssets):
+# la definicion del desenvuelto de UV de lightmap se repite aqui.
+if(NOT ANDROID)
+    target_compile_definitions(CramionCoreObjects PUBLIC CRAMION_HAS_LIGHTMAP_UNWRAP=1)
+endif()
 
 # Debug agil: lo que se ejecuta en cada frame con muchos objetos (sync del
 # render, ECS, fisica, particulas) y el JSON de las escenas y del deshacer se
@@ -251,7 +276,58 @@ if(WIN32)
     target_link_libraries(CramionCore PRIVATE ole32 d3d11 dxgi)
 elseif(ANDROID)
     # miniaudio (AAudio/OpenSL por dlopen) y el log del sistema.
-    target_link_libraries(CramionCore PRIVATE android log OpenSLES dl)
+    # mediandk: el video de Android (src/video/decoders/MediaCodecDecoder.cpp:
+    # AMediaExtractor, AMediaCodec y AImageReader). Lo de Android 9+
+    # (AMediaDataSource para https://) se busca con dlsym.
+    target_link_libraries(CramionCore PRIVATE android log OpenSLES dl mediandk)
+endif()
+
+# Video, backend FFmpeg opcional (src/video/decoders/FfmpegDecoder.cpp): RTSP,
+# RTMP y DASH en todas las plataformas, HLS en Android y Linux, y todo el video
+# en Linux. Apagado por defecto: FFmpeg (5.1 o mas nuevo) no va incluido y sus
+# bibliotecas (LGPL/GPL segun como se compilaran) hay que repartirlas con el
+# editor y con cada juego exportado. Se busca con pkg-config (libavformat,
+# libavcodec, libavutil, libswscale) o en CRAMION_FFMPEG_ROOT (include/ y lib/,
+# p. ej. una compilacion "shared" de FFmpeg para Windows o para el ABI de Android).
+option(CRAMION_WITH_FFMPEG "Video: backend FFmpeg para RTSP/RTMP/DASH (y HLS fuera de Windows)" OFF)
+if(CRAMION_WITH_FFMPEG)
+    set(CRAMION_FFMPEG_ROOT "" CACHE PATH "Carpeta de FFmpeg (include/ y lib/) si no se encuentra con pkg-config")
+    set(_cramion_ffmpeg_libs "")
+    if(NOT CRAMION_FFMPEG_ROOT)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(CRAMION_FFMPEG QUIET IMPORTED_TARGET
+                              "libavformat>=59.27.100" "libavcodec>=59.37.100" libavutil libswscale)
+            if(CRAMION_FFMPEG_FOUND)
+                set(_cramion_ffmpeg_libs PkgConfig::CRAMION_FFMPEG)
+            endif()
+        endif()
+    endif()
+    if(NOT _cramion_ffmpeg_libs)
+        find_path(CRAMION_FFMPEG_INCLUDE_DIR libavformat/avformat.h
+                  HINTS "${CRAMION_FFMPEG_ROOT}/include" NO_CMAKE_FIND_ROOT_PATH)
+        set(_cramion_ffmpeg_missing "")
+        foreach(_lib avformat avcodec avutil swscale)
+            find_library(CRAMION_FFMPEG_${_lib}_LIBRARY NAMES ${_lib}
+                         HINTS "${CRAMION_FFMPEG_ROOT}/lib" NO_CMAKE_FIND_ROOT_PATH)
+            if(CRAMION_FFMPEG_${_lib}_LIBRARY)
+                list(APPEND _cramion_ffmpeg_libs "${CRAMION_FFMPEG_${_lib}_LIBRARY}")
+            else()
+                list(APPEND _cramion_ffmpeg_missing ${_lib})
+            endif()
+        endforeach()
+        if(NOT CRAMION_FFMPEG_INCLUDE_DIR OR _cramion_ffmpeg_missing)
+            message(FATAL_ERROR "CRAMION_WITH_FFMPEG=ON pero no se encontro FFmpeg 5.1+ "
+                                "(faltan: ${_cramion_ffmpeg_missing}). Instala sus paquetes de desarrollo "
+                                "(pkg-config) o indica CRAMION_FFMPEG_ROOT con include/ y lib/.")
+        endif()
+        target_include_directories(CramionCoreObjects PRIVATE "${CRAMION_FFMPEG_INCLUDE_DIR}")
+    endif()
+    target_link_libraries(CramionCoreObjects PRIVATE ${_cramion_ffmpeg_libs})
+    target_link_libraries(CramionCore PRIVATE ${_cramion_ffmpeg_libs})
+    # Lo ven todas las fuentes de CramionCore (VideoFiles.cpp acepta rtsp://).
+    target_compile_definitions(CramionCoreObjects PRIVATE CRAMION_HAS_FFMPEG=1)
+    message(STATUS "Cramion: video con FFmpeg (RTSP/RTMP/DASH). Reparte sus bibliotecas con el juego.")
 endif()
 # Hilos de las conexiones WebSocket (sesion, lector, vigilante).
 find_package(Threads REQUIRED)

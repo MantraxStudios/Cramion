@@ -42,7 +42,7 @@ bool traceBounce(vec3 origin, vec3 direction, float max_distance, out RtHit hit)
         uint model = hitObjectGetInstanceCustomIndexEXT(hit_object);
         uint geometry = hitObjectGetGeometryIndexEXT(hit_object);
         uint primitive = hitObjectGetPrimitiveIndexEXT(hit_object);
-        key = rt_triangle_materials[rtTriangle(model, geometry, primitive)] & 0xFFFFu;
+        key = rtMaterial(model, rtTriangle(model, geometry, primitive)) & 0xFFFFu;
     }
     reorderThreadEXT(hit_object, key, 16u);
 

@@ -340,6 +340,12 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
     // llega un frame tarde y no se suelta.)
     if (!game_input && preferred_view_ != kGameSlot && scripts_.cursorLocked()) scripts_.releaseCursor();
     const dm::Input* game_in = touchSimulatedInput();  // con "Tactil": el raton es un dedo
+    // Un clic sobre la interfaz del juego no llega a los scripts.
+    if (game_in != nullptr) {
+        script_input_ = *game_in;
+        ui_.filterGameInput(script_input_);
+        game_in = &script_input_;
+    }
     scripts_.setInput(typing || !game_input ? nullptr : game_in);
     // Vehiculos con "Teclado": WASD / flechas y Espacio (freno de mano).
     if (input_ != nullptr && !typing && game_input) {
@@ -532,6 +538,7 @@ void EditorApp::updatePhysics(float delta_seconds) {
         fire::updateFires(world_, delta_seconds, fire_mode, &terrain_store_);
     }
     updateTerrainStreaming();  // teselas de los Terrenos grandes cerca de la camara (EditorTerrainGrid.cpp)
+    updateDataLayerVisibility();  // Data Layers ocultas en la Escena (EditorWorldPartition.cpp)
     if (play_state_ == PlayState::Playing) {
         spline::updateSplineFollowers(world_, delta_seconds);
         world_partition_.update(world_, scene_.camera().position());  // celdas cerca del jugador

@@ -1639,8 +1639,11 @@ void NavigationSystem::update(ecs::World& world, float delta_seconds, bool simul
     d.time += delta_seconds;
     // Sin generacion en tiempo real: solo la primera vez (malla vacia).
     const bool scan = rebuild || d.built_once == 0 || d.navmesh == nullptr;
-    if (scan) {
-        d.scanVolumes(world);
+    // Sin ningun Nav Mesh Bounds no hay baldosas que construir: escanear las
+    // fuentes (todos los colliders de la escena, miles en una ciudad) era
+    // ~1.3 ms por frame para nada, porque sin malla se escaneaba cada frame.
+    if (scan) d.scanVolumes(world);
+    if (scan && !d.active_tiles.empty()) {
         d.scanModifiers(world);
         d.scanSources(world, delta_seconds);
         if (d.dirty_all) {

@@ -4,6 +4,36 @@
   lightmap de superficie, accesibilidad, mods, informe de cierres, job system y Linux.
 </p>
 
+<h3 id="v251">2.5.1: lightmaps UV2, memoria con VMA y mundos grandes más rápidos</h3>
+<p>
+  Novedad sobre la 2.4.13. Ver el detalle en el <code>CHANGELOG.md</code>.
+</p>
+<ul>
+  <li><strong>Lightmaps UV2</strong>: UV de lightmap automáticas con xatlas (<em>Generar UV de lightmap</em> y la vista LM de
+    la Escena), lightmapper propio con luz directa, rebote y luces Horneadas, y el <code>.crbake</code> v4 con los
+    lightmaps. Ver <a href="iluminacion-horneada.html">Iluminación horneada</a>.</li>
+  <li><strong>Memoria de la GPU con VMA</strong>: los buffers y las texturas ya no piden una asignación de Vulkan cada uno;
+    cada modelo sube en un solo lote, por una cola de transferencia si la GPU la tiene, sin bloquear el frame.</li>
+  <li><strong>Mundos estáticos</strong>: los actores tienen identidad estable, así que un objeto que entra o sale ya no hace
+    redibujar las cascadas de sombra. Las sombras descartan lo que no puede verse y el terreno solo las redibuja si cambia.</li>
+  <li><strong>Trazado de rayos y tiling</strong>: las variantes <code>.crmat</code> comparten triángulos y BLAS, y el tiling
+    de UV va en el material sin duplicar vértices.</li>
+  <li><strong>Gama baja</strong>: GI horneada sin filtro, sol horneado sin cascadas si nadie las lee, ríos y ondas más baratos,
+    y distancia de sombras y LOD por gama.</li>
+  <li><strong>Render</strong>: vidrio recortado con la pirámide Hi-Z, luces puntuales por teselas, early-Z en los opacos,
+    LOD para personajes con esqueleto y texturas BC7 para la UI, los árboles y el terreno.</li>
+  <li><strong>UI y ventana</strong>: el clic sobre la UI ya no llega al juego, <code>UIEventTrigger</code>,
+    <code>UIInputField</code> con selección y portapapeles, <code>UIImage</code> con 9-slice, modo sin bordes y tope de FPS
+    (<code>fps_limit</code>).</li>
+  <li><strong>World Partition y red</strong>: varias rejillas y Data Layers; las posiciones de red viajan absolutas para mundos
+    de más de 2 km. <strong>Blueprints</strong>: Construction Script, funciones, macros, Timeline y depuración en vivo.</li>
+  <li><strong>Vídeo en Android</strong> con MediaCodec, y <code>--run-tests</code> en el juego exportado.</li>
+</ul>
+<div class="note">
+  <strong>Red</strong>: el protocolo pasa a la versión 2, así que los juegos y el <code>CramionServer</code> anteriores no se
+  conectan con los nuevos. <strong>UI</strong>: los scripts ya no reciben el clic que cae sobre la interfaz.
+</div>
+
 <h3 id="v2413">2.4.13: Cramion Store, Package Manager y horneado de luz con los modelos Static</h3>
 <p>
   Novedad sobre la 2.4.11.

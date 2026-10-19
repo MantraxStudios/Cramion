@@ -176,6 +176,9 @@ std::vector<NodeInfo> buildCatalog() {
           {X(""), P("Evento", kString), P("Tiempo", kFloat), P("Cantidad", kInt), P("Mensaje", kString)},
           {O(P("Evento", kString, "LoopPointReached"), {"Prepared", "Started", "LoopPointReached", "FrameReady", "SeekCompleted",
                                                          "Error", "FrameDropped", "Buffering", "Resumed", "Any"})});
+    event("event.construction", "Construction Script",
+          "En el editor, al colocar o cambiar el objeto (fuera de Play): va en el grafo Construction Script",
+          "construction script construir editor colocar mover", {X("")});
 
     // --- Flujo ---
     node("Flujo", "flow.branch", "Branch", "Si la condicion es verdadera sigue por Verdadero; si no, por Falso", "if si condicion",
@@ -397,6 +400,14 @@ std::vector<NodeInfo> buildCatalog() {
     pure("Logica", "flow.select_int", "Select", "La opcion con el numero del Indice (desde 0)", "seleccionar elegir select indice opcion",
          {P("Indice", kInt, "0"), P("Opcion 0", kAny), P("Opcion 1", kAny)}, {P("Resultado", kAny)});
     c.back().dynamic_inputs = true;
+    // Las pistas (Node::timeline) dan una salida cada una, despues de las fijas.
+    node("Flujo", "flow.timeline", "Timeline",
+         "Anima valores en el tiempo: pistas de float o vector con curva (Detalles). Update cada frame mientras corre; "
+         "Finished al llegar al final",
+         "timeline linea de tiempo animar curva interpolar tween pista",
+         {X("Play"), X("Play desde el inicio"), X("Stop"), X("Reverse"), X("Reverse desde el final"), X("Set New Time"),
+          P("Nuevo tiempo", kFloat, "0")},
+         {X("Update"), X("Finished"), P("Direccion", kString), P("Tiempo", kFloat)}, true);
 
     // --- Matematicas extra ---
     pure("Matematicas", "math.finterp_to", "FInterp To", "Acerca Actual a Objetivo con una velocidad (Delta vacio = el del frame)",
@@ -637,6 +648,7 @@ bool Graph::connect(int from_node, int from_pin, int to_node, int to_pin, std::s
     const Node* b = find(to_node);
     if (a == nullptr || b == nullptr) return fail("El nodo no existe");
     if (a == b) return fail("No se puede enlazar un nodo consigo mismo");
+    if (a->graph != b->graph) return fail("Los dos nodos estan en grafos distintos");
     if (from_pin < 0 || from_pin >= static_cast<int>(a->outputs.size()) || to_pin < 0 || to_pin >= static_cast<int>(b->inputs.size())) {
         return fail("El pin no existe");
     }
@@ -682,8 +694,246 @@ Node& Graph::add(Node node) {
     for (const Node& n : nodes) max_id = std::max(max_id, n.id);
     next_id = std::max(next_id, max_id + 1);
     node.id = next_id++;
+    if (node.graph.empty()) node.graph = editing;
     nodes.push_back(std::move(node));
     return nodes.back();
+}
+
+// --- Funciones y macros --------------------------------------------------------------
+
+std::string functionKey(const std::string& name) { return "fn:" + name; }
+std::string macroKey(const std::string& name) { return "macro:" + name; }
+std::string Subgraph::key() const { return kind == SubgraphKind::Macro ? macroKey(name) : functionKey(name); }
+
+bool isSubgraphNode(const std::string& kind) {
+    return kind == "fn.entry" || kind == "fn.return" || kind == "fn.call" || kind == "macro.entry" || kind == "macro.exit" ||
+           kind == "macro.call";
+}
+
+namespace {
+
+bool macroFamily(const std::string& kind) { return kind.rfind("macro.", 0) == 0; }
+
+}  // namespace
+
+void subgraphNodePins(const Subgraph& sub, const std::string& kind, std::vector<Pin>& inputs, std::vector<Pin>& outputs) {
+    inputs.clear();
+    outputs.clear();
+    // Una funcion solo tiene datos en su firma (su exec es el de siempre, sin nombre).
+    const auto data = [](const std::vector<Pin>& pins, std::vector<Pin>& out) {
+        for (const Pin& p : pins) {
+            if (p.type != PinType::Exec) out.push_back(Pin{p.name, p.type, p.value, {}});
+        }
+    };
+    if (sub.kind == SubgraphKind::Function) {
+        if (kind == "fn.entry") {
+            outputs.push_back(X(""));
+            data(sub.inputs, outputs);
+        } else if (kind == "fn.return") {
+            inputs.push_back(X(""));
+            data(sub.outputs, inputs);
+        } else if (kind == "fn.call") {
+            if (!sub.pure) {
+                inputs.push_back(X(""));
+                outputs.push_back(X(""));
+            }
+            data(sub.inputs, inputs);
+            data(sub.outputs, outputs);
+            // Los resultados no tienen valor escrito.
+            for (Pin& p : outputs) p.value.clear();
+        }
+        return;
+    }
+    // Macro: los pines tal cual (exec incluidos), en el orden de la firma.
+    const auto all = [](const std::vector<Pin>& pins, std::vector<Pin>& out) {
+        for (const Pin& p : pins) out.push_back(Pin{p.name, p.type, p.type == PinType::Exec ? std::string() : p.value, {}});
+    };
+    if (kind == "macro.entry") {
+        all(sub.inputs, outputs);
+        for (Pin& p : outputs) p.value.clear();
+    } else if (kind == "macro.exit") {
+        all(sub.outputs, inputs);
+    } else if (kind == "macro.call") {
+        all(sub.inputs, inputs);
+        all(sub.outputs, outputs);
+        for (Pin& p : outputs) p.value.clear();
+    }
+}
+
+const Subgraph* Graph::findSubgraph(const std::string& key) const {
+    for (const Subgraph& s : functions) {
+        if (s.key() == key) return &s;
+    }
+    return nullptr;
+}
+
+Subgraph* Graph::findSubgraph(const std::string& key) {
+    for (Subgraph& s : functions) {
+        if (s.key() == key) return &s;
+    }
+    return nullptr;
+}
+
+const Subgraph* Graph::findFunction(const std::string& name, SubgraphKind kind) const {
+    for (const Subgraph& s : functions) {
+        if (s.kind == kind && s.name == name) return &s;
+    }
+    return nullptr;
+}
+
+Subgraph& Graph::addSubgraph(const std::string& name, SubgraphKind kind) {
+    const bool macro = kind == SubgraphKind::Macro;
+    const std::string base = name.empty() ? std::string(macro ? "NuevaMacro" : "NuevaFuncion") : name;
+    std::string unique = base;
+    for (int i = 2; findFunction(unique, kind) != nullptr; ++i) unique = base + std::to_string(i);
+    Subgraph s;
+    s.name = unique;
+    s.kind = kind;
+    if (macro) {
+        s.inputs.push_back(Pin{"Entrada", PinType::Exec, {}, {}});
+        s.outputs.push_back(Pin{"Salida", PinType::Exec, {}, {}});
+    }
+    functions.push_back(s);
+    const std::string key = s.key();
+    Node entry;
+    entry.kind = macro ? "macro.entry" : "fn.entry";
+    entry.fn = unique;
+    entry.graph = key;
+    entry.position = core::Vec2{0.0f, 0.0f};
+    subgraphNodePins(s, entry.kind, entry.inputs, entry.outputs);
+    Node exit;
+    exit.kind = macro ? "macro.exit" : "fn.return";
+    exit.fn = unique;
+    exit.graph = key;
+    exit.position = core::Vec2{420.0f, 0.0f};
+    subgraphNodePins(s, exit.kind, exit.inputs, exit.outputs);
+    const int a = add(std::move(entry)).id;
+    const int b = add(std::move(exit)).id;
+    connect(a, 0, b, 0);  // la entrada ya va a la salida (como Unreal)
+    return functions.back();
+}
+
+void Graph::setPins(int id, std::vector<Pin> inputs, std::vector<Pin> outputs) {
+    Node* n = find(id);
+    if (n == nullptr) return;
+    const Node old = *n;
+    for (Pin& p : inputs) {
+        const int k = old.input(p.name);
+        if (k >= 0 && p.type != PinType::Exec && old.inputs[static_cast<std::size_t>(k)].type == p.type) {
+            p.value = old.inputs[static_cast<std::size_t>(k)].value;
+        }
+    }
+    n->inputs = std::move(inputs);
+    n->outputs = std::move(outputs);
+    std::vector<Link> kept;
+    kept.reserve(links.size());
+    for (Link l : links) {
+        if (l.to_node == id) {
+            if (l.to_pin < 0 || l.to_pin >= static_cast<int>(old.inputs.size())) continue;
+            const Pin& before = old.inputs[static_cast<std::size_t>(l.to_pin)];
+            const int k = n->input(before.name);
+            if (k < 0 || (n->inputs[static_cast<std::size_t>(k)].type == PinType::Exec) != (before.type == PinType::Exec)) continue;
+            l.to_pin = k;
+        }
+        if (l.from_node == id) {
+            if (l.from_pin < 0 || l.from_pin >= static_cast<int>(old.outputs.size())) continue;
+            const Pin& before = old.outputs[static_cast<std::size_t>(l.from_pin)];
+            const int k = n->output(before.name);
+            if (k < 0 || (n->outputs[static_cast<std::size_t>(k)].type == PinType::Exec) != (before.type == PinType::Exec)) continue;
+            l.from_pin = k;
+        }
+        kept.push_back(l);
+    }
+    links = std::move(kept);
+}
+
+void Graph::syncSubgraph(const std::string& key) {
+    const Subgraph* found = findSubgraph(key);
+    if (found == nullptr) return;
+    const Subgraph def = *found;
+    const bool macro = def.kind == SubgraphKind::Macro;
+    std::vector<int> ids;
+    for (const Node& n : nodes) {
+        if (isSubgraphNode(n.kind) && macroFamily(n.kind) == macro && n.fn == def.name) ids.push_back(n.id);
+    }
+    for (const int id : ids) {
+        Node* n = find(id);
+        if (n == nullptr) continue;
+        std::vector<Pin> in;
+        std::vector<Pin> out;
+        subgraphNodePins(def, n->kind, in, out);
+        if (n->kind == "fn.call") n->pure = def.pure;
+        setPins(id, std::move(in), std::move(out));
+    }
+}
+
+bool Graph::renameSubgraph(const std::string& key, const std::string& name) {
+    Subgraph* s = findSubgraph(key);
+    if (s == nullptr || name.empty()) return false;
+    if (s->name == name) return true;
+    if (findFunction(name, s->kind) != nullptr) return false;
+    const std::string old_name = s->name;
+    const bool macro = s->kind == SubgraphKind::Macro;
+    s->name = name;
+    const std::string new_key = s->key();
+    for (Node& n : nodes) {
+        if (n.graph == key) n.graph = new_key;
+        if (isSubgraphNode(n.kind) && macroFamily(n.kind) == macro && n.fn == old_name) n.fn = name;
+    }
+    if (editing == key) editing = new_key;
+    return true;
+}
+
+void Graph::removeSubgraph(const std::string& key) {
+    const Subgraph* s = findSubgraph(key);
+    if (s == nullptr) return;
+    const std::string name = s->name;
+    const bool macro = s->kind == SubgraphKind::Macro;
+    std::vector<int> ids;
+    for (const Node& n : nodes) {
+        if (n.graph == key || (isSubgraphNode(n.kind) && macroFamily(n.kind) == macro && n.fn == name)) ids.push_back(n.id);
+    }
+    for (const int id : ids) removeNode(id);
+    functions.erase(std::remove_if(functions.begin(), functions.end(), [&](const Subgraph& f) { return f.key() == key; }),
+                    functions.end());
+    if (editing == key) editing.clear();
+}
+
+// --- Timeline ------------------------------------------------------------------------
+
+std::vector<Pin> timelineOutputs(const Timeline& timeline) {
+    std::vector<Pin> out = {X("Update"), X("Finished"), P("Direccion", kString), P("Tiempo", kFloat)};
+    for (const TimelineTrack& t : timeline.tracks) {
+        out.push_back(Pin{t.name, t.type == PinType::Vector ? PinType::Vector : PinType::Float, {}, {}});
+    }
+    return out;
+}
+
+void Graph::syncTimeline(int id) {
+    const Node* n = find(id);
+    if (n == nullptr || n->kind != "flow.timeline") return;
+    std::vector<Pin> inputs = n->inputs;
+    std::vector<Pin> outputs = timelineOutputs(n->timeline);
+    setPins(id, std::move(inputs), std::move(outputs));
+}
+
+core::Vec3 evaluateTrack(const TimelineTrack& track, float time) {
+    const std::vector<TimelineKey>& keys = track.keys;
+    if (keys.empty()) return core::Vec3{};
+    if (time <= keys.front().time) return keys.front().value;
+    if (time >= keys.back().time) return keys.back().value;
+    for (std::size_t i = 0; i + 1 < keys.size(); ++i) {
+        const TimelineKey& a = keys[i];
+        const TimelineKey& b = keys[i + 1];
+        if (time >= b.time) continue;
+        const float span = b.time - a.time;
+        if (span <= 0.0f) return b.value;
+        float t = (time - a.time) / span;
+        if (a.interp == CurveInterp::Constant) return a.value;
+        if (a.interp == CurveInterp::Smooth) t = t * t * (3.0f - 2.0f * t);
+        return a.value + (b.value - a.value) * t;
+    }
+    return keys.back().value;
 }
 
 // --- Catalogo ------------------------------------------------------------------------
@@ -714,6 +964,13 @@ Node makeNode(const std::string& kind, core::Vec2 position) {
         n.pure = info->pure;
     }
     if (kind == "comment") n.size = core::Vec2{320.0f, 160.0f};
+    if (kind == "flow.timeline") {
+        // Una pista "Alpha" de 0 a 1 en un segundo.
+        TimelineTrack alpha;
+        alpha.keys = {TimelineKey{0.0f, core::Vec3{0.0f}, CurveInterp::Linear}, TimelineKey{1.0f, core::Vec3{1.0f}, CurveInterp::Linear}};
+        n.timeline.tracks.push_back(std::move(alpha));
+        n.outputs = timelineOutputs(n.timeline);
+    }
     return n;
 }
 
@@ -736,6 +993,10 @@ std::string nodeTitle(const Node& node) {
         return "On Video " + node.inputs[0].value;
     }
     if (node.kind == "comment") return node.comment.empty() ? std::string("Comentario") : node.comment;
+    if (node.kind == "fn.entry" || node.kind == "fn.call" || node.kind == "macro.call") return node.fn.empty() ? std::string("?") : node.fn;
+    if (node.kind == "fn.return") return "Return";
+    if (node.kind == "macro.entry") return "Entradas";
+    if (node.kind == "macro.exit") return "Salidas";
     if (node.kind == "entity.child") {
         const std::string name = entityChildPathName(node.fn);
         return name.empty() ? std::string("Objeto hijo ?") : name;
@@ -748,6 +1009,9 @@ core::Vec3 nodeColor(const Node& node) {
     if (node.kind == "call" || node.kind == "call.get" || node.kind == "call.set") {
         return node.pure || node.kind == "call.get" ? core::Vec3{0.20f, 0.45f, 0.30f} : core::Vec3{0.18f, 0.35f, 0.62f};
     }
+    if (node.kind == "fn.call") return node.pure ? core::Vec3{0.20f, 0.45f, 0.30f} : core::Vec3{0.18f, 0.35f, 0.62f};
+    if (node.kind == "fn.entry" || node.kind == "fn.return") return core::Vec3{0.45f, 0.22f, 0.55f};
+    if (node.kind == "macro.entry" || node.kind == "macro.exit" || node.kind == "macro.call") return core::Vec3{0.36f, 0.36f, 0.40f};
     const NodeInfo* info = findNodeInfo(node.kind);
     const std::string category = info != nullptr ? info->category : std::string();
     if (category == "Eventos") return core::Vec3{0.62f, 0.12f, 0.12f};
@@ -1093,6 +1357,8 @@ NodeLook nodeLook(const Node& node) {
     if (node.kind == "util.reroute") return NodeLook::Reroute;
     if (node.kind == "var.get" || node.kind == "entity.child") return NodeLook::Variable;
     if (compactSymbols().contains(node.kind)) return NodeLook::Compact;
+    if (node.kind == "fn.entry" || node.kind == "macro.entry") return NodeLook::Event;
+    if (node.kind == "macro.call") return NodeLook::Flow;
     const NodeInfo* info = findNodeInfo(node.kind);
     if (info != nullptr && info->event) return NodeLook::Event;
     if (info != nullptr && info->category == "Flujo" && !info->pure) return NodeLook::Flow;
@@ -1275,6 +1541,94 @@ void retypeVariableNodes(Graph& g) {
     }
 }
 
+const char* interpKey(CurveInterp interp) {
+    switch (interp) {
+        case CurveInterp::Constant: return "constant";
+        case CurveInterp::Smooth: return "smooth";
+        default: return "linear";
+    }
+}
+
+CurveInterp interpFromKey(const std::string& key) {
+    const std::string k = lower(key);
+    if (k == "constant" || k == "constante" || k == "step") return CurveInterp::Constant;
+    if (k == "smooth" || k == "suave" || k == "cubic" || k == "auto") return CurveInterp::Smooth;
+    return CurveInterp::Linear;
+}
+
+// {"length": 2, "loop": false, "autoplay": false, "tracks": [{"name": "Alpha", "type": "float",
+//  "keys": [{"t": 0, "v": 0}, {"t": 2, "v": [1, 2, 3], "interp": "smooth"}]}]}
+// Una clave tambien puede ser [t, v].
+Timeline timelineFromJson(const json& j) {
+    Timeline t;
+    if (!j.is_object()) return t;
+    if (j.contains("length") && j["length"].is_number()) t.length = std::max(0.001f, j["length"].get<float>());
+    t.loop = j.value("loop", false);
+    t.autoplay = j.value("autoplay", false);
+    if (!j.contains("tracks") || !j["tracks"].is_array()) return t;
+    const auto value = [](const json& v, PinType type) {
+        core::Vec3 out{};
+        if (v.is_number()) {
+            const float f = v.get<float>();
+            out = type == PinType::Vector ? core::Vec3{f, f, f} : core::Vec3{f, 0.0f, 0.0f};
+        } else if (v.is_array()) {
+            float c[3] = {0.0f, 0.0f, 0.0f};
+            for (std::size_t i = 0; i < 3 && i < v.size(); ++i) c[i] = v[i].is_number() ? v[i].get<float>() : 0.0f;
+            out = core::Vec3{c[0], c[1], c[2]};
+        } else if (v.is_string()) {
+            const std::vector<double> n = numbersIn(v.get<std::string>());
+            if (n.size() == 3) out = core::Vec3{static_cast<float>(n[0]), static_cast<float>(n[1]), static_cast<float>(n[2])};
+            else if (n.size() == 1) out = core::Vec3{static_cast<float>(n[0]), 0.0f, 0.0f};
+        }
+        return out;
+    };
+    for (const json& jt : j["tracks"]) {
+        if (!jt.is_object()) continue;
+        TimelineTrack track;
+        track.name = jt.value("name", std::string("Alpha"));
+        track.type = pinTypeFromKey(jt.value("type", std::string("float")), PinType::Float) == PinType::Vector ? PinType::Vector
+                                                                                                             : PinType::Float;
+        if (jt.contains("keys") && jt["keys"].is_array()) {
+            for (const json& jk : jt["keys"]) {
+                TimelineKey key;
+                if (jk.is_object()) {
+                    key.time = jk.contains("t") && jk["t"].is_number() ? jk["t"].get<float>() : 0.0f;
+                    if (jk.contains("v")) key.value = value(jk["v"], track.type);
+                    key.interp = interpFromKey(jk.value("interp", std::string("linear")));
+                } else if (jk.is_array() && jk.size() >= 2 && jk[0].is_number()) {
+                    key.time = jk[0].get<float>();
+                    key.value = value(jk[1], track.type);
+                } else {
+                    continue;
+                }
+                track.keys.push_back(key);
+            }
+        }
+        std::stable_sort(track.keys.begin(), track.keys.end(), [](const TimelineKey& a, const TimelineKey& b) { return a.time < b.time; });
+        t.tracks.push_back(std::move(track));
+    }
+    return t;
+}
+
+json timelineToJson(const Timeline& t) {
+    json j{{"length", t.length}, {"loop", t.loop}, {"autoplay", t.autoplay}};
+    json tracks = json::array();
+    for (const TimelineTrack& track : t.tracks) {
+        const bool vector = track.type == PinType::Vector;
+        json keys = json::array();
+        for (const TimelineKey& k : track.keys) {
+            json jk{{"t", k.time}};
+            if (vector) jk["v"] = json::array({k.value.x, k.value.y, k.value.z});
+            else jk["v"] = k.value.x;
+            if (k.interp != CurveInterp::Linear) jk["interp"] = interpKey(k.interp);
+            keys.push_back(std::move(jk));
+        }
+        tracks.push_back(json{{"name", track.name}, {"type", vector ? "vec3" : "float"}, {"keys", std::move(keys)}});
+    }
+    j["tracks"] = std::move(tracks);
+    return j;
+}
+
 // "out": 2 o "out": "Verdadero" (o "exec" = la primera de ejecucion).
 int pinIndex(const json& j, const std::vector<Pin>& pins) {
     if (j.is_number_integer()) return j.get<int>();
@@ -1318,12 +1672,27 @@ bool graphFromJson(const std::string& text, Graph& out, std::string* error) {
             if (!var.name.empty()) g.variables.push_back(std::move(var));
         }
     }
+    // Funciones y macros (antes que los nodos: sus pines salen de la firma).
+    if (j.contains("functions") && j["functions"].is_array()) {
+        for (const json& f : j["functions"]) {
+            if (!f.is_object()) continue;
+            Subgraph s;
+            s.name = f.value("name", std::string());
+            s.kind = lower(f.value("kind", std::string("function"))) == "macro" ? SubgraphKind::Macro : SubgraphKind::Function;
+            s.inputs = readPins(f.contains("inputs") ? f["inputs"] : json());
+            s.outputs = readPins(f.contains("outputs") ? f["outputs"] : json());
+            s.pure = s.kind == SubgraphKind::Function && f.value("pure", false);
+            s.description = f.value("description", std::string());
+            if (!s.name.empty() && g.findFunction(s.name, s.kind) == nullptr) g.functions.push_back(std::move(s));
+        }
+    }
     if (j.contains("nodes") && j["nodes"].is_array()) {
         for (const json& jn : j["nodes"]) {
             if (!jn.is_object()) continue;
             Node n;
             n.id = jn.value("id", 0);
             n.kind = jn.value("kind", std::string());
+            n.graph = jn.value("graph", std::string());
             n.position = core::Vec2{jn.value("x", 0.0f), jn.value("y", 0.0f)};
             n.fn = jn.value("fn", std::string());
             n.comment = jn.value("comment", std::string());
@@ -1362,6 +1731,26 @@ bool graphFromJson(const std::string& text, Graph& out, std::string* error) {
                 for (std::size_t k = 0; k < stored_in.size(); ++k) {
                     int index = k < n.inputs.size() && n.inputs[k].name == stored_in[k].name ? static_cast<int>(k) : n.input(stored_in[k].name);
                     if (index >= 0) n.inputs[index].value = stored_in[k].value;
+                }
+                if (n.kind == "flow.timeline") {
+                    // Las pistas dan las salidas (sin datos: la pista Alpha de siempre).
+                    n.timeline = jn.contains("timeline") ? timelineFromJson(jn["timeline"]) : makeNode("flow.timeline").timeline;
+                    n.outputs = timelineOutputs(n.timeline);
+                }
+            } else if (isSubgraphNode(n.kind)) {
+                // Los pines salen de la firma de su funcion / macro (si no existe, los guardados).
+                n.inputs = stored_in;
+                n.outputs = stored_out;
+                n.pure = n.kind == "fn.call" && jn.value("pure", false);
+                const SubgraphKind family = macroFamily(n.kind) ? SubgraphKind::Macro : SubgraphKind::Function;
+                if (const Subgraph* def = g.findFunction(n.fn, family)) {
+                    subgraphNodePins(*def, n.kind, n.inputs, n.outputs);
+                    for (Pin& p : n.inputs) {
+                        for (const Pin& s : stored_in) {
+                            if (s.name == p.name && s.type == p.type && p.type != PinType::Exec) p.value = s.value;
+                        }
+                    }
+                    if (n.kind == "fn.call") n.pure = def->pure;
                 }
             } else {
                 n.inputs = stored_in;
@@ -1428,7 +1817,11 @@ bool graphFromJson(const std::string& text, Graph& out, std::string* error) {
 std::string graphToJson(const Graph& g) {
     json j;
     j["uuid"] = g.uuid.valid() ? g.uuid.toString() : Uuid::generate().toString();
-    j["version"] = 1;
+    // 2: usa lo de la fase 2 (funciones, macros, Construction Script, Timeline); si no, como antes.
+    const bool phase2 = !g.functions.empty() || std::any_of(g.nodes.begin(), g.nodes.end(), [](const Node& n) {
+        return !n.graph.empty() || n.kind == "flow.timeline";
+    });
+    j["version"] = phase2 ? 2 : 1;
     j["next_id"] = g.next_id;
     json vars = json::array();
     for (const Variable& v : g.variables) {
@@ -1437,11 +1830,25 @@ std::string graphToJson(const Graph& g) {
         vars.push_back(std::move(jv));
     }
     j["variables"] = std::move(vars);
+    if (!g.functions.empty()) {
+        json functions = json::array();
+        for (const Subgraph& s : g.functions) {
+            json jf{{"name", s.name}, {"kind", s.kind == SubgraphKind::Macro ? "macro" : "function"}};
+            jf["inputs"] = writePins(s.inputs);
+            jf["outputs"] = writePins(s.outputs);
+            if (s.pure) jf["pure"] = true;
+            if (!s.description.empty()) jf["description"] = s.description;
+            functions.push_back(std::move(jf));
+        }
+        j["functions"] = std::move(functions);
+    }
     json nodes = json::array();
     for (const Node& n : g.nodes) {
         json jn{{"id", n.id}, {"kind", n.kind}, {"x", n.position.x}, {"y", n.position.y}};
+        if (!n.graph.empty()) jn["graph"] = n.graph;
         if (!n.fn.empty()) jn["fn"] = n.fn;
-        if (n.kind == "call") jn["pure"] = n.pure;
+        if (n.kind == "call" || n.kind == "fn.call") jn["pure"] = n.pure;
+        if (n.kind == "flow.timeline") jn["timeline"] = timelineToJson(n.timeline);
         if (!n.comment.empty()) jn["comment"] = n.comment;
         if (n.kind == "comment") {
             jn["w"] = n.size.x;
@@ -1533,7 +1940,7 @@ PinType nodePinType(const Graph& graph, const Node& node, bool output, int index
 }
 
 bool isPureNode(const Node& node) {
-    if (node.kind == "call") return node.pure;
+    if (node.kind == "call" || node.kind == "fn.call") return node.pure;
     if (node.kind == "call.get" || node.kind == "comment") return true;
     if (node.kind == "call.set") return false;
     const NodeInfo* info = findNodeInfo(node.kind);
@@ -1631,6 +2038,8 @@ private:
     std::map<std::pair<int, int>, std::vector<const Link*>> in_links_;   // (nodo, entrada)
     std::map<std::pair<int, int>, std::vector<const Link*>> out_links_;  // (nodo, salida)
     std::set<std::pair<int, std::string>> reported_;
+    std::map<std::string, std::set<std::string>> macro_calls_;  // grafo -> macros que usa ("macro:X")
+    std::set<std::string> latent_graphs_;                       // grafos con un nodo que espera
 
     void error(int node, const std::string& message) {
         if (!reported_.insert({node, message}).second) return;
@@ -1673,9 +2082,19 @@ private:
         for (const Node& n : g_.nodes) {
             if (n.kind == "event.custom" && !n.inputs.empty() && !n.disabled) custom_names.insert(trim(n.inputs[0].value));
         }
+        subgraphs();
         for (const Node& n : g_.nodes) {
             const NodeInfo* info = findNodeInfo(n.kind);
             const bool call = n.kind == "call" || n.kind == "call.get" || n.kind == "call.set";
+            // En que grafo esta (Event Graph, Construction Script, funcion o macro).
+            const Subgraph* owner = nullptr;
+            if (!n.graph.empty() && n.graph != kConstructionGraph) {
+                owner = g_.findSubgraph(n.graph);
+                if (owner == nullptr) {
+                    error(n.id, "El nodo esta en un grafo que no existe (" + n.graph + ")");
+                    continue;
+                }
+            }
             if (n.disabled) {
                 // Desactivado: no se comprueba (deja pasar la ejecucion); su valor no se puede usar.
                 if (isPureNode(n) && n.kind != "comment") {
@@ -1688,10 +2107,11 @@ private:
                 }
                 continue;
             }
-            if (info == nullptr && !call) {
+            if (info == nullptr && !call && !isSubgraphNode(n.kind)) {
                 error(n.id, "Tipo de nodo desconocido: " + n.kind);
                 continue;
             }
+            graphRules(n, info, owner);
             if ((n.kind == "var.get" || n.kind == "var.set") && g_.findVariable(n.fn) == nullptr) {
                 error(n.id, n.fn.empty() ? std::string("Elige una variable") : "No existe la variable \"" + n.fn + "\"");
             }
@@ -1729,6 +2149,10 @@ private:
                 error(l.to_node, "Un enlace va a un pin que no existe");
                 continue;
             }
+            if (a->second->graph != b->second->graph) {
+                error(l.to_node, "Un enlace va de un grafo a otro (cada funcion o macro tiene sus nodos)");
+                continue;
+            }
             const PinType from = pinType(*a->second, true, l.from_pin);
             const PinType to = pinType(*b->second, false, l.to_pin);
             if ((from == PinType::Exec) != (to == PinType::Exec)) {
@@ -1755,6 +2179,120 @@ private:
             if (pinType(*it->second, false, key.second) != PinType::Exec) {
                 error(key.first, "Una entrada de datos solo puede tener un enlace");
             }
+        }
+    }
+
+    // Firmas de las funciones y macros, sus nodos de entrada y que macros usan
+    // a cuales (y cuales esperan por dentro).
+    void subgraphs() {
+        std::set<std::string> seen;
+        std::map<std::string, int> entries;
+        for (const Node& n : g_.nodes) {
+            if (n.kind == "fn.entry" || n.kind == "macro.entry") ++entries[n.graph];
+        }
+        for (const Subgraph& s : g_.functions) {
+            const bool macro = s.kind == SubgraphKind::Macro;
+            if (trim(s.name).empty()) {
+                error(0, std::string(macro ? "Una macro" : "Una funcion") + " no tiene nombre");
+                continue;
+            }
+            const std::string what = std::string(macro ? "La macro \"" : "La funcion \"") + s.name + "\"";
+            if (s.name.find(':') != std::string::npos) error(0, what + ": el nombre no puede llevar ':'");
+            if (!seen.insert(s.key()).second) error(0, std::string("Hay dos ") + (macro ? "macros" : "funciones") + " \"" + s.name + "\"");
+            const int count = entries[s.key()];
+            if (count != 1) error(0, what + (count == 0 ? " no tiene nodo de entrada" : " tiene mas de un nodo de entrada"));
+            for (const std::vector<Pin>* pins : {&s.inputs, &s.outputs}) {
+                std::set<std::string> names;
+                for (const Pin& p : *pins) {
+                    if (p.type == PinType::Exec && !macro) continue;  // una funcion no usa los exec de su firma
+                    if (trim(p.name).empty()) error(0, what + ": un pin no tiene nombre");
+                    else if (!names.insert(p.name).second) error(0, what + ": hay dos pines \"" + p.name + "\"");
+                }
+            }
+            if (macro && std::none_of(s.inputs.begin(), s.inputs.end(), [](const Pin& p) { return p.type == PinType::Exec; })) {
+                error(0, what + " necesita al menos una entrada de ejecucion");
+            }
+        }
+        for (const Node& n : g_.nodes) {
+            if (n.disabled) continue;
+            if (n.kind == "macro.call") macro_calls_[n.graph].insert(macroKey(n.fn));
+            const NodeInfo* info = findNodeInfo(n.kind);
+            if (info != nullptr && info->latent) latent_graphs_.insert(n.graph);
+        }
+    }
+
+    // La macro `from` usa (aunque sea a traves de otras) la macro `target`?
+    bool reaches(const std::string& from, const std::string& target, std::set<std::string>& seen) const {
+        if (from == target) return true;
+        if (!seen.insert(from).second) return false;
+        const auto it = macro_calls_.find(from);
+        if (it == macro_calls_.end()) return false;
+        for (const std::string& next : it->second) {
+            if (reaches(next, target, seen)) return true;
+        }
+        return false;
+    }
+
+    // La macro `key` (o una que use) espera (Delay)?
+    bool macroWaits(const std::string& key, std::set<std::string>& seen) const {
+        if (latent_graphs_.contains(key)) return true;
+        if (!seen.insert(key).second) return false;
+        const auto it = macro_calls_.find(key);
+        if (it == macro_calls_.end()) return false;
+        for (const std::string& next : it->second) {
+            if (macroWaits(next, seen)) return true;
+        }
+        return false;
+    }
+
+    // Lo que puede ir en cada grafo y los nodos de las funciones y macros.
+    void graphRules(const Node& n, const NodeInfo* info, const Subgraph* owner) {
+        const bool in_function = owner != nullptr && owner->kind == SubgraphKind::Function;
+        const bool in_macro = owner != nullptr && owner->kind == SubgraphKind::Macro;
+        const bool construction = n.graph == kConstructionGraph;
+        if (info != nullptr && info->event) {
+            if (n.kind == "event.construction") {
+                if (!construction) error(n.id, "Construction Script va en su grafo (Mi Blueprint > Construction Script)");
+            } else if (!n.graph.empty()) {
+                error(n.id, "Los eventos van en el Event Graph");
+            }
+        }
+        if (n.kind == "flow.timeline") {
+            if (!n.graph.empty()) error(n.id, "El Timeline solo puede ir en el Event Graph");
+            timeline(n);
+        } else if (info != nullptr && info->latent && (in_function || construction)) {
+            error(n.id, std::string(construction ? "El Construction Script" : "Una funcion") + " no puede esperar (" + info->title +
+                            "): usa una macro o el Event Graph");
+        }
+        if (!isSubgraphNode(n.kind)) return;
+        const bool macro = macroFamily(n.kind);
+        const Subgraph* def = g_.findFunction(n.fn, macro ? SubgraphKind::Macro : SubgraphKind::Function);
+        if (def == nullptr) {
+            error(n.id, std::string(macro ? "No existe la macro \"" : "No existe la funcion \"") + n.fn + "\"");
+            return;
+        }
+        const bool inner = n.kind != "fn.call" && n.kind != "macro.call";
+        if (inner && n.graph != def->key()) {
+            error(n.id, std::string("Este nodo solo va dentro de ") + (macro ? "su macro" : "su funcion"));
+            return;
+        }
+        if (n.kind == "macro.call") {
+            std::set<std::string> seen;
+            if (in_macro && reaches(def->key(), owner->key(), seen)) error(n.id, "Una macro no puede usarse a si misma");
+            std::set<std::string> waits;
+            if ((in_function || construction) && macroWaits(def->key(), waits)) {
+                error(n.id, "La macro \"" + n.fn + "\" espera (Delay): no se puede usar en una funcion ni en el Construction Script");
+            }
+        }
+    }
+
+    void timeline(const Node& n) {
+        const Timeline& t = n.timeline;
+        if (!(t.length > 0.0f)) error(n.id, "El Timeline necesita una duracion mayor que 0");
+        std::set<std::string> names = {"Update", "Finished", "Direccion", "Tiempo"};
+        for (const TimelineTrack& track : t.tracks) {
+            if (trim(track.name).empty()) error(n.id, "Una pista del Timeline no tiene nombre");
+            else if (!names.insert(track.name).second) error(n.id, "Hay dos pistas (o una salida) \"" + track.name + "\" en el Timeline");
         }
     }
 
@@ -1858,10 +2396,17 @@ void VisualScript::reflect(ecs::PropertyVisitor& v) {
     }
 }
 
+void ConstructionOwned::reflect(ecs::PropertyVisitor& v) {
+    v.entity({"owner", "Creado por", "El objeto cuyo Construction Script creo este (se rehace al cambiarlo)"}, owner);
+}
+
 void registerVisualScriptComponents() {
     ecs::ComponentRegistry& registry = ecs::ComponentRegistry::instance();
     if (registry.find("VisualScript") == nullptr) {
         registry.registerComponent<VisualScript>("VisualScript", "Visual Script (Blueprints)", "Scripting");
+    }
+    if (registry.find("ConstructionOwned") == nullptr) {
+        registry.registerComponent<ConstructionOwned>("ConstructionOwned", "Creado por Construction Script", "Scripting", true, false);
     }
 }
 

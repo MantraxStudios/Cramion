@@ -1,7 +1,11 @@
 #include "CramionCore/asset/AssetManager.h"
 
+#include "CramionCore/asset/LightmapUv.h"
+
 #include "CrData.h"
 #include "Primitives.h"
+
+#include <CramionFX/asset/TextureStats.h>
 
 #include <algorithm>
 #include <chrono>
@@ -23,6 +27,8 @@ struct AssetManager::Loader {
         std::filesystem::path path;
         std::string name;
         std::uint64_t generation = 0;
+        // Las UV de lightmap de la escena cuando se pidio (se leen en el hilo).
+        std::shared_ptr<const lighting::LightmapUvSet> uvs;
     };
     struct Done {
         Uuid uuid{};
@@ -66,7 +72,7 @@ struct AssetManager::Loader {
             }
             std::shared_ptr<ModelAsset> asset;
             try {
-                asset = AssetManager::readModel(job.uuid, job.path, job.name);
+                asset = AssetManager::readModel(job.uuid, job.path, job.name, true, job.uvs.get());
             } catch (const std::exception& e) {
                 std::cerr << "[Assets] " << job.name << ": " << e.what() << "\n";
             }
@@ -101,7 +107,7 @@ std::shared_ptr<const ModelAsset> AssetManager::requestModel(const Uuid& uuid) {
     }
     {
         std::lock_guard lock(loader_->mutex);
-        loader_->queue.push_back(Loader::Job{uuid, info->path, info->name, loader_->generation});
+        loader_->queue.push_back(Loader::Job{uuid, info->path, info->name, loader_->generation, lightmap_uvs_});
         loader_->in_flight.insert(uuid);
     }
     loader_->work.notify_one();
@@ -162,10 +168,122 @@ std::vector<asset::TextureData> AssetManager::readModelTextures(const std::files
     return textures;
 }
 
-std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std::filesystem::path& file,
-                                                   const std::string& name, bool decode_textures) {
+std::vector<std::vector<MaterialColors>> AssetManager::readMaterialColors(const Uuid& uuid,
+                                                                          const std::filesystem::path& file,
+                                                                          const std::vector<bool>& wanted) {
+    std::vector<asset::ModelData> parts;
     if (primitives::isBuiltin(uuid)) {
-        return primitives::make(uuid);
+        const std::shared_ptr<ModelAsset> asset = primitives::make(uuid);
+        if (asset) {
+            for (const std::shared_ptr<asset::ModelData>& part : asset->parts) {
+                parts.push_back(part ? *part : asset::ModelData{});
+            }
+        }
+    } else {
+        crdata::Header header{};
+        crdata::ModelContent content{};
+        if (file.empty() || !crdata::readModel(file, header, content)) {
+            std::cerr << "[Assets] No se pudieron leer los materiales de " << crdata::utf8(file) << "\n";
+            return {};
+        }
+        parts = std::move(content.parts);
+    }
+    // Lo mismo que skinned.frag: emision = textura x factor x kEmissiveIntensity.
+    constexpr float kEmissiveIntensity = 6.0f;
+    std::vector<std::vector<MaterialColors>> out(parts.size());
+    for (std::size_t p = 0; p < parts.size(); ++p) {
+        if (!wanted.empty() && (p >= wanted.size() || !wanted[p])) {
+            parts[p] = asset::ModelData{};
+            continue;
+        }
+        asset::ModelData& part = parts[p];
+        // La media de cada textura, una vez (varios materiales la comparten).
+        std::vector<std::uint8_t> state(part.textures.size(), 0);  // 0 sin mirar, 1 leida, 2 fallo
+        std::vector<core::Vec3> average(part.textures.size());
+        std::vector<float> opaque(part.textures.size(), 1.0f);
+        const auto texture_average = [&](std::int32_t index, core::Vec3& rgb, float* opaque_fraction) {
+            if (index < 0 || static_cast<std::size_t>(index) >= part.textures.size()) return false;
+            const auto i = static_cast<std::size_t>(index);
+            if (state[i] == 0) {
+                state[i] = asset::averageStoredTextureLinear(part.textures[i], average[i], &opaque[i]) ? 1 : 2;
+                // Ya no hace falta: fuera de la memoria.
+                part.textures[i].pixels = {};
+                part.textures[i].encoded = {};
+            }
+            if (state[i] != 1) return false;
+            rgb = average[i];
+            if (opaque_fraction != nullptr) *opaque_fraction = opaque[i];
+            return true;
+        };
+        out[p].reserve(part.materials.size());
+        for (const asset::MaterialData& md : part.materials) {
+            MaterialColors c;
+            c.albedo = core::Vec3{md.base_color.x, md.base_color.y, md.base_color.z};
+            c.transparent = md.transparent;
+            c.metallic = md.metallic;
+            c.roughness = md.roughness;
+            if (md.albedo_texture >= 0) {
+                c.albedo_texture = true;
+                core::Vec3 t{1.0f, 1.0f, 1.0f};
+                float fraction = 1.0f;
+                if (texture_average(md.albedo_texture, t, &fraction)) {
+                    c.albedo = c.albedo * t;
+                    c.opaque_fraction = fraction;
+                    c.albedo_texture_read = true;
+                } else {
+                    c.albedo = c.albedo * 0.6f;  // sin leer: lo de antes
+                }
+            } else if (md.base_color.w < 0.5f) {
+                c.opaque_fraction = 0.0f;  // todo recortado
+            }
+            core::Vec3 e{1.0f, 1.0f, 1.0f};
+            if (md.emissive_texture >= 0) {
+                core::Vec3 t;
+                if (texture_average(md.emissive_texture, t, nullptr)) e = t;
+            }
+            c.emission = md.emissive * e * kEmissiveIntensity;
+            out[p].push_back(c);
+        }
+        part = asset::ModelData{};  // suelta la pieza (y sus texturas)
+    }
+    return out;
+}
+
+namespace {
+
+// Las UV de lightmap de cada pieza (si el conjunto tiene su disposicion), sobre
+// la malla tal como sale del .crdata: antes de reagrupar y de los LODs (el
+// hash es de esa malla, PLAN-LIGHTMAPS 1.4).
+void applySceneLightmapUvs(const Uuid& uuid, std::vector<asset::ModelData*> parts, const lighting::LightmapUvSet* uvs) {
+    if (uvs == nullptr || uvs->empty()) return;
+    for (std::size_t p = 0; p < parts.size(); ++p) {
+        if (parts[p] == nullptr) continue;
+        const std::shared_ptr<const lighting::LightmapUvLayout> layout = uvs->load(uuid, static_cast<int>(p));
+        if (!layout) continue;
+        if (!lighting::applyLightmapUvs(*parts[p], *layout)) {
+            std::cerr << "[Lightmap] Las UV de lightmap de " << parts[p]->name
+                      << " son de otra version de la malla: vuelve a hornear\n";
+        }
+    }
+}
+
+}  // namespace
+
+void AssetManager::setLightmapUvs(std::shared_ptr<const lighting::LightmapUvSet> uvs) {
+    lightmap_uvs_ = std::move(uvs);
+}
+
+std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std::filesystem::path& file,
+                                                   const std::string& name, bool decode_textures,
+                                                   const lighting::LightmapUvSet* uvs) {
+    if (primitives::isBuiltin(uuid)) {
+        std::shared_ptr<ModelAsset> asset = primitives::make(uuid);
+        if (asset && uvs != nullptr) {
+            std::vector<asset::ModelData*> parts;
+            for (const std::shared_ptr<asset::ModelData>& part : asset->parts) parts.push_back(part.get());
+            applySceneLightmapUvs(uuid, parts, uvs);
+        }
+        return asset;
     }
     const auto start = std::chrono::steady_clock::now();
     crdata::Header header{};
@@ -179,6 +297,12 @@ std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std:
     const float read_seconds =
         std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
 
+    if (uvs != nullptr) {
+        std::vector<asset::ModelData*> parts;
+        for (asset::ModelData& part : content.parts) parts.push_back(&part);
+        applySceneLightmapUvs(uuid, parts, uvs);
+    }
+
     auto asset = std::make_shared<ModelAsset>();
     asset->uuid = uuid;
     asset->name = name;
@@ -186,6 +310,9 @@ std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std:
     asset->animated = content.animated;
     asset->animation_names = std::move(content.animation_names);
     asset->parts.reserve(content.parts.size());
+    double acmr_before = 0.0;
+    double acmr_after = 0.0;
+    std::size_t acmr_triangles = 0;
     try {
         std::size_t reclustered = 0;
         std::size_t before = 0;
@@ -207,6 +334,13 @@ std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std:
                       << " submallas). Reimporta el modelo para guardarlo asi.\n";
         }
         for (asset::ModelData& part : content.parts) {
+            // Los triangulos de cada submalla en el orden que reutiliza los
+            // vertices ya transformados (solo en memoria, como los LODs): los
+            // clusteres del importador y del static batching los desordenan.
+            const asset::VertexCacheStats cache = asset::optimizeVertexCache(part);
+            acmr_before += static_cast<double>(cache.acmr_before) * static_cast<double>(part.indices.size() / 3);
+            acmr_after += static_cast<double>(cache.acmr_after) * static_cast<double>(part.indices.size() / 3);
+            acmr_triangles += part.indices.size() / 3;
             // LODs automaticos (solo en memoria): los estaticos pesados se
             // dibujan simplificados cuando la diferencia no se ve.
             asset::generateLods(part);
@@ -225,7 +359,12 @@ std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std:
         std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
     std::cout << "[Assets] Cargado " << name << ": " << asset->parts.size() << " piezas, "
               << asset->nodes.size() << " nodos, " << seconds << " s (lectura " << read_seconds
-              << " s)\n";
+              << " s)";
+    if (acmr_triangles >= 4096) {
+        std::cout << ", vertices por triangulo " << acmr_before / static_cast<double>(acmr_triangles) << " -> "
+                  << acmr_after / static_cast<double>(acmr_triangles);
+    }
+    std::cout << "\n";
     return asset;
 }
 
@@ -280,7 +419,7 @@ std::shared_ptr<const ModelAsset> AssetManager::loadModel(const Uuid& uuid) {
     }
 
     if (primitives::isBuiltin(uuid)) {
-        std::shared_ptr<ModelAsset> asset = primitives::make(uuid);
+        std::shared_ptr<ModelAsset> asset = readModel(uuid, {}, {}, true, lightmap_uvs_.get());
         models_.emplace(uuid, asset);
         return asset;
     }
@@ -291,7 +430,7 @@ std::shared_ptr<const ModelAsset> AssetManager::loadModel(const Uuid& uuid) {
         return nullptr;
     }
 
-    std::shared_ptr<ModelAsset> asset = readModel(uuid, info->path, info->name);
+    std::shared_ptr<ModelAsset> asset = readModel(uuid, info->path, info->name, true, lightmap_uvs_.get());
     if (!asset) return nullptr;
     models_.emplace(uuid, asset);
     return asset;

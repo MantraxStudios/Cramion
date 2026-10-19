@@ -186,7 +186,8 @@ void testFiles() {
     check(!video::checkVideoUrl("http://example.com/v.mp4", &why) && !why.empty(), "http a otro dominio: no (con motivo)");
     check(video::checkVideoUrl("https://example.com/v.mp4", nullptr), "https: si");
     check(video::checkVideoUrl("http://localhost:8080/v.mp4", nullptr), "http a localhost: si");
-    check(!video::checkVideoUrl("rtsp://camara/1", nullptr), "rtsp: aun no (Fase 2)");
+    check(video::checkVideoUrl("rtsp://camara/1", nullptr) == video::streamingProtocolsAvailable(),
+          "rtsp: solo con el backend FFmpeg");
     std::string error;
     check(video::resolveClip("../fuera.mp4", std::filesystem::temp_directory_path(), &error).empty() && !error.empty(),
           "un clip no sale de Assets");

@@ -17,7 +17,7 @@ layout(set = 1, binding = 0) uniform WaterBuffer {
     vec4 ripple;         // olas interactivas: xy = esquina (x, z), z = celda (m), w = lado (0 = no hay)
     vec4 cascade_size;   // oceano FFT: lado de cada cascada (m); 0 = sin espectro
     vec4 cascade_slope;  // varianza de la pendiente de cada cascada
-    vec4 ocean;          // x choppiness, y altura significativa, z niveles del clipmap
+    vec4 ocean;          // x choppiness, y altura significativa, z niveles del clipmap, w calidad Baja (1)
     WaterBody bodies[16];
 } water;
 

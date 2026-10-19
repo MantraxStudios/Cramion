@@ -219,8 +219,11 @@ void Window::setCursorCaptured(bool captured, const RECT* client_region) {
         device.hwndTarget = hwnd_;
         raw_input_registered_ = RegisterRawInputDevices(&device, 1, sizeof(device)) != FALSE;
     }
+    const bool was_captured = cursor_captured_;
     cursor_captured_ = captured;
     if (captured) {
+        // Recuerda donde estaba el cursor para devolverlo ahi al soltarlo.
+        if (!was_captured) has_cursor_before_capture_ = GetCursorPos(&cursor_before_capture_) != FALSE;
         applyCursorClip();
         if (!cursor_hidden_) {
             while (ShowCursor(FALSE) >= 0) {
@@ -229,6 +232,8 @@ void Window::setCursorCaptured(bool captured, const RECT* client_region) {
         }
     } else {
         ClipCursor(nullptr);
+        if (was_captured && has_cursor_before_capture_) SetCursorPos(cursor_before_capture_.x, cursor_before_capture_.y);
+        has_cursor_before_capture_ = false;
         if (cursor_hidden_) {
             while (ShowCursor(TRUE) < 0) {
             }

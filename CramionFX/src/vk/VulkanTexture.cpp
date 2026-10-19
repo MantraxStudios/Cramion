@@ -1,12 +1,15 @@
 #include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanTexture.h"
 
-#include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanDevice.h"
+#include "CramionFX/vk/VulkanDeviceUpload.h"
+
+#include <vk_mem_alloc.h>
 
 #include <algorithm>
 #include <bit>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace cramion::gfx {
@@ -40,8 +43,63 @@ void pipelineBarrier(const vk::raii::CommandBuffer& cmd, const vk::ImageMemoryBa
 
 }  // namespace
 
+VulkanTexture::VulkanTexture(VulkanTexture&& other) noexcept
+    : memory_ticket_(std::move(other.memory_ticket_)),
+      device_(std::exchange(other.device_, nullptr)),
+      allocation_(std::exchange(other.allocation_, nullptr)),
+      image_(std::move(other.image_)),
+      view_(std::move(other.view_)),
+      mip_levels_(std::exchange(other.mip_levels_, 1u)) {}
+
+VulkanTexture& VulkanTexture::operator=(VulkanTexture&& other) noexcept {
+    if (this != &other) {
+        destroy();
+        memory_ticket_ = std::move(other.memory_ticket_);
+        device_ = std::exchange(other.device_, nullptr);
+        allocation_ = std::exchange(other.allocation_, nullptr);
+        image_ = std::move(other.image_);
+        view_ = std::move(other.view_);
+        mip_levels_ = std::exchange(other.mip_levels_, 1u);
+    }
+    return *this;
+}
+
+void VulkanTexture::createImage(const VulkanDevice& device, const vk::ImageCreateInfo& info) {
+    image_ = vk::raii::Image(device.handle(), info);
+
+    // Un hueco en un bloque de VMA (respeta bufferImageGranularity); las
+    // imagenes grandes pueden llevar su propia asignacion si el driver lo pide.
+    VmaAllocationCreateInfo allocation_info{};
+    allocation_info.usage = VMA_MEMORY_USAGE_UNKNOWN;
+    allocation_info.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    VmaAllocation allocation = nullptr;
+    VmaAllocationInfo result_info{};
+    const VkResult result = vmaAllocateMemoryForImage(device.allocator(), static_cast<VkImage>(*image_),
+                                                      &allocation_info, &allocation, &result_info);
+    if (result != VK_SUCCESS) {
+        image_ = nullptr;
+        throw std::runtime_error("No hay memoria de la GPU para una textura (" +
+                                 vk::to_string(static_cast<vk::Result>(result)) + ").");
+    }
+    if (vmaBindImageMemory(device.allocator(), allocation, static_cast<VkImage>(*image_)) != VK_SUCCESS) {
+        image_ = nullptr;
+        vmaFreeMemory(device.allocator(), allocation);
+        throw std::runtime_error("No se pudo enlazar la memoria de una textura.");
+    }
+    device_ = &device;
+    allocation_ = allocation;
+    memory_ticket_ = GpuMemoryTicket(GpuMemoryKind::Texture, result_info.size);
+}
+
 void VulkanTexture::create(const VulkanDevice& device, std::uint32_t width, std::uint32_t height,
                            const std::uint8_t* rgba) {
+    UploadBatch batch(device);
+    create(device, width, height, rgba, batch);
+    batch.submitAndWait();
+}
+
+void VulkanTexture::create(const VulkanDevice& device, std::uint32_t width, std::uint32_t height,
+                           const std::uint8_t* rgba, UploadBatch& batch) {
     if (width == 0 || height == 0 || rgba == nullptr) {
         throw std::runtime_error("Textura vacia.");
     }
@@ -64,30 +122,17 @@ void VulkanTexture::create(const VulkanDevice& device, std::uint32_t width, std:
                        vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;
     image_info.sharingMode = vk::SharingMode::eExclusive;
     image_info.initialLayout = vk::ImageLayout::eUndefined;
+    createImage(device, image_info);
 
-    image_ = vk::raii::Image(device.handle(), image_info);
-
-    const vk::MemoryRequirements requirements = image_.getMemoryRequirements();
-    vk::MemoryAllocateInfo allocate_info{};
-    allocate_info.allocationSize = requirements.size;
-    allocate_info.memoryTypeIndex = device.findMemoryType(
-        requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
-    memory_ = vk::raii::DeviceMemory(device.handle(), allocate_info);
-    memory_ticket_ = GpuMemoryTicket(GpuMemoryKind::Texture, requirements.size);
-    image_.bindMemory(*memory_, 0);
-
-    // --- Subida del nivel 0 y generacion de los demas ---
+    // --- Subida del nivel 0 (cola de copias) ---
     const vk::DeviceSize size = static_cast<vk::DeviceSize>(width) * height * 4;
-    VulkanBuffer staging;
-    staging.create(device, size, vk::BufferUsageFlagBits::eTransferSrc,
-                   vk::MemoryPropertyFlagBits::eHostVisible |
-                       vk::MemoryPropertyFlagBits::eHostCoherent);
-    staging.write(rgba, size);
+    const UploadBatch::Staging staging = batch.stage(rgba, size, 16);
 
     const vk::Image image = *image_;
     const std::uint32_t levels = mip_levels_;
 
-    device.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+    {
+        const vk::raii::CommandBuffer& cmd = batch.copyCommands();
         // Todos los niveles a destino de copia.
         vk::ImageMemoryBarrier2 to_transfer = mipBarrier(
             image, 0, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
@@ -97,55 +142,68 @@ void VulkanTexture::create(const VulkanDevice& device, std::uint32_t width, std:
         pipelineBarrier(cmd, to_transfer);
 
         vk::BufferImageCopy region{};
+        region.bufferOffset = staging.offset;
         region.imageSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
         region.imageExtent = vk::Extent3D{width, height, 1};
-        cmd.copyBufferToImage(*staging.handle(), image, vk::ImageLayout::eTransferDstOptimal, region);
+        cmd.copyBufferToImage(staging.buffer, image, vk::ImageLayout::eTransferDstOptimal, region);
+    }
 
-        auto level_width = static_cast<std::int32_t>(width);
-        auto level_height = static_cast<std::int32_t>(height);
+    // A la cola de graficos (los blits de los mips no se pueden hacer en una
+    // cola solo de copias), sin cambiar de layout.
+    {
+        vk::ImageMemoryBarrier2 hand_off = mipBarrier(
+            image, 0, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferDstOptimal,
+            vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+            vk::PipelineStageFlagBits2::eTransfer,
+            vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite);
+        hand_off.subresourceRange.levelCount = levels;
+        batch.handOffImage(hand_off);
+    }
 
-        for (std::uint32_t level = 1; level < levels; ++level) {
-            // El nivel anterior pasa a ser origen del blit.
-            pipelineBarrier(cmd, mipBarrier(image, level - 1, vk::ImageLayout::eTransferDstOptimal,
-                                            vk::ImageLayout::eTransferSrcOptimal,
-                                            vk::PipelineStageFlagBits2::eTransfer,
-                                            vk::AccessFlagBits2::eTransferWrite,
-                                            vk::PipelineStageFlagBits2::eTransfer,
-                                            vk::AccessFlagBits2::eTransferRead));
+    // --- Generacion de los demas niveles (cola de graficos) ---
+    const vk::raii::CommandBuffer& cmd = batch.graphicsCommands();
+    auto level_width = static_cast<std::int32_t>(width);
+    auto level_height = static_cast<std::int32_t>(height);
 
-            const std::int32_t next_width = std::max(level_width / 2, 1);
-            const std::int32_t next_height = std::max(level_height / 2, 1);
-
-            vk::ImageBlit blit{};
-            blit.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, level - 1, 0, 1};
-            blit.srcOffsets[1] = vk::Offset3D{level_width, level_height, 1};
-            blit.dstSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, level, 0, 1};
-            blit.dstOffsets[1] = vk::Offset3D{next_width, next_height, 1};
-            cmd.blitImage(image, vk::ImageLayout::eTransferSrcOptimal, image,
-                          vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
-
-            // Y ya no se vuelve a tocar: lista para los shaders.
-            pipelineBarrier(cmd, mipBarrier(image, level - 1, vk::ImageLayout::eTransferSrcOptimal,
-                                            vk::ImageLayout::eShaderReadOnlyOptimal,
-                                            vk::PipelineStageFlagBits2::eTransfer,
-                                            vk::AccessFlagBits2::eTransferRead,
-                                            vk::PipelineStageFlagBits2::eFragmentShader,
-                                            vk::AccessFlagBits2::eShaderSampledRead));
-
-            level_width = next_width;
-            level_height = next_height;
-        }
-
-        // El ultimo nivel solo fue destino.
-        pipelineBarrier(cmd, mipBarrier(image, levels - 1, vk::ImageLayout::eTransferDstOptimal,
-                                        vk::ImageLayout::eShaderReadOnlyOptimal,
+    for (std::uint32_t level = 1; level < levels; ++level) {
+        // El nivel anterior pasa a ser origen del blit.
+        pipelineBarrier(cmd, mipBarrier(image, level - 1, vk::ImageLayout::eTransferDstOptimal,
+                                        vk::ImageLayout::eTransferSrcOptimal,
                                         vk::PipelineStageFlagBits2::eTransfer,
                                         vk::AccessFlagBits2::eTransferWrite,
+                                        vk::PipelineStageFlagBits2::eTransfer,
+                                        vk::AccessFlagBits2::eTransferRead));
+
+        const std::int32_t next_width = std::max(level_width / 2, 1);
+        const std::int32_t next_height = std::max(level_height / 2, 1);
+
+        vk::ImageBlit blit{};
+        blit.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, level - 1, 0, 1};
+        blit.srcOffsets[1] = vk::Offset3D{level_width, level_height, 1};
+        blit.dstSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, level, 0, 1};
+        blit.dstOffsets[1] = vk::Offset3D{next_width, next_height, 1};
+        cmd.blitImage(image, vk::ImageLayout::eTransferSrcOptimal, image,
+                      vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
+
+        // Y ya no se vuelve a tocar: lista para los shaders.
+        pipelineBarrier(cmd, mipBarrier(image, level - 1, vk::ImageLayout::eTransferSrcOptimal,
+                                        vk::ImageLayout::eShaderReadOnlyOptimal,
+                                        vk::PipelineStageFlagBits2::eTransfer,
+                                        vk::AccessFlagBits2::eTransferRead,
                                         vk::PipelineStageFlagBits2::eFragmentShader,
                                         vk::AccessFlagBits2::eShaderSampledRead));
-    });
 
-    staging.destroy();
+        level_width = next_width;
+        level_height = next_height;
+    }
+
+    // El ultimo nivel solo fue destino.
+    pipelineBarrier(cmd, mipBarrier(image, levels - 1, vk::ImageLayout::eTransferDstOptimal,
+                                    vk::ImageLayout::eShaderReadOnlyOptimal,
+                                    vk::PipelineStageFlagBits2::eTransfer,
+                                    vk::AccessFlagBits2::eTransferWrite,
+                                    vk::PipelineStageFlagBits2::eFragmentShader,
+                                    vk::AccessFlagBits2::eShaderSampledRead));
 
     vk::ImageViewCreateInfo view_info{};
     view_info.image = image;
@@ -159,6 +217,15 @@ void VulkanTexture::createCompressed(const VulkanDevice& device, std::uint32_t w
                                      std::uint32_t height, vk::Format format,
                                      std::uint32_t block_bytes, std::uint32_t mip_levels,
                                      const std::uint8_t* data, std::size_t size) {
+    UploadBatch batch(device);
+    createCompressed(device, width, height, format, block_bytes, mip_levels, data, size, batch);
+    batch.submitAndWait();
+}
+
+void VulkanTexture::createCompressed(const VulkanDevice& device, std::uint32_t width,
+                                     std::uint32_t height, vk::Format format,
+                                     std::uint32_t block_bytes, std::uint32_t mip_levels,
+                                     const std::uint8_t* data, std::size_t size, UploadBatch& batch) {
     if (width == 0 || height == 0 || data == nullptr || mip_levels == 0) {
         throw std::runtime_error("Textura comprimida vacia.");
     }
@@ -180,22 +247,11 @@ void VulkanTexture::createCompressed(const VulkanDevice& device, std::uint32_t w
     image_info.usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;
     image_info.sharingMode = vk::SharingMode::eExclusive;
     image_info.initialLayout = vk::ImageLayout::eUndefined;
-    image_ = vk::raii::Image(device.handle(), image_info);
+    createImage(device, image_info);
 
-    const vk::MemoryRequirements requirements = image_.getMemoryRequirements();
-    vk::MemoryAllocateInfo allocate_info{};
-    allocate_info.allocationSize = requirements.size;
-    allocate_info.memoryTypeIndex = device.findMemoryType(
-        requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
-    memory_ = vk::raii::DeviceMemory(device.handle(), allocate_info);
-    memory_ticket_ = GpuMemoryTicket(GpuMemoryKind::Texture, requirements.size);
-    image_.bindMemory(*memory_, 0);
-
-    VulkanBuffer staging;
-    staging.create(device, size, vk::BufferUsageFlagBits::eTransferSrc,
-                   vk::MemoryPropertyFlagBits::eHostVisible |
-                       vk::MemoryPropertyFlagBits::eHostCoherent);
-    staging.write(data, size);
+    // (Alineado a 16: el desplazamiento de una copia de bloques tiene que ser
+    // multiplo del tamano del bloque, 8 o 16 bytes.)
+    const UploadBatch::Staging staging = batch.stage(data, size, 16);
 
     // Una copia por nivel: bloques de 4x4, como minimo uno por eje.
     std::vector<vk::BufferImageCopy> regions;
@@ -204,7 +260,7 @@ void VulkanTexture::createCompressed(const VulkanDevice& device, std::uint32_t w
     std::uint32_t level_height = height;
     for (std::uint32_t level = 0; level < mip_levels; ++level) {
         vk::BufferImageCopy region{};
-        region.bufferOffset = offset;
+        region.bufferOffset = staging.offset + offset;
         region.imageSubresource =
             vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, level, 0, 1};
         region.imageExtent = vk::Extent3D{level_width, level_height, 1};
@@ -217,7 +273,8 @@ void VulkanTexture::createCompressed(const VulkanDevice& device, std::uint32_t w
     }
 
     const vk::Image image = *image_;
-    device.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+    {
+        const vk::raii::CommandBuffer& cmd = batch.copyCommands();
         vk::ImageMemoryBarrier2 to_transfer = mipBarrier(
             image, 0, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
             vk::PipelineStageFlagBits2::eNone, vk::AccessFlagBits2::eNone,
@@ -225,18 +282,17 @@ void VulkanTexture::createCompressed(const VulkanDevice& device, std::uint32_t w
         to_transfer.subresourceRange.levelCount = mip_levels;
         pipelineBarrier(cmd, to_transfer);
 
-        cmd.copyBufferToImage(*staging.handle(), image, vk::ImageLayout::eTransferDstOptimal,
-                              regions);
+        cmd.copyBufferToImage(staging.buffer, image, vk::ImageLayout::eTransferDstOptimal, regions);
+    }
 
-        vk::ImageMemoryBarrier2 to_read = mipBarrier(
-            image, 0, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
-            vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
-            vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderSampledRead);
-        to_read.subresourceRange.levelCount = mip_levels;
-        pipelineBarrier(cmd, to_read);
-    });
-
-    staging.destroy();
+    // Lista para los shaders (con cola de transferencia, ademas pasa a la de
+    // graficos).
+    vk::ImageMemoryBarrier2 to_read = mipBarrier(
+        image, 0, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+        vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+        vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderSampledRead);
+    to_read.subresourceRange.levelCount = mip_levels;
+    batch.handOffImage(to_read);
 
     vk::ImageViewCreateInfo view_info{};
     view_info.image = image;
@@ -250,7 +306,12 @@ void VulkanTexture::createCompressed(const VulkanDevice& device, std::uint32_t w
 void VulkanTexture::destroy() {
     view_ = nullptr;
     image_ = nullptr;
-    memory_ = nullptr;
+    // (Sin asignador: el dispositivo ya se cerro con esto vivo; se deja.)
+    if (allocation_ != nullptr && device_ != nullptr && device_->allocator() != nullptr) {
+        vmaFreeMemory(device_->allocator(), allocation_);
+    }
+    allocation_ = nullptr;
+    device_ = nullptr;
     memory_ticket_.release();
     mip_levels_ = 1;
 }

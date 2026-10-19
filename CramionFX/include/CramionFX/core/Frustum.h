@@ -88,6 +88,18 @@ public:
         return true;
     }
 
+    // false solo si la capsula (el segmento a-b engordado `radius`) queda
+    // entera fuera de algun plano. Para el volumen que barre una esfera.
+    bool intersectsSwept(const Vec3& a, const Vec3& b, float radius) const {
+        for (int i = 0; i < count_; ++i) {
+            const Vec4& p = planes_[i];
+            const float da = p.x * a.x + p.y * a.y + p.z * a.z + p.w;
+            const float db = p.x * b.x + p.y * b.y + p.z * b.z + p.w;
+            if (da < -radius && db < -radius) return false;
+        }
+        return true;
+    }
+
 private:
     void add(const Vec4& plane) {
         const float length = std::sqrt(plane.x * plane.x + plane.y * plane.y + plane.z * plane.z);

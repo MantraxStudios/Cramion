@@ -63,10 +63,13 @@ std::string EditorApp::mcpTools21(const std::string& name, const std::string& ar
         }
         configureLightingBake(args.value("rays", -1), args.value("bounces", -1), args.value("spacing", -1.0f), sun_mode,
                               args.value("surface_texel", -1.0f), args.value("direct_samples", -1));
+        configureLightmapBake(args_json);
         startLightingBake();
         return lightingStateJson();
     }
     if (name == "lighting_state") return lightingStateJson();
+    if (name == "set_lighting_mode") return setLightingModeJson(args_json);
+    if (name == "generate_lightmap_uvs") return generateLightmapUvsJson(args_json);
 
     if (name == "create_vfx") {
         int preset = 0;

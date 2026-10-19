@@ -259,7 +259,7 @@ private:
     VulkanImage depth_test_;    // D32: la mas cercana
     VulkanImage depth_temp_;    // R32F: suavizado horizontal
     VulkanImage depth_smooth_;  // R32F: suavizado final
-    std::array<VulkanImage, 3> thick_{};  // RGBA16F a media resolucion
+    std::array<VulkanImage, 4> thick_{};  // RGBA16F a media resolucion (y RG16F de la costra)
     vk::Extent2D extent_{};
     vk::ImageView bound_depth_{};
     bool targets_ready_ = false;

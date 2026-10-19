@@ -667,6 +667,16 @@ void EditorApp::saveVisualScriptEditor() {
     }
     scripts_.clearErrors();
     scripts_.reloadFile(st.vs_doc.relative);  // en Play: se recompila al momento
+    constructionGraphChanged(st.vs_doc.relative);
+}
+
+void EditorApp::graphFileMoved(const std::string& from, const std::string& to) {
+    if (!graph_editors_ || !has_project_) return;
+    GraphEditorState& st = graphEditors();
+    if (st.vs_doc.relative != from) return;
+    // Sigue editando el mismo grafo (guardar no vuelve a crear el archivo viejo).
+    st.vs_doc.relative = to;
+    st.vs_doc.path = project_.assetsFolder() / dialogs::fromUtf8(to);
 }
 
 void EditorApp::drawVisualScriptEditor() {
@@ -704,10 +714,7 @@ void EditorApp::drawVisualScriptEditor() {
             st.vs_break_text = "Punto de ruptura: nodo " + std::to_string(break_node) +
                                (world_.registry().valid(break_entity) ? " en " + world_.wrap(break_entity).name() : std::string());
             pushToast("Punto de ruptura", st.vs_break_text, 2);
-            if (break_graph == relative) {
-                doc.canvas.select(break_node);
-                doc.canvas.frameNode(break_node);
-            }
+            if (break_graph == relative) vsedit::focusNode(doc, break_node);  // en su grafo (funcion, macro...)
         }
     }
 
@@ -721,6 +728,7 @@ void EditorApp::drawVisualScriptEditor() {
     host.reload = [this](const std::string& file) {
         scripts_.clearErrors();
         scripts_.reloadFile(file);
+        constructionGraphChanged(file);
     };
     host.entity_names = [this]() {
         std::vector<std::string> names{"Self"};

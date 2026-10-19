@@ -56,6 +56,13 @@ layout(location = 2) out vec4 v_tangent[];
 layout(location = 3) out vec3 v_world_position[];
 layout(location = 4) out vec4 v_current_clip[];
 layout(location = 5) out vec4 v_previous_clip[];
+// Lightmap (como skinned.vert): UV2 del vertice y el hueco de la instancia.
+layout(std430, set = 1, binding = 10) readonly buffer LightmapUvs {
+    uint lightmap_uvs[];
+};
+layout(location = 7) out vec2 v_lightmap_uv[];
+layout(location = 8) flat out uint v_lightmap_slot[];
+const uint kFlagLightmap = 1u << 6;
 
 void main() {
     Meshlet m = meshlets[payload.meshlets[gl_WorkGroupID.x]];
@@ -94,6 +101,18 @@ void main() {
                              weights.z * bones[previous + joints.z] + weights.w * bones[previous + joints.w];
         v_current_clip[v] = camera.unjittered_view_projection * world_position;
         v_previous_clip[v] = camera.previous_view_projection * (previous_skin * vec4(position, 1.0));
+
+        vec2 lightmap_uv = vec2(-1.0);
+        uint lightmap_slot = 0xFFFFFFFFu;
+        if ((push.flags & kFlagLightmap) != 0u) {
+            uint packed = lightmap_uvs[vertex];
+            if (packed != 0xFFFFFFFFu) {
+                lightmap_uv = unpackUnorm2x16(packed);
+                lightmap_slot = base;  // la matriz de la instancia (payload.instance)
+            }
+        }
+        v_lightmap_uv[v] = lightmap_uv;
+        v_lightmap_slot[v] = lightmap_slot;
     }
     for (uint t = gl_LocalInvocationIndex; t < m.triangle_count; t += 64u) {
         gl_PrimitiveTriangleIndicesEXT[t] = meshletTriangle(m, t);

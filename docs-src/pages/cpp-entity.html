@@ -181,6 +181,7 @@
     <tr><td><code>Value setSoundEffect(texto, activar, valor) const</code></td><td>entity().setSoundEffect(&quot;lowpass&quot;, true, 800) lowpass/highpass/echo/reverb/occlusion Devuelve: bool</td></tr>
     <tr><td><code>Value setSplineControlPoint(valor, vec) const</code></td><td>entity().setSplineControlPoint(1, Vec3) Spline: mueve un punto de control (mundo) Devuelve: bool</td></tr>
     <tr><td><code>Value setTile(x, y, id, capa) const</code></td><td>entity().setTile(x, y, id, capa) Tilemap: pone una celda (id 0 = vacia, n = celda n-1 del tileset, -k = Rule Tile k) Devuelve: bool</td></tr>
+    <tr><td><code>Value setUvRect(x, y, ancho, alto) const</code></td><td>entity().setUvRect(x, y, ancho, alto) parte de la textura de su UIImage (atlas de iconos), 0..1 desde arriba a la izquierda Devuelve: bool</td></tr>
     <tr><td><code>Value setVehicleInput(acelerador, direccion, freno, frenoDeMano) const</code></td><td>entity().setVehicleInput(acelerador, direccion, freno, freno de mano) conduce su Vehicle</td></tr>
     <tr><td><code>Value setupCreatureIK(...) const</code></td><td>entity().setupCreatureIK() Configura el IK solo (patas, cuello, cola) Devuelve: booleano</td></tr>
     <tr><td><code>Value setupPhysBones(...) const</code></td><td>entity().setupPhysBones() Detecta pelo, colas, orejas... Devuelve: numero de cadenas</td></tr>
@@ -218,8 +219,10 @@
     <tr><td><code>Value translateLocal(vec) const</code></td><td>entity().translateLocal(Vec3) mueve en sus ejes</td></tr>
     <tr><td><code>Value uiPosition() const</code></td><td>entity.uiPosition: Vec3 posicion de su RectTransform (Vec3)</td></tr>
     <tr><td><code>void setUiPosition(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value uiScreenRect(...) const</code></td><td>entity().uiScreenRect() rectangulo en pantalla (pixeles de la vista, ultimo frame): {x, y, width, height} o nil si no se ve Devuelve: objeto</td></tr>
     <tr><td><code>Value uiSize() const</code></td><td>entity.uiSize: Vec3 tamano de su RectTransform (Vec3)</td></tr>
     <tr><td><code>void setUiSize(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value uvRect(...) const</code></td><td>entity().uvRect() parte de la textura de su UIImage: {x, y, width, height} (0..1) Devuelve: objeto</td></tr>
     <tr><td><code>Value value() const</code></td><td>entity.value: valor de su Slider o Casilla (numero)</td></tr>
     <tr><td><code>void setValue(const Value&amp; v) const</code></td><td></td></tr>
     <tr><td><code>Value vehicleState(...) const</code></td><td>entity().vehicleState() {speed, forwardSpeed, rpm, rpmFraction, gear, gearCount, automatic} o nil Devuelve: objeto</td></tr>

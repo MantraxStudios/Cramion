@@ -222,8 +222,7 @@ void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCom
                         g_render_texture_resolver ? g_render_texture_resolver(c.texture, &image_size) : -1;
                     texture = id >= 0 ? imgui.renderTexture(id) : 0;
                 } else {
-                    texture = imgui.image(assets_root / std::filesystem::path(std::u8string(c.texture.begin(), c.texture.end())),
-                                          &image_size);
+                    texture = imgui.uiImage(assets_root, c.texture, &image_size);
                 }
                 if (texture == 0) {
                     draw->AddRectFilled(min, max, (color & 0x00FFFFFFu) | 0x40000000u, c.radius);
@@ -231,8 +230,44 @@ void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCom
                 }
                 ImVec2 a = min;
                 ImVec2 b = max;
-                if (c.preserve_aspect && image_size.x > 0.0f && image_size.y > 0.0f) {
-                    const float aspect = image_size.x / image_size.y;
+                const ImVec2 uv0{c.uv0.x, c.uv0.y};
+                const ImVec2 uv1{c.uv1.x, c.uv1.y};
+                // Tamano en pixeles de la parte que se ve (atlas).
+                const ImVec2 part{image_size.x * std::abs(uv1.x - uv0.x), image_size.y * std::abs(uv1.y - uv0.y)};
+                const bool sliced = c.slice.x > 0.0f || c.slice.y > 0.0f || c.slice.z > 0.0f || c.slice.w > 0.0f;
+                if (sliced && image_size.x > 0.0f && image_size.y > 0.0f) {
+                    // 9-slice: las esquinas no se estiran; los lados, en una
+                    // direccion; el centro, en las dos.
+                    float l = c.slice.x * c.slice_scale, t = c.slice.y * c.slice_scale;
+                    float r = c.slice.z * c.slice_scale, bt = c.slice.w * c.slice_scale;
+                    if (l + r > c.rect.w && l + r > 0.0f) {
+                        const float k = c.rect.w / (l + r);
+                        l *= k;
+                        r *= k;
+                    }
+                    if (t + bt > c.rect.h && t + bt > 0.0f) {
+                        const float k = c.rect.h / (t + bt);
+                        t *= k;
+                        bt *= k;
+                    }
+                    const float su = uv1.x >= uv0.x ? 1.0f : -1.0f;  // atlas al reves
+                    const float sv = uv1.y >= uv0.y ? 1.0f : -1.0f;
+                    const float xs[4] = {min.x, min.x + l, max.x - r, max.x};
+                    const float ys[4] = {min.y, min.y + t, max.y - bt, max.y};
+                    const float us[4] = {uv0.x, uv0.x + su * c.slice.x / image_size.x, uv1.x - su * c.slice.z / image_size.x, uv1.x};
+                    const float vs[4] = {uv0.y, uv0.y + sv * c.slice.y / image_size.y, uv1.y - sv * c.slice.w / image_size.y, uv1.y};
+                    for (int j = 0; j < 3; ++j) {
+                        for (int i = 0; i < 3; ++i) {
+                            if (i == 1 && j == 1 && !c.slice_fill) continue;
+                            if (xs[i + 1] - xs[i] <= 0.0f || ys[j + 1] - ys[j] <= 0.0f) continue;
+                            draw->AddImage(texture, ImVec2(xs[i], ys[j]), ImVec2(xs[i + 1], ys[j + 1]), ImVec2(us[i], vs[j]),
+                                           ImVec2(us[i + 1], vs[j + 1]), color);
+                        }
+                    }
+                    break;
+                }
+                if (c.preserve_aspect && part.x > 0.0f && part.y > 0.0f) {
+                    const float aspect = part.x / part.y;
                     float w = c.rect.w;
                     float h = c.rect.h;
                     if (w / std::max(h, 1.0f) > aspect) w = h * aspect;
@@ -240,7 +275,7 @@ void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCom
                     a = ImVec2(min.x + (c.rect.w - w) * 0.5f, min.y + (c.rect.h - h) * 0.5f);
                     b = ImVec2(a.x + w, a.y + h);
                 }
-                draw->AddImageRounded(texture, a, b, ImVec2(0, 0), ImVec2(1, 1), color, c.radius);
+                draw->AddImageRounded(texture, a, b, uv0, uv1, color, c.radius);
                 break;
             }
             case ui::UiDrawCommand::Type::Text: {
@@ -248,7 +283,7 @@ void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCom
                 ImFont* regular = font;
                 ImFont* bold = theme::boldFont();
                 if (!c.font.empty()) {
-                    if (ImFont* custom = imgui.uiFont(assets_root / std::filesystem::path(std::u8string(c.font.begin(), c.font.end())))) {
+                    if (ImFont* custom = imgui.uiFont(assets_root, c.font)) {
                         regular = custom;
                         bold = nullptr;  // con fuente propia la negrita se simula
                     }
@@ -286,6 +321,8 @@ ui::UiInput uiInputFromImGui(ImVec2 origin, ImVec2 size, bool hovered, bool typi
         input.mouse_x = io.MousePos.x - origin.x;
         input.mouse_y = io.MousePos.y - origin.y;
         input.mouse_pressed = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        input.right_pressed = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+        input.double_click = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
     } else {
         input.mouse_x = input.mouse_y = -1.0f;
     }
@@ -293,11 +330,35 @@ ui::UiInput uiInputFromImGui(ImVec2 origin, ImVec2 size, bool hovered, bool typi
     input.mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
     if (hovered) input.wheel = io.MouseWheel;
     input.mouse_released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+    input.right_down = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+    input.right_released = ImGui::IsMouseReleased(ImGuiMouseButton_Right);
+    input.shift = io.KeyShift;
     if (typing) {
         for (const ImWchar c : io.InputQueueCharacters) appendUtf8(input.typed, c);
         input.backspace = ImGui::IsKeyPressed(ImGuiKey_Backspace);
         input.enter = ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+        // Cursor, seleccion y portapapeles del campo con el foco.
+        input.key_left = ImGui::IsKeyPressed(ImGuiKey_LeftArrow);
+        input.key_right = ImGui::IsKeyPressed(ImGuiKey_RightArrow);
+        input.key_home = ImGui::IsKeyPressed(ImGuiKey_Home);
+        input.key_end = ImGui::IsKeyPressed(ImGuiKey_End);
+        input.key_delete = ImGui::IsKeyPressed(ImGuiKey_Delete);
+        const bool ctrl = io.KeyCtrl && !io.KeyAlt;  // AltGr = Ctrl+Alt: no es un atajo
+        input.select_all = ctrl && ImGui::IsKeyPressed(ImGuiKey_A, false);
+        input.copy = ctrl && (ImGui::IsKeyPressed(ImGuiKey_C, false) || ImGui::IsKeyPressed(ImGuiKey_Insert, false));
+        input.cut = ctrl && ImGui::IsKeyPressed(ImGuiKey_X, false);
+        input.paste = (ctrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) || (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Insert, false));
+        if (input.paste) {
+            if (const char* text = ImGui::GetClipboardText(); text != nullptr) input.clipboard = text;
+        }
+        input.set_clipboard = [](const std::string& text) { ImGui::SetClipboardText(text.c_str()); };
     }
+    // Medir con la fuente con la que drawUiList pinta el texto sin fuente propia.
+    input.measure_text = [](const std::string& text, float font_px) {
+        ImFont* font = ImGui::GetFont();
+        if (font == nullptr || text.empty()) return 0.0f;
+        return font->CalcTextSizeA(std::max(font_px, 1.0f), FLT_MAX, 0.0f, text.c_str(), text.c_str() + text.size()).x;
+    };
     return input;
 }
 

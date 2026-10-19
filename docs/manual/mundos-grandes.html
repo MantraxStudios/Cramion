@@ -26,7 +26,7 @@
   <header class="site-header">
     <div class="header-inner">
       <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.4.13</span></a>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.5.1</span></a>
       <nav class="main-nav" aria-label="Secciones">
         <a href="index.html" data-nav="index">Documentación</a>
         <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
@@ -168,6 +168,28 @@
   todo vuelve a la escena y la carpeta se borra. La carpeta va dentro de Assets y se exporta con el juego.
 </p>
 
+<h3 id="rejillas">Rejillas, Data Layers y dependencias</h3>
+<p>Como el World Partition de Unreal 5. Todo va en el <code>WorldPartition</code> y se guarda con la escena; las escenas de
+  antes siguen igual (una rejilla, sin capas).</p>
+<ul>
+  <li><strong>Rejillas</strong>: la del componente es la principal; cada rejilla de la lista tiene su tamaño de celda y su
+    distancia de carga (los edificios grandes se cargan a 2 km, las piedras a 150 m). Un objeto va a la rejilla que pide su
+    <code>PartitionObject</code> (<em>Rejilla</em>); si no pide ninguna, a la de su etiqueta; si no, a la principal.</li>
+  <li><strong>Data Layers</strong>: capas con nombre. Un objeto está en las que dice su <code>PartitionObject</code>
+    (<code>Noche, Ruinas</code>, o con las casillas del Inspector). <em>Visible en el editor</em> las oculta en la Escena sin
+    cambiar la escena; <em>Activa al empezar</em> dice si se cargan en Play y en el juego. Después,
+    <code>WorldPartition.setDataLayer("Ruinas", false)</code> la apaga (sus celdas salen) y <code>true</code> la enciende
+    (entran las cercanas). Un objeto en varias capas solo se carga con todas activas. Con capas, también se descargan
+    objetos sin malla (luces, sonidos, disparadores).</li>
+  <li><strong>Dependencias entre celdas</strong>: cuando una celda se carga (o se queda), otra también, aunque esté lejos (el
+    interior de un edificio con su fachada, las dos orillas de un puente). En cadena y sin colgarse con bucles. En el
+    Inspector de un <code>PartitionObject</code>, selecciona también los otros objetos y pulsa <em>Su celda carga la de los
+    otros seleccionados</em>.</li>
+</ul>
+<p>Con <em>Celdas en disco</em>, las de la rejilla principal sin capas siguen siendo <code>cell_X_Z.crcell</code>; las demás
+  son <code>cell_X_Z_&lt;hash&gt;.crcell</code> con la rejilla y las capas en la cabecera. El HLOD solo junta la rejilla
+  principal sin capas.</p>
+
 <h3 id="mmo">Servidor y jugadores</h3>
 <ul>
   <li>Pon una <code>StreamingSource</code> en el prefab del jugador. En el servidor dedicado cada jugador carga lo suyo: las
@@ -175,6 +197,8 @@
   <li>Lo que debe estar siempre (puntos de aparición, gestores) lleva <code>AlwaysLoaded</code>. Los objetos de red
     (<code>NetworkObject</code>), las cámaras, el agua y el ambiente no se descargan nunca.</li>
   <li>Con 12 km las coordenadas siguen siendo precisas (milímetros). Para más, el origen flotante del mundo ya está.</li>
+  <li>La red manda posiciones absolutas (cada equipo tiene su origen flotante): los objetos de red están en el mismo sitio
+    real en todos, a cualquier distancia. Ver <a href="red.html#lejos">Red lejos del origen</a>.</li>
 </ul>
 <p>
   Lo que aún no hace: el terreno más allá de la distancia de carga no se dibuja (usa niebla, o súbela si la VRAM da), y el
@@ -203,7 +227,7 @@
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.4.13. Gratis para hacer y vender tus juegos.</span>
+      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.5.1. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="../store/index.html">Assets</a>

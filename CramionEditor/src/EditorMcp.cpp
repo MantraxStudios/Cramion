@@ -452,12 +452,29 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"run_tests", "Ejecuta las pruebas automaticas del proyecto (CRAMION_TEST en los scripts de C++): entra en Play, corre las de edicion y las de Play y vuelve. Mira el resultado con test_results.",
                      {{"mode", prop("string", "all (por defecto), edit o play")}}, {}});
         d.push_back({"test_results", "Resultado de la ultima ejecucion de pruebas: running y cada prueba (file, name, mode, status passed/failed/skipped, message, seconds, assertions).", json::object(), {}});
-        d.push_back({"bake_lighting", "Hornea la iluminacion de la escena abierta en volumenes de sondas (Light Probe Volume; si no hay, uno automatico) y en el lightmap de superficie, y la activa. Entran los objetos Static (o hijos de uno Static; si no hay ninguno, todo lo que no se mueve) y el terreno. Las luces con Modo 'Horneada' (Light.bake_mode = 1) hornean tambien su luz directa y sus sombras y dejan de dibujarse en tiempo real; las 'Mixtas' (0) solo su rebote. Corre en segundo plano: mira lighting_state (gather_report dice que entro y por que no).",
+        d.push_back({"bake_lighting", "Hornea la iluminacion de la escena abierta en volumenes de sondas (Light Probe Volume; si no hay, uno automatico) y en lightmaps por UV2 de los objetos Static (sombras del sol, luces Horneadas y rebote), y la activa. Entran los objetos Static (o hijos de uno Static; si no hay ninguno, todo lo que no se mueve) y el terreno. Las luces con Modo 'Horneada' (Light.bake_mode = 1) hornean tambien su luz directa y sus sombras y dejan de dibujarse en tiempo real; las 'Mixtas' (0) solo su rebote. Corre en segundo plano: mira lighting_state (gather_report dice que entro y por que no).",
                      {{"rays", prop("integer", "Rayos por sonda (256)")}, {"bounces", prop("integer", "Rebotes extra (2)")}, {"spacing", prop("number", "Separacion del volumen automatico en metros (2)")},
                       {"sun_mode", prop("string", "Sol si no hay Light direccional: mixed (por defecto), baked o realtime")},
                       {"surface_texel", prop("number", "Lado del texel del lightmap de superficie en m (0 = apagado; con luces horneadas se enciende a 0.5)")},
-                      {"direct_samples", prop("integer", "Rayos de sombra por luz horneada y texel (16)")}}, {}});
-        d.push_back({"lighting_state", "Estado de la iluminacion horneada: baking, progress, mode (baked/realtime), volumes, probes, surface_texels, sun_baked, baked_lights, last_error y gather_report (lo que entro en el horneado y por que se omitio lo demas).", json::object(), {}});
+                      {"direct_samples", prop("integer", "Rayos de sombra por luz horneada y texel (16)")},
+                      {"lightmaps", prop("boolean", "Lightmaps por UV2 en los objetos Static rigidos (por defecto si)")},
+                      {"preset", prop("string", "preview, medium (por defecto) o high")},
+                      {"texels_per_meter", prop("number", "Texeles de lightmap por metro (20)")},
+                      {"max_page_size", prop("integer", "Lado maximo de una pagina: 1024, 2048 (por defecto) o 4096")},
+                      {"texel_budget_millions", prop("number", "Presupuesto de texeles en millones (8): si se pasa, baja la densidad")},
+                      {"sun_samples", prop("integer", "Rayos de sombra del sol por texel (64)")},
+                      {"min_piece_texels", prop("number", "Piezas sueltas mas pequenas (en texeles): sin lightmap, sondas (2)")},
+                      {"indirect_samples", prop("integer", "Rayos de luz rebotada por texel (128; 0 = sin rebote en los lightmaps)")},
+                      {"denoise", prop("boolean", "Filtrar el ruido de la luz rebotada (por defecto si)")},
+                      {"lightmap_ao", prop("number", "SSAO sobre lo horneado (0..1)")}}, {}});
+        d.push_back({"set_lighting_mode", "Cambia la iluminacion de la escena entre tiempo real y horneada para comparar (capturas A/B). Devuelve lighting_state.",
+                     {{"mode", prop("string", "realtime o baked")},
+                      {"persist", prop("boolean", "Guardar el modo en el .crbake (por defecto no)")},
+                      {"exposure", prop("number", "Exposicion manual fija mientras se compara (0 = la automatica)")},
+                      {"debug_view", prop("string", "Vista de la escena: lightmap, sun_visibility, uv2 o none")}}, {}});
+        d.push_back({"generate_lightmap_uvs", "Genera las UV de lightmap (xatlas) de los objetos Static sin hornear y las aplica (vista uv2). Corre en segundo plano: mira lighting_state.uv_generation (parts, cache_hits, charts, utilization, ignored_triangles_percent, max_layout_size, seconds).",
+                     {{"texels_per_meter", prop("number", "Densidad (20)")}}, {}});
+        d.push_back({"lighting_state", "Estado de la iluminacion horneada: baking, progress, mode (baked/realtime), version del .crbake, volumes, probes, probe_coverage, lightmaps (paginas, atlas, registros, objetos con lightmap y con sondas, densidad, texeles no validos, disposiciones UV2, registros desactualizados), sun (bake_mode, shadow_source, direction_matches), timings, debug_view, uv_generation, seconds, last_error y gather_report.", json::object(), {}});
         // --- Package Manager: paquetes .crwpack de la Cramion Store (EditorPackageManager.cpp) ---
         d.push_back({"packages", "Paquetes del proyecto (Ventana > Package Manager): los instalados (en Assets/Packages/<nombre>, con version, origen store/local y dependencias) y, con store=true (o query/category), el catalogo de la Cramion Store con la ultima version de cada paquete y si hay actualizacion.",
                      {{"store", prop("boolean", "Consultar tambien el catalogo de la Store")}, {"query", prop("string", "Buscar en la Store (nombre, etiquetas, autor)")},
@@ -2571,6 +2588,7 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         return json::parse(out, nullptr, false);
     }
     if (name == "run_tests" || name == "test_results" || name == "bake_lighting" || name == "lighting_state" ||
+        name == "set_lighting_mode" || name == "generate_lightmap_uvs" ||
         name == "create_vfx" || name == "vfx_control" || name == "create_visual_script" || name == "create_shader_graph" ||
         name == "create_behavior_tree") {
         needProject();
@@ -2637,6 +2655,7 @@ json rpcError(const json& id, int code, const std::string& message) {
 }  // namespace
 
 std::string EditorApp::handleMcp(const std::string& body) {
+    last_mcp_request_ = std::chrono::steady_clock::now();
     const json request = json::parse(body, nullptr, false);
     if (request.is_discarded()) return rpcError(nullptr, -32700, "JSON no valido").dump();
 

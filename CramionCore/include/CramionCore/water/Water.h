@@ -117,6 +117,30 @@ std::vector<RiverSample> riverCenterline(const WaterBody& body, const core::Mat4
 WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const core::Vec3& position, float time,
                         const std::vector<RiverSample>& river_line);
 
+// Firma de lo que da forma a un rio: sus puntos, sus anchos y la matriz. Si no
+// cambia, su linea central (y su cinta) tampoco.
+std::uint64_t riverHash(const WaterBody& body, const core::Mat4& world);
+
+// Linea central de un rio (riverCenterline con paso 1 m) para guardarla en
+// cache junto a su firma, con su caja en el plano xz ensanchada con el medio
+// ancho: fuera de ella sampleWater no encuentra rio, asi que ni se busca.
+struct RiverLine {
+    std::uint64_t hash = 0;            // riverHash con la que se hizo
+    std::vector<RiverSample> samples;  // paso 1 m
+    core::Vec2 min{1e30f, 1e30f};      // caja xz (sin muestras: vacia)
+    core::Vec2 max{-1e30f, -1e30f};
+    // El punto (xz) cae en la caja, con `margin` metros de mas.
+    bool mayContain(const core::Vec3& position, float margin = 0.0f) const {
+        return position.x >= min.x - margin && position.x <= max.x + margin && position.z >= min.y - margin &&
+               position.z <= max.y + margin;
+    }
+};
+RiverLine riverLine(const WaterBody& body, const core::Mat4& world);
+// sampleWater con la linea en cache: descarta por la caja antes de buscar la
+// muestra mas cercana. Da lo mismo que las otras dos.
+WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const core::Vec3& position, float time,
+                        const RiverLine& river_line);
+
 // --- Oceano FFT ---
 // Cuatro cascadas de 128 x 128 modos (cada una 3.7 veces mas pequena que la
 // anterior; cada onda del espectro esta en una sola cascada). La GPU hace la

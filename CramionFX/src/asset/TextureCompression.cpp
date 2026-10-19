@@ -1,6 +1,7 @@
 #include "CramionFX/asset/TextureCompression.h"
 
 #include "CramionFX/asset/Dds.h"
+#include "CramionFX/asset/ImageFile.h"
 
 #include <bc7enc.h>
 
@@ -9,8 +10,11 @@
 #include <stb_dxt.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstdio>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
@@ -362,13 +366,49 @@ bool loadCachedTexture(std::uint64_t key, TextureData& out) {
     return true;
 }
 
+namespace {
+// Guarda una textura ya comprimida en la cache (a un temporal y luego el
+// nombre: otro hilo puede estar escribiendo la misma).
+void storeTexture(const TextureData& texture, std::uint64_t key) {
+    const std::filesystem::path path = textureCacheWritable() ? cachePath(key) : std::filesystem::path();
+    if (path.empty()) return;
+    const std::vector<std::uint8_t> dds = writeDds(texture);
+    std::ostringstream tmp_name;
+    tmp_name << path.filename().string() << "." << std::this_thread::get_id() << ".tmp";
+    const std::filesystem::path tmp = path.parent_path() / tmp_name.str();
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(dds.data()), static_cast<std::streamsize>(dds.size()));
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) std::filesystem::remove(tmp, ec);
+}
+
+bool encodeTexture(TextureData& texture);
+}  // namespace
+
 bool compressTexture(TextureData& texture, std::uint64_t key) {
+    if (!encodeTexture(texture)) return false;
+    storeTexture(texture, key);
+    return true;
+}
+
+namespace {
+// Las tablas de bc7enc, una sola vez para todo el proceso (encodeTexture y
+// encodeBc7Level pueden ir a la vez en hilos distintos).
+void initBc7Encoder() {
+    static std::once_flag init;
+    std::call_once(init, [] { bc7enc_compress_block_init(); });
+}
+
+// RGBA8 -> BC1 o BC7 con todos sus mips, sin guardarla.
+bool encodeTexture(TextureData& texture) {
     if (texture.format != TextureFormat::Rgba8 || texture.width == 0 || texture.height == 0 ||
         texture.pixels.size() < static_cast<std::size_t>(texture.width) * texture.height * 4) {
         return false;
     }
-    static std::once_flag init;
-    std::call_once(init, [] { bc7enc_compress_block_init(); });
+    initBc7Encoder();
 
     bc7enc_compress_block_params params;
     bc7enc_compress_block_params_init(&params);
@@ -424,24 +464,318 @@ bool compressTexture(TextureData& texture, std::uint64_t key) {
     texture.format = format;
     texture.mip_levels = mips;
     texture.alpha = alpha ? 1 : 0;
+    return true;
+}
+}  // namespace
 
-    // A la cache (a un temporal y luego el nombre: otro hilo puede estar
-    // escribiendo la misma).
-    const std::filesystem::path path = textureCacheWritable() ? cachePath(key) : std::filesystem::path();
-    if (!path.empty()) {
-        const std::vector<std::uint8_t> dds = writeDds(texture);
-        std::ostringstream tmp_name;
-        tmp_name << path.filename().string() << "." << std::this_thread::get_id() << ".tmp";
-        const std::filesystem::path tmp = path.parent_path() / tmp_name.str();
-        {
-            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-            out.write(reinterpret_cast<const char*>(dds.data()), static_cast<std::streamsize>(dds.size()));
+std::vector<std::uint8_t> encodeBc7Level(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height,
+                                         unsigned threads) {
+    if (rgba == nullptr || width == 0 || height == 0) return {};
+    initBc7Encoder();
+    bc7enc_compress_block_params params;
+    bc7enc_compress_block_params_init(&params);
+    bc7enc_compress_block_params_init_linear_weights(&params);
+    params.m_max_partitions = 16;  // como encodeTexture
+    std::vector<std::uint8_t> blocks(mipByteSize(TextureFormat::Bc7, width, height));
+    encodeLevel(rgba, width, height, blocks.data(), params, std::max(threads, 1u), /*bc1=*/false);
+    return blocks;
+}
+
+std::uint64_t hashMipLayers(const MipLayers& layers, std::uint64_t seed) {
+    std::uint64_t h = 1469598103934665603ull ^ seed;
+    for (const auto& layer : layers) {
+        for (const auto& level : layer) {
+            h = (h ^ level.size()) * 1099511628211ull;
+            const std::size_t words = level.size() / 8;
+            for (std::size_t i = 0; i < words; ++i) {
+                std::uint64_t w = 0;
+                std::memcpy(&w, level.data() + i * 8, 8);
+                h = (h ^ w) * 1099511628211ull;
+            }
+            for (std::size_t i = words * 8; i < level.size(); ++i) h = (h ^ level[i]) * 1099511628211ull;
         }
-        std::error_code ec;
-        std::filesystem::rename(tmp, path, ec);
-        if (ec) std::filesystem::remove(tmp, ec);
+    }
+    return h;
+}
+
+std::filesystem::path userTextureCachePath(const std::string& stem, std::uint64_t hash) {
+#if defined(_WIN32)
+    const char* local = std::getenv("LOCALAPPDATA");
+    if (local == nullptr || *local == 0) return {};
+    char name[32];
+    std::snprintf(name, sizeof(name), "_%016llx.bc7", static_cast<unsigned long long>(hash));
+    return std::filesystem::path(local) / "Cramion" / "Cache" / (stem + name);
+#else
+    (void)stem;
+    (void)hash;
+    return {};
+#endif
+}
+
+namespace {
+constexpr std::uint32_t kArrayCacheMagic = 0x37434241;  // "ABC7"
+constexpr std::uint32_t kArrayCacheVersion = 1;
+
+// Comprueba que las capas de `like` son cuadradas de lado `size` con una
+// cadena de mips valida (como mucho hasta 1x1), y devuelve los bytes que
+// ocupan en BC7. 0 si no valen (o si no hay nada).
+std::uint64_t bc7LayersBytes(const MipLayers& like, std::uint32_t size) {
+    if (size == 0) return 0;
+    const std::size_t max_mips = static_cast<std::size_t>(std::bit_width(size));
+    std::uint64_t total = 0;
+    for (const auto& layer : like) {
+        if (layer.empty() || layer.size() > max_mips) return 0;
+        std::uint32_t side = size;
+        for (std::size_t m = 0; m < layer.size(); ++m) {
+            if (layer[m].size() != static_cast<std::size_t>(side) * side * 4) return 0;
+            total += mipByteSize(TextureFormat::Bc7, side, side);
+            side = std::max(side / 2, 1u);
+        }
+    }
+    return total;
+}
+}  // namespace
+
+bool readBc7ArrayCache(const std::filesystem::path& file, std::uint64_t hash, std::uint32_t size,
+                       const std::vector<const MipLayers*>& like, Bc7ArrayCache& out) {
+    out = Bc7ArrayCache{};
+    if (file.empty() || like.empty() || size == 0) return false;
+    std::error_code ec;
+    const std::uintmax_t file_bytes = std::filesystem::file_size(file, ec);
+    if (ec) return false;
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return false;
+    std::uint32_t header[6] = {};
+    in.read(reinterpret_cast<char*>(header), sizeof(header));
+    if (!in || header[0] != kArrayCacheMagic || header[1] != kArrayCacheVersion ||
+        header[2] != static_cast<std::uint32_t>(hash) || header[3] != static_cast<std::uint32_t>(hash >> 32) ||
+        header[4] != size || header[5] != like.size()) {
+        return false;
+    }
+    Bc7ArrayCache result;
+    result.bc7.assign(like.size(), 0);
+    result.blocks.assign(like.size(), {});
+    // Lo que tiene que medir el archivo: cabecera, info por array y los
+    // bloques de los que estan en BC7. Si no cuadra (truncado, de otra
+    // version), no vale.
+    std::uint64_t expected = sizeof(header) + like.size() * sizeof(std::uint32_t) * 3;
+    for (std::size_t a = 0; a < like.size(); ++a) {
+        if (like[a] == nullptr) return false;
+        std::uint32_t info[3] = {};  // capas, mips de la primera, en BC7
+        in.read(reinterpret_cast<char*>(info), sizeof(info));
+        if (!in || info[0] != like[a]->size() || (!like[a]->empty() && info[1] != (*like[a])[0].size()) ||
+            info[2] > 1) {
+            return false;
+        }
+        result.bc7[a] = info[2] != 0 ? 1 : 0;
+        if (result.bc7[a]) {
+            const std::uint64_t bytes = bc7LayersBytes(*like[a], size);
+            if (bytes == 0) return false;
+            expected += bytes;
+        }
+    }
+    if (static_cast<std::uint64_t>(file_bytes) != expected) return false;
+    for (std::size_t a = 0; a < like.size(); ++a) {
+        if (!result.bc7[a]) continue;
+        MipLayers& blocks = result.blocks[a];
+        blocks.assign(like[a]->size(), {});
+        for (std::size_t l = 0; l < like[a]->size(); ++l) {
+            std::uint32_t side = size;
+            for (std::size_t m = 0; m < (*like[a])[l].size(); ++m) {
+                std::vector<std::uint8_t> level(mipByteSize(TextureFormat::Bc7, side, side));
+                in.read(reinterpret_cast<char*>(level.data()), static_cast<std::streamsize>(level.size()));
+                if (!in) return false;
+                blocks[l].push_back(std::move(level));
+                side = std::max(side / 2, 1u);
+            }
+        }
+    }
+    out = std::move(result);
+    return true;
+}
+
+bool writeBc7ArrayCache(const std::filesystem::path& file, std::uint64_t hash, std::uint32_t size,
+                        const std::vector<const MipLayers*>& like, const Bc7ArrayCache& cache) {
+    if (file.empty() || like.empty() || cache.bc7.size() != like.size() || cache.blocks.size() != like.size()) {
+        return false;
+    }
+    // Los bloques tienen que cuadrar con las capas (lo que comprueba la
+    // lectura): si no, no se escribe nada.
+    for (std::size_t a = 0; a < like.size(); ++a) {
+        if (like[a] == nullptr) return false;
+        if (!cache.bc7[a]) continue;
+        if (bc7LayersBytes(*like[a], size) == 0 || cache.blocks[a].size() != like[a]->size()) return false;
+        for (std::size_t l = 0; l < like[a]->size(); ++l) {
+            if (cache.blocks[a][l].size() != (*like[a])[l].size()) return false;
+            std::uint32_t side = size;
+            for (const auto& level : cache.blocks[a][l]) {
+                if (level.size() != mipByteSize(TextureFormat::Bc7, side, side)) return false;
+                side = std::max(side / 2, 1u);
+            }
+        }
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(file.parent_path(), ec);
+    std::filesystem::path temp = file;
+    temp += ".tmp";
+    bool written = false;
+    {
+        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+        const std::uint32_t header[6] = {kArrayCacheMagic, kArrayCacheVersion, static_cast<std::uint32_t>(hash),
+                                         static_cast<std::uint32_t>(hash >> 32), size,
+                                         static_cast<std::uint32_t>(like.size())};
+        out.write(reinterpret_cast<const char*>(header), sizeof(header));
+        for (std::size_t a = 0; a < like.size(); ++a) {
+            const std::uint32_t info[3] = {static_cast<std::uint32_t>(like[a]->size()),
+                                           like[a]->empty() ? 0u : static_cast<std::uint32_t>((*like[a])[0].size()),
+                                           cache.bc7[a] ? 1u : 0u};
+            out.write(reinterpret_cast<const char*>(info), sizeof(info));
+        }
+        for (std::size_t a = 0; a < like.size(); ++a) {
+            if (!cache.bc7[a]) continue;
+            for (const auto& layer : cache.blocks[a]) {
+                for (const auto& level : layer) {
+                    out.write(reinterpret_cast<const char*>(level.data()), static_cast<std::streamsize>(level.size()));
+                }
+            }
+        }
+        out.close();
+        written = static_cast<bool>(out);
+    }
+    if (written) std::filesystem::rename(temp, file, ec);
+    if (!written || ec) {
+        std::filesystem::remove(temp, ec);
+        return false;
     }
     return true;
+}
+
+bool compressBc7Layers(const MipLayers& rgba, std::uint32_t size, MipLayers& blocks, const std::atomic<bool>& stop,
+                       unsigned threads, bool premultiplied, double& worst_psnr) {
+    blocks.assign(rgba.size(), {});
+    worst_psnr = 99.0;
+    for (std::size_t l = 0; l < rgba.size(); ++l) {
+        std::uint32_t side = size;
+        for (std::size_t m = 0; m < rgba[l].size(); ++m) {
+            if (stop.load()) return false;
+            blocks[l].push_back(encodeBc7Level(rgba[l][m].data(), side, side, threads));
+            if (m == 0) {
+                TextureData check;
+                check.width = check.height = side;
+                check.format = TextureFormat::Bc7;
+                check.mip_levels = 1;
+                check.pixels = blocks[l][0];
+                const std::vector<std::uint8_t> back = decodeBlockCompressed(check);
+                double psnr = 0.0;
+                if (back.size() == rgba[l][0].size()) {
+                    if (premultiplied) {
+                        psnr = premultipliedPsnr(rgba[l][0].data(), back.data(), back.size() / 4);
+                    } else {
+                        double sum = 0.0;
+                        for (std::size_t i = 0; i < back.size(); ++i) {
+                            const double d = static_cast<double>(rgba[l][0][i]) - back[i];
+                            sum += d * d;
+                        }
+                        const double mse = sum / static_cast<double>(back.size());
+                        psnr = mse <= 1e-12 ? 99.0 : 10.0 * std::log10(255.0 * 255.0 / mse);
+                    }
+                }
+                worst_psnr = std::min(worst_psnr, psnr);
+                if (psnr < kMinUiPsnr) return false;
+            }
+            side = std::max(side / 2, 1u);
+        }
+    }
+    return true;
+}
+
+double premultipliedPsnr(const std::uint8_t* a, const std::uint8_t* b, std::size_t pixels) {
+    if (pixels == 0) return 99.0;
+    double sum = 0.0;
+    for (std::size_t i = 0; i < pixels; ++i) {
+        const std::uint8_t* p = a + i * 4;
+        const std::uint8_t* q = b + i * 4;
+        for (int c = 0; c < 3; ++c) {
+            const double d = (static_cast<double>(p[c]) * p[3] - static_cast<double>(q[c]) * q[3]) / 255.0;
+            sum += d * d;
+        }
+        const double da = static_cast<double>(p[3]) - q[3];
+        sum += da * da;
+    }
+    const double mse = sum / (static_cast<double>(pixels) * 4.0);
+    if (mse <= 1e-12) return 99.0;
+    return 10.0 * std::log10(255.0 * 255.0 / mse);
+}
+
+std::uint64_t uiTextureKey(const std::filesystem::path& file, std::uint32_t max_size,
+                           const std::filesystem::path& portable_root) {
+    if (!textureCompressionEnabled()) return 0;
+    std::string ext = file.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".tga" && ext != ".bmp") return 0;
+    const std::uint64_t key = portable_root.empty() ? textureFileKey(file, false, TextureUsage::Ui)
+                                                    : texturePortableFileKey(file, portable_root, false, TextureUsage::Ui);
+    if (key == 0) return 0;
+    return mix(key ^ (0x5549000000000000ULL + max_size)) | 1u;
+}
+
+bool loadUiTexture(const std::filesystem::path& file, std::uint32_t max_size, TextureData& out, double* psnr) {
+    if (psnr != nullptr) *psnr = 0.0;
+    const std::uint64_t key = uiTextureKey(file, max_size, texturePortableRoot());
+    if (key == 0) return false;
+    if (loadCachedTexture(key, out)) return true;
+    if (!textureCacheWritable()) return false;  // el juego: lo que no esta, en RGBA8
+    std::filesystem::path marker = cachePath(key);
+    marker.replace_extension(".rgba");
+    std::error_code ec;
+    if (std::filesystem::exists(marker, ec)) return false;  // ya se probo y perdia nitidez
+    if (!beginTextureCompression(key)) return loadCachedTexture(key, out);
+    bool ok = false;
+    // El nombre en UTF-8 (path::string() lanza con nombres que no caben en la
+    // pagina de codigos, y aqui quedaria la compresion marcada como en marcha).
+    const std::u8string name_u8 = file.filename().u8string();
+    const std::string name(name_u8.begin(), name_u8.end());
+    ImageRgba8 image;
+    if (loadImageRgba8(file, image, max_size) && image.width >= 4 && image.height >= 4) {
+        TextureData texture;
+        texture.name = name;
+        texture.width = image.width;
+        texture.height = image.height;
+        texture.usage = TextureUsage::Ui;
+        texture.pixels = image.pixels;
+        if (encodeTexture(texture)) {
+            const std::vector<std::uint8_t> back = decodeBlockCompressed(texture);
+            const double measured = back.size() == image.pixels.size()
+                                        ? premultipliedPsnr(image.pixels.data(), back.data(), image.pixels.size() / 4)
+                                        : 0.0;
+            if (psnr != nullptr) *psnr = measured;
+            if (measured >= kMinUiPsnr) {
+                storeTexture(texture, key);
+                out = std::move(texture);
+                ok = true;
+                std::cout << "[UI] " << name << " a BC7 (" << image.width << "x" << image.height
+                          << ", PSNR " << measured << " dB)\n";
+            } else {
+                std::ofstream(marker, std::ios::binary).put('0');
+                std::cout << "[UI] " << name << " se queda en RGBA8 (PSNR " << measured << " dB < "
+                          << kMinUiPsnr << ")\n";
+            }
+        }
+    }
+    endTextureCompression(key);
+    return ok;
+}
+
+std::uint64_t prepareExportUiTexture(const std::filesystem::path& file, std::uint32_t max_size,
+                                     const std::filesystem::path& assets_root, std::filesystem::path& dds) {
+    dds.clear();
+    if (!textureCacheWritable()) return 0;
+    TextureData scratch;
+    if (!loadUiTexture(file, max_size, scratch)) return 0;
+    const std::uint64_t editor_key = uiTextureKey(file, max_size, std::filesystem::path());
+    if (editor_key == 0 || !isTextureCached(editor_key)) return 0;
+    dds = cachedTexturePath(editor_key);
+    return uiTextureKey(file, max_size, assets_root);
 }
 
 bool beginTextureCompression(std::uint64_t key) {
