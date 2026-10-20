@@ -8,14 +8,17 @@
 #include "CramionCore/asset/MaterialAsset.h"
 #include "CramionCore/asset/ModelMaterials.h"
 #include "CramionCore/asset/RenderTextureAsset.h"
+#include "CramionCore/asset/SurfaceShader.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/RenderSync.h"
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
 
 #include <CramionFX/asset/ImageFile.h>
+#include <CramionFX/vk/ShaderCompiler.h>
 
 #include <cstdint>
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -231,6 +234,53 @@ void testModelMaterialsSearch() {
           "el mapa del modelo se guarda y se lee por su UUID");
 }
 
+// Nombres genericos y palabras completas: "lambert1" no coge la textura
+// "lambert1" de otro pack, "Ore" no casa con "Forest" (antes bastaban 3
+// letras), "Gear" si con "OrcGear" y no se busca fuera de la carpeta del
+// modelo y de las Textures de sus carpetas padre.
+void testModelMaterialsGenericNames() {
+    std::printf("Crear materiales de un modelo (nombres genericos y palabras)\n");
+    const std::filesystem::path base = std::filesystem::temp_directory_path() / "cramion_model_materials_generic";
+    std::filesystem::remove_all(base);
+    const std::filesystem::path root = base / "Assets";
+    const std::filesystem::path source = base / "Descargas" / "Silla";
+
+    writeImage(root / "Textures" / "lambert1_BaseColor.png", 10, 10, 10);  // de otro pack
+    writeImage(root / "Textures" / "Forest_BaseColor.png", 20, 90, 20);    // "ore" dentro de "Forest"
+    writeImage(root / "Textures" / "OrcGear_BaseColor.png", 90, 60, 30);   // "Gear" como palabra
+    writeImage(root / "Lejos" / "Ore_BaseColor.png", 140, 70, 30);         // fuera del alcance
+
+    std::filesystem::create_directories(source);
+    std::ofstream(source / "silla.mtl") << "newmtl lambert1\nKd 0.8 0.8 0.8\n\nnewmtl Gear\nKd 0.8 0.8 0.8\n\n"
+                                           "newmtl Ore\nKd 0.8 0.8 0.8\n";
+    std::ofstream(source / "silla.obj")
+        << "mtllib silla.mtl\n"
+           "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 2 0 0\nv 3 0 0\nv 3 1 0\nv 2 1 0\n"
+           "v 4 0 0\nv 5 0 0\nv 5 1 0\nv 4 1 0\n"
+           "vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n"
+           "usemtl lambert1\nf 1/1 2/2 3/3\nf 1/1 3/3 4/4\n"
+           "usemtl Gear\nf 5/1 6/2 7/3\nf 5/1 7/3 8/4\n"
+           "usemtl Ore\nf 9/1 10/2 11/3\nf 9/1 11/3 12/4\n";
+
+    const assets::ImportResult imported = assets::importModel(source / "silla.obj", root / "Models" / "Silla");
+    check(imported.ok, "importar el OBJ");
+    if (!imported.ok) return;
+    assets::AssetDatabase database;
+    database.open(root);
+    const auto info = database.find(imported.info.uuid);
+    if (!info) return;
+    const assets::ExtractMaterialsResult r = assets::extractModelMaterials(*info, root);
+    assets::MaterialAsset gear;
+    const bool read = r.map.count("Gear") && assets::loadMaterial(r.material_folder / "Gear.crmat", gear);
+    check(r.ok && read && gear.albedo == "Textures/OrcGear_BaseColor.png", "Gear: la de OrcGear (palabra completa)");
+    const auto missing = [&](const char* name) {
+        return std::find(r.without_color.begin(), r.without_color.end(), name) != r.without_color.end();
+    };
+    check(missing("lambert1"), "lambert1 (generico): sin textura, no la de otro pack");
+    check(missing("Ore"), "Ore: ni Forest (subcadena) ni Lejos/Ore (fuera de la carpeta y de sus Textures)");
+    std::filesystem::remove_all(base);
+}
+
 // Un glTF con las texturas dentro (DamagedHelmet): se sacan a imagenes y el
 // metal/rugosidad empaquetado se parte en dos mapas.
 void testModelMaterialsEmbedded() {
@@ -350,6 +400,61 @@ void testVariantSharesMesh() {
     check(base.materials[0].uv_scale.x == 1.0f, "el original no se toca");
 }
 
+// Un .crshader usado antes de que exista el renderizador (el editor abre con
+// la escena cargada): antes se quedaba con el error "sin renderizador" y el
+// material en blanco hasta tocar el archivo. Ahora espera a instalarse.
+void testSurfaceShaderBeforeRenderer() {
+    std::printf("Shader de superficie antes del renderizador\n");
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_shader_no_renderer";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "Shaders");
+    {
+        std::ofstream out(root / "Shaders" / "Agua.crshader", std::ios::binary);
+        out << "domain transparent\n"
+               "property range desvio = 0.05 (0, 0.2)\n"
+               "void surface(inout Surface s) {\n"
+               "    s.albedo = vec3(0.0);\n"
+               "    s.alpha = 0.1;\n"
+               "    s.refraction = desvio;\n"
+               "}\n";
+    }
+    assets::MaterialAsset water;
+    water.shader = "Shaders/Agua.crshader";
+    check(assets::saveMaterial(water, root / "Materials" / "Agua.crmat"), "guardar el .crmat con shader");
+
+    assets::AssetDatabase database;
+    database.open(root);
+    assets::AssetManager manager(database);
+    ecs::RenderSync sync(manager);
+
+    const assets::SurfaceShaderSource* source = sync.surfaceShaderSource(water.shader);
+    check(source != nullptr && source->domain == assets::SurfaceDomain::Transparent,
+          "sin renderizador el shader se lee (propiedades y dominio)");
+    const std::string error = sync.surfaceShaderError(water.shader);
+    check(error != "sin renderizador", "sin renderizador no es un error");
+    const bool templates = std::filesystem::exists(assets::surfaceTemplateDirectory() / "surface_forward.frag");
+    if (gfx::shaders::compilerAvailable() && templates) {
+        check(error.empty() && sync.surfaceShaderAwaitingRenderer(water.shader),
+              "compilado: espera al renderizador (s.refraction compila)");
+    } else {
+        std::printf("  (sin compilador o sin plantillas: no se comprueba la espera)\n");
+    }
+
+    // Mientras espera, el material conserva el dominio del shader (no opaco).
+    asset::ModelData base;
+    base.vertices = std::vector<asset::SkinnedVertex>(3);
+    base.indices = std::vector<std::uint32_t>{0, 1, 2};
+    asset::SubMesh submesh;
+    submesh.index_count = 3;
+    base.submeshes.push_back(submesh);
+    base.materials.push_back(asset::MaterialData{});
+    const asset::ModelData variant = sync.buildMaterialVariant(base, {water.uuid});
+    check(variant.materials.size() == 1 && variant.materials[0].surface_shader == -1 &&
+              variant.materials[0].transparent,
+          "a la espera: shader estandar, pero transparente");
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
@@ -357,9 +462,11 @@ int main() {
     testMeshRenderer();
     testRenderTexture();
     testModelMaterialsSearch();
+    testModelMaterialsGenericNames();
     testModelMaterialsEmbedded();
     testCompanionNames();
     testVariantSharesMesh();
+    testSurfaceShaderBeforeRenderer();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

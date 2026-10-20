@@ -13,6 +13,7 @@
 #include <imgui.h>
 
 #include <iostream>
+#include <unordered_set>
 
 namespace cramion::editor {
 
@@ -67,6 +68,7 @@ const std::string& EditorApp::prefabText(const Uuid& uuid) {
     static const std::string kEmpty;
     if (prefab_texts_version_ != database_version_) {
         prefab_texts_.clear();
+        prefab_docs_.clear();
         prefab_texts_version_ = database_version_;
     }
     const std::string key = uuid.toString();
@@ -201,15 +203,39 @@ void EditorApp::syncPrefabInstances() {
     }
 }
 
-void EditorApp::recordPrefabOverrides() {
-    if (!database_) return;
-    for (const entt::entity handle : world_.registry().view<ecs::PrefabInstance>()) {
-        const ecs::Entity root = world_.wrap(handle);
+std::shared_ptr<const ecs::ParsedPrefab> EditorApp::prefabDocument(const Uuid& uuid) {
+    const std::filesystem::path path = prefabPath(uuid);
+    if (path.empty()) return nullptr;
+    const std::string& text = prefabText(uuid);
+    if (text.empty()) return nullptr;
+    std::error_code ec;
+    const std::filesystem::file_time_type stamp = std::filesystem::last_write_time(path, ec);
+    PrefabDocCache& cache = prefab_docs_[uuid];
+    // Mismo archivo, misma fecha y mismo texto (Aplicar cambia los tres): el
+    // documento ya parseado sirve. Antes se parseaba el .crprefab entero dos
+    // veces por instancia (revision y cambios propios) en cada paso.
+    if (cache.doc && !ec && cache.path == path && cache.stamp == stamp && cache.size == text.size()) return cache.doc;
+    cache.path = path;
+    cache.stamp = ec ? std::filesystem::file_time_type{} : stamp;
+    cache.size = text.size();
+    cache.doc = ecs::parsePrefabText(text);
+    return cache.doc;
+}
+
+void EditorApp::recordPrefabOverrides(std::span<const ecs::Entity> changed, std::vector<ecs::Entity>& touched) {
+    if (!database_ || changed.empty()) return;
+    // Las instancias a las que pertenece lo que cambio, una vez cada una (las
+    // demas no pueden tener cambios propios nuevos).
+    std::unordered_set<entt::entity> seen;
+    for (const ecs::Entity& e : changed) {
+        const ecs::Entity root = ecs::prefabRoot(e);
+        if (!root.valid() || !seen.insert(root.handle()).second) continue;
         const ecs::PrefabInstance& instance = root.get<ecs::PrefabInstance>();
-        const std::string& text = prefabText(instance.prefab.uuid);
+        const std::shared_ptr<const ecs::ParsedPrefab> doc = prefabDocument(instance.prefab.uuid);
         // Solo con la misma revision: si no, todo lo nuevo pareceria propio.
-        if (text.empty() || ecs::prefabRevision(text) != instance.revision) continue;
-        ecs::recordOverrides(world_, root, text);
+        if (doc == nullptr || ecs::prefabRevision(*doc) != instance.revision) continue;
+        ecs::recordOverrides(world_, root, *doc);
+        touched.push_back(root);
     }
 }
 

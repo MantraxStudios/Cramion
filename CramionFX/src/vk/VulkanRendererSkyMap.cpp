@@ -16,6 +16,7 @@
 
 #include "CramionFX/scene/Scene.h"
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -60,6 +61,43 @@ constexpr std::uint32_t kSkyMapSize = 512;
 constexpr float kSkyMapExtent = 160.0f;  // m de lado (31 cm por texel)
 constexpr float kSkyMapAbove = 120.0f;   // m sobre la camara desde donde se mira
 constexpr float kSkyMapRange = 400.0f;   // m de profundidad que cubre
+
+// Presupuesto de VRAM del streaming de modelos (fracciones del presupuesto que
+// da VK_EXT_memory_budget al proceso). Por encima de kVramTarget salen los
+// menos vistos aunque no lleven IdleSeconds fuera de vista; por debajo de
+// kVramRelaxed no sale nada visto en los ultimos streaming_relaxed_seconds_
+// (render.streaming.RelaxedIdleSeconds, 30 s por defecto; girar la
+// camara no obliga a resubir lo que acaba de salir de cuadro).
+constexpr std::uint64_t kVramTargetPercent = 80;
+// CRAMION_VRAM_TARGET_PERCENT=N cambia el objetivo (pruebas: forzar la
+// presion en una GPU grande).
+std::uint64_t vramTargetPercent() {
+    static const std::uint64_t percent = []() -> std::uint64_t {
+        const char* text = std::getenv("CRAMION_VRAM_TARGET_PERCENT");
+        const long value = text != nullptr ? std::strtol(text, nullptr, 10) : 0;
+        return value >= 1 && value <= 100 ? static_cast<std::uint64_t>(value) : kVramTargetPercent;
+    }();
+    return percent;
+}
+constexpr std::uint64_t kVramRelaxedPercent = 60;
+// Con presion: lo que lleve al menos esto sin verse ya puede salir.
+constexpr float kPressureIdleSeconds = 1.0f;
+
+// Lo que ocupa (aprox.) un modelo en la GPU: mallas y texturas al detalle
+// `texture_lod`. Solo para estimar cuanto libera una expulsion hasta la
+// siguiente medida de la VRAM (las texturas compartidas cuentan de mas).
+std::uint64_t modelGpuBytes(const asset::ModelData& model, int texture_lod) {
+    std::uint64_t bytes = static_cast<std::uint64_t>(model.vertices.size()) * sizeof(asset::SkinnedVertex) +
+                          (static_cast<std::uint64_t>(model.indices.size()) + model.lod_indices.size()) * 4u;
+    const int lod = std::clamp(texture_lod, 0, 3);
+    for (const asset::TextureData& texture : model.textures) {
+        std::uint64_t size = texture.pixels.size();
+        if (texture.format == asset::TextureFormat::Rgba8) size += size / 3;  // los mips de la GPU
+        if (size == 0) size = 4ull << 20;  // perezosa: sin saber, una 1024 RGBA8
+        bytes += size >> (2 * lod);
+    }
+    return bytes;
+}
 }  // namespace
 
 bool VulkanRenderer::skyMapWanted() const {
@@ -192,6 +230,16 @@ void VulkanRenderer::recordSkyMap(const vk::raii::CommandBuffer& cmd, std::uint3
     sky_map_drawn_ = true;
 }
 
+void VulkanRenderer::pinRayTracedTextures(std::uint32_t index) {
+    // Solo la version que vio la escena de rayos (la primera que se aparta
+    // desde que se construyo): las siguientes no las lee nadie.
+    if (index >= ray_traced_models_ || index >= ray_pinned_.size() || ray_pinned_[index]) return;
+    if (index >= skinned_models_.size()) return;
+    ray_pinned_[index] = true;
+    const std::vector<std::shared_ptr<VulkanTexture>>& textures = skinned_models_[index].textures();
+    ray_pinned_textures_.insert(ray_pinned_textures_.end(), textures.begin(), textures.end());
+}
+
 std::uint32_t VulkanRenderer::evictedModelCount() const {
     return static_cast<std::uint32_t>(std::count(model_evicted_.begin(), model_evicted_.end(), true));
 }
@@ -199,13 +247,9 @@ std::uint32_t VulkanRenderer::evictedModelCount() const {
 void VulkanRenderer::evictModel(std::uint32_t index) {
     if (!modelResident(index)) return;
     if (model_evicted_.size() < skinned_models_.size()) model_evicted_.resize(skinned_models_.size(), false);
-    // Los frames en vuelo (y la escena de rayos) aun pueden usarlo.
-    if (index < ray_traced_models_ && index < ray_pinned_.size() && !ray_pinned_[index]) {
-        ray_pinned_[index] = true;
-        ray_pinned_models_.push_back(std::move(skinned_models_[index]));
-    } else {
-        retired_models_.push_back(RetiredModel{std::move(skinned_models_[index]), kMaxFramesInFlight + 1});
-    }
+    // Los frames en vuelo aun pueden usarlo; la escena de rayos, sus texturas.
+    pinRayTracedTextures(index);
+    retired_models_.push_back(RetiredModel{std::move(skinned_models_[index]), kMaxFramesInFlight + 1});
     skinned_models_[index] = SkinnedModel{};
     model_evicted_[index] = true;
     bumpModelRevision(index);
@@ -250,6 +294,15 @@ void VulkanRenderer::waitModelJob(const ModelJob& job) {
 
 bool VulkanRenderer::modelJobPending(std::uint32_t index) const {
     return std::any_of(model_jobs_.begin(), model_jobs_.end(), [&](const ModelJob& job) { return job.index == index; });
+}
+
+void VulkanRenderer::reuploadModelAsync(const scene::Scene& scene, std::uint32_t index) {
+    if (!initialized_ || index >= uploadedModelCount() || index >= scene.models().size()) return;
+    // Una subida de antes (otro detalle, o la vuelta del streaming) traeria los
+    // datos viejos: fuera.
+    if (modelJobPending(index)) finishModelJobs(index, index + 1);
+    if (!modelResident(index)) return;  // fuera de la GPU: volvera con los nuevos
+    launchModelJob(scene, index, skinned_models_[index].textureLod(), false);
 }
 
 void VulkanRenderer::launchModelJob(const scene::Scene& scene, std::uint32_t index, int texture_lod, bool restore,
@@ -346,13 +399,21 @@ void VulkanRenderer::streamModels(const scene::Scene& scene) {
         vram_at = now;
         if (!device_.videoMemory(vram_used, vram_budget)) vram_used = vram_budget = 0;
     }
+    // Presion de VRAM (ver kVramTargetPercent). vram_used se rebaja con lo que
+    // se va expulsando (estimado) hasta la siguiente medida: sin eso, en el
+    // medio segundo hasta medir otra vez saldria todo.
+    const std::uint64_t vram_target = vram_budget / 100 * vramTargetPercent();
+    const bool vram_pressure = model_streaming_ && vram_budget > 0 && vram_used > vram_target;
+    const bool vram_relaxed = vram_budget > 0 && !vram_pressure &&
+                              vram_used < vram_budget / 100 * std::min(kVramRelaxedPercent, vramTargetPercent());
     // Casi sin VRAM: el streaming de texturas no sube detalle (solo baja).
     const bool vram_full = vram_budget > 0 && vram_used > vram_budget / 100 * 85;
     if (now - report_at > std::chrono::seconds(2)) {
         if (restores + texture_uploads + evictions > 0) {
             std::cout << "[Streaming] 2 s: " << restores << " modelos vueltos, " << texture_uploads
                       << " cambios de detalle de texturas, " << evictions << " fuera; en hilos " << model_jobs_.size()
-                      << ", retirados " << retired_models_.size() << ", fijados por RT " << ray_pinned_models_.size()
+                      << ", retirados " << retired_models_.size() << ", texturas fijadas por RT "
+                      << ray_pinned_textures_.size()
                       << "; VRAM " << vram_used / (1024 * 1024) << " de " << vram_budget / (1024 * 1024) << " MB"
                       << (vram_full ? " (LLENA: no se sube detalle)" : "")
                       << " [texturas " << gpuMemoryBytes(GpuMemoryKind::Texture) / (1024 * 1024) << " MB, imagenes "
@@ -431,7 +492,9 @@ void VulkanRenderer::streamModels(const scene::Scene& scene) {
             const int want = wanted_lod(pixels);
             if (want >= current) {
                 if (want == current) model_lod_since_[i] = now;
-                if (want > current && std::chrono::duration<float>(now - model_lod_since_[i]).count() > 3.0f &&
+                // (Con presion de VRAM, menos detalle en cuanto lo pide.)
+                if (want > current &&
+                    std::chrono::duration<float>(now - model_lod_since_[i]).count() > (vram_pressure ? 0.5f : 3.0f) &&
                     best < 0) {
                     best = static_cast<int>(i);
                     best_lod = want;
@@ -452,15 +515,46 @@ void VulkanRenderer::streamModels(const scene::Scene& scene) {
         }
     }
     // Salen los que llevan un rato sin verse (como mucho 8 por frame). Sin el
-    // streaming, solo los "solo base de variantes" que nadie dibuja.
+    // streaming, solo los "solo base de variantes" que nadie dibuja. Con VRAM
+    // de sobra se espera mas: girar la camara y volver
+    // no cuesta una resubida (streaming_relaxed_seconds_).
+    const float idle_seconds =
+        vram_relaxed ? std::max(streaming_idle_seconds_, streaming_relaxed_seconds_) : streaming_idle_seconds_;
+    const auto evictable = [&](std::uint32_t i) {
+        return !model_evicted_[i] && !skinned_models_[i].submeshes().empty() && !modelJobPending(i);
+    };
     std::uint32_t evicted = 0;
     for (std::uint32_t i = 0; i < count && evicted < 8; ++i) {
         if (!model_streaming_ && !scene.variantBaseOnly(i)) continue;
-        if (model_evicted_[i] || skinned_models_[i].submeshes().empty() || modelJobPending(i)) continue;
-        if (std::chrono::duration<float>(now - model_last_seen_[i]).count() < streaming_idle_seconds_) continue;
+        if (!evictable(i)) continue;
+        if (std::chrono::duration<float>(now - model_last_seen_[i]).count() < idle_seconds) continue;
+        const std::uint64_t freed = modelGpuBytes(*scene.models()[i], skinned_models_[i].textureLod());
         evictModel(i);
+        vram_used -= std::min(vram_used, freed);
         ++evicted;
         ++evictions;
+    }
+    // Por encima del presupuesto: fuera los menos vistos (LRU por la ultima
+    // vez que se vieron) hasta bajar del objetivo, aunque no lleven
+    // IdleSeconds. Lo visible no sale nunca (kPressureIdleSeconds sin verse).
+    // Antes no habia presupuesto: con mas variedad que VRAM, el driver
+    // paginaba en silencio (tirones de cientos de ms, riesgo de DeviceLost).
+    if (vram_pressure && vram_used > vram_target && evicted < 8) {
+        std::vector<std::pair<std::chrono::steady_clock::time_point, std::uint32_t>> lru;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            if (!evictable(i)) continue;
+            if (std::chrono::duration<float>(now - model_last_seen_[i]).count() < kPressureIdleSeconds) continue;
+            lru.emplace_back(model_last_seen_[i], i);
+        }
+        std::sort(lru.begin(), lru.end());
+        for (const auto& [seen, i] : lru) {
+            if (evicted >= 8 || vram_used <= vram_target) break;
+            const std::uint64_t freed = modelGpuBytes(*scene.models()[i], skinned_models_[i].textureLod());
+            evictModel(i);
+            vram_used -= std::min(vram_used, freed);
+            ++evicted;
+            ++evictions;
+        }
     }
 }
 

@@ -499,12 +499,23 @@ const std::vector<ToolDef>& toolDefs() {
                       {"display_name", prop("string", "Nombre visible")}, {"description", prop("string", "Descripcion")}, {"author", prop("string", "Autor")},
                       {"dependencies", prop("object", "{identificador: version minima}")}, {"changelog", prop("string", "Cambios de esta version")},
                       {"level", prop("string", "Compresion: fast, normal (por defecto) o max")}}, {"folder", "output", "name", "version"}});
-        d.push_back({"create_vfx", "Crea un efecto del VFX Graph (.crvfx) desde una plantilla (Chispas, Fuego, Humo, Chispas que rebotan, Explosion, Magia, Luciernagas, Nieve, Lluvia, Estela; o su indice 0..9) o desde 'graph' (el JSON del .crvfx: capacity, world_space, duration, loop, params, spawn/initialize/update/output_blocks [{type, values{campo: valor}, bind{campo: parametro}}], output{orient, blend, intensity, texture...}). attach_to: le pone el componente Visual Effect.",
+        d.push_back({"create_vfx", "Crea un efecto del VFX Graph (.crvfx) desde una plantilla (Chispas, Fuego, Humo, Chispas que rebotan, Explosion, Magia, Luciernagas, Nieve, Lluvia, Estela, Estela (cinta), Estela de proyectil; o su indice 0..11) o desde 'graph' (el JSON del .crvfx: capacity, world_space, duration, loop, params, spawn/initialize/update/output_blocks [{type, values{campo: valor}, bind{campo: parametro}}], output{type Quads/Ribbon/Mesh, orient, blend, intensity, texture, flip_blend, ribbon_facing Camera/Emitter/CustomFacing/CustomSide, ribbon_vector, ribbon_uv Stretch/Tile(Distance)/Age, ribbon_tile, ribbon_uv_scale, ribbon_uv_offset, ribbon_subdivisions 1..16, ribbon_tension, ribbon_adaptive, ribbon_atlas_cell...; malla: mesh (uuid del modelo), mesh_orient Random/Velocity/Fixed/Camera, mesh_rotation [x,y,z,w] (Fixed), mesh_scale, mesh_scale_jitter [0..1 x3], mesh_variants [uuid, hasta 3], mesh_lod_distance (m por nivel; 0 = bloque MeshIndex), mesh_sprite_distance (m; quad mas lejos), material (uuid .crmat: opaco/transparente, color, emision); blend Additive/Alpha/Premultiplied/Distortion/Opaque, distortion (px a 1080p, 0..5; textura = normal map), distortion_height}; bloque Initialize MeshIndex {min, max}; bloque Update AngularVelocity {acceleration, drag, roll (grados)}; bloque Initialize RibbonAttributes {id, strands, width, twist_min, twist_max, spacing}; bloque Output ParticleLight {lightEnabled, lightRadius, lightIntensity, falloff 0 fisica/1 lineal, exponent, maxLights, priority 0 intensidad x alcance/1 distancia, affectsTranslucent}). output_type: Sprite, Ribbon o Mesh. light: las particulas tambien iluminan (anade o cambia el bloque ParticleLight). attach_to: le pone el componente Visual Effect.",
                      {{"name", prop("string", "Nombre del archivo")}, {"folder", prop("string", "Carpeta dentro de Assets (Efectos)")}, {"preset", prop("string", "Plantilla")},
-                      {"graph", prop("object", "JSON del .crvfx")}, {"attach_to", entity}}, {}});
-        d.push_back({"vfx_control", "Controla el Visual Effect de una entidad (en Play o con vista previa): action play, stop (clear), event (event) o set (param, value: numero, bool, [x,y,z] o [r,g,b,a]).",
-                     {{"entity", entity}, {"action", prop("string", "play, stop, event o set")}, {"event", prop("string", "Evento del bloque Spawn")},
-                      {"param", prop("string", "Parametro expuesto")}, {"value", prop("string", "Valor")}, {"clear", prop("boolean", "Borrar las particulas al parar")}}, {"entity"}});
+                      {"graph", prop("object", "JSON del .crvfx")}, {"output_type", prop("string", "Sprite, Ribbon o Mesh")},
+                      {"flip_blend", prop("boolean", "Fundir los cuadros del flipbook")},
+                      {"effect_type", prop("string", "Tipo para la escalabilidad: Hero, Combat, Impact, Ambient o None (sin limites)")},
+                      {"sort_order", prop("integer", "Orden de dibujo entre transparentes (mayor = encima)")},
+                      {"light", prop("object", "Luz por particula: {radius (m), intensity, falloff physical/linear, exponent, max_lights, priority intensity/distance, affects_translucent, enabled}")},
+                      {"attach_to", entity}}, {}});
+        d.push_back({"vfx_control", "Controla el Visual Effect de una entidad (en Play o con vista previa): action play, stop (clear), event (event) o set (param, value: numero, bool, [x,y,z] o [r,g,b,a]). Sin entidad: stats (instancias, particulas y ms por tipo de efecto y la tabla de la calidad), play_at (effect = UUID del .crvfx, position [x,y,z]: efecto suelto del pool) o time_scale (value: 0 pausa, < 1 camara lenta).",
+                     {{"entity", entity}, {"action", prop("string", "play, stop, event, set, stats, play_at o time_scale")}, {"event", prop("string", "Evento del bloque Spawn")},
+                      {"param", prop("string", "Parametro expuesto")}, {"value", prop("string", "Valor")}, {"clear", prop("boolean", "Borrar las particulas al parar")},
+                      {"effect", prop("string", "play_at: UUID del .crvfx")}, {"position", prop("array", "play_at: [x,y,z]")}}, {}});
+        d.push_back({"vfx_push_event", "Apunta eventos en un canal de datos del VFX Graph (como Effects.pushEvent): los dibujan el frame siguiente los efectos con el bloque Spawn OnGpuEvent ('Al recibir un evento de la GPU') en ese canal; los bloques Update EmitOnDeath / EmitOnCollision / EmitEvery escriben en el mismo canal desde la GPU. count > 1 repite el evento (pruebas de carga).",
+                     {{"channel", prop("string", "Nombre del canal")}, {"type", prop("integer", "Tipo (filtra quien escucha; 0 por defecto)")},
+                      {"position", prop("array", "[x, y, z] en el mundo")}, {"velocity", prop("array", "[x, y, z] m/s")},
+                      {"color", prop("array", "[r, g, b] o [r, g, b, a]")}, {"value", prop("number", "Valor libre (1 por defecto)")},
+                      {"count", prop("integer", "Cuantas veces (1 por defecto)")}}, {"channel"}});
         d.push_back({"create_visual_script", "Crea un Visual Script (.crgraph, Blueprints). 'graph': {variables:[{name,type,value,exposed}], nodes:[{id, kind ('event.start', 'event.update', 'flow.branch', 'var.get', 'call'...), fn ('Debug.log', 'Entity:translate'...), values:{pin: valor}, position:[x,y]}], links:[{from, out (nombre o indice), to, in}]}. Devuelve si compila y los errores por nodo. attach_to: le pone el componente.",
                      {{"name", prop("string", "Nombre del archivo")}, {"folder", prop("string", "Carpeta (Scripts)")}, {"graph", prop("object", "JSON del grafo")}, {"attach_to", entity}}, {}});
         d.push_back({"create_shader_graph", "Crea un Shader Graph (.crshadergraph) y genera su .crshader (los materiales lo eligen como shader). 'graph' es el JSON del grafo (nodes [{id, type, x, y, inputs, name, value...}], links [{from_node, from_pin, to_node, to_pin}]); sin el, el de ejemplo. Devuelve el codigo generado y los errores.",
@@ -2589,7 +2600,8 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
     }
     if (name == "run_tests" || name == "test_results" || name == "bake_lighting" || name == "lighting_state" ||
         name == "set_lighting_mode" || name == "generate_lightmap_uvs" ||
-        name == "create_vfx" || name == "vfx_control" || name == "create_visual_script" || name == "create_shader_graph" ||
+        name == "create_vfx" || name == "vfx_control" || name == "vfx_push_event" || name == "create_visual_script" ||
+        name == "create_shader_graph" ||
         name == "create_behavior_tree") {
         needProject();
         json in = args;
@@ -2750,6 +2762,7 @@ void EditorApp::startMcp() {
     int port = 7777;
     if (const char* env = std::getenv("CRAMION_MCP_PORT"); env != nullptr && std::atoi(env) > 0) port = std::atoi(env);
     mcp_error_.clear();
+    mcp_.setRequireToken(safety_prefs_.mcp_require_token);  // "Exigir token MCP" (McpServer.h)
     // Si el puerto esta ocupado (otro editor abierto), los siguientes.
     for (int p = port; p < port + 10; ++p) {
         std::string error;
@@ -2782,7 +2795,8 @@ void EditorApp::drawMcpWindow() {
         ImGui::SameLine();
         ImGui::TextUnformatted(url.c_str());
         ImGui::SameLine();
-        ImGui::TextDisabled("(%llu peticiones)", static_cast<unsigned long long>(mcp_.requestCount()));
+        ImGui::TextDisabled("(%llu peticiones, %llu rechazadas)", static_cast<unsigned long long>(mcp_.requestCount()),
+                            static_cast<unsigned long long>(mcp_.rejectedCount()));
         if (ImGui::Button("Apagar")) mcp_.stop();
     } else {
         ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "Apagado");
@@ -2793,6 +2807,23 @@ void EditorApp::drawMcpWindow() {
         if (ImGui::Button("Encender")) startMcp();
     }
     ImGui::TextDisabled("Solo acepta conexiones de este PC.");
+    // Token de la sesion: sin el, otro programa del PC no puede mandar
+    // ordenes (escribir archivos + compilar C++ + Play = codigo nativo).
+    bool require_token = safety_prefs_.mcp_require_token;
+    if (ImGui::Checkbox("Exigir token MCP", &require_token)) {
+        safety_prefs_.mcp_require_token = require_token;
+        saveSafetyPreferences(safety_prefs_);
+        mcp_.setRequireToken(require_token);
+    }
+    ImGui::SetItemTooltip("Cada peticion tiene que traer el token de esta sesion del editor (Authorization: Bearer).\n"
+                          "CramionMcp.exe y la Terminal (IA) lo mandan solos; las paginas web siempre se rechazan.\n"
+                          "Desactivalo solo para clientes HTTP antiguos que no pueden mandar cabeceras.");
+    if (require_token && mcp_.running()) {
+        const std::string token_file = dialogs::utf8(McpServer::tokenFile(mcp_.port()));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Copiar token")) ImGui::SetClipboardText(mcp_.token().c_str());
+        ImGui::TextDisabled("Token en %s (cambia en cada sesion del editor)", token_file.c_str());
+    }
 
     const auto snippet = [](const char* title, const std::string& text) {
         ImGui::SeparatorText(title);
@@ -2803,13 +2834,24 @@ void EditorApp::drawMcpWindow() {
         if (ImGui::SmallButton("Copiar")) ImGui::SetClipboardText(text.c_str());
         ImGui::PopID();
     };
-    snippet("Claude Code (terminal)", "claude mcp add --transport http cramion " + url);
-    snippet("Cursor / VS Code / Windsurf (mcp.json)", "{\n  \"mcpServers\": {\n    \"cramion\": { \"url\": \"" + url + "\" }\n  }\n}");
     std::string bridge = dialogs::utf8(gfx::shaders::directory().parent_path() / "CramionMcp.exe");
     std::string escaped;
     for (char c : bridge) {
         escaped += c;
         if (c == '\\') escaped += '\\';
+    }
+    const std::string port = std::to_string(mcp_.port());
+    if (require_token) {
+        // Con token: por el puente (lo lee en cada mensaje: sobrevive a reiniciar el editor).
+        snippet("Claude Code (terminal)", "claude mcp add cramion -- \"" + bridge + "\" --port " + port);
+        snippet("Cursor / VS Code / Windsurf (mcp.json, por stdio)",
+                "{\n  \"mcpServers\": {\n    \"cramion\": {\n      \"command\": \"" + escaped + "\",\n      \"args\": [\"--port\", \"" +
+                    port + "\"]\n    }\n  }\n}");
+        snippet("HTTP directo (solo esta sesion del editor)",
+                "claude mcp add --transport http cramion " + url + " --header \"Authorization: Bearer " + mcp_.token() + "\"");
+    } else {
+        snippet("Claude Code (terminal)", "claude mcp add --transport http cramion " + url);
+        snippet("Cursor / VS Code / Windsurf (mcp.json)", "{\n  \"mcpServers\": {\n    \"cramion\": { \"url\": \"" + url + "\" }\n  }\n}");
     }
     snippet("Claude Desktop (claude_desktop_config.json, por stdio)",
             "{\n  \"mcpServers\": {\n    \"cramion\": {\n      \"command\": \"" + escaped + "\",\n      \"args\": [\"--port\", \"" +

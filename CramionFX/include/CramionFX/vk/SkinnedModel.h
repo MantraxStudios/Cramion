@@ -19,6 +19,12 @@ class UploadBatch;
 class UploadFence;
 class VulkanDevice;
 
+// Recarga en caliente: el archivo `path` (ruta absoluta o relativa, como
+// aparece en TextureData::source_path o en una receta) cambio en disco. Las
+// texturas perezosas que lo usan dejan de compartirse con las ya subidas: el
+// siguiente SkinnedModel::create lo vuelve a leer. Cualquier hilo.
+void invalidateSharedTextureFile(const std::string& path);
+
 // Modelo con esqueleto ya en la GPU: vertices e indices, las texturas y un
 // descriptor set por material. Lo comparten todas sus instancias; lo que
 // cambia de una a otra (transformacion y huesos) va aparte.
@@ -31,7 +37,8 @@ public:
         // Bits de GpuSkinnedPush::flags del material (kFlagSpecularMap...).
         std::uint32_t shader_flags = 0;
         // Modelo de sombreado de Disney empaquetado para push.pick_id (bits
-        // 0-3 modelo, 8-31 tres parametros de 8 bits; ver shadingBits).
+        // 0-3 modelo, 4-7 mezcla, sin luz y color de vertice, 8-31 tres
+        // parametros de 8 bits; ver shadingBits).
         std::uint32_t shading = 0;
         // x = metalicidad, y = rugosidad, z = fuerza de la oclusion, w = escala
         // del normal map.
@@ -97,6 +104,13 @@ public:
     static std::uint32_t reliefFlags(std::uint32_t flags, const asset::MaterialData& material, bool has_height,
                                      bool tessellation);
     // El modelo de Disney del material, como lo leen skinned.frag y glass.frag.
+    // Bits 0-3: modelo (8 = sin luz, opaco); 4-5: mezcla de lo transparente
+    // (glass.frag: 0 vidrio, 1 alfa, 2 aditivo); 6: transparente sin luz; 7: el
+    // color de vertice multiplica al color base; 8-31: los tres parametros.
+    static constexpr int kShadingUnlit = 8;
+    static constexpr std::uint32_t kBlendShift = 4;
+    static constexpr std::uint32_t kShadingUnlitBit = 1u << 6;
+    static constexpr std::uint32_t kShadingVertexColorBit = 1u << 7;
     static std::uint32_t shadingBits(const asset::MaterialData& material);
     void destroy();
 
@@ -127,6 +141,7 @@ public:
     // Tiene UV de lightmap (set 1, binding 10; sus materiales llevan
     // GpuSkinnedPush::kFlagLightmap).
     bool hasLightmapUvs() const { return lightmap_uvs_ != nullptr; }
+    bool hasVertexColors() const { return vertex_colors_ != nullptr; }
     const std::vector<Material>& materials() const { return materials_; }
     // Editable en vivo: color, emision y parametros se leen al dibujar
     // (push constants), asi que un cambio se ve en el frame siguiente.
@@ -197,6 +212,7 @@ private:
     std::shared_ptr<VulkanBuffer> vertices_;
     std::shared_ptr<VulkanBuffer> indices_;
     std::shared_ptr<VulkanBuffer> lightmap_uvs_;  // unorm16x2 por vertice (o nada)
+    std::shared_ptr<VulkanBuffer> vertex_colors_;  // RGBA8 por vertice (o nada)
     std::uint32_t index_count_ = 0;
     bool rigid_ = false;
 

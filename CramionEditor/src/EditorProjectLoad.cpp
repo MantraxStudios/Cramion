@@ -43,7 +43,7 @@ std::vector<std::uint8_t> captureEditorWindow(HWND hwnd, const std::filesystem::
 namespace {
 
 constexpr ImU32 kAccent = theme::kAccent;  // acento del tema
-constexpr ImU32 kCardBg = IM_COL32(12, 14, 17, 255);   // el fondo del banner (igual: sin recuadro)
+constexpr ImU32 kCardBg = IM_COL32(12, 14, 17, 255);   // fondo de la tarjeta (el logo va con alfa encima)
 
 }  // namespace
 
@@ -468,30 +468,35 @@ void EditorApp::drawProjectLoading(float delta_seconds) {
     const ImVec2 p = ImGui::GetWindowPos();
     const float w = card_size.x;
 
-    // --- Banner: el logo y la palabra CRAMION, recortados del de 1920x1080
-    // (sin el "GAME POWERED BY", que es para los juegos) ---
-    const ImTextureID banner = imgui_.banner();
+    // --- Logo del motor (editor_icons/logo.png, con alfa) y CRAMION en texto ---
+    // Antes se recortaba el banner de 1920x1080 con coordenadas fijas del
+    // banner viejo: con el de la 2.5.1 (solo texto, sin logo) salian trozos de
+    // las letras de "GAME" y "CRAMION" sobre recuadros negros.
+    const ImTextureID logo = imgui_.logo();
     float y = p.y + 34.0f;
-    if (banner != 0) {
-        // Logo: x 820..1100, y 205..490 del banner.
-        const float logo_h = 120.0f;
-        const float logo_w = logo_h * (280.0f / 285.0f);
-        draw->AddImage(banner, ImVec2(p.x + (w - logo_w) * 0.5f, y), ImVec2(p.x + (w + logo_w) * 0.5f, y + logo_h),
-                       ImVec2(820.0f / 1920.0f, 205.0f / 1080.0f), ImVec2(1100.0f / 1920.0f, 490.0f / 1080.0f));
-        y += logo_h + 22.0f;
-        // CRAMION: x 770..1150, y 628..712.
-        const float word_h = 38.0f;
-        const float word_w = word_h * (380.0f / 84.0f);
-        draw->AddImage(banner, ImVec2(p.x + (w - word_w) * 0.5f, y), ImVec2(p.x + (w + word_w) * 0.5f, y + word_h),
-                       ImVec2(770.0f / 1920.0f, 628.0f / 1080.0f), ImVec2(1150.0f / 1920.0f, 712.0f / 1080.0f));
-        y += word_h + 30.0f;
+    if (logo != 0) {
+        const float logo_size = 120.0f;
+        draw->AddImage(logo, ImVec2(p.x + (w - logo_size) * 0.5f, y), ImVec2(p.x + (w + logo_size) * 0.5f, y + logo_size));
+        y += logo_size + 18.0f;
     } else {
+        y += 90.0f;
+    }
+    {
+        // CRAMION con espaciado entre letras, centrado.
         const char* title = "CRAMION";
-        const float size = ImGui::GetFontSize() * 2.6f;
-        const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0.0f, title);
-        draw->AddText(ImGui::GetFont(), size, ImVec2(p.x + (w - ts.x) * 0.5f, y + 90.0f), IM_COL32(240, 242, 246, 255),
-                      title);
-        y += 190.0f;
+        const float size = ImGui::GetFontSize() * 2.3f;
+        const float spacing = size * 0.18f;
+        ImFont* font = ImGui::GetFont();
+        float title_w = -spacing;
+        for (const char* c = title; *c != '\0'; ++c) {
+            title_w += font->CalcTextSizeA(size, FLT_MAX, 0.0f, c, c + 1).x + spacing;
+        }
+        float x = p.x + (w - title_w) * 0.5f;
+        for (const char* c = title; *c != '\0'; ++c) {
+            draw->AddText(font, size, ImVec2(x, y), IM_COL32(240, 242, 246, 255), c, c + 1);
+            x += font->CalcTextSizeA(size, FLT_MAX, 0.0f, c, c + 1).x + spacing;
+        }
+        y += size + 30.0f;
     }
 
     // --- Proyecto ---

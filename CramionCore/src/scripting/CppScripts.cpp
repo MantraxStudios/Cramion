@@ -12,6 +12,7 @@
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/scripting/CppScriptIpc.h"
+#include "CramionCore/scripting/NativeApi.h"
 
 #include <CramionDM/Input.h>
 #include <CramionDM/KeyCode.h>
@@ -33,6 +34,7 @@
 #include <unordered_map>
 #include <tuple>
 #include <unordered_set>
+#include <utility>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -53,6 +55,7 @@
 #include <unistd.h>
 #include <cerrno>
 #include <csignal>
+#include <dlfcn.h>
 extern char** environ;
 #endif
 
@@ -80,9 +83,22 @@ cvar::CVar<bool> g_hot_keep_state("script.cpp.HotReloadKeepState", true,
                                    "Recarga en caliente (guardar un .cpp en Play): conservar propiedades y estado (onBeforeReload/"
                                    "onAfterReload) sin volver a llamar a awake/start",
                                    cvar::Saved);
+cvar::CVar<bool> g_batch_calls("script.cpp.BatchCalls", true,
+                                "Enviar los eventos de cada fase (fixedUpdate, colisiones, start/update/lateUpdate) de todos "
+                                "los scripts en un solo mensaje al proceso (false: un mensaje por script y evento, para comparar)",
+                                cvar::Saved);
 cvar::CVar<int> g_max_restarts("script.cpp.MaxRestarts", 20,
                                "Veces que se rearranca el proceso de scripts en una sesion de Play antes de rendirse",
                                cvar::Saved, 0, 1000);
+cvar::CVar<bool> g_skip_empty("script.cpp.SkipEmptyEvents", true,
+                              "No enviar los eventos que la clase no sobrescribe (update, fixedUpdate, colisiones...): "
+                              "un update() vacio no cuesta un viaje (false: enviarlos todos, para comparar)",
+                              cvar::Saved);
+cvar::CVar<bool> g_in_process("script.cpp.InProcess", true,
+                              "Juego exportado: cargar la DLL de los scripts en el propio juego, sin CramionScriptHost.exe "
+                              "(sin cambios de contexto; un fallo de hardware de un script cierra el juego). El editor siempre "
+                              "usa el proceso aparte",
+                              cvar::Saved);
 
 // El script del SDK que corre las pruebas (cramion/Test.h): sus pruebas con co_await
 // son corrutinas cuyas tramas y codigo viven en la DLL del proceso de scripts.
@@ -620,6 +636,144 @@ namespace {
 enum class Outcome { Ok, ScriptError, Missing, HostDied, Timeout };
 using RpcHandler = std::function<void(proto::Rpc, proto::Reader&, proto::Writer&)>;
 
+// --- Scripts en el mismo proceso (juego exportado: setInProcess) ---
+// La DLL se carga en el motor y sus exportaciones se llaman directamente, con
+// los mismos mensajes que van a CramionScriptHost.exe (CppScriptIpc.h): el
+// resto del sistema no cambia, pero no hay cambio de contexto, ni espera, ni
+// copia al bloque compartido. Se eligio esto y no un anillo de comandos en
+// memoria compartida porque el anillo sigue necesitando el otro proceso y una
+// espera por cada llamada que devuelve algo; aqui una llamada a la API cuesta
+// lo que una llamada a funcion.
+// El precio: no hay aislamiento. Las excepciones de C++ se atrapan (las
+// exportaciones del SDK no dejan salir ninguna), pero un fallo de hardware de
+// un script cierra el juego (como con IL2CPP en Unity) y un bucle infinito lo
+// cuelga (no hay tiempo maximo). Por eso el editor sigue con el proceso aparte.
+// La DLL no se descarga nunca (sus hilos o sus estaticos podrian seguir vivos):
+// al cerrar se destruyen las instancias y al volver a arrancar se reutiliza.
+struct LocalScripts {
+    using AbiFn = std::uint32_t (*)();
+    using InitFn = void (*)(const proto::Api*, std::uint64_t);
+    using CountFn = int (*)();
+    using NameFn = const char* (*)(int);
+    using EventsFn = std::uint32_t (*)(int);
+    using CreateFn = void* (*)(const char*, std::uint64_t, const char*, char*, int);
+    using CallFn = int (*)(void*, std::uint32_t, const proto::EventArgs*, char*, int);
+    using DestroyFn = void (*)(void*);
+    using CallbackFn = int (*)(std::uint64_t, const char*, char*, int);
+    using MessageFn = int (*)(void*, const char*, const char*, char*, int);
+    using SnapshotFn = int (*)(void*, char*, int, char*, int);
+    using RestoreFn = int (*)(void*, const char*, char*, int);
+
+    void* library = nullptr;
+    std::string path;
+    InitFn init = nullptr;
+    CountFn count = nullptr;
+    NameFn name = nullptr;
+    EventsFn events = nullptr;  // opcional (DLL anterior: todos los eventos)
+    CreateFn create = nullptr;
+    CallFn call = nullptr;
+    DestroyFn destroy = nullptr;
+    CallbackFn callback = nullptr;
+    MessageFn message = nullptr;    // opcional
+    SnapshotFn snapshot = nullptr;  // opcional
+    RestoreFn restore = nullptr;    // opcional
+    std::unordered_map<std::uint32_t, void*> instances;
+    // La peticion en curso: las RPC de la DLL van a su handler. Sin peticion
+    // (destructores al cerrar) se contestan vacias.
+    const RpcHandler* handler = nullptr;
+    std::uint64_t* rpcs = nullptr;
+    proto::Writer reply;  // vale hasta la siguiente RPC (como el bloque del proceso)
+
+    void* symbol(const char* s) const {
+#if defined(_WIN32)
+        return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(library), s));
+#else
+        return dlsym(library, s);
+#endif
+    }
+
+    // Carga la DLL (una vez por proceso). false + error si no se puede.
+    bool load(const std::filesystem::path& dll, std::string& error) {
+        const std::string wanted = utf8(dll);
+        if (library != nullptr) {
+            if (path == wanted) return true;
+            error = "ya hay otra DLL de scripts cargada en el juego (" + path + ")";
+            return false;
+        }
+#if defined(_WIN32)
+        // Sus dependencias, primero en su carpeta (como el proceso aparte, que arranca en ella).
+        library = LoadLibraryExW(dll.wstring().c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (library == nullptr) {
+            error = "no se pudo cargar " + wanted + " (error " + std::to_string(GetLastError()) + ")";
+            return false;
+        }
+#else
+        library = dlopen(wanted.c_str(), RTLD_NOW | RTLD_LOCAL);
+        if (library == nullptr) {
+            const char* why = dlerror();
+            error = "no se pudo cargar " + wanted + " (" + (why != nullptr ? why : "?") + ")";
+            return false;
+        }
+#endif
+        const auto abi = reinterpret_cast<AbiFn>(symbol("cramion_abi"));
+        init = reinterpret_cast<InitFn>(symbol("cramion_init"));
+        count = reinterpret_cast<CountFn>(symbol("cramion_class_count"));
+        name = reinterpret_cast<NameFn>(symbol("cramion_class_name"));
+        events = reinterpret_cast<EventsFn>(symbol("cramion_class_events"));
+        create = reinterpret_cast<CreateFn>(symbol("cramion_create"));
+        call = reinterpret_cast<CallFn>(symbol("cramion_call"));
+        destroy = reinterpret_cast<DestroyFn>(symbol("cramion_destroy"));
+        callback = reinterpret_cast<CallbackFn>(symbol("cramion_callback"));
+        message = reinterpret_cast<MessageFn>(symbol("cramion_message"));
+        snapshot = reinterpret_cast<SnapshotFn>(symbol("cramion_snapshot"));
+        restore = reinterpret_cast<RestoreFn>(symbol("cramion_restore"));
+        if (abi == nullptr || init == nullptr || count == nullptr || name == nullptr || create == nullptr || call == nullptr ||
+            destroy == nullptr || callback == nullptr) {
+            error = "la DLL no es de scripts de Cramion (faltan exportaciones del SDK)";
+        } else if (abi() != proto::kAbiVersion) {
+            error = "la DLL se compilo con otra version del SDK: vuelve a exportar el juego";
+        } else {
+            path = wanted;
+            return true;
+        }
+        // Aun sin instancias: se puede descargar.
+#if defined(_WIN32)
+        FreeLibrary(static_cast<HMODULE>(library));
+#else
+        dlclose(library);
+#endif
+        library = nullptr;
+        return false;
+    }
+
+    // Destruye las instancias que queden (al cerrar o con Quit).
+    void destroyAll() {
+        std::unordered_map<std::uint32_t, void*> list;
+        list.swap(instances);
+        for (const auto& [id, instance] : list) destroy(instance);
+    }
+};
+
+LocalScripts& localScripts() {
+    static LocalScripts scripts;
+    return scripts;
+}
+
+// La puerta de la DLL al motor (la misma que hostRpc en el proceso aparte).
+std::uint32_t localRpc(std::uint32_t op, const void* data, std::uint32_t size, const void** reply) {
+    LocalScripts& l = localScripts();
+    l.reply.bytes.clear();
+    if (l.handler != nullptr && *l.handler) {
+        proto::Reader r(data, size);
+        (*l.handler)(static_cast<proto::Rpc>(op), r, l.reply);
+        if (l.rpcs != nullptr) ++*l.rpcs;
+    }
+    if (reply != nullptr) *reply = l.reply.bytes.data();
+    return static_cast<std::uint32_t>(l.reply.bytes.size());
+}
+
+const proto::Api g_local_api{proto::kAbiVersion, &localRpc};
+
 struct HostProcess {
 #if defined(_WIN32)
     HANDLE mapping = nullptr;
@@ -639,8 +793,18 @@ struct HostProcess {
 #endif
     std::uint32_t serial = 0;
     std::uint64_t rpcs = 0;
+    std::uint64_t requests = 0;  // viajes motor -> proceso (Create, Call, CallMany...)
+    // Los eventos que sobrescribe cada clase de Load (en el orden de los nombres;
+    // ~0u = todos, con un proceso o una DLL que no lo dicen).
+    std::vector<std::uint32_t> class_events;
+    // La DLL en el mismo proceso (LocalScripts) en vez de CramionScriptHost.
+    bool local = false;
+
+    // CallMany: 1 + el indice de la llamada que estaba en curso (0 = ninguna).
+    std::uint32_t progress() const { return block != nullptr ? block->progress.load(std::memory_order_acquire) : 0; }
 
     bool running() const {
+        if (local) return localScripts().library != nullptr;
 #if defined(_WIN32)
         return process != nullptr && WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
 #else
@@ -693,6 +857,12 @@ struct HostProcess {
 #endif
 
     void close() {
+        if (local) {
+            // La DLL se queda cargada; las instancias que queden se destruyen
+            // (sus llamadas al motor se contestan vacias: ya no hay peticion).
+            local = false;
+            if (localScripts().library != nullptr) localScripts().destroyAll();
+        }
 #if defined(_WIN32)
         if (process != nullptr) {
             TerminateProcess(process, 0);
@@ -734,6 +904,7 @@ struct HostProcess {
     }
 
     void applyMemoryLimit() {
+        if (local) return;  // el tope es del proceso aparte
 #if defined(_WIN32)
         if (job == nullptr) return;
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -750,6 +921,7 @@ struct HostProcess {
     }
 
     std::uint64_t memory() const {
+        if (local) return 0;  // la de los scripts es la del juego
 #if defined(_WIN32)
         PROCESS_MEMORY_COUNTERS_EX counters{};
         if (running() && GetProcessMemoryInfo(process, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters))) {
@@ -770,6 +942,7 @@ struct HostProcess {
     // Una peticion; las RPC del script se contestan mientras se espera.
     Outcome request(ipc::Op op, const proto::Writer& w, std::string& message, std::vector<std::uint8_t>* payload,
                     int timeout_ms, const RpcHandler& handler) {
+        if (local) return requestLocal(op, w, message, payload, handler);
 #if defined(_WIN32)
         if (block == nullptr || !running()) {
             message = "el proceso de scripts no esta en marcha";
@@ -779,12 +952,15 @@ struct HostProcess {
         if (size > 0) std::memcpy(block->data, w.bytes.data(), size);
         block->op = static_cast<std::uint32_t>(op);
         block->size = static_cast<std::uint32_t>(size);
+        block->progress.store(0, std::memory_order_relaxed);
+        ++requests;
         block->turn.store(1, std::memory_order_release);
         SetEvent(to_host);
-        const auto start = std::chrono::steady_clock::now();
+        auto start = std::chrono::steady_clock::now();
         const int budget = timeout_ms > 0 ? timeout_ms : g_timeout_ms.get();
         const auto limit = std::chrono::milliseconds(std::max(budget, 20));
         int spin = 0;
+        std::uint32_t progress_seen = 0;
         while (true) {
             if (block->turn.load(std::memory_order_acquire) == 2) {
                 spin = 0;
@@ -836,6 +1012,11 @@ struct HostProcess {
                     return Outcome::HostDied;
                 }
             }
+            // CallMany: el tiempo maximo es por llamada; cada una nueva lo reinicia.
+            if (const std::uint32_t p = block->progress.load(std::memory_order_relaxed); p != progress_seen) {
+                progress_seen = p;
+                start = std::chrono::steady_clock::now();
+            }
             if (std::chrono::steady_clock::now() - start > limit) {
                 TerminateProcess(process, 1);
                 message = "tardo mas de " + std::to_string(budget) + " ms (bucle infinito?): se corto (script.cpp.TimeoutMs)";
@@ -851,12 +1032,15 @@ struct HostProcess {
         if (size > 0) std::memcpy(block->data, w.bytes.data(), size);
         block->op = static_cast<std::uint32_t>(op);
         block->size = static_cast<std::uint32_t>(size);
+        block->progress.store(0, std::memory_order_relaxed);
+        ++requests;
         block->turn.store(1, std::memory_order_release);
         wake();
-        const auto start = std::chrono::steady_clock::now();
+        auto start = std::chrono::steady_clock::now();
         const int budget = timeout_ms > 0 ? timeout_ms : g_timeout_ms.get();
         const auto limit = std::chrono::milliseconds(std::max(budget, 20));
         int spin = 0;
+        std::uint32_t progress_seen = 0;
         while (true) {
             if (block->turn.load(std::memory_order_acquire) == 2) {
                 spin = 0;
@@ -901,6 +1085,11 @@ struct HostProcess {
                     return Outcome::HostDied;
                 }
             }
+            // CallMany: el tiempo maximo es por llamada; cada una nueva lo reinicia.
+            if (const std::uint32_t p = block->progress.load(std::memory_order_relaxed); p != progress_seen) {
+                progress_seen = p;
+                start = std::chrono::steady_clock::now();
+            }
             if (std::chrono::steady_clock::now() - start > limit) {
                 kill(pid, SIGKILL);
                 message = "tardo mas de " + std::to_string(budget) + " ms (bucle infinito?): se corto (script.cpp.TimeoutMs)";
@@ -936,6 +1125,7 @@ struct HostProcess {
         }
         block = static_cast<ipc::Block*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ipc::Block)));
         block->turn.store(0);
+        block->progress.store(0);
         block->host_ready = 0;
         block->crash[0] = 0;
         job = CreateJobObjectW(nullptr, nullptr);
@@ -1007,6 +1197,7 @@ struct HostProcess {
         }
         block = static_cast<ipc::Block*>(mapped);
         block->turn.store(0);
+        block->progress.store(0);
         block->host_ready = 0;
         block->crash[0] = 0;
         channel = pair[0];
@@ -1065,7 +1256,227 @@ struct HostProcess {
         const std::uint32_t n = r.u32();
         classes.clear();
         for (std::uint32_t i = 0; i < n && r.ok(); ++i) classes.push_back(r.str());
+        // Los eventos de cada clase (un proceso anterior no los manda: todos).
+        class_events.assign(classes.size(), ~0u);
+        if (r.ok() && r.remaining() >= sizeof(std::uint32_t)) {
+            const std::uint32_t m = r.u32();
+            for (std::uint32_t i = 0; i < m && r.ok(); ++i) {
+                const std::uint32_t mask = r.u32();
+                if (r.ok() && i < class_events.size()) class_events[i] = mask;
+            }
+        }
         return true;
+    }
+
+    // Como launch(), con la DLL en el mismo proceso (LocalScripts).
+    bool launchLocal(const std::filesystem::path& dll, std::uint32_t new_serial, std::string& error,
+                     std::vector<std::string>& classes, const RpcHandler& handler) {
+        close();
+        serial = new_serial;
+        std::error_code ec;
+        if (dll.empty() || !std::filesystem::exists(dll, ec)) {
+            error = "no hay DLL de scripts de C++ compilada";
+            return false;
+        }
+        LocalScripts& l = localScripts();
+        std::string why;
+        if (!l.load(dll, why)) {
+            error = "no se pudo cargar la DLL de scripts: " + why;
+            return false;
+        }
+        l.destroyAll();  // de un uso anterior (no deberia quedar ninguna)
+        const RpcHandler* prev_handler = std::exchange(l.handler, &handler);
+        std::uint64_t* prev_rpcs = std::exchange(l.rpcs, &rpcs);
+        l.init(&g_local_api, serial);  // registra sus CVars (RPC) y empieza la sesion de la API
+        l.handler = prev_handler;
+        l.rpcs = prev_rpcs;
+        const int n = l.count();
+        classes.clear();
+        class_events.clear();
+        for (int i = 0; i < n; ++i) {
+            const char* name = l.name(i);
+            classes.push_back(name != nullptr ? name : "");
+            class_events.push_back(l.events != nullptr ? l.events(i) : ~0u);
+        }
+        local = true;
+        return true;
+    }
+
+    // request() con la DLL en el mismo proceso: lo mismo que hace
+    // CramionScriptHost con cada mensaje (ScriptHost.cpp), llamando directo.
+    Outcome requestLocal(ipc::Op op, const proto::Writer& w, std::string& message, std::vector<std::uint8_t>* payload,
+                         const RpcHandler& handler) {
+        LocalScripts& l = localScripts();
+        message.clear();
+        if (payload != nullptr) payload->clear();
+        if (l.library == nullptr) {
+            message = "la DLL de scripts no esta cargada";
+            return Outcome::HostDied;
+        }
+        ++requests;
+        // Las RPC de la DLL van a este handler mientras dura (y se deja el anterior).
+        struct Scope {
+            LocalScripts& l;
+            const RpcHandler* prev_handler;
+            std::uint64_t* prev_rpcs;
+            ~Scope() {
+                l.handler = prev_handler;
+                l.rpcs = prev_rpcs;
+            }
+        } scope{l, std::exchange(l.handler, &handler), std::exchange(l.rpcs, &rpcs)};
+        proto::Reader r(w.bytes.data(), w.bytes.size());
+        char error[2048];
+        error[0] = 0;
+        const auto find = [&](std::uint32_t id) -> void* {
+            const auto it = l.instances.find(id);
+            return it != l.instances.end() ? it->second : nullptr;
+        };
+        switch (op) {
+            case ipc::Op::Create: {
+                const std::uint32_t id = r.u32();
+                const std::string cls = r.str();
+                const std::uint64_t entity = r.u64();
+                const std::string values = r.str();
+                void* created = l.create(cls.c_str(), entity, values.c_str(), error, sizeof(error));
+                if (created == nullptr) {
+                    if (error[0] != 0) {
+                        message = error;
+                        return Outcome::ScriptError;
+                    }
+                    message = "no hay ninguna clase " + cls + " (CRAMION_SCRIPT)";
+                    return Outcome::Missing;
+                }
+                l.instances[id] = created;
+                return Outcome::Ok;
+            }
+            case ipc::Op::Destroy: {
+                const auto it = l.instances.find(r.u32());
+                if (it == l.instances.end()) return Outcome::Ok;
+                void* instance = it->second;
+                l.instances.erase(it);
+                l.destroy(instance);
+                return Outcome::Ok;
+            }
+            case ipc::Op::Call: {
+                const std::uint32_t id = r.u32();
+                const std::uint32_t event = r.u32();
+                proto::EventArgs args{};
+                if (const std::uint8_t* raw = r.bytes(sizeof(args))) std::memcpy(&args, raw, sizeof(args));
+                void* instance = find(id);
+                if (instance == nullptr) {
+                    message = "no existe la instancia";
+                    return Outcome::Missing;
+                }
+                if (l.call(instance, event, &args, error, sizeof(error)) != 0) {
+                    message = error;
+                    return Outcome::ScriptError;
+                }
+                return Outcome::Ok;
+            }
+            case ipc::Op::CallMany: {
+                // Como callMany del proceso: tras fallar, las demas llamadas de esa
+                // instancia en el lote se saltan; un id que ya no existe, tambien.
+                std::vector<std::uint32_t> broken;
+                proto::Writer failures;
+                std::uint32_t failed = 0;
+                const std::uint32_t n = r.u32();
+                for (std::uint32_t i = 0; i < n && r.ok(); ++i) {
+                    const std::uint32_t id = r.u32();
+                    const std::uint32_t event = r.u32();
+                    const std::uint8_t* raw = r.bytes(sizeof(proto::EventArgs));
+                    if (raw == nullptr) break;
+                    if (std::find(broken.begin(), broken.end(), id) != broken.end()) continue;
+                    void* instance = find(id);
+                    if (instance == nullptr) continue;
+                    proto::EventArgs args{};
+                    std::memcpy(&args, raw, sizeof(args));
+                    error[0] = 0;
+                    if (l.call(instance, event, &args, error, sizeof(error)) == 0) continue;
+                    broken.push_back(id);
+                    failures.u32(i).u32(static_cast<std::uint32_t>(ipc::Status::Exception)).str(error);
+                    ++failed;
+                }
+                if (payload != nullptr) {
+                    proto::Writer out;
+                    out.u32(failed).raw(failures.bytes.data(), failures.bytes.size());
+                    *payload = std::move(out.bytes);
+                }
+                return Outcome::Ok;
+            }
+            case ipc::Op::Callback: {
+                const std::uint64_t id = r.u64();
+                const std::string args = r.str();
+                if (l.callback(id, args.c_str(), error, sizeof(error)) != 0) {
+                    message = error;
+                    return Outcome::ScriptError;
+                }
+                return Outcome::Ok;
+            }
+            case ipc::Op::Message: {
+                const std::uint32_t id = r.u32();
+                const std::string method = r.str();
+                const std::string value = r.str();
+                void* instance = find(id);
+                if (instance == nullptr) {
+                    message = "no existe la instancia";
+                    return Outcome::Missing;
+                }
+                if (l.message != nullptr && l.message(instance, method.c_str(), value.c_str(), error, sizeof(error)) != 0) {
+                    message = error;
+                    return Outcome::ScriptError;
+                }
+                return Outcome::Ok;
+            }
+            case ipc::Op::Snapshot: {
+                void* instance = find(r.u32());
+                std::string text = "{}";
+                Outcome result = Outcome::Ok;
+                if (instance != nullptr && l.snapshot != nullptr) {
+                    // Devuelve el tamano que hace falta: si no llega, otra vez (no
+                    // vuelve a llamar a onBeforeReload).
+                    std::vector<char> out(1 << 16);
+                    for (int attempt = 0; attempt < 2; ++attempt) {
+                        const int needed = l.snapshot(instance, out.data(), static_cast<int>(out.size()), error, sizeof(error));
+                        if (needed <= static_cast<int>(out.size())) {
+                            if (needed > 0) text = out.data();
+                            break;
+                        }
+                        out.resize(static_cast<std::size_t>(needed) + 16);
+                    }
+                    if (error[0] != 0) {
+                        message = error;
+                        result = Outcome::ScriptError;
+                    }
+                }
+                if (payload != nullptr) {
+                    proto::Writer out;
+                    out.str(text);
+                    *payload = std::move(out.bytes);
+                }
+                return result;
+            }
+            case ipc::Op::Restore: {
+                const std::uint32_t id = r.u32();
+                const std::string state = r.str();
+                void* instance = find(id);
+                if (instance == nullptr) {
+                    message = "no existe la instancia";
+                    return Outcome::Missing;
+                }
+                if (l.restore != nullptr && l.restore(instance, state.c_str(), error, sizeof(error)) != 0) {
+                    message = error;
+                    return Outcome::ScriptError;
+                }
+                return Outcome::Ok;
+            }
+            case ipc::Op::Quit:
+                // Las instancias que queden se destruyen ya (aun con la API).
+                l.destroyAll();
+                return Outcome::Ok;
+            default:
+                message = "no disponible con los scripts en el mismo proceso";
+                return Outcome::Missing;
+        }
     }
 };
 
@@ -1084,6 +1495,7 @@ struct CppScriptSystem::Impl {
     std::filesystem::path host_exe;
     std::filesystem::path dll_path;
     bool prebuilt = false;
+    bool in_process = false;  // setInProcess (y script.cpp.InProcess): la DLL en el juego
     physics::PhysicsSystem* physics = nullptr;
     int physics_listener = -1;
     const dm::Input* input = nullptr;
@@ -1104,6 +1516,9 @@ struct CppScriptSystem::Impl {
         std::string cls;
         bool created = false;
         bool started = false;
+        bool wanted = false;   // el script y su objeto estan activos (lo que deberia ver)
+        bool enabled = false;  // ya se le llamo a onEnable (y aun no a onDisable)
+        std::uint32_t events = ~0u;  // los que sobrescribe su clase (bit 1 << proto::Event), al crearla
     };
     HostProcess host;
     ecs::World* world = nullptr;
@@ -1121,6 +1536,7 @@ struct CppScriptSystem::Impl {
     struct ReloadState {
         std::string json;
         bool started = false;
+        bool enabled = false;
     };
     std::unordered_map<entt::entity, ReloadState> reload_state;
     int reloads = 0;
@@ -1132,6 +1548,21 @@ struct CppScriptSystem::Impl {
     std::uint64_t frame = 0;
     float fixed_step = 1.0f / 60.0f;
     int memory_listener = -1;
+    // Lote de eventos de la fase en curso (Op::CallMany) y vectores que se
+    // reutilizan cada frame (sin reservar memoria en el camino de juego).
+    struct BatchCall {
+        entt::entity h;
+        std::uint32_t id;
+        proto::Event event;
+    };
+    std::vector<BatchCall> batch;
+    proto::Writer batch_message;
+    std::vector<std::uint8_t> batch_reply;
+    bool batch_supported = true;  // un proceso que no conoce CallMany: llamada a llamada
+    std::uint64_t posted = 0;     // eventos enviados por post() (los no sobrescritos no cuentan)
+    std::vector<entt::entity> live;     // liveHandles()
+    std::vector<entt::entity> pending;  // sync()
+    static constexpr std::size_t kBatchMax = 16384;  // ~1,3 MB por mensaje (el bloque es de 4 MB)
     // Vivo mientras exista este sistema: el sumidero de callbacks que se da a
     // ScriptSystem lo mira (puede durar mas o menos que nosotros).
     std::shared_ptr<int> alive = std::make_shared<int>(0);
@@ -1164,8 +1595,10 @@ struct CppScriptSystem::Impl {
 
     void closeHost() {
         host.close();
-        for (auto& [h, inst] : instances) inst.created = inst.started = false;
+        for (auto& [h, inst] : instances) inst.created = inst.started = inst.enabled = false;
         callbacks.clear();
+        batch.clear();
+        batch_supported = true;
     }
     // Tras cerrar el proceso para reiniciarlo (fallo o recarga): los callbacks de
     // C++ del motor ya no valen. No en closeHost(): stop() lo llama desde el
@@ -1180,6 +1613,13 @@ struct CppScriptSystem::Impl {
 
     bool launch() {
         std::string message;
+        // Juego exportado: la DLL en el mismo proceso; si no carga, el proceso aparte.
+        if (in_process && g_in_process.get()) {
+            if (host.launchLocal(dll_path, g_next_serial++, message, classes, handler())) return true;
+            std::cerr << "[C++] Scripts en el mismo proceso: " << message << " (se usa " << utf8(host_exe.filename()) << ")"
+                      << std::endl;
+            message.clear();
+        }
         if (!host.launch(host_exe, dll_path, g_next_serial++, message, classes, handler())) {
             error({}, 0, message);
             load_failed = true;
@@ -1188,11 +1628,28 @@ struct CppScriptSystem::Impl {
         return true;
     }
 
+    // Los eventos que sobrescribe una clase (de la ultima carga; todos si no se sabe).
+    std::uint32_t eventsOf(const std::string& cls) const {
+        if (!g_skip_empty.get()) return ~0u;
+        for (std::size_t i = 0; i < classes.size() && i < host.class_events.size(); ++i) {
+            if (classes[i] == cls) return host.class_events[i];
+        }
+        return ~0u;
+    }
+
+    // false: la clase no sobrescribe ese evento y no hace falta enviarlo. Time
+    // (solo el tiempo) y los que no conoce el SDK se envian siempre.
+    static bool wants(const Instance& inst, proto::Event event) {
+        const auto i = static_cast<std::uint32_t>(event);
+        return i >= static_cast<std::uint32_t>(proto::Event::Time) || ((inst.events >> i) & 1u) != 0;
+    }
+
     Outcome request(ipc::Op op, const proto::Writer& w, std::string& message, std::vector<std::uint8_t>* payload = nullptr) {
         return host.request(op, w, message, payload, 0, handler());
     }
 
     bool callEvent(entt::entity h, Instance& inst, proto::Event event, const proto::EventArgs& args) {
+        if (!wants(inst, event)) return true;  // metodo vacio (el de Script): nada que llamar
         proto::Writer w;
         w.u32(inst.id).u32(static_cast<std::uint32_t>(event)).raw(&args, sizeof(args));
         std::string message;
@@ -1216,6 +1673,9 @@ struct CppScriptSystem::Impl {
             case proto::Event::TriggerEnter: return "onTriggerEnter()";
             case proto::Event::TriggerStay: return "onTriggerStay()";
             case proto::Event::TriggerExit: return "onTriggerExit()";
+            case proto::Event::Enable: return "onEnable()";
+            case proto::Event::Disable: return "onDisable()";
+            case proto::Event::Time: return "Time (fin de frame)";
             default: return "?";
         }
     }
@@ -1251,6 +1711,7 @@ struct CppScriptSystem::Impl {
             std::string ignored;
             if (host.running() && inst.created) request(ipc::Op::Destroy, w, ignored);
             inst.created = false;
+            inst.enabled = false;
             return;
         }
         reportFault(who, (o == Outcome::Timeout ? "" : "el proceso de scripts cayo: ") + message +
@@ -1402,6 +1863,57 @@ struct CppScriptSystem::Impl {
                     out.str(reply);
                 } else if (reply.find("\"ok\":false") != std::string::npos) {
                     std::cerr << "[C++] Api::send: " << reply << std::endl;
+                }
+                break;
+            }
+            // La API por indice y en binario (NativeApi::bridgeBinary). Sin
+            // juego en marcha: ApiResolve sin respuesta (el SDK usa el JSON,
+            // que da el error de siempre) y ApiCall con el error.
+            case proto::Rpc::ApiResolve:
+            case proto::Rpc::ApiCall:
+            case proto::Rpc::ApiCallSend: {
+                const std::size_t size = r.remaining();
+                const std::uint8_t* data = r.bytes(size);
+                if (api == nullptr || !api->running()) {
+                    if (op == proto::Rpc::ApiCall) out.u32(static_cast<std::uint32_t>(proto::ApiStatus::Error)).str("el juego no esta en marcha");
+                    break;
+                }
+                using Bridge = scripting::api::NativeApi::BridgeOp;
+                const Bridge kind = op == proto::Rpc::ApiResolve ? Bridge::Resolve : (op == proto::Rpc::ApiCall ? Bridge::Call : Bridge::Send);
+                const std::string warning = api->nativeApi().bridgeBinary(kind, data, size, out.bytes);
+                if (!warning.empty()) std::cerr << "[C++] " << warning << std::endl;
+                break;
+            }
+            // Scene::setTransforms y Entity::setQuaternion (van en el lote).
+            case proto::Rpc::SetTransforms: {
+                const std::uint32_t n = r.u32();
+                const std::uint32_t mask = r.u32();
+                const auto finite = [](const Vec3& v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); };
+                for (std::uint32_t i = 0; i < n && r.ok(); ++i) {
+                    ecs::Entity e = entity(r.u64());
+                    const Vec3 p = (mask & proto::TransformPosition) != 0 ? readVec(r) : Vec3{};
+                    core::Quat q{};
+                    if ((mask & proto::TransformRotation) != 0) {
+                        q.x = r.f32();
+                        q.y = r.f32();
+                        q.z = r.f32();
+                        q.w = r.f32();
+                    }
+                    const Vec3 s = (mask & proto::TransformScale) != 0 ? readVec(r) : Vec3{};
+                    if (!e.valid() || !r.ok()) continue;
+                    const bool has_q = (mask & proto::TransformRotation) != 0 && std::isfinite(q.x) && std::isfinite(q.y) &&
+                                       std::isfinite(q.z) && std::isfinite(q.w) && (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w) > 1e-12f;
+                    const bool has_p = (mask & proto::TransformPosition) != 0 && finite(p);
+                    const bool has_s = (mask & proto::TransformScale) != 0 && finite(s);
+                    const bool local = (mask & proto::TransformLocalPosition) != 0;
+                    // Las tres en local: una sola escritura (una marca de sucio).
+                    if (has_p && has_q && has_s && local) {
+                        e.setLocalTrs(p, core::normalize(q), s);
+                        continue;
+                    }
+                    if (has_q) e.setLocalRotation(core::normalize(q));
+                    if (has_s) e.setLocalScale(s);
+                    if (has_p) local ? e.setLocalPosition(p) : e.setWorldPosition(p);
                 }
                 break;
             }
@@ -1732,44 +2244,54 @@ struct CppScriptSystem::Impl {
         return a;
     }
 
-    // Crea las instancias que falten y destruye las que sobren. false si no hay proceso.
+    // Crea las instancias que falten, destruye las que sobren y avisa de los
+    // cambios de estado. Desactivar el script (enabled) o su objeto llama a
+    // onDisable() y la instancia sigue viva (pool de objetos: minions,
+    // proyectiles...); reactivarlo llama a onEnable(). Solo destruir el objeto,
+    // quitar el componente o cambiar de clase la destruye (onDisable si estaba
+    // activa + onDestroy). Una instancia se crea la primera vez que esta activa:
+    // awake, onEnable y, en el siguiente update, start. false si no hay proceso.
     bool sync(ecs::World& w) {
         auto& registry = w.registry();
         for (auto it = instances.begin(); it != instances.end();) {
             const entt::entity h = it->first;
             const CppScript* s = registry.valid(h) ? registry.try_get<CppScript>(h) : nullptr;
-            const bool keep = s != nullptr && s->enabled && w.wrap(h).activeInHierarchy() && s->class_name == it->second.cls &&
-                              !faulted.contains(h);
-            if (keep) {
+            if (s != nullptr && s->class_name == it->second.cls && !faulted.contains(h)) {
                 ++it;
                 continue;
             }
-            if (it->second.created && host.running() && !faulted.contains(h)) {
-                callEvent(h, it->second, proto::Event::Destroy, args(0.0f));
-                proto::Writer msg;
-                msg.u32(it->second.id);
-                std::string ignored;
-                request(ipc::Op::Destroy, msg, ignored);
-            }
+            retire(h);  // no toca el mapa (solo los valores)
+            reload_state.erase(h);
             it = instances.erase(it);
         }
+        // Lo que deberia estar activo: un activeInHierarchy() por script, solo si
+        // el componente esta activado.
         bool any = false;
         for (const entt::entity h : registry.view<CppScript>()) {
             const CppScript& s = registry.get<CppScript>(h);
-            if (!s.enabled || s.class_name.empty() || faulted.contains(h) || !w.wrap(h).activeInHierarchy()) continue;
-            any = true;
-            if (!instances.contains(h)) instances[h] = Instance{next_id++, s.class_name, false, false};
+            if (s.class_name.empty() || faulted.contains(h)) continue;
+            const bool active = s.enabled && w.wrap(h).activeInHierarchy();
+            auto it = instances.find(h);
+            if (it == instances.end()) {
+                if (!active) continue;  // se crea al activarse
+                Instance inst;
+                inst.id = next_id++;
+                inst.cls = s.class_name;
+                it = instances.emplace(h, std::move(inst)).first;
+            }
+            it->second.wanted = active;
+            any = any || active;
         }
-        if (!any) return false;
         if (!host.running()) {
+            if (!any) return false;
             if (load_failed || restarts > g_max_restarts.get()) return false;
             if (!launch()) return false;
         }
-        std::vector<entt::entity> order;
+        pending.clear();
         for (auto& [h, inst] : instances) {
-            if (!inst.created) order.push_back(h);
+            if (!inst.created && inst.wanted) pending.push_back(h);
         }
-        for (const entt::entity h : order) {
+        for (const entt::entity h : pending) {
             auto it = instances.find(h);
             if (it == instances.end() || !host.running()) break;
             Instance& inst = it->second;
@@ -1781,6 +2303,7 @@ struct CppScriptSystem::Impl {
             }
             proto::Writer msg;
             msg.u32(inst.id).str(inst.cls).u64(idOf(h)).str(values.dump());
+            inst.events = eventsOf(inst.cls);
             std::string message;
             const Outcome o = request(ipc::Op::Create, msg, message);
             if (o != Outcome::Ok) {
@@ -1794,9 +2317,11 @@ struct CppScriptSystem::Impl {
             }
             inst.created = true;
             // Recarga en caliente: el estado de antes en vez de awake()/start().
+            // Si estaba desactivada al guardar, ahora recibe onEnable (abajo).
             const auto saved = reload_state.find(h);
             if (saved != reload_state.end()) {
                 const bool was_started = saved->second.started;
+                const bool was_enabled = saved->second.enabled;
                 proto::Writer restore;
                 restore.u32(inst.id).str(saved->second.json);
                 reload_state.erase(saved);
@@ -1807,11 +2332,143 @@ struct CppScriptSystem::Impl {
                     continue;
                 }
                 inst.started = was_started;
+                inst.enabled = was_enabled;
                 continue;
             }
             callEvent(h, inst, proto::Event::Awake, args(0.0f));
         }
+        // onEnable / onDisable: tras awake y antes de start (que va en update).
+        pending.clear();
+        for (auto& [h, inst] : instances) {
+            if (inst.created && inst.wanted != inst.enabled) pending.push_back(h);
+        }
+        for (const entt::entity h : pending) {
+            auto it = instances.find(h);
+            if (it == instances.end() || !host.running()) break;
+            Instance& inst = it->second;
+            if (!inst.created || inst.wanted == inst.enabled || faulted.contains(h)) continue;
+            inst.enabled = inst.wanted;
+            callEvent(h, inst, inst.enabled ? proto::Event::Enable : proto::Event::Disable, args(0.0f));
+        }
         return host.running();
+    }
+
+    // Fin de una instancia: onDisable (si estaba activa), onDestroy y se borra
+    // del proceso. Busca la instancia en cada paso: el script puede fallar en
+    // medio (fault() la da por borrada o reinicia el proceso).
+    void retire(entt::entity h) {
+        auto it = instances.find(h);
+        if (it == instances.end() || !it->second.created || !host.running() || faulted.contains(h)) return;
+        if (it->second.enabled) {
+            it->second.enabled = false;
+            callEvent(h, it->second, proto::Event::Disable, args(0.0f));
+            it = instances.find(h);
+            if (it == instances.end() || !it->second.created || !host.running()) return;
+        }
+        callEvent(h, it->second, proto::Event::Destroy, args(0.0f));
+        it = instances.find(h);
+        if (it == instances.end() || !it->second.created || !host.running()) return;
+        proto::Writer msg;
+        msg.u32(it->second.id);
+        std::string ignored;
+        request(ipc::Op::Destroy, msg, ignored);
+        it->second.created = false;
+    }
+
+    // Las instancias vivas (creadas y sin fallo), en un vector que se reutiliza.
+    // Quien lo recorre vuelve a buscar cada una: un fallo cambia su estado.
+    const std::vector<entt::entity>& liveHandles() {
+        live.clear();
+        for (const auto& [h, inst] : instances) {
+            if (inst.created && !faulted.contains(h)) live.push_back(h);
+        }
+        return live;
+    }
+
+    // Un evento a la fase en curso: va al lote (Op::CallMany, sale con
+    // runBatch o al llenarse) o, con script.cpp.BatchCalls = false, al momento.
+    void post(entt::entity h, const Instance& inst, proto::Event event, const proto::EventArgs& a) {
+        if (!wants(inst, event)) return;  // la clase no lo sobrescribe: ni lote ni viaje
+        ++posted;
+        if (!g_batch_calls.get() || !batch_supported) {
+            auto it = instances.find(h);
+            if (it != instances.end() && it->second.created) callEvent(h, it->second, event, a);
+            return;
+        }
+        if (batch.empty()) {
+            batch_message.bytes.clear();
+            batch_message.u32(0);  // n, al enviar
+        }
+        batch.push_back(BatchCall{h, inst.id, event});
+        batch_message.u32(inst.id).u32(static_cast<std::uint32_t>(event)).raw(&a, sizeof(a));
+        if (batch.size() >= kBatchMax) runBatch();
+    }
+
+    // Envia el lote en un solo viaje y reparte los fallos a su instancia (como
+    // si cada evento hubiera ido solo: el script fallido se desactiva y, si el
+    // proceso cae o se corta, se culpa al que estaba en curso).
+    void runBatch() {
+        if (batch.empty()) return;
+        const auto n = static_cast<std::uint32_t>(batch.size());
+        std::memcpy(batch_message.bytes.data(), &n, sizeof(n));
+        std::string message;
+        batch_reply.clear();
+        const Outcome o = request(ipc::Op::CallMany, batch_message, message, &batch_reply);
+        if (o == Outcome::Ok) {
+            proto::Reader r(batch_reply.data(), batch_reply.size());
+            const std::uint32_t failed = r.u32();
+            for (std::uint32_t i = 0; i < failed && r.ok(); ++i) {
+                const std::uint32_t index = r.u32();
+                const auto status = static_cast<ipc::Status>(r.u32());
+                const std::string text = r.str();
+                if (!r.ok() || index >= batch.size()) break;
+                failCall(batch[index], status == ipc::Status::Missing ? Outcome::Missing : Outcome::ScriptError,
+                         text.empty() ? std::string("fallo (sin detalle: demasiados fallos en el lote)") : text);
+            }
+        } else if (o == Outcome::HostDied || o == Outcome::Timeout) {
+            const std::uint32_t at = host.progress();
+            if (at > 0 && at <= batch.size()) {
+                failCall(batch[at - 1], o, message);
+            } else {
+                reportFault("un lote de eventos", message + "  -> los scripts se reinician");
+                closeHost();
+                hostRestarted();
+                ++restarts;
+            }
+        } else {
+            // Un proceso que no conoce CallMany (otra version): cada evento por separado.
+            batch_supported = false;
+            std::vector<BatchCall> calls;
+            calls.swap(batch);
+            const std::size_t stride = 8 + sizeof(proto::EventArgs);
+            for (std::size_t i = 0; i < calls.size() && host.running(); ++i) {
+                auto it = instances.find(calls[i].h);
+                if (it == instances.end() || it->second.id != calls[i].id || !it->second.created || faulted.contains(calls[i].h)) {
+                    continue;
+                }
+                proto::EventArgs a{};
+                std::memcpy(&a, batch_message.bytes.data() + 4 + i * stride + 8, sizeof(a));
+                callEvent(calls[i].h, it->second, calls[i].event, a);
+            }
+        }
+        batch.clear();
+    }
+
+    void failCall(const BatchCall call, Outcome o, const std::string& message) {  // copia: fault() puede vaciar el lote
+        auto it = instances.find(call.h);
+        if (it != instances.end() && it->second.id == call.id && !faulted.contains(call.h)) {
+            fault(call.h, it->second, eventName(call.event), o, message);
+            return;
+        }
+        // La instancia ya no esta (se destruyo durante el lote): solo el proceso.
+        if (o == Outcome::HostDied || o == Outcome::Timeout) {
+            reportFault(std::string("un evento ") + eventName(call.event), message + "  -> los scripts se reinician");
+            closeHost();
+            hostRestarted();
+            ++restarts;
+        } else {
+            error({}, 0, std::string(eventName(call.event)) + ": " + message);
+        }
     }
 
     void dispatchPhysics() {
@@ -1831,7 +2488,10 @@ struct CppScriptSystem::Impl {
             for (int side = 0; side < 2; ++side) {
                 const physics::PhysicsEvent e = side == 0 ? ev : ev.flipped();
                 auto it = instances.find(e.a.handle());
-                if (it == instances.end() || !it->second.created || !it->second.started || !host.running()) continue;
+                if (it == instances.end() || !it->second.created || !it->second.started || !it->second.enabled ||
+                    faulted.contains(e.a.handle()) || !host.running()) {
+                    continue;
+                }
                 proto::EventArgs a = args(0.0f);
                 a.other = idOf(e.b.handle());
                 const float p[3] = {e.point.x, e.point.y, e.point.z};
@@ -1840,9 +2500,10 @@ struct CppScriptSystem::Impl {
                 std::memcpy(a.point, p, sizeof(p));
                 std::memcpy(a.normal, n, sizeof(n));
                 std::memcpy(a.relative_velocity, v, sizeof(v));
-                callEvent(e.a.handle(), it->second, kind, a);
+                post(e.a.handle(), it->second, kind, a);
             }
         }
+        runBatch();
     }
 
     // Los callbacks que la API llamo (botones, red, acciones...).
@@ -1883,19 +2544,10 @@ struct CppScriptSystem::Impl {
     // onDestroy de la instancia del objeto mientras aun es valido (justo antes
     // de borrarlo); sync() ya no la encuentra al frame siguiente.
     void destroyInstance(entt::entity h) {
-        auto it = instances.find(h);
-        if (it == instances.end()) return;
-        if (playing && it->second.created && host.running() && !faulted.contains(h)) {
-            callEvent(h, it->second, proto::Event::Destroy, args(0.0f));
-            it = instances.find(h);  // por si acaso: onDestroy pide cosas al motor
-            if (it != instances.end() && it->second.created && host.running()) {
-                proto::Writer msg;
-                msg.u32(it->second.id);
-                std::string ignored;
-                request(ipc::Op::Destroy, msg, ignored);
-            }
-        }
+        if (!instances.contains(h)) return;
+        if (playing) retire(h);  // onDisable (si estaba activa) + onDestroy
         instances.erase(h);
+        reload_state.erase(h);
     }
 
     void flushDestroys(ecs::World& w) {
@@ -2472,6 +3124,9 @@ void CppScriptSystem::usePrebuilt(const std::filesystem::path& dll) {
     impl_->prebuilt = true;
 }
 
+void CppScriptSystem::setInProcess(bool in_process) { impl_->in_process = in_process; }
+bool CppScriptSystem::inProcess() const { return impl_->host.local; }
+
 const std::filesystem::path& CppScriptSystem::dll() const { return impl_->dll_path; }
 std::vector<std::string> CppScriptSystem::classes() const { return impl_->classes; }
 
@@ -2496,9 +3151,20 @@ void CppScriptSystem::start(ecs::World& world) {
 void CppScriptSystem::stop() {
     Impl& d = *impl_;
     if (d.playing && d.world != nullptr && d.host.running()) {
-        d.forEachLive([&](entt::entity h, Impl::Instance& inst) {
-            if (inst.started) d.callEvent(h, inst, cppproto::Event::Destroy, d.args(0.0f));
-        });
+        // onDisable de las activas y onDestroy de las empezadas, en un lote.
+        const proto::EventArgs a = d.args(0.0f);
+        for (const entt::entity h : d.liveHandles()) {
+            const auto it = d.instances.find(h);
+            if (!d.host.running()) break;
+            if (it == d.instances.end()) continue;
+            Impl::Instance& inst = it->second;
+            if (inst.enabled) {
+                inst.enabled = false;
+                d.post(h, inst, proto::Event::Disable, a);
+            }
+            if (inst.started) d.post(h, inst, proto::Event::Destroy, a);
+        }
+        d.runBatch();
         proto::Writer w;
         std::string ignored;
         if (d.host.running()) d.request(ipc::Op::Quit, w, ignored);
@@ -2543,7 +3209,7 @@ void CppScriptSystem::reload() {
             std::string ignored;
             d.request(ipc::Op::Destroy, w, ignored);
             it->second.created = false;
-            d.reload_state[h] = Impl::ReloadState{"{}", true};
+            d.reload_state[h] = Impl::ReloadState{"{}", true, it->second.enabled};
         }
     }
     int kept = 0;
@@ -2560,7 +3226,7 @@ void CppScriptSystem::reload() {
                 text = r.str();
             }
             if (o != Outcome::Ok) d.error({}, 0, inst.cls + " (" + d.entityName(h) + "): recarga sin su estado: " + message);
-            d.reload_state[h] = Impl::ReloadState{text, inst.started};
+            d.reload_state[h] = Impl::ReloadState{text, inst.started, inst.enabled};
             ++kept;
         });
         proto::Writer quit;
@@ -2593,11 +3259,19 @@ void CppScriptSystem::fixedUpdate(ecs::World& world, float step, int steps) {
     d.world = &world;
     d.fixed_step = step;
     if (!d.sync(world)) return;
-    for (int i = 0; i < steps; ++i) {
-        d.forEachLive([&](entt::entity h, Impl::Instance& inst) {
-            if (inst.started) d.callEvent(h, inst, proto::Event::FixedUpdate, d.args(step));
-        });
+    // Todos los pasos en un lote (entre pasos no se simula: el orden es el mismo).
+    const proto::EventArgs a = d.args(step);
+    const std::vector<entt::entity>& live = d.liveHandles();
+    for (int i = 0; i < steps && d.host.running(); ++i) {
+        for (const entt::entity h : live) {
+            const auto it = d.instances.find(h);
+            if (!d.host.running()) break;
+            if (it == d.instances.end()) continue;
+            const Impl::Instance& inst = it->second;
+            if (inst.created && inst.enabled && inst.started && !d.faulted.contains(h)) d.post(h, inst, proto::Event::FixedUpdate, a);
+        }
     }
+    d.runBatch();
 }
 
 void CppScriptSystem::update(ecs::World& world, float delta_seconds) {
@@ -2606,6 +3280,7 @@ void CppScriptSystem::update(ecs::World& world, float delta_seconds) {
     const auto t0 = std::chrono::steady_clock::now();
     d.world = &world;
     d.host.rpcs = 0;
+    d.host.requests = 0;
     d.calls = 0;
     d.time += delta_seconds;
     ++d.frame;
@@ -2626,18 +3301,40 @@ void CppScriptSystem::update(ecs::World& world, float delta_seconds) {
         for (const auto& [h, method, value] : bt_messages) {
             if (world.valid(h)) sendMessage(world.wrap(h), method, value);
         }
-        d.forEachLive([&](entt::entity h, Impl::Instance& inst) {
-            if (!inst.started) {
-                inst.started = true;
-                d.callEvent(h, inst, proto::Event::Start, d.args(delta_seconds));
+        // start (las nuevas) + update + lateUpdate de todas en un solo viaje, en
+        // el mismo orden que antes: todos los start, luego todos los update...
+        // Las desactivadas (onDisable) no reciben nada; su start espera a onEnable.
+        const proto::EventArgs a = d.args(delta_seconds);
+        const std::vector<entt::entity>& live = d.liveHandles();
+        const std::uint64_t posted_before = d.posted;
+        for (const proto::Event phase : {proto::Event::Start, proto::Event::Update, proto::Event::LateUpdate}) {
+            for (const entt::entity h : live) {
+                const auto it = d.instances.find(h);
+                if (!d.host.running()) break;
+                if (it == d.instances.end()) continue;
+                Impl::Instance& inst = it->second;
+                if (!inst.created || !inst.enabled || d.faulted.contains(h)) continue;
+                if (phase == proto::Event::Start) {
+                    if (inst.started) continue;
+                    inst.started = true;
+                } else if (!inst.started) {
+                    continue;
+                }
+                d.post(h, inst, phase, a);
             }
-        });
-        d.forEachLive([&](entt::entity h, Impl::Instance& inst) {
-            if (inst.started) d.callEvent(h, inst, proto::Event::Update, d.args(delta_seconds));
-        });
-        d.forEachLive([&](entt::entity h, Impl::Instance& inst) {
-            if (inst.started) d.callEvent(h, inst, proto::Event::LateUpdate, d.args(delta_seconds));
-        });
+        }
+        // Ninguna sobrescribe start/update/lateUpdate (no hubo nada que enviar):
+        // el tiempo del SDK (Time::deltaTime, time, frameCount), que leen los
+        // callbacks, mensajes y corrutinas, avanza igual con un evento Time.
+        if (d.posted == posted_before && d.host.running()) {
+            for (const entt::entity h : live) {
+                const auto it = d.instances.find(h);
+                if (it == d.instances.end() || !it->second.created || d.faulted.contains(h)) continue;
+                d.post(h, it->second, proto::Event::Time, a);
+                break;
+            }
+        }
+        d.runBatch();
     } else {
         d.events.clear();
         d.callbacks.clear();
@@ -2683,6 +3380,7 @@ CppScriptSystem::Stats CppScriptSystem::stats() const {
     s.restarts = d.restarts;
     s.reloads = d.reloads;
     s.rpcs = d.host.rpcs;
+    s.requests = d.host.requests;
     s.calls = d.calls;
     s.frame_ms = d.frame_ms;
     s.host_memory = d.host.memory();

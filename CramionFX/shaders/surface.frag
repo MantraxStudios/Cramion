@@ -54,6 +54,10 @@ const float kEmissiveIntensity = 6.0;
 
 const uint kFlagHeightMap = 1u << 3;
 const uint kFlagParallaxShadow = 1u << 5;
+// Color de vertice del modelo (blanco si no lo trae; lightmap_common.glsl).
+#define VERTEX_COLOR v_color
+// Datos propios de la instancia (registro de su hueco, lightmap_common.glsl).
+#define INSTANCE_DATA(i) instanceData(uint(i))
 
 #define CRAMION_FRAGMENT_STAGE 1
 #include "surface_common.glsl"
@@ -115,6 +119,7 @@ void main() {
     s.roughness = clamp(push.material.y * metallic_roughness.g, 0.0, 1.0);
     s.occlusion = mix(1.0, textureGrad(occlusion_map, uv, uv_dx, uv_dy).r, push.material.z);
     s.emission = toLinear(textureGrad(emissive_map, uv, uv_dx, uv_dy).rgb) * push.emissive.rgb;
+    s.refraction = 0.0;  // (en el G-buffer no hay escena que desviar)
     s.uv = uv;
     s.worldPosition = v_world_position;
     s.vertexNormal = n;
@@ -122,12 +127,25 @@ void main() {
 
     surface(s);
 
-    bool cut_out = s.alpha < 0.5;
+    // Parametros por instancia (MeshRenderer) sobre lo que deje el shader:
+    // tinte (lineal, al sRGB del albedo), escala de la emision y disolucion
+    // por tramado con opacidad < 1.
+    vec4 instance_tint = instanceTint();
+    s.albedo *= pow(instance_tint.rgb, vec3(1.0 / 2.2));
+    s.emission *= instanceEmission();
+    bool cut_out = s.alpha < 0.5 || instanceDissolve(instance_tint.a, gl_FragCoord.xy, camera.jitter.xy) ||
+                   lodFadeDiscard(gl_FragCoord.xy, camera.jitter.xy);  // fundido de LOD
     vec3 final_normal = normalize(s.normal);
     // Normal en espacio tangente (para el agua de la lluvia).
     vec3 tangent_normal = has_tangent ? normalize(transpose(tbn) * final_normal) : vec3(0.0, 0.0, 1.0);
 
+#ifdef CRAMION_UNLIT
+    // domain unlit: modelo 8 del G-buffer (disney_brdf.glsl, kShadingUnlit);
+    // lighting.frag deja el color tal cual mas la emision (y la niebla).
+    surface_shading = vec4(8.0 / 255.0, 0.0, 0.0, 0.0);
+#endif
     setupLightmap(v_world_position, camera.position.xyz);
+    surface_receive_decals = instanceReceivesDecals();
     writeSurface(vec4(clamp(s.albedo, 0.0, 1.0), s.alpha), n, final_normal, tangent_normal, n,
                  clamp(s.metallic, 0.0, 1.0), clamp(s.roughness, 0.04, 1.0), clamp(s.occlusion, 0.0, 1.0),
                  max(s.emission, vec3(0.0)) * kEmissiveIntensity, push.reflectance, v_world_position);

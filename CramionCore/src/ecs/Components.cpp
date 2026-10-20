@@ -41,6 +41,31 @@ void MeshRenderer::reflect(PropertyVisitor& v) {
     v.field({"lightmap_scale", "Escala en lightmap",
              "Resolución de su lightmap respecto a la de la escena. 0 = sin lightmap (lo iluminan las sondas)"},
             lightmap_scale, FloatRange{0.0f, 8.0f, 0.05f, "%.2f"});
+    // Por instancia: no rompen el lote ni piden otro material.
+    v.field({"tint", "Tinte", "Multiplica al color de sus materiales solo en este objeto (color de equipo, golpe)"},
+            tint, Vec3Kind::Color);
+    v.field({"alpha", "Opacidad", "Solo en este objeto. Opaco: se disuelve con un tramado; transparente: mezcla"},
+            alpha, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+    v.field({"emission_scale", "Escala de emision", "Multiplica a la emision de sus materiales (0 = apagada)"},
+            emission_scale, FloatRange{0.0f, 64.0f, 0.05f, "%.2f"});
+    v.field({"receive_decals", "Recibe decals", "Si los decals (estampas, charcos, indicadores) lo pintan"},
+            receive_decals);
+    // INSTANCE_DATA(i) de su .crshader: xyz y w por separado (el visitante no
+    // tiene Vec4). Cero = sin datos.
+    static constexpr Meta kDataXyz[kInstanceDataCount] = {
+        {"instance_data0", "Datos de instancia 0", "INSTANCE_DATA(0).xyz en su .crshader"},
+        {"instance_data1", "Datos de instancia 1", "INSTANCE_DATA(1).xyz en su .crshader"}};
+    static constexpr Meta kDataW[kInstanceDataCount] = {
+        {"instance_data0_w", "Datos de instancia 0 (w)", "INSTANCE_DATA(0).w en su .crshader"},
+        {"instance_data1_w", "Datos de instancia 1 (w)", "INSTANCE_DATA(1).w en su .crshader"}};
+    for (int k = 0; k < kInstanceDataCount; ++k) {
+        core::Vec4& d = instance_data[k];
+        core::Vec3 xyz{d.x, d.y, d.z};
+        float w = d.w;
+        const bool changed_xyz = v.field(kDataXyz[k], xyz, Vec3Kind::Position);
+        const bool changed_w = v.field(kDataW[k], w, FloatRange{0.0f, 0.0f, 0.01f, "%.3f"});
+        if (changed_xyz || changed_w) d = core::Vec4{xyz.x, xyz.y, xyz.z, w};
+    }
     // El Inspector los dibuja aparte (con el nombre de cada hueco).
     if (v.wantsAllFields()) {
         listField(v, {"materials", "Materiales"}, materials, [](assets::AssetRef& ref, PropertyVisitor& item) {
@@ -180,6 +205,22 @@ void Decal::reflect(PropertyVisitor& v) {
         v.field({"roughness_amount", "Sustituir material", "Cuanto cambia la rugosidad/metalicidad de debajo"},
                 roughness_amount, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
         v.field({"metallic", "Metalicidad"}, metallic, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+        // Canales opcionales (atlas de decals): relieve, ORM y emision.
+        v.field({"normal_texture", "Normal map",
+                 "Imagen dentro de Assets/; verde hacia arriba (OpenGL/glTF). Vacia = sin relieve"},
+                normal_texture);
+        v.field({"normal_strength", "Fuerza del relieve", "Negativa: verde invertido (normal maps de DirectX)"},
+                normal_strength, FloatRange{-4.0f, 4.0f, 0.01f, "%.2f", true});
+        v.field({"orm_texture", "ORM",
+                 "Imagen dentro de Assets/: R oclusion, G rugosidad, B metalicidad. Sustituye a Rugosidad y "
+                 "Metalicidad. Vacia = las de arriba"},
+                orm_texture);
+        v.field({"emission_texture", "Emision (imagen)",
+                 "Imagen dentro de Assets/. Vacia = emite el color de la estampa"},
+                emission_texture);
+        v.field({"emission_color", "Color de emision"}, emission_color, Vec3Kind::Color);
+        v.field({"emission_intensity", "Intensidad de emision", "0 = sin emision"}, emission_intensity,
+                FloatRange{0.0f, 100.0f, 0.05f, "%.2f", true});
     }
     v.field({"edge_softness", "Borde suave"}, edge_softness, FloatRange{0.0f, 0.5f, 0.01f, "%.2f", true});
     v.field({"max_angle", "Angulo maximo", "No pinta superficies mas inclinadas respecto al eje"}, max_angle,
@@ -314,6 +355,7 @@ void blendPostProcess(gfx::PostProcessSettings& o, const gfx::PostProcessSetting
         b(o.reflections, v.reflections);
         b(o.contact_shadows, v.contact_shadows);
         f(o.contact_shadow_length, v.contact_shadow_length);
+        f(o.contact_shadow_distance, v.contact_shadow_distance);
         // La luz volumetrica se funde por su densidad.
         const float from = o.volumetric_light ? o.volumetric_density : 0.0f;
         const float to = v.volumetric_light ? v.volumetric_density : 0.0f;
@@ -741,6 +783,11 @@ void PostProcessing::reflect(PropertyVisitor& v) {
                      "mas lejos): el resto de la sombra ya lo dan las cascadas"},
                     s.contact_shadow_length,
                     FloatRange{0.05f, 3.0f, 0.01f, "%.2f m", true});
+            v.field({"contact_shadow_distance", "Distancia (m)",
+                     "Hasta donde se ven: se funden suave en el ultimo tercio (sin corte) y nunca pasan de donde "
+                     "acaban las sombras en cascada"},
+                    s.contact_shadow_distance,
+                    FloatRange{5.0f, 200.0f, 1.0f, "%.0f m", true});
         }
         v.field({"volumetric_light", "Luz volumetrica"}, s.volumetric_light);
         if (all || s.volumetric_light) {

@@ -42,6 +42,8 @@ layout(location = 6) in vec3 in_previous_world[];
 // Lightmap (skinned.vert): UV2 y hueco de la instancia, tal cual.
 layout(location = 7) in vec2 in_lightmap_uv[];
 layout(location = 8) in uint in_lightmap_slot[];
+layout(location = 9) in uint in_instance_slot[];
+layout(location = 10) in vec4 in_color[];
 
 layout(location = 0) out vec3 out_normal[];
 layout(location = 1) out vec2 out_uv[];
@@ -50,6 +52,8 @@ layout(location = 3) out vec3 out_world_position[];
 layout(location = 6) out vec3 out_previous_world[];
 layout(location = 7) out vec2 out_lightmap_uv[];
 layout(location = 8) out uint out_lightmap_slot[];
+layout(location = 9) out uint out_instance_slot[];
+layout(location = 10) out vec4 out_color[];
 
 const float kTargetPixels = 10.0;
 
@@ -85,6 +89,8 @@ void main() {
     out_previous_world[gl_InvocationID] = in_previous_world[gl_InvocationID];
     out_lightmap_uv[gl_InvocationID] = in_lightmap_uv[gl_InvocationID];
     out_lightmap_slot[gl_InvocationID] = in_lightmap_slot[gl_InvocationID];
+    out_instance_slot[gl_InvocationID] = in_instance_slot[gl_InvocationID];
+    out_color[gl_InvocationID] = in_color[gl_InvocationID];
 
     if (gl_InvocationID == 0) {
         if (outsideView()) {

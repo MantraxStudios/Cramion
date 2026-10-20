@@ -62,8 +62,17 @@ extern cppproto::EventArgs g_event;
 void queue(cppproto::Rpc op, const cppproto::Writer& w);
 void flush();
 
+// La API solo funciona en el hilo que ejecuta los scripts (awake, update,
+// callbacks...): el canal con el motor va por turnos y una llamada desde otro
+// hilo cruzaria las respuestas. Desde otro hilo no se envia nada, se devuelve
+// un valor vacio y el error sale en la Consola (desde el hilo de los scripts,
+// en el siguiente evento). true si es otro hilo.
+bool offScriptThread(cppproto::Rpc op);
+bool offScriptThread(std::string_view what);
+
 // Una llamada al motor: los argumentos y un lector de la respuesta.
 inline cppproto::Reader rpc(cppproto::Rpc op, const cppproto::Writer& w = {}) {
+    if (offScriptThread(op)) return cppproto::Reader(nullptr, 0);
     flush();
     const void* reply = nullptr;
     std::uint32_t size = 0;
@@ -71,10 +80,20 @@ inline cppproto::Reader rpc(cppproto::Rpc op, const cppproto::Writer& w = {}) {
     return cppproto::Reader(reply, reply != nullptr ? size : 0);
 }
 
-// Puente a la API del motor (Api.gen.h la usa): la peticion en JSON
+// Puente a la API del motor en JSON
 // ({"op":"call|get|set","fn":"Audio.playOneShot","self":v,"key":"x","args":[...],"value":v})
-// y su resultado (nil si fallo: el error sale en la Consola).
+// y su resultado (nil si fallo: el error sale en la Consola). Lo usa
+// apiFast cuando el motor no da ids (fuera de Play) y Api::send.
 Value apiRequest(const Value& request);
+// La API por indice y en binario (Api.gen.h la usa por las de abajo): cada
+// clave ("Audio.playOneShot", el metodo "translate" de una entidad...) se
+// resuelve una vez por sesion y despues va su id con los valores en binario,
+// sin JSON. Los set de propiedades y las funciones que no devuelven nada (su
+// documentacion no dice "Devuelve") van en el lote, sin esperar al motor: se
+// envian antes de la siguiente llamada que si espera respuesta y al terminar
+// el evento, en orden. self: nullptr en las tablas. Nil si fallo (el error sale
+// en la Consola; los de las que van en lote, en la del motor).
+Value apiFast(cppproto::ApiOp op, std::string_view key, const Value* self, const Value* args, std::size_t count);
 // Los argumentos opcionales que no se pasan llegan como nil: los del final no se envian.
 inline Values trimNils(Values args) {
     while (!args.empty() && args.back().isNil()) args.pop_back();
@@ -83,22 +102,27 @@ inline Values trimNils(Values args) {
 // Una funcion de la API ("Audio.playOneShot").
 inline Value api(std::string_view fn, Values args) {
     args = trimNils(std::move(args));
-    return apiRequest(Value{{"op", "call"}, {"fn", fn}, {"args", Value(std::move(args))}});
+    return apiFast(cppproto::ApiOp::Call, fn, nullptr, args.data(), args.size());
 }
 // Un metodo de un objeto del motor (entidad o handle: "translate", "apply").
 inline Value apiMethod(const Value& self, std::string_view fn, Values args) {
     args = trimNils(std::move(args));
-    return apiRequest(Value{{"op", "call"}, {"fn", fn}, {"self", self}, {"args", Value(std::move(args))}});
+    return apiFast(cppproto::ApiOp::Call, fn, &self, args.data(), args.size());
 }
 // Una propiedad de una tabla ("Time.timeScale").
-inline Value apiGet(std::string_view fn) { return apiRequest(Value{{"op", "get"}, {"fn", fn}}); }
-inline void apiSet(std::string_view fn, const Value& v) { apiRequest(Value{{"op", "set"}, {"fn", fn}, {"value", v}}); }
+inline Value apiGet(std::string_view fn) { return apiFast(cppproto::ApiOp::Get, fn, nullptr, nullptr, 0); }
+inline void apiSet(std::string_view fn, const Value& v) { apiFast(cppproto::ApiOp::Set, fn, nullptr, &v, 1); }
 // Una propiedad de un objeto del motor.
-inline Value apiGetField(const Value& self, std::string_view key) {
-    return apiRequest(Value{{"op", "get"}, {"self", self}, {"key", key}});
-}
+inline Value apiGetField(const Value& self, std::string_view key) { return apiFast(cppproto::ApiOp::Get, key, &self, nullptr, 0); }
 inline void apiSetField(const Value& self, std::string_view key, const Value& v) {
-    apiRequest(Value{{"op", "set"}, {"self", self}, {"key", key}, {"value", v}});
+    apiFast(cppproto::ApiOp::Set, key, &self, &v, 1);
+}
+// Un Writer para armar mensajes del hilo de los scripts sin reservar memoria
+// en cada llamada (vacio; comprobar antes offScriptThread).
+inline cppproto::Writer& scratchWriter() {
+    static cppproto::Writer w;
+    w.bytes.clear();
+    return w;
 }
 }  // namespace detail
 
@@ -178,6 +202,18 @@ public:
     void rotate(const Vec3& degrees) const { set(cppproto::VecSet::Rotate, degrees); }
     /// Gira para mirar a un punto del mundo.
     void lookAt(const Vec3& target) const { set(cppproto::VecSet::LookAt, target); }
+    /// Pone el giro local como cuaternion (un Quat; va en el lote, sin esperar al motor).
+    void setQuaternion(const Value& q) const {
+        if (q.type() != Value::Type::Quat) {
+            set("quaternion", q);  // otro tipo: por la API (da el error si no vale)
+            return;
+        }
+        if (detail::offScriptThread(cppproto::Rpc::SetTransforms)) return;
+        const Quat r = q.asQuat();
+        cppproto::Writer& w = detail::scratchWriter();
+        w.u32(1).u32(cppproto::TransformRotation).u64(id_).f32(r.x).f32(r.y).f32(r.z).f32(r.w);
+        detail::queue(cppproto::Rpc::SetTransforms, w);
+    }
 
     /// Esta activo en la escena.
     bool active() const { return u32(cppproto::Rpc::GetActive) != 0; }
@@ -709,6 +745,43 @@ inline void setPositions(const std::vector<Entity>& entities, const std::vector<
     }
     detail::queue(cppproto::Rpc::SetPositions, w);
 }
+/// Posicion, giro y escala de muchos objetos en una llamada (va en el lote, sin esperar al motor).
+/// La posicion es del mundo (local = true: respecto al padre); el giro (Quat) y la escala, locales.
+/// Una lista vacia no se toca: setTransforms(balas, posiciones, giros) no cambia la escala.
+/// Si una lista es mas corta que entities, solo se mueven los que tienen todos sus datos.
+inline void setTransforms(const std::vector<Entity>& entities, const std::vector<Vec3>& positions,
+                          const std::vector<Quat>& rotations = {}, const std::vector<Vec3>& scales = {}, bool local = false) {
+    if (detail::offScriptThread(cppproto::Rpc::SetTransforms)) return;
+    std::uint32_t mask = 0;
+    std::size_t n = entities.size();
+    if (!positions.empty()) {
+        mask |= cppproto::TransformPosition | (local ? cppproto::TransformLocalPosition : 0u);
+        n = n < positions.size() ? n : positions.size();
+    }
+    if (!rotations.empty()) {
+        mask |= cppproto::TransformRotation;
+        n = n < rotations.size() ? n : rotations.size();
+    }
+    if (!scales.empty()) {
+        mask |= cppproto::TransformScale;
+        n = n < scales.size() ? n : scales.size();
+    }
+    if (mask == 0 || n == 0) return;
+    // En trozos: cada mensaje al motor tiene un tope (4 MB).
+    constexpr std::size_t kChunk = 16384;
+    for (std::size_t first = 0; first < n; first += kChunk) {
+        const std::size_t count = n - first < kChunk ? n - first : kChunk;
+        cppproto::Writer& w = detail::scratchWriter();
+        w.u32(static_cast<std::uint32_t>(count)).u32(mask);
+        for (std::size_t i = first; i < first + count; ++i) {
+            w.u64(entities[i].id());
+            if (!positions.empty()) w.f32(positions[i].x).f32(positions[i].y).f32(positions[i].z);
+            if (!rotations.empty()) w.f32(rotations[i].x).f32(rotations[i].y).f32(rotations[i].z).f32(rotations[i].w);
+            if (!scales.empty()) w.f32(scales[i].x).f32(scales[i].y).f32(scales[i].z);
+        }
+        detail::queue(cppproto::Rpc::SetTransforms, w);
+    }
+}
 }  // namespace Scene
 
 // --- Input ---
@@ -957,8 +1030,15 @@ public:
         return v.isNil() ? std::string(fallback) : v.asString();
     }
 
-    /// Al crearse el script (antes de start).
+    /// Al crearse el script (antes de onEnable y de start).
     virtual void awake() {}
+    /// Al activarse: tras awake() y cada vez que se reactiva el script (enabled) o su objeto
+    /// (setActive). Orden: awake, onEnable, start (una vez), update... Pool de objetos: reinicia aqui.
+    virtual void onEnable() {}
+    /// Al desactivarse el script o su objeto: deja de recibir start/update/fixedUpdate/lateUpdate y
+    /// colisiones, pero la instancia sigue viva (sus variables se conservan). Tambien antes de onDestroy si
+    /// estaba activo. Los mensajes (onMessage) y los callbacks de la API si le siguen llegando.
+    virtual void onDisable() {}
     /// Una vez, antes del primer update.
     virtual void start() {}
     /// Cada frame (dt = segundos desde el anterior).
@@ -967,7 +1047,7 @@ public:
     virtual void fixedUpdate(float /*dt*/) {}
     /// Cada frame, despues de todos los update (camaras).
     virtual void lateUpdate(float /*dt*/) {}
-    /// Al destruirse el objeto o parar el juego.
+    /// Al destruirse el objeto, quitar el componente o parar el juego (desactivar no destruye: onDisable).
     virtual void onDestroy() {}
     /// Empieza un choque con otro objeto.
     virtual void onCollisionEnter(const Collision&) {}
@@ -1043,10 +1123,46 @@ inline detail::PropertyBase::PropertyBase(Script* owner, const char* name) : nam
 namespace detail {
 using Factory = Script* (*)();
 void registerClass(const char* name, const char* file, Factory factory);
+// events: los eventos que la clase sobrescribe (bit 1 << cppproto::Event); el
+// motor no envia los demas (un update() vacio no cuesta un viaje al proceso).
+void registerClass(const char* name, const char* file, Factory factory, std::uint32_t events);
+
+// 1 si T (o una base suya que no es Script) sobrescribe `fn`. &T::fn tiene el
+// tipo de puntero a miembro de la clase que lo declara: si es Script, nadie lo
+// sobrescribio. Si no se puede saber (sobrecargas en T, metodo privado...), se
+// da por sobrescrito: como mucho se envia una llamada de mas.
+template <typename F>
+using ScriptMember = F Script::*;
+#define CRAMION_DETAIL_OVERRIDES(fn, Sig) \
+    (requires { requires std::is_same_v<decltype(&T::fn), ScriptMember<Sig>>; } ? 0u : 1u)
+
+template <typename T>
+constexpr std::uint32_t eventMask() {
+    using E = cppproto::Event;
+    const auto bit = [](E e, std::uint32_t on) { return on << static_cast<std::uint32_t>(e); };
+    std::uint32_t mask = 0;
+    mask |= bit(E::Awake, CRAMION_DETAIL_OVERRIDES(awake, void()));
+    mask |= bit(E::Start, CRAMION_DETAIL_OVERRIDES(start, void()));
+    mask |= bit(E::Update, CRAMION_DETAIL_OVERRIDES(update, void(float)));
+    mask |= bit(E::FixedUpdate, CRAMION_DETAIL_OVERRIDES(fixedUpdate, void(float)));
+    mask |= bit(E::LateUpdate, CRAMION_DETAIL_OVERRIDES(lateUpdate, void(float)));
+    mask |= bit(E::Destroy, CRAMION_DETAIL_OVERRIDES(onDestroy, void()));
+    mask |= bit(E::CollisionEnter, CRAMION_DETAIL_OVERRIDES(onCollisionEnter, void(const Collision&)));
+    mask |= bit(E::CollisionStay, CRAMION_DETAIL_OVERRIDES(onCollisionStay, void(const Collision&)));
+    mask |= bit(E::CollisionExit, CRAMION_DETAIL_OVERRIDES(onCollisionExit, void(const Collision&)));
+    mask |= bit(E::TriggerEnter, CRAMION_DETAIL_OVERRIDES(onTriggerEnter, void(Entity)));
+    mask |= bit(E::TriggerStay, CRAMION_DETAIL_OVERRIDES(onTriggerStay, void(Entity)));
+    mask |= bit(E::TriggerExit, CRAMION_DETAIL_OVERRIDES(onTriggerExit, void(Entity)));
+    mask |= bit(E::Enable, CRAMION_DETAIL_OVERRIDES(onEnable, void()));
+    mask |= bit(E::Disable, CRAMION_DETAIL_OVERRIDES(onDisable, void()));
+    return mask;
+}
+#undef CRAMION_DETAIL_OVERRIDES
+
 template <typename T>
 struct Registrar {
     Registrar(const char* name, const char* file) {
-        registerClass(name, file, []() -> Script* { return new T(); });
+        registerClass(name, file, []() -> Script* { return new T(); }, eventMask<T>());
     }
 };
 }  // namespace detail

@@ -2007,51 +2007,58 @@ void TerrainPass::prepare(std::uint32_t frame, const core::Vec3& camera_position
             continue;
         }
         selectChunks(*terrain, camera_position, view_projection);
-        if (frame >= terrain->params.size()) continue;
-        const TerrainDesc& d = terrain->desc;
-        GpuTerrainParams params{};
-        params.origin_size = core::Vec4{d.origin.x, d.origin.y, d.origin.z, d.size};
-        params.info = core::Vec4{d.max_height, static_cast<float>(terrain->resolution),
-                                 1.0f / static_cast<float>(terrain->resolution),
-                                 static_cast<float>(std::max<std::size_t>(d.layers.size(), 1))};
-        for (std::uint32_t i = 0; i < kMaxTerrainLayers; ++i) {
-            const TerrainLayerDesc layer = i < d.layers.size() ? d.layers[i] : TerrainLayerDesc{};
-            params.layer_params[i] = core::Vec4{std::max(layer.tiling, 0.01f), layer.roughness, layer.metallic,
-                                                layer.normal_strength};
-            params.layer_tint[i] = core::Vec4{layer.tint.x, layer.tint.y, layer.tint.z,
-                                              terrain->layer_set->albedo_paths[i].empty() ? 0.0f : 1.0f};
-            params.layer_extra[i] =
-                core::Vec4{terrain->layer_set->normal_paths[i].empty() ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f};
-        }
-        // Suelo del cesped: donde crece la hierba, el suelo toma su color
-        // (oscuro bajo las briznas de cerca, el de las puntas lejos).
-        params.grass_floor = core::Vec4{-1.0f, 0.0f, 0.0f, 0.0f};
-        const GrassDesc& grass = d.grass;
-        const std::size_t layer_count = std::max<std::size_t>(d.layers.size(), 1);
-        if (grass.enabled && grass.layer >= 0 && static_cast<std::size_t>(grass.layer) < layer_count &&
-            static_cast<std::uint32_t>(grass.layer) < kMaxTerrainLayers) {
-            const GrassRings r = grassRingsFor(grass_tier_, grass);
-            // z = donde empiezan a desvanecerse las briznas (lo mismo que en
-            // recordGrassCull): el tinte del suelo se apaga con ellas.
-            const float fade_start =
-                std::min(std::max(r.mid_distance, r.max_distance * 0.7f), r.max_distance * 0.98f);
-            params.grass_floor = core::Vec4{static_cast<float>(grass.layer), 0.85f, fade_start, r.max_distance};
-            const core::Vec3 canopy = grass.base_color * 0.25f + grass.tip_color * 0.75f;
-            params.grass_floor_color = core::Vec4{canopy.x, canopy.y, canopy.z, std::clamp(grass.threshold, 0.0f, 0.99f)};
-        }
-        terrain->params[frame].write(&params, sizeof(params));
+        writeParams(*terrain, frame);
     }
     updateShadowSignature();
 }
 
-void TerrainPass::prepareView(const core::Vec3& camera_position, const core::Mat4& view_projection,
-                              bool include) {
+void TerrainPass::writeParams(Terrain& terrain, std::uint32_t frame) {
+    if (frame >= terrain.params.size()) return;
+    const TerrainDesc& d = terrain.desc;
+    GpuTerrainParams params{};
+    params.origin_size = core::Vec4{d.origin.x, d.origin.y, d.origin.z, d.size};
+    params.info = core::Vec4{d.max_height, static_cast<float>(terrain.resolution),
+                             1.0f / static_cast<float>(terrain.resolution),
+                             static_cast<float>(std::max<std::size_t>(d.layers.size(), 1))};
+    for (std::uint32_t i = 0; i < kMaxTerrainLayers; ++i) {
+        const TerrainLayerDesc layer = i < d.layers.size() ? d.layers[i] : TerrainLayerDesc{};
+        params.layer_params[i] = core::Vec4{std::max(layer.tiling, 0.01f), layer.roughness, layer.metallic,
+                                            layer.normal_strength};
+        params.layer_tint[i] = core::Vec4{layer.tint.x, layer.tint.y, layer.tint.z,
+                                          terrain.layer_set->albedo_paths[i].empty() ? 0.0f : 1.0f};
+        params.layer_extra[i] =
+            core::Vec4{terrain.layer_set->normal_paths[i].empty() ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f};
+    }
+    // Suelo del cesped: donde crece la hierba, el suelo toma su color
+    // (oscuro bajo las briznas de cerca, el de las puntas lejos).
+    params.grass_floor = core::Vec4{-1.0f, 0.0f, 0.0f, 0.0f};
+    const GrassDesc& grass = d.grass;
+    const std::size_t layer_count = std::max<std::size_t>(d.layers.size(), 1);
+    if (grass.enabled && grass.layer >= 0 && static_cast<std::size_t>(grass.layer) < layer_count &&
+        static_cast<std::uint32_t>(grass.layer) < kMaxTerrainLayers) {
+        const GrassRings r = grassRingsFor(grass_tier_, grass);
+        // z = donde empiezan a desvanecerse las briznas (lo mismo que en
+        // recordGrassCull): el tinte del suelo se apaga con ellas.
+        const float fade_start =
+            std::min(std::max(r.mid_distance, r.max_distance * 0.7f), r.max_distance * 0.98f);
+        params.grass_floor = core::Vec4{static_cast<float>(grass.layer), 0.85f, fade_start, r.max_distance};
+        const core::Vec3 canopy = grass.base_color * 0.25f + grass.tip_color * 0.75f;
+        params.grass_floor_color = core::Vec4{canopy.x, canopy.y, canopy.z, std::clamp(grass.threshold, 0.0f, 0.99f)};
+    }
+    terrain.params[frame].write(&params, sizeof(params));
+}
+
+void TerrainPass::prepareView(std::uint32_t frame, const core::Vec3& camera_position,
+                              const core::Mat4& view_projection, bool include) {
     for (auto& [id, terrain] : terrains_) {
         if (!include || !terrain->layer_set || terrain->needs_clear) {
             terrain->chunks.clear();
             continue;
         }
         selectChunks(*terrain, camera_position, view_projection);
+        // La sonda dibuja en su propio hueco de frame (kProbeFrameSlot): sus
+        // parametros no los escribe ningun prepare().
+        writeParams(*terrain, frame);
     }
     updateShadowSignature();
 }

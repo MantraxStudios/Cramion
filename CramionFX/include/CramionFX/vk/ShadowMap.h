@@ -57,6 +57,13 @@ public:
     bool canCacheStatic() const { return resolution_ <= 4096; }
     void createStaticCache(const VulkanDevice& device);
     void destroyStaticCache() { static_.destroy(); }
+    // La saca (queda sin cache) para retirarla sin parar la GPU: ningun set la
+    // apunta, solo copias y el adjunto de las cascadas de frames en vuelo.
+    VulkanImage takeStaticCache() {
+        VulkanImage taken = std::move(static_);
+        static_ = VulkanImage{};
+        return taken;
+    }
     bool hasStaticCache() const { return static_.isValid(); }
     const VulkanImage& staticImage() const { return static_; }
     const vk::raii::ImageView& staticCascadeView(std::uint32_t cascade) const { return static_.layerView(cascade); }

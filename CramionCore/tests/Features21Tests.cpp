@@ -27,8 +27,10 @@
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/twod/System2D.h"
 #include "CramionCore/vfx/VisualEffect.h"
+#include "CramionCore/cvar/CVar.h"
 
 #include <CramionFX/asset/TextureStats.h>
+#include <CramionFX/scene/Camera.h>
 #include <CramionFX/scene/Scene.h>
 #include <CramionFX/scene/ShadowCascades.h>
 
@@ -105,6 +107,757 @@ void testVfx() {
     gfx::VfxInstanceDesc desc;
     vfx::compileGraph(vfx::vfxPreset(1), {}, desc);
     check(!desc.initialize.empty() && !desc.update.empty() && desc.color_over_life, "el fuego compila a bloques de la GPU");
+}
+
+// Luz por particula (bloque ParticleLight): .crvfx de antes sin luz, JSON de
+// ida y vuelta, compilar con un parametro atado (setEffectFloat) y la
+// eleccion de luces (VfxLightSelector: maximo por efecto, tope global, sin
+// parpadeos con el tope lleno y con fundidos al cambiar).
+void testVfxParticleLight() {
+    std::printf("VFX Graph: luz por particula\n");
+    {
+        const char* text =
+            R"({"version":1,"capacity":64,"spawn":[],"initialize":[],"update":[],)"
+            R"("output_blocks":[{"type":"ColorOverLife","enabled":true,"values":{},"gradient":[[0,1,1,1,1],[1,1,1,1,0]]}],)"
+            R"("output":{"blend":"Additive"}})";
+        vfx::VfxGraph old;
+        const bool ok = vfx::vfxGraphFromText(text, old);
+        gfx::VfxInstanceDesc d;
+        vfx::compileGraph(old, {}, d);
+        check(ok && old.output_blocks.size() == 1 && !d.light, "un .crvfx de antes (sin el bloque) carga igual y no da luz");
+    }
+    vfx::VfxGraph g = vfx::vfxPreset(0);
+    vfx::Block light = vfx::makeBlock(vfx::BlockKind::ParticleLight);
+    check(light.values[0] == 1.0f && light.values[5] == 4.0f && light.values[7] == 0.0f,
+          "por defecto: encendida, 4 luces por efecto, sin lo transparente");
+    light.values[1] = 0.5f;  // alcance
+    light.values[3] = 1.0f;  // caida lineal
+    light.values[4] = 3.0f;  // exponente
+    light.values[5] = 12.0f;
+    light.values[6] = 1.0f;  // por distancia a la camara
+    light.bindings[2] = "LightIntensity";
+    g.params.push_back(vfx::ExposedParam{"LightIntensity", vfx::ParamType::Float, core::Vec4{8.0f, 0, 0, 0}, {}});
+    g.output_blocks.push_back(light);
+    vfx::VfxGraph back;
+    const bool ok = vfx::vfxGraphFromText(vfx::vfxGraphToText(g), back);
+    const vfx::Block* saved = nullptr;
+    for (const vfx::Block& b : back.output_blocks) {
+        if (b.kind == vfx::BlockKind::ParticleLight) saved = &b;
+    }
+    check(ok && saved != nullptr && std::fabs(saved->values[1] - 0.5f) < 1e-5f && saved->values[5] == 12.0f &&
+              saved->bindings[2] == "LightIntensity",
+          "el bloque Luz por particula se guarda y se lee igual");
+    vfx::ParamValues params;
+    params["LightIntensity"] = core::Vec4{3.0f, 0, 0, 0};
+    gfx::VfxInstanceDesc desc;
+    vfx::compileGraph(back, params, desc);
+    check(desc.light && std::fabs(desc.light_intensity - 3.0f) < 1e-5f && std::fabs(desc.light_radius - 0.5f) < 1e-5f &&
+              desc.light_falloff == gfx::VfxLightFalloff::Linear && std::fabs(desc.light_exponent - 3.0f) < 1e-5f &&
+              desc.light_max == 12 && desc.light_priority == gfx::VfxLightPriority::CameraDistance && !desc.light_translucent,
+          "compila la luz con la intensidad del parametro atado");
+    params["LightIntensity"] = core::Vec4{0.0f, 0, 0, 0};
+    vfx::compileGraph(back, params, desc);
+    check(!desc.light, "intensidad 0 (desde un script): sin luz");
+
+    // --- Eleccion ---
+    const auto candidate = [](std::uint64_t key, std::uint32_t emitter, float x, float brightness) {
+        gfx::VfxLightCandidate c;
+        c.key = key;
+        c.emitter = emitter;
+        c.position = Vec3{x, 0.0f, 10.0f};
+        c.radius = 2.0f;
+        c.color = Vec3{brightness, brightness, brightness};
+        return c;
+    };
+    const float dt = 1.0f / 60.0f;
+    std::vector<gfx::VfxLight> out;
+    {
+        // 12 impactos cortos de un efecto (maximo 12, tope 32): entran todos de golpe.
+        gfx::VfxLightSelector selector;
+        std::vector<gfx::VfxLightCandidate> list;
+        for (std::uint64_t k = 0; k < 12; ++k) list.push_back(candidate(k, 0, static_cast<float>(k), 1.0f));
+        selector.select(list, {{12, gfx::VfxLightPriority::IntensityRadius}}, Vec3{}, 32, dt, out);
+        bool full = out.size() == 12;
+        for (const gfx::VfxLight& l : out) full = full && std::fabs(l.color.x - 1.0f) < 1e-5f;
+        check(full, "12 impactos: las 12 luces de golpe (sin fundido de entrada)");
+        // 40 vivas con luz y maximo 12: 12.
+        for (std::uint64_t k = 12; k < 40; ++k) list.push_back(candidate(k, 0, static_cast<float>(k), 1.0f));
+        selector.select(list, {{12, gfx::VfxLightPriority::IntensityRadius}}, Vec3{}, 32, dt, out);
+        check(out.size() == 12, "el maximo por efecto");
+    }
+    {
+        // Tope global 4 con 8 iguales de dos efectos: siempre las mismas 4.
+        gfx::VfxLightSelector selector;
+        std::vector<gfx::VfxLightCandidate> list;
+        for (std::uint64_t k = 0; k < 8; ++k) list.push_back(candidate(100 + k, static_cast<std::uint32_t>(k % 2), 0.0f, 1.0f));
+        const std::vector<gfx::VfxLightSelector::Emitter> emitters{{8, gfx::VfxLightPriority::IntensityRadius},
+                                                                   {8, gfx::VfxLightPriority::IntensityRadius}};
+        selector.select(list, emitters, Vec3{}, 4, dt, out);
+        std::vector<float> first;
+        for (const gfx::VfxLight& l : out) first.push_back(l.position.x + l.color.x);
+        bool stable = out.size() == 4;
+        for (int frame = 0; frame < 30 && stable; ++frame) {
+            // Pequenos cambios de brillo (el alfa en la vida) no cambian cuales lucen.
+            for (std::size_t i = 0; i < list.size(); ++i) {
+                const std::size_t step = (static_cast<std::size_t>(frame) + i) % 3;
+                list[i].color = Vec3{1.0f, 1.0f, 1.0f} * (1.0f + 0.2f * static_cast<float>(step));
+            }
+            selector.select(list, emitters, Vec3{}, 4, dt, out);
+            stable = out.size() == 4 && selector.tracked() == 4;
+        }
+        check(stable, "tope lleno: las mismas luces cada frame (sin parpadeo)");
+        // Una mucho mas fuerte: la que sale baja poco a poco y la nueva entra
+        // subiendo; nunca pasan del tope.
+        list.push_back(candidate(999, 0, 5.0f, 50.0f));
+        bool never_over = true;
+        bool faded_out = false;
+        bool faded_in = false;
+        bool arrived = false;
+        for (int frame = 0; frame < 30; ++frame) {
+            selector.select(list, emitters, Vec3{}, 4, dt, out);
+            never_over = never_over && out.size() <= 4;
+            for (const gfx::VfxLight& l : out) {
+                const float b = l.color.x;
+                if (l.position.x == 0.0f && b > 0.0f && b < 0.99f) faded_out = true;
+                if (l.position.x == 5.0f && b > 0.0f && b < 49.0f) faded_in = true;
+                if (l.position.x == 5.0f && b > 49.9f) arrived = true;
+            }
+        }
+        check(never_over && faded_out && faded_in && arrived,
+              "con el tope lleno, una nueva sustituye a otra con fundidos (sin saltos)");
+    }
+}
+
+// Cinta (Ribbon): atributos por particula, cara, UV, suavizado, .crvfx de
+// antes, empaquetado del id y la clave de la ordenacion, la plantilla de
+// proyectil y el caudal por distancia que la alimenta.
+void testVfxRibbon() {
+    std::printf("VFX: cinta\n");
+    const char* old_json = R"({"capacity":256,"output":{"type":"Ribbon","ribbon_uv":"Tile","ribbon_facing":"Emitter",
+        "ribbon_tile":2.0},"initialize":[{"type":"FlipbookFrame","values":{"min":1,"max":3}}]})";
+    vfx::VfxGraph old;
+    const bool loaded = vfx::vfxGraphFromText(old_json, old);
+    check(loaded && old.output.type == gfx::VfxOutput::Ribbon && old.output.ribbon_uv == gfx::VfxRibbonUv::Tile &&
+              old.output.ribbon_facing == gfx::VfxRibbonFacing::Emitter && old.output.ribbon_subdivisions == 1 &&
+              !old.output.ribbon_adaptive && old.output.ribbon_atlas_cell == -1 && old.output.ribbon_uv_scale.x == 1.0f &&
+              old.output.ribbon_uv_offset.x == 0.0f && !old.output.flip_blend && old.initialize.size() == 1 &&
+              old.initialize[0].values[2] == 0.0f,
+          "un .crvfx de antes carga con los valores de siempre");
+    gfx::VfxInstanceDesc od;
+    vfx::compileGraph(old, {}, od);
+    check(!od.ribbon_ids && od.ribbon_subdivisions == 1 && !od.flip_blend && od.initialize.size() == 1 &&
+              od.initialize[0].a.z == 0.0f,
+          "sin los bloques nuevos: sin ids, un tramo, sin variacion (coste cero)");
+
+    vfx::VfxGraph g;
+    g.output.type = gfx::VfxOutput::Ribbon;
+    g.output.ribbon_facing = gfx::VfxRibbonFacing::CustomSide;
+    g.output.ribbon_vector = Vec3{1.0f, 0.0f, 0.0f};
+    g.output.ribbon_uv = gfx::VfxRibbonUv::Age;
+    g.output.ribbon_tension = 0.25f;
+    g.output.ribbon_subdivisions = 8;
+    g.output.ribbon_adaptive = true;
+    g.output.ribbon_atlas_cell = 3;
+    g.output.ribbon_uv_scale = core::Vec2{2.0f, 1.0f};
+    g.output.ribbon_uv_offset = core::Vec2{0.5f, 0.0f};
+    vfx::Block attributes = vfx::makeBlock(vfx::BlockKind::RibbonAttributes);
+    check(attributes.values[0] == 0.0f && attributes.values[1] == 1.0f && std::fabs(attributes.values[2] - 0.1f) < 1e-6f,
+          "RibbonAttributes por defecto: id 0, una tira, 0.1 m de ancho");
+    attributes.values[0] = 2.0f;   // id
+    attributes.values[1] = 3.0f;   // tiras
+    attributes.values[2] = 0.2f;   // ancho
+    attributes.values[3] = 10.0f;  // giro min
+    attributes.values[4] = 30.0f;  // giro max
+    attributes.values[5] = 0.1f;   // separacion x
+    g.initialize.push_back(attributes);
+    vfx::VfxGraph back;
+    const bool round_trip = vfx::vfxGraphFromText(vfx::vfxGraphToText(g), back);
+    check(round_trip && back.output.ribbon_facing == gfx::VfxRibbonFacing::CustomSide && back.output.ribbon_vector.x == 1.0f &&
+              back.output.ribbon_uv == gfx::VfxRibbonUv::Age && std::fabs(back.output.ribbon_tension - 0.25f) < 1e-6f &&
+              back.output.ribbon_subdivisions == 8 && back.output.ribbon_adaptive && back.output.ribbon_atlas_cell == 3 &&
+              back.output.ribbon_uv_scale.x == 2.0f && back.output.ribbon_uv_offset.x == 0.5f &&
+              back.initialize.size() == 1 && back.initialize[0].kind == vfx::BlockKind::RibbonAttributes &&
+              back.initialize[0].values[1] == 3.0f,
+          "la cinta (cara, UV, suavizado, atlas, atributos) se guarda y se lee igual");
+    vfx::VfxGraph distance;
+    check(vfx::vfxGraphFromText(R"({"output":{"type":"Ribbon","ribbon_uv":"Distance"}})", distance) &&
+              distance.output.ribbon_uv == gfx::VfxRibbonUv::Tile,
+          "ribbon_uv \"Distance\" se lee como Tile (por distancia)");
+    gfx::VfxInstanceDesc d;
+    vfx::compileGraph(back, {}, d);
+    const gfx::VfxBlock* ribbon_block = nullptr;
+    for (const gfx::VfxBlock& b : d.initialize) {
+        if (b.type == static_cast<std::uint32_t>(gfx::VfxBlockType::RibbonAttributes)) ribbon_block = &b;
+    }
+    check(ribbon_block != nullptr && ribbon_block->a.x == 2.0f && ribbon_block->a.y == 3.0f &&
+              std::fabs(ribbon_block->a.z - 0.2f) < 1e-6f && ribbon_block->a.w == 10.0f && ribbon_block->b.x == 30.0f &&
+              std::fabs(ribbon_block->b.y - 0.1f) < 1e-6f && d.ribbon_ids && d.ribbon_subdivisions == 8 && d.ribbon_adaptive &&
+              d.ribbon_atlas_cell == 3 && d.ribbon_uv_transform.x == 2.0f && d.ribbon_uv_transform.z == 0.5f,
+          "la cinta compila a la GPU (bloque 48, ids, tramos, UV)");
+
+    // Id y eje en un float (vfx_common.glsl vfxRibbonPack) y la clave (id, edad).
+    const Vec3 axis = core::normalize(Vec3{1.0f, 2.0f, -3.0f});
+    const float packed = vfx::ribbonPack(200, axis);
+    const Vec3 unpacked = vfx::ribbonPackedAxis(packed);
+    check(vfx::ribbonPackedId(packed) == 200 && core::dot(unpacked, axis) > 0.999f && packed < 16777216.0f,
+          "id y eje de la cinta empaquetados (exacto, < 2^24)");
+    const float up_packed = vfx::ribbonPack(0, Vec3{0.0f, 1.0f, 0.0f});
+    check(vfx::ribbonPackedId(up_packed) == 0 && vfx::ribbonPackedAxis(up_packed).y > 0.999f, "id 0 y el eje Y");
+    check(vfx::ribbonSortKey(0, 5.0f) < vfx::ribbonSortKey(1, 0.0f) && vfx::ribbonSortKey(3, 0.010f) < vfx::ribbonSortKey(3, 0.012f) &&
+              vfx::ribbonSortKey(255, 63.8f) < vfx::ribbonSortKey(255, 63.9f) && vfx::ribbonSortKey(255, 100.0f) < 16777216.0f,
+          "orden de las cintas por (id, edad), sin perder precision");
+
+    // Plantilla "Estela de proyectil".
+    int projectile = -1;
+    for (int i = 0; i < vfx::vfxPresetCount(); ++i) {
+        if (std::string(vfx::vfxPresetName(i)) == "Estela de proyectil") projectile = i;
+    }
+    bool by_distance = false;
+    bool fades = false;
+    bool has_attributes = false;
+    if (projectile >= 0) {
+        const vfx::VfxGraph p = vfx::vfxPreset(projectile);
+        for (const vfx::Block& b : p.spawn) by_distance = by_distance || b.kind == vfx::BlockKind::RateOverDistance;
+        for (const vfx::Block& b : p.initialize) has_attributes = has_attributes || b.kind == vfx::BlockKind::RibbonAttributes;
+        for (const vfx::Block& b : p.output_blocks) {
+            if (b.kind == vfx::BlockKind::ColorOverLife && !b.gradient.empty()) fades = b.gradient.back().color.w == 0.0f;
+        }
+        check(p.output.type == gfx::VfxOutput::Ribbon && p.output.ribbon_uv == gfx::VfxRibbonUv::Tile && by_distance && fades &&
+                  has_attributes,
+              "plantilla Estela de proyectil: cinta por distancia que se apaga en la cola");
+    } else {
+        check(false, "plantilla Estela de proyectil");
+    }
+
+    // RateOverDistance alimenta la cinta: un punto cada 1/8 m (20 m/s, 1 s).
+    vfx::VfxGraph trail;
+    trail.spawn.push_back(vfx::makeBlock(vfx::BlockKind::RateOverDistance));
+    trail.spawn.back().values[0] = 8.0f;
+    trail.output.type = gfx::VfxOutput::Ribbon;
+    vfx::SpawnState state;
+    std::mt19937 rng(7);
+    std::uint32_t points = 0;
+    for (int i = 0; i < 60; ++i) points += vfx::advanceSpawn(trail, {}, state, 1.0f / 60.0f, 20.0f / 60.0f, true, rng);
+    gfx::VfxInstanceDesc td;
+    vfx::compileGraph(trail, {}, td);
+    check(points >= 159 && points <= 161 && td.interpolate_spawn, "caudal por distancia: 160 puntos en 20 m (repartidos en el frame)");
+}
+
+// Flipbook fundido: cuadro actual, siguiente y fraccion; cuadro inicial al
+// azar y variacion de velocidad por particula (la misma cuenta que vfx.vert).
+void testVfxFlipbookBlend() {
+    std::printf("VFX: flipbook fundido\n");
+    check(vfx::flipbookStartValue(3, 1.0f) == 3.0f, "sin variacion el cuadro inicial queda entero (como antes)");
+    vfx::FlipbookSample s = vfx::flipbookSample(3.0f, 0.25f, 1.0f, 16, 0.0f);
+    check(s.current == 7 && s.next == 8 && s.blend < 1e-4f, "a lo largo de la vida: cuadro 3 + 4");
+    s = vfx::flipbookSample(3.0f, 0.26f, 1.0f, 16, 0.0f);
+    check(s.current == 7 && s.next == 8 && std::fabs(s.blend - 0.16f) < 1e-3f, "fraccion para fundir con el siguiente");
+    s = vfx::flipbookSample(0.0f, 0.55f, 1.0f, 16, 10.0f);
+    check(s.current == 5 && s.next == 6 && std::fabs(s.blend - 0.5f) < 1e-3f, "por cuadros/s");
+    s = vfx::flipbookSample(0.0f, 0.35f, 1.0f, 4, 10.0f);
+    check(s.current == 3 && s.next == 0 && std::fabs(s.blend - 0.5f) < 1e-3f, "por cuadros/s da la vuelta al ultimo");
+    s = vfx::flipbookSample(0.0f, 1.0f, 1.0f, 8, 0.0f);
+    check(s.current == 7 && s.next == 7 && s.blend == 0.0f, "al final de la vida se queda en el ultimo sin fundir");
+    const float fast = vfx::flipbookStartValue(0, 1.2f);
+    const float slow = vfx::flipbookStartValue(2, 0.8f);
+    check(vfx::flipbookSample(fast, 1.05f, 1.0f, 16, 10.0f).current == 12 && vfx::flipbookSample(slow, 1.05f, 1.0f, 16, 10.0f).current == 10,
+          "variacion de velocidad por particula (+-20 %) y cuadro inicial");
+
+    vfx::VfxGraph g;
+    g.output.flip_cols = 4;
+    g.output.flip_rows = 4;
+    g.output.flip_blend = true;
+    vfx::Block frame = vfx::makeBlock(vfx::BlockKind::FlipbookFrame);
+    check(frame.values[2] == 0.0f, "FlipbookFrame: sin variacion por defecto");
+    frame.values[0] = 0.0f;
+    frame.values[1] = 15.0f;
+    frame.values[2] = 0.2f;
+    g.initialize.push_back(frame);
+    vfx::VfxGraph back;
+    const bool round_trip = vfx::vfxGraphFromText(vfx::vfxGraphToText(g), back);
+    gfx::VfxInstanceDesc d;
+    vfx::compileGraph(back, {}, d);
+    check(round_trip && back.output.flip_blend && d.flip_blend && d.initialize.size() == 1 && d.initialize[0].a.y == 15.0f &&
+              std::fabs(d.initialize[0].a.z - 0.2f) < 1e-6f,
+          "flip_blend y la variacion se guardan y compilan");
+}
+
+// Canales de datos (eventos de la GPU con nombre): 12 flechas que mueren en el
+// suelo apuntan "Impactos" (tipo 1) y un solo efecto escucha y hace nacer 5
+// astillas por evento. Sin GPU: el catalogo, el .crvfx, la compilacion y el
+// canal de los scripts.
+void testVfxChannels() {
+    std::printf("VFX Graph: canales de datos\n");
+    vfx::VfxGraph arrows;
+    arrows.world_space = true;
+    arrows.capacity = 12;
+    vfx::Block burst = vfx::makeBlock(vfx::BlockKind::Burst);
+    burst.values[0] = 12.0f;
+    arrows.spawn.push_back(burst);
+    arrows.update.push_back(vfx::makeBlock(vfx::BlockKind::Gravity));
+    arrows.update.push_back(vfx::makeBlock(vfx::BlockKind::CollidePlane));
+    vfx::Block on_death = vfx::makeBlock(vfx::BlockKind::EmitOnDeath);
+    on_death.text = "Impactos";
+    on_death.values[0] = 1.0f;  // tipo
+    on_death.values[1] = 2.5f;  // valor
+    arrows.update.push_back(on_death);
+    vfx::Block every = vfx::makeBlock(vfx::BlockKind::EmitEvery);
+    every.text = "Rastro";
+    every.values[8] = 0.1f;
+    arrows.update.push_back(every);
+    vfx::Block on_hit = vfx::makeBlock(vfx::BlockKind::EmitOnCollision);
+    on_hit.text = "Impactos";
+    arrows.update.push_back(on_hit);
+
+    vfx::VfxGraph shards;
+    shards.world_space = false;  // escuchar lo pasa al mundo
+    vfx::Block listen = vfx::makeBlock(vfx::BlockKind::OnGpuEvent);
+    listen.text = "Impactos";
+    listen.values[0] = 1.0f;   // tipo
+    listen.values[1] = 5.0f;   // por evento
+    listen.values[2] = 60.0f;  // maximo por frame (12 x 5)
+    listen.values[3] = 0.5f;   // velocidad heredada
+    shards.spawn.push_back(listen);
+    shards.initialize.push_back(vfx::makeBlock(vfx::BlockKind::Lifetime));
+
+    const vfx::BlockInfo* info = vfx::blockInfo("OnGpuEvent");
+    check(info != nullptr && info->context == vfx::Context::Spawn && info->has_text && info->text_label != nullptr &&
+              vfx::blockInfo("EmitOnDeath") != nullptr && vfx::blockInfo("EmitOnCollision") != nullptr &&
+              vfx::blockInfo("EmitEvery") != nullptr && vfx::isChannelBlock(vfx::BlockKind::EmitEvery),
+          "bloques EmitOnDeath / EmitOnCollision / EmitEvery (Update) y OnGpuEvent (Spawn)");
+
+    // El .crvfx: ida y vuelta con el canal.
+    vfx::VfxGraph back;
+    const bool round_trip = vfx::vfxGraphFromText(vfx::vfxGraphToText(arrows), back) && back.update.size() == 5 &&
+                            back.update[2].kind == vfx::BlockKind::EmitOnDeath && back.update[2].text == "Impactos" &&
+                            back.update[2].values[0] == 1.0f && back.update[3].values[8] == 0.1f;
+    vfx::VfxGraph shards_back;
+    const bool listen_trip = vfx::vfxGraphFromText(vfx::vfxGraphToText(shards), shards_back) && shards_back.spawn.size() == 1 &&
+                             shards_back.spawn[0].kind == vfx::BlockKind::OnGpuEvent && shards_back.spawn[0].text == "Impactos";
+    check(round_trip && listen_trip, "los bloques de canales se guardan y se leen igual");
+
+    // Compilacion: los Emit* van al Update con el indice del canal en pad1 y
+    // sin canal (pad0) hasta que VfxSystem lo pone.
+    const std::vector<std::string> names = vfx::eventChannels(arrows);
+    check(names.size() == 2 && names[0] == "Impactos" && names[1] == "Rastro", "eventChannels: sin repetir y en orden");
+    gfx::VfxInstanceDesc d;
+    vfx::compileGraph(arrows, {}, d);
+    int emits = 0;
+    bool death_ok = false;
+    for (const gfx::VfxBlock& b : d.update) {
+        if (!gfx::vfxWritesChannel(b.type)) continue;
+        ++emits;
+        if (b.type == static_cast<std::uint32_t>(gfx::VfxBlockType::EmitOnDeath)) {
+            death_ok = b.pad0 == gfx::VfxPass::kNoChannel && b.pad1 == 0 && b.b.x == 1.0f && b.b.y == 2.5f && b.b.z == 1.0f &&
+                       b.flags == 1u;
+        }
+        if (b.type == static_cast<std::uint32_t>(gfx::VfxBlockType::EmitEvery) && (b.pad1 != 1 || std::fabs(b.b.w - 0.1f) > 1e-6f)) {
+            death_ok = false;
+        }
+    }
+    check(emits == 3 && death_ok && d.listens.empty(), "los Emit* compilan al Update (tipo, valor, probabilidad, periodo)");
+    gfx::VfxInstanceDesc ld;
+    vfx::compileGraph(shards, {}, ld);
+    check(ld.listens.size() == 1 && ld.listens[0].a.x == 1.0f && ld.listens[0].a.y == 5.0f && ld.listens[0].a.z == 60.0f &&
+              ld.listens[0].a.w == 0.5f && ld.listens[0].flags == 1u && ld.listens[0].pad0 == gfx::VfxPass::kNoChannel &&
+              ld.world_space,
+          "OnGpuEvent compila a listens (tipo, 5 por evento, maximo, herencia) y simula en el mundo");
+    // Escuchar no hace nacer nada en la CPU (es la GPU, con dispatch indirecto).
+    vfx::SpawnState state;
+    std::mt19937 rng(3);
+    std::uint32_t cpu = 0;
+    for (int i = 0; i < 30; ++i) cpu += vfx::advanceSpawn(shards, {}, state, 1.0f / 30.0f, 0.0f, true, rng);
+    check(cpu == 0, "OnGpuEvent: ninguna nace en la CPU");
+    // Desactivado o sin canal: ni escucha ni apunta.
+    shards.spawn[0].enabled = false;
+    arrows.update[2].text.clear();
+    gfx::VfxInstanceDesc off;
+    vfx::compileGraph(shards, {}, off);
+    gfx::VfxInstanceDesc no_channel;
+    vfx::compileGraph(arrows, {}, no_channel);
+    int left = 0;
+    for (const gfx::VfxBlock& b : no_channel.update) left += gfx::vfxWritesChannel(b.type) ? 1 : 0;
+    check(off.listens.empty() && !off.world_space && left == 2, "desactivado o sin canal: fuera");
+
+    // Un .crvfx de antes (sin canales) se lee y compila igual que siempre.
+    vfx::VfxGraph old;
+    const bool old_ok = vfx::vfxGraphFromText(
+        R"({"capacity": 100, "spawn": [{"type": "ConstantRate", "values": {"rate": 10}}],
+            "update": [{"type": "Gravity", "values": {"acceleration": [0, -9.81, 0]}}]})",
+        old);
+    gfx::VfxInstanceDesc od;
+    if (old_ok) vfx::compileGraph(old, {}, od);
+    check(old_ok && od.listens.empty() && od.update.size() == 1 && vfx::eventChannels(old).empty(), "un .crvfx de antes, igual");
+
+    // El canal de los scripts: 100 impactos por segundo de varios jugadores
+    // en el mismo canal (un frame de 30 Hz son ~4; aqui un segundo entero).
+    vfx::VfxSystem system;
+    int accepted = 0;
+    for (int player = 0; player < 4; ++player) {
+        for (int i = 0; i < 25; ++i) {
+            gfx::VfxEventRecord e;
+            e.type = 1.0f;
+            e.position = Vec3{static_cast<float>(player), 0.0f, static_cast<float>(i)};
+            accepted += system.pushGpuEvent("Impactos", e) ? 1 : 0;
+        }
+    }
+    check(accepted == 100 && system.pendingGpuEvents() == 100 && system.channelId("Impactos") == 0,
+          "100 impactos de 4 jugadores en un solo canal (sin GPU: pendientes)");
+    // Tope de canales y de eventos por canal y frame.
+    for (int c = 1; c < static_cast<int>(gfx::VfxPass::kMaxChannels); ++c) system.channelId("Canal" + std::to_string(c));
+    check(system.channelId("Otro") == gfx::VfxPass::kNoChannel && !system.pushGpuEvent("Otro", gfx::VfxEventRecord{}) &&
+              system.channelId("Impactos") == 0,
+          "como mucho kMaxChannels canales (los de antes siguen)");
+    for (std::uint32_t i = 0; i < gfx::VfxPass::kMaxChannelEvents; ++i) system.pushGpuEvent("Impactos", gfx::VfxEventRecord{});
+    check(system.pendingGpuEvents() == gfx::VfxPass::kMaxChannelEvents, "tope de eventos por canal y frame");
+    system.clear();
+    check(system.pendingGpuEvents() == 0, "clear() los tira");
+}
+
+// Salida Malla: variantes / LOD, orientacion (cuaternion, camara), escala al
+// azar, material, bloques MeshIndex y AngularVelocity (spec item 7).
+void testVfxMeshParticles() {
+    std::printf("VFX Graph: particulas de malla\n");
+    // Un .crvfx de antes (salida Malla sin las claves nuevas) carga igual.
+    vfx::VfxGraph old;
+    const bool old_ok = vfx::vfxGraphFromText(
+        R"({"capacity": 64, "output": {"type": "Mesh", "mesh_orient": "Fixed", "mesh_scale": [1, 2, 3]}})", old);
+    check(old_ok && old.output.type == gfx::VfxOutput::Mesh && old.output.mesh_orient == gfx::VfxMeshOrient::Fixed &&
+              old.output.mesh_variants.empty() && old.output.mesh_lod_distance == 0.0f &&
+              old.output.mesh_sprite_distance == 0.0f && old.output.mesh_rotation.w == 1.0f &&
+              old.output.mesh_scale_jitter.x == 0.0f && !old.output.material.valid(),
+          "un .crvfx de malla de antes carga con los valores de siempre");
+    gfx::VfxInstanceDesc old_desc;
+    vfx::compileGraph(old, {}, old_desc);
+    check(old_desc.mesh_variant_count == 1 && old_desc.mesh_sprite_distance == 0.0f && old_desc.tint.x == 1.0f &&
+              old_desc.mesh_rotation.w == 1.0f,
+          "sin variantes ni material: una malla, sin sprite, color sin tocar");
+
+    // Todo lo nuevo, guardado y leido.
+    vfx::VfxGraph g;
+    g.output.type = gfx::VfxOutput::Mesh;
+    g.output.mesh = assets::AssetRef{Uuid::generate(), assets::AssetType::Model};
+    g.output.mesh_orient = gfx::VfxMeshOrient::Camera;
+    g.output.mesh_variants.push_back(assets::AssetRef{Uuid::generate(), assets::AssetType::Model});
+    g.output.mesh_variants.push_back(assets::AssetRef{{}, assets::AssetType::Model});  // hueco: la principal
+    g.output.mesh_lod_distance = 12.0f;
+    g.output.mesh_sprite_distance = 80.0f;
+    g.output.mesh_rotation = core::Vec4{0.0f, 2.0f, 0.0f, 2.0f};  // sin normalizar
+    g.output.mesh_scale_jitter = Vec3{0.25f, 0.0f, 0.5f};
+    g.output.material = assets::AssetRef{Uuid::generate(), assets::AssetType::Material};
+    vfx::Block index = vfx::makeBlock(vfx::BlockKind::MeshIndex);
+    index.values[0] = 5.0f;  // fuera de rango: se acota a 0..3
+    index.values[1] = 9.0f;
+    g.initialize.push_back(index);
+    vfx::Block spin = vfx::makeBlock(vfx::BlockKind::AngularVelocity);
+    spin.values[0] = 180.0f;  // grados/s2
+    spin.values[1] = 0.5f;
+    spin.values[2] = 90.0f;   // grados por metro
+    g.update.push_back(spin);
+    vfx::VfxGraph back;
+    const bool round = vfx::vfxGraphFromText(vfx::vfxGraphToText(g), back);
+    check(round && back.output.mesh_orient == gfx::VfxMeshOrient::Camera && back.output.mesh_variants.size() == 2 &&
+              back.output.mesh_variants[0].uuid == g.output.mesh_variants[0].uuid && !back.output.mesh_variants[1].valid() &&
+              back.output.mesh_lod_distance == 12.0f && back.output.mesh_sprite_distance == 80.0f &&
+              back.output.mesh_rotation.y == 2.0f && back.output.mesh_scale_jitter.z == 0.5f &&
+              back.output.material.uuid == g.output.material.uuid && back.initialize.size() == 1 && back.update.size() == 1,
+          "variantes, LOD, sprite, cuaternion, escala al azar y material se guardan y se leen");
+
+    gfx::VfxInstanceDesc desc;
+    vfx::compileGraph(back, {}, desc);
+    const float qlen = std::sqrt(desc.mesh_rotation.x * desc.mesh_rotation.x + desc.mesh_rotation.y * desc.mesh_rotation.y +
+                                 desc.mesh_rotation.z * desc.mesh_rotation.z + desc.mesh_rotation.w * desc.mesh_rotation.w);
+    check(desc.mesh_variant_count == 3 && desc.mesh_lod_distance == 12.0f && desc.mesh_sprite_distance == 80.0f &&
+              std::fabs(qlen - 1.0f) < 1e-4f && desc.mesh_scale_jitter.x == 0.25f,
+          "compila: 3 mallas, LOD, sprite y cuaternion normalizado");
+    bool index_ok = false;
+    for (const gfx::VfxBlock& b : desc.initialize) {
+        if (b.type == static_cast<std::uint32_t>(gfx::VfxBlockType::MeshIndex)) index_ok = b.a.x == 3.0f && b.a.y == 3.0f;
+    }
+    check(index_ok, "MeshIndex a la GPU, acotado a las 4 mallas");
+    bool spin_ok = false;
+    for (const gfx::VfxBlock& b : desc.update) {
+        if (b.type == static_cast<std::uint32_t>(gfx::VfxBlockType::AngularVelocity)) {
+            spin_ok = std::fabs(b.a.x - 3.14159265f) < 1e-3f && b.a.y == 0.5f && std::fabs(b.a.z - 1.5707963f) < 1e-3f;
+        }
+    }
+    check(spin_ok, "AngularVelocity en Update (grados -> radianes)");
+
+    // Material: opaco / transparente, color, emision y sin luz.
+    vfx::VfxMaterialSource source;
+    source.base_color = core::Vec4{0.5f, 0.25f, 1.0f, 1.0f};
+    source.emissive = Vec3{1.0f, 0.5f, 0.0f};
+    source.emissive_intensity = 2.0f;
+    source.unlit = true;
+    const vfx::VfxMaterial opaque = vfx::vfxMaterialFrom(source);
+    source.transparent = true;
+    source.transparent_blend = 2;  // aditivo
+    const vfx::VfxMaterial additive = vfx::vfxMaterialFrom(source);
+    source.transparent_blend = 0;  // vidrio -> alfa
+    const vfx::VfxMaterial glass = vfx::vfxMaterialFrom(source);
+    check(opaque.blend == gfx::VfxBlend::Opaque && additive.blend == gfx::VfxBlend::Additive &&
+              glass.blend == gfx::VfxBlend::Alpha && !opaque.lit && opaque.emissive.x == 2.0f,
+          "material .crmat: opaco, aditivo, vidrio como alfa, sin luz y emision x intensidad");
+    gfx::VfxInstanceDesc lit_desc;
+    lit_desc.lit = true;
+    vfx::applyVfxMaterial(opaque, lit_desc);
+    gfx::VfxInstanceDesc distortion_desc;
+    distortion_desc.blend = gfx::VfxBlend::Distortion;
+    vfx::applyVfxMaterial(opaque, distortion_desc);
+    check(lit_desc.blend == gfx::VfxBlend::Opaque && !lit_desc.lit && lit_desc.tint.y == 0.25f &&
+              distortion_desc.blend == gfx::VfxBlend::Distortion,
+          "el material manda sobre la mezcla y la luz (no sobre Distorsion)");
+}
+
+// Mezcla Distorsion del VFX Graph (spec item 8).
+void testVfxDistortion() {
+    std::printf("VFX Graph: distorsion\n");
+    vfx::VfxGraph old;
+    vfx::vfxGraphFromText(R"({"output": {"blend": "Premultiplied"}})", old);
+    check(old.output.blend == gfx::VfxBlend::Premultiplied && old.output.distortion == 3.0f && !old.output.distortion_height,
+          "un .crvfx de antes: su mezcla, distorsion por defecto");
+    vfx::VfxGraph unknown;
+    vfx::vfxGraphFromText(R"({"output": {"blend": "Desconocida"}})", unknown);
+    check(unknown.output.blend == gfx::VfxBlend::Additive, "mezcla desconocida: aditiva");
+
+    vfx::VfxGraph g;
+    g.output.blend = gfx::VfxBlend::Distortion;
+    g.output.distortion = 9.0f;  // mas de 5 px: se acota
+    g.output.distortion_height = true;
+    g.output.texture = "Texturas/calor_normal.png";
+    const std::string text = vfx::vfxGraphToText(g);
+    vfx::VfxGraph back;
+    const bool round = vfx::vfxGraphFromText(text, back);
+    check(round && text.find("\"Distortion\"") != std::string::npos && back.output.blend == gfx::VfxBlend::Distortion &&
+              back.output.distortion == gfx::kVfxMaxDistortionPixels && back.output.distortion_height,
+          "Distorsion se guarda y se lee (como mucho 5 px a 1080p)");
+    gfx::VfxInstanceDesc desc;
+    vfx::compileGraph(g, {}, desc);
+    check(desc.blend == gfx::VfxBlend::Distortion && desc.distortion == gfx::kVfxMaxDistortionPixels && desc.distortion_height,
+          "compila a la mezcla Distorsion acotada");
+    vfx::VfxGraph opaque;
+    opaque.output.blend = gfx::VfxBlend::Opaque;
+    vfx::VfxGraph opaque_back;
+    vfx::vfxGraphFromText(vfx::vfxGraphToText(opaque), opaque_back);
+    check(opaque_back.output.blend == gfx::VfxBlend::Opaque, "mezcla Opaca se guarda y se lee");
+    check(!vfx::vfxDistortionForQuality(0) && vfx::vfxDistortionForQuality(1) && vfx::vfxDistortionForQuality(3),
+          "calidad Baja: sin distorsion; Media en adelante, con ella");
+    check(vfx::vfxDistortionCvar(), "render.vfx.Distortion encendida por defecto");
+}
+
+// Escalabilidad por tipo de efecto (MMO) y las mejoras pequenas: orden de
+// dibujo, ruido rizado horneado, pool de instancias, texturas y tiempo.
+void testVfxScalability() {
+    std::printf("VFX: escalabilidad por tipo de efecto\n");
+    using vfx::BudgetCandidate;
+    using Decision = BudgetCandidate::Decision;
+
+    // Un .crvfx de antes (sin las claves nuevas) se lee igual: sin tipo, sin
+    // caja, orden 0, sin repartir; y al guardarlo no aparecen.
+    {
+        vfx::VfxGraph old;
+        const bool ok = vfx::vfxGraphFromText(R"({"capacity": 300, "duration": 2, "loop": false})", old);
+        check(ok && old.effect_type == vfx::EffectType::None && !old.fixed_bounds && old.sort_order == 0 &&
+                  old.spawn_spread_frames == 1 && old.capacity == 300,
+              "un .crvfx de antes: sin tipo ni caja (sin limites, como antes)");
+        const std::string text = vfx::vfxGraphToText(old);
+        check(text.find("effect_type") == std::string::npos && text.find("\"bounds\"") == std::string::npos &&
+                  text.find("sort_order") == std::string::npos,
+              "sin tipo se guarda igual que antes");
+        vfx::VfxGraph typed = old;
+        typed.effect_type = vfx::EffectType::Impact;
+        typed.sort_order = 3;
+        typed.fixed_bounds = true;
+        typed.bounds_center = Vec3{0.0f, 1.0f, 0.0f};
+        typed.bounds_size = Vec3{2.0f, 3.0f, 4.0f};
+        typed.spawn_spread_frames = 4;
+        vfx::VfxGraph back;
+        check(vfx::vfxGraphFromText(vfx::vfxGraphToText(typed), back) && back.effect_type == vfx::EffectType::Impact &&
+                  back.sort_order == 3 && back.fixed_bounds && std::fabs(back.bounds_size.z - 4.0f) < 1e-4f &&
+                  std::fabs(back.bounds_center.y - 1.0f) < 1e-4f && back.spawn_spread_frames == 4,
+              "tipo, orden, caja fija y rafagas repartidas se guardan y se leen");
+        check(vfx::effectTypeFromKey("Ambient") == vfx::EffectType::Ambient &&
+                  vfx::effectTypeFromKey("???") == vfx::EffectType::None,
+              "tipos por su clave (desconocido = sin tipo)");
+    }
+
+    // Tabla por defecto: Baja mas estricta que Ultra; movil mas que escritorio.
+    {
+        const vfx::VfxScalability low = vfx::defaultScalability(0, vfx::VfxPlatform::Desktop);
+        const vfx::VfxScalability ultra = vfx::defaultScalability(3, vfx::VfxPlatform::Desktop);
+        const vfx::VfxScalability mobile = vfx::defaultScalability(0, vfx::VfxPlatform::Mobile);
+        bool stricter = true;
+        for (int t = 0; t < vfx::kEffectTypes; ++t) {
+            const auto& l = low.types[static_cast<std::size_t>(t)];
+            const auto& u = ultra.types[static_cast<std::size_t>(t)];
+            const auto& m = mobile.types[static_cast<std::size_t>(t)];
+            stricter = stricter && l.max_instances <= u.max_instances && l.particle_scale <= u.particle_scale &&
+                       (u.max_distance == 0.0f || l.max_distance <= u.max_distance) && m.max_instances <= l.max_instances &&
+                       m.particle_scale <= l.particle_scale && (l.disabled_outputs & ~m.disabled_outputs) == 0u;
+        }
+        check(stricter, "Baja <= Ultra y movil <= escritorio en distancia, instancias y particulas");
+        const auto& hero = low.types[static_cast<std::size_t>(vfx::EffectType::Hero)];
+        const auto& ambient = low.types[static_cast<std::size_t>(vfx::EffectType::Ambient)];
+        check(hero.max_distance == 0.0f && (ambient.disabled_outputs & gfx::kVfxOutMesh) != 0u &&
+                  ambient.policy == vfx::OverBudget::Pause && ultra.types[1].disabled_outputs == 0u,
+              "Heroe sin distancia; en Baja el Ambiente sin mallas y en pausa al pasarse");
+    }
+
+    // Presupuesto: cada politica.
+    {
+        vfx::VfxScalability s;
+        for (auto& b : s.types) b = vfx::EffectTypeBudget{};
+        auto& impact = s.types[static_cast<std::size_t>(vfx::EffectType::Impact)];
+        impact.max_instances = 2;
+        impact.policy = vfx::OverBudget::RemoveFarthest;
+        auto& combat = s.types[static_cast<std::size_t>(vfx::EffectType::Combat)];
+        combat.max_instances = 2;
+        combat.policy = vfx::OverBudget::DontCreate;
+        auto& ambient = s.types[static_cast<std::size_t>(vfx::EffectType::Ambient)];
+        ambient.max_distance = 30.0f;
+        ambient.policy = vfx::OverBudget::Pause;
+
+        const auto make = [](vfx::EffectType type, float distance, bool running = false, bool in_view = true) {
+            BudgetCandidate c;
+            c.type = type;
+            c.distance = distance;
+            c.running = running;
+            c.in_view = in_view;
+            return c;
+        };
+        std::vector<BudgetCandidate> c = {make(vfx::EffectType::Impact, 5.0f), make(vfx::EffectType::Impact, 1.0f),
+                                          make(vfx::EffectType::Impact, 3.0f), make(vfx::EffectType::Impact, 8.0f)};
+        vfx::applyBudget(c, s);
+        check(c[1].decision == Decision::Run && c[2].decision == Decision::Run && c[0].decision == Decision::Removed &&
+                  c[3].decision == Decision::Removed,
+              "RemoveFarthest: entran los 2 mas cercanos, los lejanos se quitan");
+        c = {make(vfx::EffectType::Combat, 50.0f, true), make(vfx::EffectType::Combat, 10.0f, true),
+             make(vfx::EffectType::Combat, 1.0f, false)};
+        vfx::applyBudget(c, s);
+        check(c[0].decision == Decision::Run && c[1].decision == Decision::Run && c[2].decision == Decision::Removed,
+              "DontCreate: los que ya corrian se quedan, el nuevo no entra aunque este cerca");
+        c = {make(vfx::EffectType::Ambient, 10.0f), make(vfx::EffectType::Ambient, 45.0f),
+             make(vfx::EffectType::Ambient, 5.0f, false, false), make(vfx::EffectType::None, 5000.0f, false, true)};
+        vfx::applyBudget(c, s);
+        check(c[0].decision == Decision::Run && c[1].decision == Decision::Paused && c[2].decision == Decision::Hidden &&
+                  c[3].decision == Decision::Run,
+              "Pause: el lejano se congela; fuera de la vista se oculta; sin tipo no se toca");
+        // 300 impactos de un MMO en Baja: como mucho los de la tabla.
+        const vfx::VfxScalability low = vfx::defaultScalability(0, vfx::VfxPlatform::Desktop);
+        std::vector<BudgetCandidate> crowd;
+        for (int i = 0; i < 300; ++i) crowd.push_back(make(vfx::EffectType::Impact, static_cast<float>(i % 40)));
+        vfx::applyBudget(crowd, low);
+        const auto running =
+            std::count_if(crowd.begin(), crowd.end(), [](const BudgetCandidate& b) { return b.decision == Decision::Run; });
+        check(running == low.types[static_cast<std::size_t>(vfx::EffectType::Impact)].max_instances,
+              "300 impactos a la vez en Baja: solo corren los de la tabla");
+    }
+
+    // Rafagas repartidas y precalentado en varios frames.
+    {
+        std::uint32_t backlog = 0, rate = 0;
+        std::vector<std::uint32_t> frames;
+        frames.push_back(vfx::takeSpread(backlog, rate, 400, 4));
+        for (int i = 0; i < 4; ++i) frames.push_back(vfx::takeSpread(backlog, rate, 0, 4));
+        check(frames[0] == 100 && frames[1] == 100 && frames[2] == 100 && frames[3] == 100 && frames[4] == 0 && backlog == 0,
+              "una rafaga de 400 en 4 frames: 100 por frame");
+        check(vfx::takeSpread(backlog, rate, 3, 4) == 3 && backlog == 0, "las pocas salen ya (sin esperar)");
+        check(vfx::takeSpread(backlog, rate, 50, 1) == 50, "sin repartir (1 frame): todas a la vez, como antes");
+        // Precalentado de 800 en 8 frames con un caudal de 2 por frame.
+        vfx::queueSpread(backlog, rate, 800, 8);
+        std::uint32_t total = 0, first = 0;
+        for (int i = 0; i < 8; ++i) {
+            const std::uint32_t n = vfx::takeSpread(backlog, rate, 2, 1);
+            if (i == 0) first = n;
+            total += n;
+        }
+        check(total == 816 && first == 102 && backlog == 0, "precalentado de 800 repartido en 8 frames (sin tiron)");
+    }
+
+    // Vista: esfera delante, detras y a un lado.
+    {
+        scene::Camera camera;
+        camera.setPosition(Vec3{0.0f, 0.0f, 0.0f});
+        camera.lookAt(Vec3{0.0f, 0.0f, -10.0f});
+        camera.setAspectRatio(16.0f / 9.0f);
+        const core::Mat4 vp = camera.projection() * camera.view();
+        check(vfx::sphereInView(vp, Vec3{0.0f, 0.0f, -10.0f}, 1.0f), "delante de la camara: se ve");
+        check(!vfx::sphereInView(vp, Vec3{0.0f, 0.0f, 10.0f}, 1.0f), "detras: no se ve");
+        check(!vfx::sphereInView(vp, Vec3{200.0f, 0.0f, -10.0f}, 1.0f) && vfx::sphereInView(vp, Vec3{200.0f, 0.0f, -10.0f}, 400.0f),
+              "a un lado: no se ve (salvo que la caja sea enorme)");
+    }
+
+    // Orden de dibujo entre efectos (sortOrder).
+    {
+        const gfx::VfxDrawKey smoke_near{0, false, 5.0f};
+        const gfx::VfxDrawKey smoke_far{0, false, 50.0f};
+        const gfx::VfxDrawKey fire{0, true, 1.0f};
+        const gfx::VfxDrawKey on_top{1, false, 100.0f};
+        check(gfx::vfxDrawBefore(smoke_far, smoke_near) && gfx::vfxDrawBefore(smoke_near, fire) &&
+                  gfx::vfxDrawBefore(fire, on_top) && !gfx::vfxDrawBefore(on_top, smoke_far),
+              "sort_order manda; a igual orden, transparentes de atras adelante y luego aditivos");
+    }
+
+    // Ruido rizado horneado: se repite, coincide con el calculado en sus
+    // texeles y entre ellos va suave.
+    {
+        std::vector<core::Vec4> volume;
+        gfx::bakeVfxCurlVolume(volume);
+        const std::size_t n = gfx::kVfxCurlSize;
+        check(volume.size() == n * n * n, "volumen de 32^3");
+        const float period = static_cast<float>(gfx::kVfxCurlPeriod);
+        float max_tile = 0.0f, max_texel = 0.0f, max_mid = 0.0f, mean = 0.0f;
+        std::mt19937 rng(7);
+        std::uniform_real_distribution<float> any(-20.0f, 20.0f);
+        for (int i = 0; i < 200; ++i) {
+            const Vec3 q{any(rng), any(rng), any(rng)};
+            const Vec3 a = gfx::sampleVfxCurlVolume(volume, q);
+            const Vec3 b = gfx::sampleVfxCurlVolume(volume, q + Vec3{period, -period, 2.0f * period});
+            max_tile = std::max(max_tile, core::length(a - b));
+            mean += core::length(a) / 200.0f;
+            // En un texel: el valor exacto. Entre texeles: cerca del exacto.
+            const Vec3 texel{std::floor(q.x * 4.0f) / 4.0f, std::floor(q.y * 4.0f) / 4.0f, std::floor(q.z * 4.0f) / 4.0f};
+            max_texel = std::max(max_texel, core::length(gfx::sampleVfxCurlVolume(volume, texel) - gfx::vfxCurlReference(texel)));
+            const Vec3 exact = gfx::vfxCurlReference(q);
+            max_mid = std::max(max_mid, core::length(a - exact) / std::max(core::length(exact), 0.5f));
+        }
+        check(max_tile < 1e-3f, "se repite cada 8 celdas (tileable)");
+        check(max_texel < 1e-3f, "en sus texeles es el campo calculado");
+        check(mean > 0.2f && max_mid < 0.75f, "con fuerza y suave entre texeles (fallback: el calculado sigue en el shader)");
+    }
+
+    // Pool de instancias: aparcar y reutilizar ranuras.
+    {
+        gfx::VfxSlotRecycler<int> pool(3);
+        check(pool.park(256, 1) && pool.park(512, 2) && pool.park(256, 3) && !pool.park(256, 4) && pool.size() == 3,
+              "aparca hasta su tope");
+        int token = 0;
+        check(pool.take(256, token) && token == 3 && pool.take(256, token) && token == 1 && !pool.take(256, token),
+              "reutiliza con la misma capacidad (la mas reciente primero)");
+        check(!pool.take(1024, token) && pool.evictOldest(token) && token == 2 && pool.size() == 0,
+              "otra capacidad no sirve; la mas antigua se puede liberar");
+    }
+
+    // Texturas: mas de 16 ranuras si el dispositivo puede.
+    check(gfx::VfxPass::kMaxTextures >= 64 && gfx::VfxPass::kMinTextures == 16, "hasta 64 texturas (16 como poco)");
+
+    // Tiempo del juego y calidad.
+    {
+        vfx::VfxSystem system;
+        check(std::fabs(system.timeScale() - 1.0f) < 1e-6f, "tiempo normal por defecto");
+        system.setTimeScale(0.5f);
+        cvar::Registry::instance().set("vfx.timeScale", "0.5");
+        check(std::fabs(system.timeScale() - 0.25f) < 1e-6f, "camara lenta: setTimeScale x vfx.timeScale");
+        system.setTimeScale(0.0f);
+        check(system.timeScale() == 0.0f, "pausa: 0");
+        cvar::Registry::instance().set("vfx.timeScale", "1");
+        vfx::setQualityPreset(0);
+        check(vfx::qualityLevel() == 0, "el preset de graficos pone la calidad de los efectos");
+        cvar::Registry::instance().set("vfx.quality", "3");
+        check(vfx::qualityLevel() == 3, "vfx.quality manda sobre el preset");
+        cvar::Registry::instance().set("vfx.quality", "-1");
+        vfx::setQualityPreset(2);
+    }
 }
 
 void testPhysics2D() {
@@ -828,6 +1581,13 @@ void testReplay() {
 
 int main() {
     testVfx();
+    testVfxParticleLight();
+    testVfxRibbon();
+    testVfxFlipbookBlend();
+    testVfxChannels();
+    testVfxScalability();
+    testVfxMeshParticles();
+    testVfxDistortion();
     testPhysics2D();
     testLocalization();
     testDialogue();

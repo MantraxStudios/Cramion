@@ -28,7 +28,9 @@ namespace cramion::physics {
 class PhysicsSystem;
 
 enum class EmitterShape : int { Cone = 0, Sphere = 1, Box = 2, Point = 3 };
-enum class ParticleBlend : int { Alpha = 0, Additive = 1 };
+// Distortion: no pintan; desplazan lo que hay detras (calor, ondas de choque)
+// con fuerza = intensidad x opacidad (gfx::ParticleDrawList::distortion).
+enum class ParticleBlend : int { Alpha = 0, Additive = 1, Distortion = 2 };
 
 struct ParticleSystem {
     // --- Principal ---
@@ -66,6 +68,11 @@ struct ParticleSystem {
     float alpha_end = 0.0f;
     float intensity = 2.0f;     // multiplica el color (HDR: brilla con el bloom)
     ParticleBlend blend = ParticleBlend::Additive;
+    // Por entidad (como MeshRenderer.tint/alpha): multiplican a todas sus
+    // particulas, tambien a las que ya estan vivas, sin tocar color_start/end:
+    // color de equipo, destello, fundido al apagar un efecto desde un script.
+    core::Vec3 tint{1.0f, 1.0f, 1.0f};
+    float alpha = 1.0f;
 
     // --- Colision ---
     bool collision = true;
@@ -150,6 +157,7 @@ private:
         // Aspecto (copiado del componente para dibujar sin el World).
         float size_start = 0.1f, size_end = 0.1f;
         core::Vec4 color_start{}, color_end{};
+        float intensity = 1.0f;  // fuerza de la distorsion
         bool world_space = true;
     };
 

@@ -195,8 +195,9 @@ void ProfilerOverlay::draw(ImDrawList* draw, const ImVec2& origin, const ImVec2&
 
 const ecs::Profiler* findProfiler(const ecs::World& world) {
     const ecs::Profiler* found = nullptr;
-    world.forEachDepthFirst([&](ecs::Entity e) {
-        if (found == nullptr && e.activeInHierarchy()) found = e.tryGet<ecs::Profiler>();
+    // Solo lo activo, y tryGet sin subir por los padres de cada entidad.
+    world.forEachActiveDepthFirst([&](ecs::Entity e) {
+        if (found == nullptr) found = e.tryGet<ecs::Profiler>();
     });
     return found;
 }

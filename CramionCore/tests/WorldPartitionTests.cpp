@@ -3,8 +3,10 @@
 // los objetos creados en Play, el mismo UUID al volver, restaurar todo al
 // parar y lo que tarda un frame con muchos objetos. Fase 1: varias rejillas,
 // Data Layers, dependencias entre celdas, lo que se guarda con la escena y
-// las celdas en disco con rejillas y capas (y las de antes). Devuelve 0 si
-// todo va.
+// las celdas en disco con rejillas y capas (y las de antes). Regiones
+// cargadas en el editor: radio de la camara, celdas fijadas, borrado por
+// trozos, guardar lo descargado, Play que hereda y el mundo rehecho con una
+// instantanea. Devuelve 0 si todo va.
 
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/SceneSerializer.h"
@@ -12,6 +14,7 @@
 #include "CramionCore/world/WorldPartition.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -558,6 +561,101 @@ int main() {
         ecs::Entity other = world.create("Otro");
         world.destroy(other);
         check(world.find(id) == back, "destruir otra entidad no toca el mapa de UUID ajeno");
+    }
+
+    std::printf("Regiones cargadas en el editor\n");
+    {
+        namespace fs = std::filesystem;
+        const fs::path folder = fs::temp_directory_path() / "cramion_wp_regions_test";
+        std::error_code ec;
+        fs::remove_all(folder, ec);
+        fs::create_directories(folder, ec);
+        const fs::path scene = folder / "Mundo.crscene";
+        worldpart::WorldPartition settings;
+        settings.cell_size = 100.0f;
+        settings.unload_margin = 50.0f;
+        settings.loads_per_frame = 64;
+        settings.unloads_per_frame = 64;
+        settings.external_cells = true;
+        {
+            ecs::World editor;
+            row(editor, 10);
+            check(worldpart::WorldPartitionSystem::writeExternalCells(editor, settings, scene) == 10, "10 celdas en disco");
+        }
+        ecs::World world;
+        world.create("World Partition").add<worldpart::WorldPartition>() = settings;
+        worldpart::WorldPartitionSystem wp;
+        wp.setCacheFolder(folder / "cache");
+        wp.setSceneFile(scene, false);
+        worldpart::WorldPartitionSystem::EditorRegions regions;
+        regions.radius = 120.0f;
+        wp.setEditorRegions(regions);
+        const Vec3 near_cam{50.0f, 0.0f, 50.0f};
+        wp.beginEditor(world, near_cam);
+        check(wp.active() && wp.editorMode(), "modo editor con celdas en disco");
+        check(wp.stats().external_cells == 10 && !world.findByName("Roca0").valid(), "al abrir no se lee nada (sin congelar)");
+        const auto pump = [&](const Vec3& cam, const auto& done) {
+            for (int i = 0; i < 500; ++i) {
+                wp.update(world, cam);
+                if (done()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            return false;
+        };
+        check(pump(near_cam, [&] { return world.findByName("Roca0").valid() && world.findByName("Roca1").valid(); }) &&
+                  !world.findByName("Roca5").valid(),
+              "solo las celdas a su radio de la camara");
+        wp.setCellPinned(0, worldpart::CellCoord{8, 0}, true);
+        check(pump(near_cam, [&] { return world.findByName("Roca8").valid(); }), "una celda fijada se carga aunque este lejos");
+        // Editar y alejarse: se descarga (borrada por trozos) con lo editado.
+        ecs::Entity roca0 = world.findByName("Roca0");
+        const Uuid id0 = roca0.uuid();
+        roca0.setWorldPosition(Vec3{60.0f, 0.0f, 50.0f});
+        const Vec3 far_cam{550.0f, 0.0f, 50.0f};
+        check(pump(far_cam, [&] { return !world.find(id0).valid(); }), "al alejarse la camara se descarga (sin UUID ya)");
+        check(pump(far_cam, [&] { return wp.pendingDestroys() == 0; }), "y se acaba de borrar en unos frames");
+        check(world.findByName("Roca8").valid(), "la fijada sigue cargada");
+        // Guardar: lo descargado (y editado) tambien va a disco.
+        check(wp.saveCells(world, settings, scene) == 10, "guardar escribe las 10 celdas (cargadas y descargadas)");
+        {
+            ecs::World reopened;
+            worldpart::WorldPartitionSystem::loadExternalCells(reopened, scene);
+            const ecs::Entity back = reopened.find(id0);
+            check(back.valid() && std::abs(back.worldPosition().x - 60.0f) < 0.01f, "lo editado y descargado se guardo");
+        }
+        // Play: el World Partition del juego toma las descargadas sin leerlas.
+        wp.settle(world);
+        {
+            ecs::World play;
+            play.create("World Partition").add<worldpart::WorldPartition>() = settings;
+            ecs::Entity player = play.create("Jugador");
+            player.add<worldpart::StreamingSource>();
+            player.setWorldPosition(Vec3{950.0f, 0.0f, 50.0f});
+            worldpart::WorldPartitionSystem game;
+            game.setCacheFolder(folder / "cache_play");
+            game.setSceneFile(scene, true);
+            game.inheritUnloadedFrom(&wp);
+            game.begin(play, Vec3{});
+            check(play.findByName("Roca9").valid() && !play.findByName("Roca0").valid(),
+                  "Play: la celda del jugador viene de lo descargado en el editor");
+            game.end(play, false);
+        }
+        check(wp.stats().loaded_cells >= 1 && !world.find(id0).valid(), "el editor sigue igual despues de Play");
+        // El mundo se rehace con una instantanea de antes de cargar una celda
+        // (parar Play, volver de una pestana): la celda vuelve de su archivo.
+        const std::uint64_t epoch = wp.loadEpoch();
+        const std::string snapshot = ecs::serializeWorld(world);
+        wp.setCellPinned(0, worldpart::CellCoord{2, 0}, true);
+        check(pump(far_cam, [&] { return world.findByName("Roca2").valid(); }), "otra celda fijada se carga");
+        ecs::deserializeWorld(world, snapshot);
+        check(!world.findByName("Roca2").valid() && wp.worldRebuilt(world), "la instantanea no la tiene");
+        wp.recoverAfterRebuild(world, epoch);
+        check(pump(far_cam, [&] { return world.findByName("Roca2").valid(); }) && world.findByName("Roca8").valid(),
+              "vuelve de su archivo y lo de la instantanea se queda");
+        // Apagar las regiones: todo de vuelta al mundo.
+        wp.end(world, true);
+        check(world.find(id0).valid() && world.entityCount() == 10 + 1, "al apagarlas, la escena entera (y con su UUID)");
+        fs::remove_all(folder, ec);
     }
 
     std::printf("\n%d de %d comprobaciones bien\n", checks - failures, checks);

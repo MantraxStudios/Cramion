@@ -30,9 +30,14 @@ public:
     // las vistas individuales de cada capa.
     // `view_format` (opcional): la vista principal en otro formato compatible
     // (p. ej. UNORM escrito a mano y leido como sRGB); la imagen se crea mutable.
+    // `name` (opcional): nombre de depuracion de la imagen y su vista
+    // (VulkanDevice::setObjectName; no hace nada sin la validacion).
     void create(const VulkanDevice& device, vk::Extent2D extent, vk::Format format,
                 vk::ImageUsageFlags usage, vk::ImageAspectFlags aspect,
-                std::uint32_t layers = 1, vk::Format view_format = vk::Format::eUndefined);
+                std::uint32_t layers = 1, vk::Format view_format = vk::Format::eUndefined,
+                const char* name = nullptr);
+    // Pone (o cambia) el nombre de depuracion de la imagen y de sus vistas.
+    void setName(const VulkanDevice& device, const char* name) const;
 
     void destroy();
 

@@ -410,7 +410,6 @@ Value playSpriteAnimation(const T0& texto = {}, const T1& reiniciar = {}) const 
 }
 /// entity.quaternion: Quat de su giro (Quat)
 Value quaternion() const { return get("quaternion"); }
-void setQuaternion(const Value& v) const { set("quaternion", v); }
 /// entity.ragdoll: Ragdoll activado (true/false) (booleano)
 Value ragdoll() const { return get("ragdoll"); }
 void setRagdoll(const Value& v) const { set("ragdoll", v); }
@@ -579,6 +578,13 @@ Value setLookAt(const T0& objetivo = {}, const T1& peso = {}) const {
 template <typename T0 = Value, typename T1 = Value>
 Value setMaterial(const T0& valor = {}, const T1& texto = {}) const {
     return call("setMaterial", Values{Value(valor), Value(texto)});
+}
+/// entity().setMaterialParam(parametro, valor, y, z, w)
+/// por instancia, sin otro .crmat: "tint" (Vec3), "alpha", "emission", "receiveDecals" o 0/1 = INSTANCE_DATA(i) de su .crshader (x, y, z, w); tint y alpha tambien en su ParticleSystem
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value, typename T4 = Value>
+Value setMaterialParam(const T0& parametro = {}, const T1& valor = {}, const T2& y = {}, const T3& z = {}, const T4& w = {}) const {
+    return call("setMaterialParam", Values{Value(parametro), Value(valor), Value(y), Value(z), Value(w)});
 }
 /// entity().setMotionFacing(Vec3)
 /// Motion Matching: hacia donde mirar (cero = hacia donde se mueve)

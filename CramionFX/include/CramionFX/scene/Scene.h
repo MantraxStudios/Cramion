@@ -46,6 +46,28 @@ struct Actor {
     // esa capa. Solo vale si su modelo tiene UV de lightmap.
     std::int32_t lightmap_layer = -1;
     core::Vec4 lightmap_scale_offset{1.0f, 1.0f, 0.0f, 0.0f};
+
+    // Parametros por instancia (MeshRenderer): rgb = tinte del color base
+    // (lineal, 0..1), a = opacidad; y la escala de su emision. Van en el
+    // registro de su hueco del buffer de huesos (GpuLightmapRecord): no
+    // cambian el lote ni el material.
+    core::Vec4 tint{1.0f, 1.0f, 1.0f, 1.0f};
+    float emission_scale = 1.0f;
+    // false: los decals no lo pintan (personajes bajo el indicador de un area).
+    bool receive_decals = true;
+    // Datos propios de la instancia (MeshRenderer.instance_data): los lee el
+    // .crshader con INSTANCE_DATA(0) e INSTANCE_DATA(1).
+    core::Vec4 instance_data[2]{};
+    bool hasInstanceData() const {
+        for (const core::Vec4& d : instance_data) {
+            if (d.x != 0.0f || d.y != 0.0f || d.z != 0.0f || d.w != 0.0f) return true;
+        }
+        return false;
+    }
+    bool hasInstanceParams() const {
+        return tint.x != 1.0f || tint.y != 1.0f || tint.z != 1.0f || tint.w != 1.0f || emission_scale != 1.0f ||
+               !receive_decals || hasInstanceData();
+    }
 };
 
 // Escena: los modelos cargados, la camara y una unica luz direccional (el

@@ -1,6 +1,7 @@
 #ifndef CRAMION_VK_SKINNED_PASS_H
 #define CRAMION_VK_SKINNED_PASS_H
 
+#include "CramionFX/core/Math.h"
 #include "CramionFX/vk/TextureFiltering.h"
 #include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
@@ -13,6 +14,27 @@ namespace cramion::gfx {
 
 class GBuffer;
 class VulkanDevice;
+
+// Sombra de un .crshader con vertex() (surface_shadow.vert/.frag): mismo
+// layout que la de siempre (shadowLayout, cuya push constant mide lo mayor de
+// esta y GpuSkinnedShadowPush: 128 bytes, el minimo de Vulkan). vertex()
+// trabaja en el mundo, asi que la luz y el modelo van por separado (el modelo
+// en 3 filas: la cuarta es siempre 0, 0, 0, 1).
+struct GpuSurfaceShadowPush {
+    core::Mat4 light_view_projection = core::Mat4::identity();
+    std::uint32_t bone_offset = 0;
+    float alpha_factor = 1.0f;
+    std::uint32_t pick_id = 0;  // bloque de propiedades del material
+    std::uint32_t flags = kOpacityMask;  // kAlphaTested y la opacidad de la instancia (bits 8-15)
+    core::Vec4 model_rows[3]{};
+    static constexpr std::uint32_t kAlphaTested = 1u;
+    // Opacidad por instancia (MeshRenderer.alpha) en 0..255; 255 = opaco (no
+    // cabe un float mas: la push constant ya mide 128). surface_shadow.frag
+    // la disuelve con el tramado de skinned_shadow.frag.
+    static constexpr std::uint32_t kOpacityShift = 8;
+    static constexpr std::uint32_t kOpacityMask = 0xFFu << kOpacityShift;
+};
+static_assert(sizeof(GpuSurfaceShadowPush) == 128, "GpuSurfaceShadowPush debe coincidir con surface_shadow.vert");
 
 // Pipelines de los modelos con esqueleto (animacion por skinning en la GPU).
 //
@@ -73,10 +95,16 @@ public:
     static std::uint32_t glassBindingCount();
     // Propiedades (vec4) de un material con shader propio.
     static constexpr std::uint32_t kSurfaceParamCount = 8;
-    // Set 0: 0..6 de siempre, 7 = atlas de lightmaps, 8 = sus registros.
-    static constexpr std::uint32_t kFrameBindingCount = 9;
+    // Set 0: 0..6 de siempre, 7 = atlas de lightmaps, 8 = sus registros, 9 =
+    // los decals (GpuDecalBuffer; el 4 es su atlas).
+    static constexpr std::uint32_t kFrameBindingCount = 10;
+    static constexpr std::uint32_t kDecalBufferBinding = 9;
     // Set 1: las UV de lightmap del modelo (storage buffer, vertices y mesh shader).
     static constexpr std::uint32_t kLightmapUvBinding = 10;  // (el 9 es el tiling del material: kMaterialUvBinding)
+    // Set 1: el color de vertice del modelo (RGBA8 por vertice, storage
+    // buffer, vertices y mesh shader). Sin el, el ficticio de las UV de
+    // lightmap (no se lee: su material no lleva kFlagVertexColor).
+    static constexpr std::uint32_t kVertexColorBinding = 11;
     // Para los modelos sin UV2: un solo 0xFFFFFFFF (el shader no lo lee: su
     // material no lleva kFlagLightmap; el binding tiene que existir).
     const VulkanBuffer& dummyLightmapUvs() const { return dummy_lightmap_uvs_; }
@@ -108,8 +136,17 @@ public:
     const vk::raii::Pipeline& wireOverlayPipeline() const { return wire_overlay_pipeline_; }
     // Pipeline de un shader de superficie del usuario (surface.vert/.frag con
     // su codigo, ya en SPIR-V): el mismo layout y estado que la geometria.
+    // `transparent` (domain transparent, surface_forward.frag): el layout y el
+    // estado del vidrio (glassLayout, imagen HDR, profundidad sin escribir) con
+    // mezcla premultiplicada.
     vk::raii::Pipeline createSurfacePipeline(const VulkanDevice& device, const std::vector<std::uint32_t>& vertex_spirv,
-                                             const std::vector<std::uint32_t>& fragment_spirv) const;
+                                             const std::vector<std::uint32_t>& fragment_spirv,
+                                             bool transparent = false) const;
+    // Sombra de un shader de superficie con vertex() (surface_shadow.vert con
+    // su codigo y surface_shadow.frag): mismo layout y estado que
+    // shadowPipeline (local = el de las luces locales). Push: GpuSurfaceShadowPush.
+    vk::raii::Pipeline createSurfaceShadowPipeline(const VulkanDevice& device,
+                                                   const std::vector<std::uint32_t>& vertex_spirv, bool local) const;
     const vk::raii::PipelineLayout& geometryLayout() const { return geometry_layout_; }
     // Etapas de la push constant de la geometria (con las de teselacion si
     // la GPU la tiene): todas las llamadas con geometryLayout() las usan.
@@ -157,8 +194,11 @@ public:
 
     // Set 2 del vidrio: 0 camara, 1 luces, 2 cascadas (datos), 3 mapa de las
     // cascadas, 4 profundidad, 5 imagen HDR sin vidrio, 6 entorno IBL,
-    // 7 y 8 cubos de la sonda de reflexion.
-    static constexpr std::uint32_t kGlassBindingCount = 10;  // 9 = luz volumetrica (la usa el agua)
+    // 7 y 8 cubos de la sonda de reflexion, 9 luz volumetrica (la usa el agua),
+    // 10 y 11 las luces por clusteres (light_clusters.glsl; no en el modo
+    // compatible, que se queda en los 7 primeros).
+    static constexpr std::uint32_t kGlassBindingCount = 12;
+    static constexpr std::uint32_t kGlassClusterBinding = 10;
     const vk::raii::DescriptorSetLayout& glassSetLayout() const { return glass_set_layout_; }
     const vk::raii::Pipeline& glassPipeline() const { return glass_pipeline_; }
 
@@ -194,7 +234,8 @@ private:
                                              bool visible_only, bool pick = false) const;
     vk::raii::Pipeline createShadowPipeline(const VulkanDevice& device, vk::Format depth_format,
                                             bool depth_clamp, float slope_bias,
-                                            bool alpha_tested, bool tessellated = false) const;
+                                            bool alpha_tested, bool tessellated = false,
+                                            const std::vector<std::uint32_t>* surface_vertex = nullptr) const;
     vk::raii::Pipeline createMeshShadowPipeline(const VulkanDevice& device, vk::Format depth_format,
                                                 bool depth_clamp) const;
 
@@ -231,6 +272,8 @@ private:
     vk::Format gbuffer_depth_format_ = vk::Format::eUndefined;
 
     vk::raii::PipelineLayout shadow_layout_{nullptr};
+    vk::Format shadow_format_ = vk::Format::eUndefined;  // (las sombras de los .crshader se crean despues)
+    bool shadow_clamp_ = false;
     vk::raii::Pipeline shadow_pipeline_{nullptr};
     vk::raii::Pipeline local_shadow_pipeline_{nullptr};
     vk::raii::Pipeline shadow_opaque_pipeline_{nullptr};

@@ -8,6 +8,7 @@
 #include <CramionFX/vk/ShaderCompiler.h>
 #include <CramionFX/vk/VulkanShader.h>
 
+#include <algorithm>
 #include <cctype>
 #include <fstream>
 #include <regex>
@@ -31,8 +32,13 @@ bool validName(const std::string& n) {
         if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) return false;
     }
     // Nombres que usa la plantilla.
-    static const std::set<std::string> reserved = {"s", "v", "surface", "vertex", "main", "push", "camera", "weather",
-                                                   "TIME", "CAMERA_POSITION", "Surface", "Vertex"};
+    static const std::set<std::string> reserved = {
+        "s", "v", "surface", "vertex", "main", "push", "camera", "weather", "TIME", "DELTA_TIME", "CAMERA_POSITION",
+        "Surface", "Vertex", "SCREEN_UV", "INSTANCE_DATA", "instanceData",
+        // Librerias de surface_common.glsl (un #define con su nombre las rompe).
+        "hash", "noise", "fbm", "fresnel", "remap", "toLinear", "toSrgb", "random", "pcgHash", "pcgHash2", "pcgHash3",
+        "gradientNoise", "gradientNoiseD", "simplexNoise", "fbmNoise", "ridgedNoise", "voronoi", "curlNoise",
+        "sceneColor", "sceneDepth", "sceneWorldPosition", "sceneLinearDepth", "sceneEmission", "depthFade"};
     return reserved.count(n) == 0;
 }
 
@@ -173,6 +179,33 @@ bool parseSurfaceShader(const std::string& text, const std::string& name, Surfac
         ++number;
         if (!line.empty() && line.back() == '\r') line.pop_back();
         std::string t = trim(line);
+        // "domain opaque|transparent": donde se dibuja (en su propia linea; una
+        // variable que se llame domain, "domain = 1.0;", sigue siendo codigo).
+        if ((t.rfind("domain ", 0) == 0 || t.rfind("domain\t", 0) == 0) &&
+            t.find_first_of("=;(") == std::string::npos) {
+            code << "\n";
+            if (const std::size_t comment = t.find("//"); comment != std::string::npos) t = trim(t.substr(0, comment));
+            // "domain opaque", "domain unlit" (opaco sin luz), "domain
+            // transparent" (iluminado) o "domain transparent unlit".
+            std::istringstream domain_words(trim(t.substr(7)));
+            std::string value, modifier, extra;
+            domain_words >> value >> modifier >> extra;
+            out.unlit = modifier == "unlit";
+            if (value == "transparent") {
+                out.domain = SurfaceDomain::Transparent;
+            } else if (value == "opaque") {
+                out.domain = SurfaceDomain::Opaque;
+            } else if (value == "unlit" && modifier.empty()) {
+                out.domain = SurfaceDomain::Opaque;
+                out.unlit = true;
+            } else {
+                return fail("domain desconocido '" + value + "' (opaque, unlit, transparent, transparent unlit)");
+            }
+            if ((!modifier.empty() && modifier != "unlit") || !extra.empty()) {
+                return fail("domain: tras '" + value + "' solo puede ir 'unlit'");
+            }
+            continue;
+        }
         if (t.rfind("property ", 0) != 0 && t.rfind("property\t", 0) != 0) {
             code << line << "\n";
             continue;
@@ -243,6 +276,19 @@ bool parseSurfaceShader(const std::string& text, const std::string& name, Surfac
         return fail("falta la funcion void surface(inout Surface s)");
     }
     out.has_vertex = hasFunction(out.code, "vertex");
+    // Color y profundidad de la escena: solo en la pasada forward (el G-buffer
+    // se escribe antes de que haya imagen que leer). Mejor un error claro que
+    // el "no matching overloaded function" de glslang.
+    if (out.domain == SurfaceDomain::Opaque) {
+        static const std::regex scene_use(
+            "\\b(sceneColor|sceneDepth|sceneWorldPosition|sceneLinearDepth|sceneEmission|depthFade|SCREEN_UV)\\b");
+        const std::string clean = blankComments(out.code);
+        std::smatch m;
+        if (std::regex_search(clean, m, scene_use)) {
+            number = 1 + static_cast<int>(std::count(clean.begin(), clean.begin() + m.position(0), '\n'));
+            return fail(m[1].str() + " solo existe con 'domain transparent' (se dibuja sobre la escena ya iluminada)");
+        }
+    }
     return true;
 }
 
@@ -259,7 +305,29 @@ bool loadSurfaceShader(const std::filesystem::path& file, SurfaceShaderSource& o
 
 bool generateSurfaceGlsl(const SurfaceShaderSource& shader, bool vertex_stage, const std::filesystem::path& template_dir,
                          std::string& glsl, std::string* error) {
+    return generateSurfaceGlsl(shader, vertex_stage ? SurfaceStage::Vertex : SurfaceStage::Fragment, template_dir, glsl,
+                               error);
+}
+
+bool generateSurfaceGlsl(const SurfaceShaderSource& shader, SurfaceStage stage, const std::filesystem::path& template_dir,
+                         std::string& glsl, std::string* error) {
+    const bool vertex_stage = stage != SurfaceStage::Fragment;
     std::ostringstream user;
+    // Funciones propias que leen la escena (domain transparent) tambien se
+    // compilan en los vertices: alli no hay escena, sceneColor() y compania
+    // devuelven nada. Antes de las propiedades: sus #define no las tocan.
+    if (vertex_stage && shader.domain == SurfaceDomain::Transparent) {
+        user << "#define SCREEN_UV vec2(0.0)\n"
+                "vec3 sceneColor(vec2 cramion_uv) { return vec3(0.0); }\n"
+                "float sceneDepth(vec2 cramion_uv) { return 1.0; }\n"
+                "vec3 sceneWorldPosition(vec2 cramion_uv) { return vec3(0.0); }\n"
+                "float sceneLinearDepth(vec2 cramion_uv) { return 1.0e6; }\n"
+                "vec3 sceneEmission(vec2 cramion_uv) { return vec3(0.0); }\n"
+                "float depthFade(Surface cramion_s, float cramion_distance) { return 1.0; }\n";
+    }
+    // Sin luz: surface.frag escribe el modelo 8 (Unlit) y surface_forward.frag
+    // se salta el sol, las luces y la sonda.
+    if (shader.unlit) user << "#define CRAMION_UNLIT 1\n";
     user << "// --- " << shader.name << " (propiedades) ---\n";
     for (const ShaderProperty& p : shader.properties) {
         if (p.type == ShaderPropertyType::Texture) {
@@ -276,7 +344,11 @@ bool generateSurfaceGlsl(const SurfaceShaderSource& shader, bool vertex_stage, c
     // ser libres (la plantilla puede tener variables que se llamen igual).
     for (const ShaderProperty& p : shader.properties) user << "#undef " << p.name << "\n";
     std::ostringstream out;
-    if (!expand(template_dir, vertex_stage ? "surface.vert" : "surface.frag", user.str(), out, 0, error)) return false;
+    const char* file = stage == SurfaceStage::Vertex                   ? "surface.vert"
+                       : stage == SurfaceStage::ShadowVertex           ? "surface_shadow.vert"
+                       : shader.domain == SurfaceDomain::Transparent ? "surface_forward.frag"
+                                                                     : "surface.frag";
+    if (!expand(template_dir, file, user.str(), out, 0, error)) return false;
     glsl = out.str();
     return true;
 }
@@ -292,6 +364,22 @@ bool compileSurfaceShader(const SurfaceShaderSource& shader, const std::filesyst
         return false;
     }
     if (!gfx::shaders::compile(vertex_glsl, gfx::shaders::Stage::Vertex, shader.name, vertex_spirv, message)) {
+        if (error) *error = message;
+        return false;
+    }
+    return true;
+}
+
+bool compileSurfaceShader(const SurfaceShaderSource& shader, const std::filesystem::path& template_dir,
+                          SurfaceShaderPrograms& programs, std::string* error) {
+    programs.shadow_vertex.clear();
+    if (!compileSurfaceShader(shader, template_dir, programs.vertex, programs.fragment, error)) return false;
+    // La sombra solo si vertex() mueve algo (sin el, la estandar) y si va al
+    // G-buffer (lo transparente no proyecta sombra).
+    if (!shader.has_vertex || shader.domain == SurfaceDomain::Transparent) return true;
+    std::string shadow_glsl, message;
+    if (!generateSurfaceGlsl(shader, SurfaceStage::ShadowVertex, template_dir, shadow_glsl, error)) return false;
+    if (!gfx::shaders::compile(shadow_glsl, gfx::shaders::Stage::Vertex, shader.name, programs.shadow_vertex, message)) {
         if (error) *error = message;
         return false;
     }
@@ -331,10 +419,23 @@ bool loadPrecompiledSurfaceShader(const std::filesystem::path& crshader, std::ve
     return readWords(vertex, vertex_spirv) && readWords(fragment, fragment_spirv);
 }
 
+bool loadPrecompiledSurfaceShader(const std::filesystem::path& crshader, SurfaceShaderPrograms& programs) {
+    if (!loadPrecompiledSurfaceShader(crshader, programs.vertex, programs.fragment)) return false;
+    std::filesystem::path shadow = crshader;
+    shadow += ".shadow.vert.spv";
+    if (!readWords(shadow, programs.shadow_vertex)) programs.shadow_vertex.clear();
+    return true;
+}
+
 bool writePrecompiledSurfaceShader(const std::filesystem::path& vertex_file, const std::filesystem::path& fragment_file,
                                    const std::vector<std::uint32_t>& vertex_spirv,
                                    const std::vector<std::uint32_t>& fragment_spirv) {
     return writeWords(vertex_file, vertex_spirv) && writeWords(fragment_file, fragment_spirv);
+}
+
+bool writePrecompiledSurfaceShadow(const std::filesystem::path& shadow_file,
+                                   const std::vector<std::uint32_t>& shadow_spirv) {
+    return !shadow_spirv.empty() && writeWords(shadow_file, shadow_spirv);
 }
 
 std::filesystem::path surfaceTemplateDirectory() { return gfx::shaders::directory() / "source"; }
@@ -352,16 +453,36 @@ property float velocidad = 1.0
 // Lo que ve la superficie: s.albedo, s.alpha, s.normal, s.metallic,
 // s.roughness, s.occlusion, s.emission (se pueden cambiar) y s.uv,
 // s.worldPosition, s.vertexNormal, s.viewDirection (solo lectura).
-// Tambien TIME (segundos), CAMERA_POSITION, noise(), fbm(), fresnel(s, p)...
+// Tambien TIME (segundos), DELTA_TIME, CAMERA_POSITION, fresnel(s, p) y ruido:
+// noise(), fbm(), gradientNoise(), simplexNoise(), fbmNoise(p, octavas),
+// ridgedNoise(), voronoi(), curlNoise(), random()...
+// Por objeto, sin otro material: INSTANCE_DATA(0) e INSTANCE_DATA(1) (vec4 del
+// MeshRenderer; desde un script, entity().setMaterialParam(0, x, y, z, w)).
 void surface(inout Surface s) {
     s.albedo *= tinte;
     // Un pulso de luz con el tiempo.
     s.emission += tinte * brillo * (0.5 + 0.5 * sin(TIME * velocidad));
 }
 
-// Opcional: mover los vertices (en el mundo) antes de dibujarlos.
+// Opcional: mover los vertices (en el mundo) antes de dibujarlos. La sombra
+// y los vectores de movimiento (TAA, FSR, DLSS) siguen el movimiento.
 // void vertex(inout Vertex v) {
 //     v.position += v.normal * sin(TIME * 3.0 + v.position.y * 4.0) * 0.05;
+// }
+
+// Opcional: "domain unlit" se ve sin luz (color tal cual mas emision).
+// "domain transparent" lo dibuja sobre la escena ya iluminada (con sol, luces,
+// sonda y niebla; "domain transparent unlit": albedo * alpha + emision) y deja
+// leerla: sceneColor(uv), sceneDepth(uv), SCREEN_UV, depthFade(s, metros).
+// Refraccion (vidrio, agua): s.refraction = 0.05; desvia lo de detras por
+// s.normal y lo deja ver por (1 - s.alpha).
+// Distorsion de calor:
+// domain transparent unlit
+// void surface(inout Surface s) {
+//     vec2 onda = gradientNoiseD(s.worldPosition.xz * 3.0 + TIME).yz * 0.01;
+//     s.albedo = vec3(0.0);
+//     s.alpha = 1.0;
+//     s.emission = sceneEmission(SCREEN_UV + onda);
 // }
 )";
 }

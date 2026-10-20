@@ -31,6 +31,17 @@ public:
     // depth de la escena en solo lectura).
     void record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, vk::Extent2D viewport) const;
 
+    // Buffer de distorsion: las particulas de ParticleDrawList::distortion
+    // suman (mezcla aditiva) un desplazamiento en UV de pantalla en una imagen
+    // RG16F a la resolucion interna; composite.frag lo suma a donde lee la
+    // escena. recordDistortion, con el renderizado abierto sobre esa imagen
+    // (y el depth de la escena en solo lectura: lo de delante las tapa).
+    static constexpr vk::Format kDistortionFormat = vk::Format::eR16G16Sfloat;
+    std::uint32_t distortionVertices(std::uint32_t frame) const {
+        return frame < distortion_counts_.size() ? distortion_counts_[frame] : 0u;
+    }
+    void recordDistortion(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, vk::Extent2D viewport) const;
+
 private:
     struct Vertex {
         float clip[4];
@@ -39,14 +50,16 @@ private:
     };
 
     vk::raii::Pipeline createPipeline(const VulkanDevice& device, vk::Format color_format,
-                                      vk::Format depth_format, bool additive) const;
+                                      vk::Format depth_format, bool additive, bool distortion = false) const;
 
     vk::raii::PipelineLayout layout_{nullptr};
     vk::raii::Pipeline alpha_pipeline_{nullptr};
     vk::raii::Pipeline additive_pipeline_{nullptr};
+    vk::raii::Pipeline distortion_pipeline_{nullptr};
     std::vector<VulkanBuffer> buffers_;
     std::vector<std::uint32_t> alpha_counts_;
     std::vector<std::uint32_t> additive_counts_;
+    std::vector<std::uint32_t> distortion_counts_;
     std::vector<Vertex> scratch_;
 };
 

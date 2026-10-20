@@ -419,6 +419,14 @@ cvar::CVar<bool> g_defer_mesh_load("physics.DeferMeshLoad", true,
                                    "Los MeshCollider de modelos sin cargar piden el modelo en segundo plano (el "
                                    "cuerpo llega unos frames despues) en vez de leerlo del disco en el frame",
                                    cvar::Saved);
+cvar::CVar<bool> g_incremental_edit("physics.IncrementalEditSync", true,
+                                    "En edicion, sincronizar solo los colliders que se movieron o se marcaron como "
+                                    "cambiados (mas una tanda rotatoria por frame) en vez de todos en cada frame",
+                                    cvar::Saved);
+cvar::CVar<int> g_edit_checks_per_frame("physics.EditSyncChecksPerFrame", 256,
+                                        "Colliders sin mover que la sincronizacion incremental de edicion revisa "
+                                        "por frame (firma completa) para recoger cambios hechos sin aviso",
+                                        cvar::Saved, 0, 1000000);
 cvar::CVar<int> g_defer_mesh_frames("physics.DeferMeshMaxFrames", 120,
                                     "Frames que un MeshCollider espera a su modelo antes de leerlo del disco",
                                     cvar::Saved, 0, 100000);
@@ -553,6 +561,11 @@ struct PhysicsSystem::Impl {
         bool interpolate = true;
         int layer = 0;
         std::uint64_t seen = 0;  // ultima sincronizacion en que existia (las demas se borran)
+        // Sincronizacion incremental en edicion: Transform::version con que
+        // se miro y si hay que mirarlo siempre (terreno, malla sin cargar o
+        // generada por codigo).
+        std::uint64_t transform_version = ~0ull;
+        bool edit_watch = true;
     };
 
     struct MeshKey {
@@ -1540,6 +1553,36 @@ struct PhysicsSystem::Impl {
         }
     };
     std::map<RuntimeShapeKey, JPH::RefConst<JPH::Shape>> runtime_shapes;
+    // Poda de mesh_shapes y runtime_shapes: antes solo se vaciaban al cambiar
+    // de escena y crecian con cada malla distinta (celdas que entran y salen).
+    // Sale lo que solo tiene la cache (ningun cuerpo lo usa) en dos pasadas
+    // seguidas (kShapePruneInterval sincronizaciones). Asi tampoco queda una
+    // forma vieja ligada a la direccion de una malla ya liberada que otra
+    // podria reutilizar.
+    static constexpr std::uint64_t kShapePruneInterval = 600;
+    std::set<const JPH::Shape*> unused_shapes;
+    template <typename Map>
+    void pruneShapeMap(Map& map, std::set<const JPH::Shape*>& unused_now) {
+        for (auto it = map.begin(); it != map.end();) {
+            const JPH::Shape* shape = it->second.GetPtr();
+            if (shape == nullptr || shape->GetRefCount() > 1) {
+                ++it;
+                continue;
+            }
+            if (unused_shapes.contains(shape)) {
+                it = map.erase(it);
+                continue;
+            }
+            unused_now.insert(shape);
+            ++it;
+        }
+    }
+    void pruneShapeCaches() {
+        std::set<const JPH::Shape*> unused_now;
+        pruneShapeMap(mesh_shapes, unused_now);
+        pruneShapeMap(runtime_shapes, unused_now);
+        unused_shapes = std::move(unused_now);
+    }
     std::map<std::pair<int, int>, JPH::RefConst<JPH::PhysicsMaterial>> materials;
     std::unordered_set<entt::entity> warned;
 
@@ -1550,6 +1593,21 @@ struct PhysicsSystem::Impl {
     ecs::World* world = nullptr;
     std::vector<entt::entity> sync_candidates;
     std::uint64_t sync_generation = 0;
+    // Sincronizacion incremental en edicion (ver sync): de que mundo y
+    // estructura es la lista de candidatos, por donde va la tanda rotatoria y
+    // lo que el editor marco como cambiado.
+    struct CandidateKey {
+        const ecs::World* world = nullptr;
+        std::uint64_t structure = 0;
+        std::uint64_t scene = 0;
+        std::size_t components = 0;
+        bool operator==(const CandidateKey&) const = default;
+    };
+    CandidateKey candidates_key{};
+    bool candidates_valid = false;
+    std::size_t edit_check_cursor = 0;
+    bool edit_full_pass = true;
+    std::unordered_set<entt::entity> edit_touched;
     // Colliders de terreno haciendose en segundo plano (physics.AsyncTerrain).
     // El cuerpo viejo (si hay) sigue en `entries` hasta el cambio.
     struct PendingTerrain {
@@ -1707,9 +1765,11 @@ struct PhysicsSystem::Impl {
 
     JPH::RefConst<JPH::Shape> runtimeMeshShape(const ecs::Mesh& mesh, bool convex, const JPH::PhysicsMaterial* material,
                                                const std::string& name) {
-        // Las versiones viejas de esta malla ya no sirven.
-        for (auto it = runtime_shapes.begin(); it != runtime_shapes.end();) {
-            it = it->first.mesh == &mesh && it->first.version != mesh.version() ? runtime_shapes.erase(it) : std::next(it);
+        // Las versiones viejas de esta malla ya no sirven. Solo su tramo del
+        // mapa (ordenado por malla): antes se recorria entero por cuerpo.
+        for (auto it = runtime_shapes.lower_bound(RuntimeShapeKey{&mesh, 0, false, nullptr});
+             it != runtime_shapes.end() && it->first.mesh == &mesh;) {
+            it = it->first.version != mesh.version() ? runtime_shapes.erase(it) : std::next(it);
         }
         auto& slot = runtime_shapes[RuntimeShapeKey{&mesh, mesh.version(), convex, material}];
         if (slot != nullptr) return slot;
@@ -2039,7 +2099,8 @@ struct PhysicsSystem::Impl {
               plane(r.storage<PlaneCollider>()),
               terrain(r.storage<terrain::Terrain>()),
               renderer(r.storage<ecs::MeshRenderer>()),
-              vehicle(r.storage<Vehicle>()) {}
+              vehicle(r.storage<Vehicle>()),
+              character(r.storage<CharacterController>()) {}
         template <typename Storage>
         static auto* find(Storage& storage, entt::entity e) {
             return storage.contains(e) ? &storage.get(e) : nullptr;
@@ -2063,6 +2124,7 @@ struct PhysicsSystem::Impl {
         entt::storage_for_t<terrain::Terrain>& terrain;
         entt::storage_for_t<ecs::MeshRenderer>& renderer;
         entt::storage_for_t<Vehicle>& vehicle;
+        entt::storage_for_t<CharacterController>& character;
     };
 
     static std::uint64_t signatureOf(Pools& pools, entt::entity entity, int layer) {
@@ -2917,22 +2979,150 @@ struct PhysicsSystem::Impl {
         buildEntry(entity, entry, simulate, nullptr, &shape);
     }
 
+    // Un candidato de sync(): crea, rehace o recoloca su cuerpo (o nada si no
+    // cambio). `terrain_budget` se comparte entre los de la misma pasada.
+    void syncCandidate(ecs::World& w, Pools& pools, entt::entity handle, bool simulate, bool async_terrain,
+                       std::optional<jobs::FrameBudget>& terrain_budget) {
+        const ecs::Entity entity = w.wrap(handle);
+        if (!pools.active(handle)) return;
+        const core::Mat4& world_matrix = entity.worldMatrix();
+        // Ragdoll cayendo: su propio collider (la capsula del personaje)
+        // sale de la simulacion hasta que se apague.
+        if (ragdolls.contains(handle)) return;
+        // El CharacterController es su collider (los demas se ignoran).
+        if (pools.character.contains(handle)) return;
+        const ecs::EntityInfo* info = Pools::find(pools.info, handle);
+        const std::uint64_t signature = signatureOf(pools, handle, info != nullptr ? info->layer : 0);
+        auto it = entries.find(handle);
+        if (it != entries.end()) it->second.seen = sync_generation;
+        const bool has_mesh = pools.mesh.contains(handle);
+        // Terreno: sus datos (y su version de colision) tambien cuentan.
+        const terrain::Terrain* terrain_comp = Pools::find(pools.terrain, handle);
+        const bool is_terrain = terrain_comp != nullptr;
+        if (is_terrain && !terrain_comp->collision && !has_mesh && !pools.box.contains(handle) &&
+            !pools.sphere.contains(handle) && !pools.capsule.contains(handle) && !pools.plane.contains(handle)) {
+            if (it != entries.end()) it->second.seen = 0;  // si tenia cuerpo, se borra
+            return;  // terreno sin colision y sin otros colliders: sin cuerpo
+        }
+        std::shared_ptr<const terrain::TerrainData> terrain_data =
+            is_terrain && terrain_provider ? terrain_provider(entity) : nullptr;
+        const std::uint64_t terrain_key =
+            terrain_data ? (terrain_data->collisionVersion() * 1000003ull ^
+                            reinterpret_cast<std::uintptr_t>(terrain_data.get()))
+                         : 0ull;
+        const void* mesh_now = it != entries.end() && has_mesh ? meshIdentity(entity) : nullptr;
+        const bool same_shape = it != entries.end() && it->second.signature == signature &&
+                                (!has_mesh || mesh_now == it->second.mesh) &&
+                                it->second.terrain_key == terrain_key;
+        // Terreno (solo su campo de alturas) que hay que rehacer: en un hilo
+        // de fondo; el cuerpo viejo sigue hasta que llegue el nuevo.
+        if (!same_shape && async_terrain && terrain_key != 0 && terrainOnly(pools, handle) &&
+            terrain_data->resolution() >= 3) {
+            syncTerrainAsync(entity, it, signature, terrain_key, world_matrix, *terrain_data, *terrain_comp, simulate,
+                             terrain_budget);
+            return;
+        }
+        // Lo normal: nada cambio (ni forma ni matriz). Sin descomponer nada.
+        if (same_shape && std::memcmp(&it->second.matrix, &world_matrix, sizeof(core::Mat4)) == 0) return;
+
+        Vec3 position{};
+        Quat rotation{};
+        Vec3 scale{};
+        ecs::decomposeMatrix(world_matrix, position, rotation, scale);
+        rotation = core::normalize(rotation);
+        if (is_terrain) {
+            // El terreno no gira ni escala: solo su esquina cuenta.
+            rotation = Quat{};
+            scale = Vec3{1.0f, 1.0f, 1.0f};
+        }
+        const bool rebuild = !same_shape || !sameScale(it->second.scale, scale);
+        if (rebuild) {
+            std::optional<KeptVelocity> kept;
+            if (it != entries.end()) {
+                // En Play un dinamico que se rehace conserva su velocidad.
+                if (simulate && it->second.type == BodyType::Dynamic && !it->second.solid.IsInvalid()) {
+                    kept = KeptVelocity{bodies().GetLinearVelocity(it->second.solid),
+                                        bodies().GetAngularVelocity(it->second.solid)};
+                }
+                destroyEntry(it->second);
+            } else {
+                it = entries.emplace(handle, BodyEntry{}).first;
+            }
+            BodyEntry& entry = it->second;
+            entry.seen = sync_generation;
+            entry.entity = handle;
+            entry.signature = signature;
+            entry.terrain_key = terrain_key;
+            entry.matrix = world_matrix;
+            entry.position = position;
+            entry.rotation = rotation;
+            entry.scale = scale;
+            buildEntry(entity, entry, simulate, kept ? &*kept : nullptr);
+            return;
+        }
+
+        // Mismo cuerpo: si el Transform se movio, se recoloca.
+        BodyEntry& entry = it->second;
+        entry.matrix = world_matrix;
+        if (nearlyEqual(entry.position, position, 1e-5f) && sameRotation(entry.rotation, rotation)) return;
+        entry.position = position;
+        entry.rotation = rotation;
+        // Teletransporte: sin interpolar desde donde estaba.
+        entry.previous_position = entry.current_position = position;
+        entry.previous_rotation = entry.current_rotation = rotation;
+        const bool kinematic_follow = simulate && entry.type == BodyType::Kinematic;
+        if (kinematic_follow) return;  // se mueve en el paso (MoveKinematic)
+        const JPH::EActivation activation =
+            entry.type == BodyType::Dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
+        for (const JPH::BodyID& id : {entry.solid, entry.sensor}) {
+            if (!id.IsInvalid()) {
+                bodies().SetPositionAndRotation(id, JPH::RVec3(toJolt(position)), toJolt(rotation), activation);
+            }
+        }
+    }
+
     void sync(ecs::World& w, bool simulate) {
         world = &w;
         entt::registry& registry = w.registry();
+        Pools pools(registry);
+        // En edicion (sin simular), incremental (physics.IncrementalEditSync):
+        // la lista de candidatos solo se rehace cuando cambia la estructura
+        // del mundo (crear, borrar, activar, emparentar, poner o quitar
+        // componentes; deshacer recrea el mundo), ya sin lo desactivado y con
+        // una pasada completa; en los demas frames solo se mira de verdad
+        // (firma y matriz) lo que se movio (Transform::version), lo marcado con
+        // touchEdit / touchAllEdit, lo que espera algo (terreno, malla sin
+        // cargar o generada) y una tanda rotatoria por frame
+        // (physics.EditSyncChecksPerFrame) que recoge lo que cambio sin aviso.
+        // Antes se ordenaban y firmaban todos los colliders en cada frame.
+        const bool incremental = !simulate && !sync_blocking && g_incremental_edit.get();
+        bool full_pass = !incremental || edit_full_pass;
         std::vector<entt::entity>& candidates = sync_candidates;  // se reutiliza
-        candidates.clear();
-        const auto gather = [&](auto view) {
-            for (const entt::entity e : view) candidates.push_back(e);
-        };
-        gather(registry.view<BoxCollider>());
-        gather(registry.view<SphereCollider>());
-        gather(registry.view<CapsuleCollider>());
-        gather(registry.view<MeshCollider>());
-        gather(registry.view<PlaneCollider>());
-        gather(registry.view<terrain::Terrain>());
-        std::sort(candidates.begin(), candidates.end());
-        candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+        // Clave de la lista: mundo, estructura, escena y cuantos componentes
+        // hay (por si alguien los pone en el registry sin pasar por Entity).
+        const std::size_t pool_total = pools.box.size() + pools.sphere.size() + pools.capsule.size() +
+                                       pools.mesh.size() + pools.plane.size() + pools.terrain.size();
+        const CandidateKey key{&w, w.structureVersion(), currentSceneGeneration(), pool_total};
+        if (full_pass || !candidates_valid || !(candidates_key == key)) {
+            full_pass = true;
+            candidates.clear();
+            const auto gather = [&](auto view) {
+                for (const entt::entity e : view) candidates.push_back(e);
+            };
+            gather(registry.view<BoxCollider>());
+            gather(registry.view<SphereCollider>());
+            gather(registry.view<CapsuleCollider>());
+            gather(registry.view<MeshCollider>());
+            gather(registry.view<PlaneCollider>());
+            gather(registry.view<terrain::Terrain>());
+            std::sort(candidates.begin(), candidates.end());
+            candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+            // En edicion lo desactivado sale ya de la lista (activar sube la
+            // estructura y la rehace); simulando se filtra en syncCandidate.
+            if (incremental) std::erase_if(candidates, [&](entt::entity e) { return !pools.active(e); });
+            candidates_valid = incremental;
+            candidates_key = key;
+        }
 
         // Mesh Collider construidas en el hilo: a la cache, y quien las
         // esperaba se rehace (su firma no coincide). Como los terrenos: con
@@ -2982,107 +3172,54 @@ struct PhysicsSystem::Impl {
             }
             it = pending_mesh_shapes.erase(it);
         }
+        if (sync_generation % kShapePruneInterval == kShapePruneInterval - 1) pruneShapeCaches();
         ++sync_generation;
-        Pools pools(registry);
         std::optional<jobs::FrameBudget> terrain_budget;  // se crea al meter el primer collider de terreno
         const bool async_terrain = g_async_terrain.get();
-        for (const entt::entity handle : candidates) {
-            const ecs::Entity entity = w.wrap(handle);
-            if (!pools.active(handle)) continue;
-            const core::Mat4& world_matrix = entity.worldMatrix();
-            const ecs::EntityInfo* info = Pools::find(pools.info, handle);
-            const std::uint64_t signature = signatureOf(pools, handle, info != nullptr ? info->layer : 0);
-            // Ragdoll cayendo: su propio collider (la capsula del personaje)
-            // sale de la simulacion hasta que se apague.
-            if (ragdolls.contains(handle)) continue;
-            // El CharacterController es su collider (los demas se ignoran).
-            if (registry.all_of<CharacterController>(handle)) continue;
-            auto it = entries.find(handle);
-            if (it != entries.end()) it->second.seen = sync_generation;
-            const bool has_mesh = pools.mesh.contains(handle);
-            // Terreno: sus datos (y su version de colision) tambien cuentan.
-            const terrain::Terrain* terrain_comp = Pools::find(pools.terrain, handle);
-            const bool is_terrain = terrain_comp != nullptr;
-            if (is_terrain && !terrain_comp->collision && !has_mesh && !pools.box.contains(handle) &&
-                !pools.sphere.contains(handle) && !pools.capsule.contains(handle) && !pools.plane.contains(handle)) {
-                if (it != entries.end()) it->second.seen = 0;  // si tenia cuerpo, se borra
-                continue;  // terreno sin colision y sin otros colliders: sin cuerpo
-            }
-            std::shared_ptr<const terrain::TerrainData> terrain_data =
-                is_terrain && terrain_provider ? terrain_provider(entity) : nullptr;
-            const std::uint64_t terrain_key =
-                terrain_data ? (terrain_data->collisionVersion() * 1000003ull ^
-                                reinterpret_cast<std::uintptr_t>(terrain_data.get()))
-                             : 0ull;
-            const void* mesh_now = it != entries.end() && has_mesh ? meshIdentity(entity) : nullptr;
-            const bool same_shape = it != entries.end() && it->second.signature == signature &&
-                                    (!has_mesh || mesh_now == it->second.mesh) &&
-                                    it->second.terrain_key == terrain_key;
-            // Terreno (solo su campo de alturas) que hay que rehacer: en un hilo
-            // de fondo; el cuerpo viejo sigue hasta que llegue el nuevo.
-            if (!same_shape && async_terrain && terrain_key != 0 && terrainOnly(pools, handle) &&
-                terrain_data->resolution() >= 3) {
-                syncTerrainAsync(entity, it, signature, terrain_key, world_matrix, *terrain_data, *terrain_comp, simulate,
-                                 terrain_budget);
-                continue;
-            }
-            // Lo normal: nada cambio (ni forma ni matriz). Sin descomponer nada.
-            if (same_shape && std::memcmp(&it->second.matrix, &world_matrix, sizeof(core::Mat4)) == 0) continue;
-
-            Vec3 position{};
-            Quat rotation{};
-            Vec3 scale{};
-            ecs::decomposeMatrix(world_matrix, position, rotation, scale);
-            rotation = core::normalize(rotation);
-            if (is_terrain) {
-                // El terreno no gira ni escala: solo su esquina cuenta.
-                rotation = Quat{};
-                scale = Vec3{1.0f, 1.0f, 1.0f};
-            }
-            const bool rebuild = !same_shape || !sameScale(it->second.scale, scale);
-            if (rebuild) {
-                std::optional<KeptVelocity> kept;
+        const std::size_t count = candidates.size();
+        const std::size_t slice = static_cast<std::size_t>(std::max(0, g_edit_checks_per_frame.get()));
+        const std::size_t cursor = edit_check_cursor < count ? edit_check_cursor : 0;
+        const auto& transforms = registry.storage<ecs::Transform>();
+        for (std::size_t index = 0; index < count; ++index) {
+            const entt::entity handle = candidates[index];
+            if (!full_pass) {
+                // Lo normal en edicion: con cuerpo, sin moverse y sin aviso.
+                // Sin firma, sin matriz y sin subir por los padres.
+                const auto it = entries.find(handle);
                 if (it != entries.end()) {
-                    // En Play un dinamico que se rehace conserva su velocidad.
-                    if (simulate && it->second.type == BodyType::Dynamic && !it->second.solid.IsInvalid()) {
-                        kept = KeptVelocity{bodies().GetLinearVelocity(it->second.solid),
-                                            bodies().GetAngularVelocity(it->second.solid)};
+                    BodyEntry& entry = it->second;
+                    const bool in_slice = count <= slice || (index + count - cursor) % count < slice;
+                    if (!in_slice && !entry.edit_watch && entry.signature != 0 && transforms.contains(handle) &&
+                        transforms.get(handle).version == entry.transform_version &&
+                        (edit_touched.empty() || !edit_touched.contains(handle))) {
+                        entry.seen = sync_generation;
+                        continue;
                     }
-                    destroyEntry(it->second);
-                } else {
-                    it = entries.emplace(handle, BodyEntry{}).first;
                 }
-                BodyEntry& entry = it->second;
-                entry.seen = sync_generation;
-                entry.entity = handle;
-                entry.signature = signature;
-                entry.terrain_key = terrain_key;
-                entry.matrix = world_matrix;
-                entry.position = position;
-                entry.rotation = rotation;
-                entry.scale = scale;
-                buildEntry(entity, entry, simulate, kept ? &*kept : nullptr);
-                continue;
             }
-
-            // Mismo cuerpo: si el Transform se movio, se recoloca.
+            syncCandidate(w, pools, handle, simulate, async_terrain, terrain_budget);
+            if (!incremental) continue;
+            // Lo que se miro: version de su Transform ya con la matriz al dia
+            // (syncCandidate la calculo) y si hay que seguir mirandolo. Sin
+            // cuerpo (CharacterController, terreno sin colision) se mira siempre.
+            const auto it = entries.find(handle);
+            if (it == entries.end()) continue;
             BodyEntry& entry = it->second;
-            entry.matrix = world_matrix;
-            if (nearlyEqual(entry.position, position, 1e-5f) && sameRotation(entry.rotation, rotation)) continue;
-            entry.position = position;
-            entry.rotation = rotation;
-            // Teletransporte: sin interpolar desde donde estaba.
-            entry.previous_position = entry.current_position = position;
-            entry.previous_rotation = entry.current_rotation = rotation;
-            const bool kinematic_follow = simulate && entry.type == BodyType::Kinematic;
-            if (kinematic_follow) continue;  // se mueve en el paso (MoveKinematic)
-            const JPH::EActivation activation =
-                entry.type == BodyType::Dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
-            for (const JPH::BodyID& id : {entry.solid, entry.sensor}) {
-                if (!id.IsInvalid()) {
-                    bodies().SetPositionAndRotation(id, JPH::RVec3(toJolt(position)), toJolt(rotation), activation);
-                }
-            }
+            entry.transform_version = transforms.contains(handle) ? transforms.get(handle).version : ~0ull;
+            // Terreno (esculpir, teselas en un hilo), malla aun sin cargar o
+            // generada por codigo (su version cambia sin tocar la entidad).
+            entry.edit_watch = pools.terrain.contains(handle) || pending_terrain.contains(handle) ||
+                               (pools.mesh.contains(handle) &&
+                                (entry.mesh == nullptr || runtimeMeshOf(w.wrap(handle)) != nullptr));
+        }
+        if (incremental) {
+            edit_check_cursor = count > 0 ? (cursor + slice) % count : 0;
+            edit_full_pass = false;
+            edit_touched.clear();
+        } else {
+            // Simulando (o con sync_blocking) todo se mira: al volver a
+            // edicion se empieza con una pasada completa.
+            edit_full_pass = true;
         }
 
         // Borradas, desactivadas o sin colliders.
@@ -3994,6 +4131,10 @@ void PhysicsSystem::stop() {
     d.temp_allocator.reset();
     d.mesh_shapes.clear();
     d.runtime_shapes.clear();
+    d.unused_shapes.clear();
+    d.candidates_valid = false;
+    d.edit_full_pass = true;
+    d.edit_touched.clear();
     d.contact_points.clear();
     d.queries.clear();
     d.world = nullptr;
@@ -4096,6 +4237,14 @@ void PhysicsSystem::flushPendingTerrain() {
     // Y las Mesh Collider del hilo de fondo (las mete la misma sincronizacion).
     for (auto& [key, pending] : d.pending_mesh_shapes) pending->finishNow();
     d.sync_blocking = true;
+}
+
+void PhysicsSystem::touchEdit(entt::entity entity) {
+    if (entity != entt::null) impl_->edit_touched.insert(entity);
+}
+
+void PhysicsSystem::touchAllEdit() {
+    impl_->edit_full_pass = true;
 }
 
 std::size_t PhysicsSystem::pendingTerrainCount() const {

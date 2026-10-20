@@ -7,14 +7,17 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <assimp/Importer.hpp>
+#include <assimp/config.h>
 #include <assimp/scene.h>
 
 namespace cramion::assets {
@@ -137,6 +140,10 @@ ModelData extractPart(const ModelData& source, const std::vector<std::size_t>& s
                 vertex.weights[0] = 1.0f;
                 vertex.weights[1] = vertex.weights[2] = vertex.weights[3] = 0.0f;
                 part.vertices.push_back(vertex);
+                // Su color de vertice, si el modelo lo trae.
+                if (source.vertex_colors.size() == source.vertices.size()) {
+                    part.vertex_colors.push_back(source.vertex_colors.get()[original]);
+                }
             }
             part.indices.push_back(vertex_it->second);
         }
@@ -349,7 +356,176 @@ bool splitByNode(const ModelData& source, bool is_obj, crdata::ModelContent& out
     return true;
 }
 
-std::string settingsJson(const ModelImportSettings& settings) {
+// --- LODs hechos a mano (mallas _LOD0.._LODn del archivo) ---
+
+// Nivel de LOD por el nombre del nodo: "Roca_LOD1", "roca-lod2", "Roca LOD0"
+// o "SM_Roca.LOD3" (sin distinguir mayusculas, como Unity y Unreal). -1 si no
+// lo es; `base` = el nombre sin el sufijo, en minusculas.
+int lodLevelOf(const std::string& name, std::string& base) {
+    const std::string l = lower(name);
+    std::size_t digits = l.size();
+    while (digits > 0 && std::isdigit(static_cast<unsigned char>(l[digits - 1])) != 0) --digits;
+    if (digits == l.size() || l.size() - digits > 2 || digits < 5) return -1;
+    if (l.compare(digits - 3, 3, "lod") != 0) return -1;
+    const char separator = l[digits - 4];
+    if (separator != '_' && separator != '-' && separator != ' ' && separator != '.') return -1;
+    base = l.substr(0, digits - 4);
+    return std::atoi(l.c_str() + digits);
+}
+
+// Los niveles 1..n de una malla con LODs a mano, ya como piezas en el
+// espacio de su LOD0.
+struct ManualLodGroup {
+    std::size_t lod0 = 0;  // nodo de LOD0 (en el modelo de assimp / OBJ)
+    std::vector<ModelData> levels;
+};
+
+// Saca de `model` las mallas _LOD1.._LODn que tienen un LOD0 hermano (mismo
+// padre y mismo nombre con _LOD0, o sin sufijo): quedan fuera de la
+// jerarquia (no son objetos de la escena) y, si `keep`, se devuelven como
+// piezas en el espacio de LOD0 (OBJ: con el mismo pivote que le da
+// splitByNode). Sin `keep` (LOD Off) solo se descartan.
+std::vector<ManualLodGroup> takeManualLods(ModelData& model, bool is_obj, bool keep) {
+    std::vector<ManualLodGroup> result;
+    if (model.nodes.empty()) return result;
+    std::vector<std::vector<std::size_t>> by_node(model.nodes.size());
+    for (std::size_t s = 0; s < model.submeshes.size(); ++s) {
+        const std::int32_t node = model.submeshes[s].node;
+        by_node[node >= 0 && static_cast<std::size_t>(node) < model.nodes.size() ? static_cast<std::size_t>(node) : 0]
+            .push_back(s);
+    }
+    // (padre, nombre base) -> LOD0 y los demas niveles.
+    struct Found {
+        std::int64_t lod0 = -1;
+        std::vector<std::pair<int, std::size_t>> levels;  // (nivel >= 1, nodo)
+    };
+    std::unordered_map<std::string, Found> found;
+    std::unordered_map<std::string, std::size_t> plain;  // (padre, nombre) de las mallas sin sufijo
+    for (std::size_t n = 0; n < model.nodes.size(); ++n) {
+        if (by_node[n].empty()) continue;
+        const std::string parent = std::to_string(model.nodes[n].parent) + "/";
+        std::string base;
+        const int level = lodLevelOf(model.nodes[n].name, base);
+        if (level < 0) {
+            plain.try_emplace(parent + lower(model.nodes[n].name), n);
+            continue;
+        }
+        Found& f = found[parent + base];
+        if (level == 0) {
+            if (f.lod0 < 0) f.lod0 = static_cast<std::int64_t>(n);
+        } else {
+            f.levels.emplace_back(level, n);
+        }
+    }
+    if (found.empty()) return result;
+
+    std::vector<Mat4> global;
+    if (!is_obj) global = globalTransforms(model);
+    std::vector<bool> removed(model.submeshes.size(), false);
+    std::size_t taken = 0;
+    for (auto& [key, f] : found) {
+        if (f.levels.empty()) continue;
+        if (f.lod0 < 0) {
+            // Sin _LOD0: la malla hermana con el nombre base.
+            const auto it = plain.find(key);
+            if (it == plain.end()) continue;  // no hay LOD0: se quedan como piezas normales
+            f.lod0 = static_cast<std::int64_t>(it->second);
+        }
+        const auto lod0 = static_cast<std::size_t>(f.lod0);
+        std::sort(f.levels.begin(), f.levels.end());
+        ManualLodGroup group{};
+        group.lod0 = lod0;
+        // Al espacio de LOD0: OBJ, su pivote (el centro de su caja, como en
+        // splitByNode); assimp, la inversa de su transform global por la del
+        // nivel (los LODs pueden colgar de otro nodo o estar movidos).
+        Mat4 obj_to_local = Mat4::identity();
+        if (is_obj && lod0 != 0) {
+            Vec3 low{};
+            Vec3 high{};
+            boundsOf(model, by_node[lod0], low, high);
+            const Vec3 center = (low + high) * 0.5f;
+            obj_to_local = core::translate(Vec3{-center.x, -center.y, -center.z});
+        }
+        int last_level = 0;
+        for (const auto& [level, node] : f.levels) {
+            for (const std::size_t s : by_node[node]) removed[s] = true;
+            ++taken;
+            if (!keep || level == last_level) continue;  // (dos mallas del mismo nivel: la primera)
+            last_level = level;
+            const Mat4 to_local = is_obj ? obj_to_local : core::inverse(global[lod0]) * global[node];
+            ModelData part = extractPart(model, by_node[node], model.nodes[node].name, &to_local);
+            // Sus texturas no hacen falta: al cargarlo se usan los materiales
+            // de LOD0 (por nombre, asset::setManualLods).
+            part.textures.clear();
+            for (asset::MaterialData& material : part.materials) {
+                material.albedo_texture = material.metallic_roughness_texture = material.normal_texture =
+                    material.occlusion_texture = material.emissive_texture = -1;
+            }
+            group.levels.push_back(std::move(part));
+        }
+        if (!group.levels.empty()) result.push_back(std::move(group));
+    }
+    if (taken > 0) {
+        std::vector<asset::SubMesh> kept;
+        kept.reserve(model.submeshes.size());
+        for (std::size_t s = 0; s < model.submeshes.size(); ++s) {
+            if (!removed[s]) kept.push_back(model.submeshes[s]);
+        }
+        model.submeshes.swap(kept);
+    }
+    // Mismo orden siempre (unordered_map no lo garantiza): por nodo de LOD0.
+    std::sort(result.begin(), result.end(),
+              [](const ManualLodGroup& a, const ManualLodGroup& b) { return a.lod0 < b.lod0; });
+    return result;
+}
+
+// Tras splitByNode: cada grupo a la pieza de su LOD0 (las piezas van en el
+// orden de los nodos con malla) y sus niveles como piezas sin nodo al final.
+// Devuelve los grupos para la cabecera ([LOD0, LOD1, ...] por pieza).
+std::vector<std::vector<std::int32_t>> attachManualLods(const ModelData& model, std::vector<ManualLodGroup>& groups,
+                                                        crdata::ModelContent& content) {
+    std::vector<std::vector<std::int32_t>> result;
+    std::vector<bool> has_mesh(model.nodes.size(), false);
+    for (const asset::SubMesh& submesh : model.submeshes) {
+        const std::int32_t node = submesh.node;
+        has_mesh[node >= 0 && static_cast<std::size_t>(node) < model.nodes.size() ? static_cast<std::size_t>(node) : 0] =
+            true;
+    }
+    for (ManualLodGroup& group : groups) {
+        if (group.lod0 >= has_mesh.size() || !has_mesh[group.lod0]) continue;
+        std::int32_t part = 0;
+        for (std::size_t n = 0; n < group.lod0; ++n) part += has_mesh[n] ? 1 : 0;
+        if (static_cast<std::size_t>(part) >= content.parts.size()) continue;
+        std::vector<std::int32_t> entry{part};
+        for (ModelData& level : group.levels) {
+            entry.push_back(static_cast<std::int32_t>(content.parts.size()));
+            content.parts.push_back(std::move(level));
+        }
+        result.push_back(std::move(entry));
+    }
+    return result;
+}
+
+const char* lodModeName(ModelLodMode mode) {
+    switch (mode) {
+        case ModelLodMode::Off: return "off";
+        case ModelLodMode::Manual: return "manual";
+        default: return "auto";
+    }
+}
+
+ModelLodMode lodModeFrom(const nlohmann::json& j) {
+    if (!j.is_object()) return ModelLodMode::Auto;
+    const auto it = j.find("lod_mode");
+    if (it == j.end() || !it->is_string()) return ModelLodMode::Auto;
+    const std::string mode = it->get<std::string>();
+    if (mode == "off") return ModelLodMode::Off;
+    if (mode == "manual") return ModelLodMode::Manual;
+    return ModelLodMode::Auto;
+}
+
+std::string settingsJson(const ModelImportSettings& settings,
+                         const std::vector<std::vector<std::int32_t>>& lod_groups = {}) {
     nlohmann::json j;
     j["animated"] = settings.animated;
     j["scale"] = settings.scale;
@@ -358,6 +534,8 @@ std::string settingsJson(const ModelImportSettings& settings) {
     j["directx_normals"] = settings.directx_normals;
     j["combine_meshes"] = settings.combine_meshes;
     j["combine_above_parts"] = settings.combine_above_parts;
+    j["lod_mode"] = lodModeName(settings.lod_mode);
+    if (!lod_groups.empty()) j["lod_groups"] = lod_groups;
     return j.dump();
 }
 
@@ -408,6 +586,7 @@ static ImportResult importModelTo(const std::filesystem::path& source,
         ModelImportSettings stored = settings;
         stored.file_unit_scale = asset::fileUnitScale(source);
         const float factor = settings.scale * (settings.convert_units ? stored.file_unit_scale : 1.0f);
+        std::vector<std::vector<std::int32_t>> lod_groups;  // LODs a mano: [LOD0, LOD1, ...] por pieza
         if (settings.animated) {
             // Personaje: una sola pieza con esqueleto y animaciones.
             ModelData model = asset::importModelSource(source, /*force_static=*/false, on_read);
@@ -426,6 +605,10 @@ static ImportResult importModelTo(const std::filesystem::path& source,
             asset::scaleModel(model, factor);
             report(progress, kReadShare, "Partiendo en piezas y agrupando");
             model.name = stem;
+            // LODs hechos a mano (_LOD1.._LODn): fuera de la jerarquia antes de
+            // partir (no son objetos de la escena ni cuentan como piezas).
+            std::vector<ManualLodGroup> manual_lods =
+                takeManualLods(model, is_obj, settings.lod_mode != ModelLodMode::Off);
             std::string reason;
             const std::size_t combine_above =
                 settings.combine_meshes ? static_cast<std::size_t>(std::max(settings.combine_above_parts, 1))
@@ -433,10 +616,15 @@ static ImportResult importModelTo(const std::filesystem::path& source,
             if (splitByNode(model, is_obj, content, reason, combine_above)) {
                 how = std::to_string(content.parts.size()) + " piezas por " +
                       (is_obj ? "objeto" : "nodo");
+                lod_groups = attachManualLods(model, manual_lods, content);
+                if (!lod_groups.empty()) how += ", " + std::to_string(lod_groups.size()) + " con LODs a mano";
             } else {
                 splitByMaterial(model, /*hierarchy_space=*/!is_obj, content);
                 how = std::to_string(content.parts.size()) + " piezas por material (" + reason +
                       ")";
+                // Agrupado por material, LOD0 ya no es una pieza: sus niveles
+                // se descartan (los automaticos siguen).
+                if (!manual_lods.empty()) how += ", sin los LODs a mano (desactiva Combinar mallas)";
             }
             content.nodes[0].name = stem;
         }
@@ -463,7 +651,7 @@ static ImportResult importModelTo(const std::filesystem::path& source,
         header.uuid = uuid.valid() ? uuid : Uuid::generate();
         header.name = stem;
         header.source = crdata::utf8(std::filesystem::absolute(source));
-        header.settings_json = settingsJson(stored);
+        header.settings_json = settingsJson(stored, lod_groups);
 
         const std::filesystem::path file =
             target.empty() ? crdata::uniquePath(destination_folder, stem, crdata::kExtension) : target;
@@ -521,7 +709,26 @@ ModelImportSettings modelImportSettings(const std::filesystem::path& file) {
     // Los importados antes de existir el ajuste: se combinan al reimportar.
     settings.combine_meshes = j.value("combine_meshes", true);
     settings.combine_above_parts = j.value("combine_above_parts", settings.combine_above_parts);
+    settings.lod_mode = lodModeFrom(j);
     return settings;
+}
+
+ModelLodInfo modelLodInfo(const std::string& settings_json) {
+    ModelLodInfo info;
+    const nlohmann::json j = nlohmann::json::parse(settings_json, nullptr, false);
+    if (!j.is_object()) return info;
+    info.mode = lodModeFrom(j);
+    const auto groups = j.find("lod_groups");
+    if (groups == j.end() || !groups->is_array()) return info;
+    for (const nlohmann::json& group : *groups) {
+        if (!group.is_array() || group.size() < 2) continue;
+        std::vector<std::int32_t> parts;
+        for (const nlohmann::json& part : group) {
+            if (part.is_number_integer()) parts.push_back(part.get<std::int32_t>());
+        }
+        if (parts.size() >= 2) info.groups.push_back(std::move(parts));
+    }
+    return info;
 }
 
 std::string modelImportSource(const std::filesystem::path& file) {
@@ -652,13 +859,33 @@ bool writeGeneratedModel(const std::filesystem::path& file, const Uuid& uuid, co
     }
 }
 
-// Si el archivo trae animaciones (un personaje) se importa como una pieza
-// animada con su esqueleto; si no, partido en piezas por nodo. Solo se lee la
-// escena de assimp sin post-proceso (rapido comparado con la importacion).
-static bool sourceHasAnimations(const std::filesystem::path& source) {
+// Si el archivo trae animaciones o piel (un personaje, tambien una malla con
+// esqueleto exportada sin tomas, como hacen Unity, Unreal y Godot) se importa
+// como una pieza animada con su esqueleto; si no, partido en piezas por nodo.
+// Basta con 2 huesos distintos: con uno solo es una pieza rigida pegada a un
+// hueso (un arma) y la importacion animada la dejaria igual sin esqueleto.
+// Se lee la escena de assimp sin post-proceso y, en FBX, sin materiales,
+// texturas incrustadas, luces ni camaras: es lo caro de la segunda lectura
+// (la de importModelSource / importModelHierarchy) que aqui no hace falta.
+static bool sourceIsAnimated(const std::filesystem::path& source) {
     Assimp::Importer importer;
+    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_MATERIALS, false);
+    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_TEXTURES, false);
+    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_LIGHTS, false);
+    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_CAMERAS, false);
     const aiScene* scene = importer.ReadFile(crdata::utf8(source), 0);
-    return scene != nullptr && scene->mNumAnimations > 0;
+    if (scene == nullptr) return false;
+    if (scene->mNumAnimations > 0) return true;
+    std::unordered_set<std::string> bones;
+    for (unsigned m = 0; m < scene->mNumMeshes; ++m) {
+        const aiMesh* mesh = scene->mMeshes[m];
+        if (mesh == nullptr || !mesh->HasBones()) continue;
+        for (unsigned b = 0; b < mesh->mNumBones; ++b) {
+            if (mesh->mBones[b] != nullptr) bones.insert(mesh->mBones[b]->mName.C_Str());
+        }
+        if (bones.size() >= 2) return true;
+    }
+    return false;
 }
 
 ImportResult importAny(const std::filesystem::path& source,
@@ -672,7 +899,7 @@ ImportResult importAny(const std::filesystem::path& source,
         extension == ".dae") {
         ModelImportSettings settings;
         report(progress, 0.0f, "Analizando " + crdata::utf8(source.filename()));
-        settings.animated = extension != ".obj" && sourceHasAnimations(source);
+        settings.animated = extension != ".obj" && sourceIsAnimated(source);
         return importModel(source, destination_folder, settings, progress);
     }
     ImportResult result{};

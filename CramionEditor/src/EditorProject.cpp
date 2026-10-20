@@ -4,14 +4,19 @@
 // Inspector, se mueven a otra carpeta arrastrandolos y se renombran/borran.
 // Los assets son .crdata/.crscene con UUID: moverlos no rompe referencias.
 //
-// Rendimiento: nada de disco por frame. Windows avisa de los cambios en
-// Assets/ (FindFirstChangeNotification) y solo entonces se rehacen la base de
-// datos y la cache de carpetas que dibuja el panel.
+// Rendimiento: nada de disco por frame. El sistema avisa de que rutas de
+// Assets/ cambiaron (assets::FileWatcher) y solo esas se vuelven a leer, en un
+// hilo de disco; lo editado fuera se recarga en caliente. Mover o renombrar
+// en el panel reescribe las rutas que lo usaban en todo el proyecto.
 
 #include "EditorApp.h"
 
 #include "Dialogs.h"
 
+#include <CramionCore/asset/FileWatcher.h>
+#include <CramionCore/asset/PathReferences.h>
+#include <CramionCore/cvar/CVar.h>
+#include <CramionCore/jobs/JobSystem.h>
 #include <CramionCore/video/VideoFiles.h>
 
 #include <shellapi.h>
@@ -26,6 +31,8 @@
 #include <functional>
 #include <fstream>
 #include <iostream>
+#include <span>
+#include <unordered_set>
 
 namespace cramion::editor {
 
@@ -104,29 +111,385 @@ void EditorApp::refreshDatabase() {
         std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - refresh_start).count();
 }
 
-// Sin recorrer el disco: Windows senala el HANDLE cuando cambia algo dentro
-// de Assets/ (archivos nuevos, copiados, borrados, renombrados o escritos).
-// Una rafaga de cambios (importar escribe varias veces) se agrupa en un solo
-// refresco un momento despues.
+// --- Vigilancia de Assets/ y recarga en caliente --------------------------------
+//
+// El vigilante (assets::FileWatcher: ReadDirectoryChangesW en Windows, inotify
+// en Linux) corre en su hilo y dice QUE rutas cambiaron, ya agrupadas (300 ms
+// sin cambios, como mucho 2 s). Solo esas rutas se vuelven a leer (cabeceras y
+// UUID) en un hilo de disco; al terminar, el hilo principal las aplica a la
+// base de datos (rapido, sin disco) y recarga lo que cambio de contenido. Antes
+// cada aviso recorria Assets/ entero en el hilo principal (miles de prefabs) y
+// solo se recargaban prefabs y .crshader.
+
+namespace {
+
+// Fecha del original de un modelo (la mira el hilo de disco).
+struct SourceStamp {
+    Uuid model{};
+    std::string key;
+    std::filesystem::file_time_type time{};
+    bool exists = false;
+};
+
+}  // namespace
+
+struct EditorApp::AssetHotReload {
+    assets::FileWatcher watcher;
+    bool watching = false;
+    // Rescan en marcha (hilo de disco): sus rutas y lo que avisaba el vigilante.
+    jobs::JobHandle job;
+    std::shared_ptr<assets::AssetScan> scan;
+    std::vector<assets::FileWatcher::Change> changes;
+    // Lo que llego mientras: va en el siguiente.
+    std::vector<assets::FileWatcher::Change> queued;
+    bool overflow = false;
+
+    // Reimportar si cambia el original (editor.assets.AutoReimport). La
+    // primera pasada, al abrir el proyecto, solo apunta las fechas (abrir no
+    // reimporta nada, y abrir una escena nunca procesa assets); despues, al
+    // volver el foco a la ventana (como Godot) o si el vigilante ve cambiar un
+    // original que esta dentro de Assets/, un hilo de disco mira las fechas y
+    // los modelos cuyo original cambio desde la ultima vez se reimportan.
+    std::unordered_map<Uuid, std::filesystem::file_time_type> source_stamps;
+    std::unordered_set<std::string> source_keys;  // originales conocidos (sourceKey)
+    bool sources_wanted = true;   // mirar en cuanto se pueda (la primera: fechas de referencia)
+    bool focused = true;
+    jobs::JobHandle source_job;
+    std::shared_ptr<std::vector<SourceStamp>> source_result;
+};
+
+namespace {
+
+// Imagenes que un .crmat (o una textura perezosa) puede leer.
+bool isTextureFile(const std::string& extension) {
+    static const std::unordered_set<std::string> kImages = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".psd",
+                                                            ".tif", ".tiff", ".dds", ".hdr", ".exr", ".gif"};
+    return kImages.contains(extension);
+}
+
+// Como el Auto Refresh de Unity / Auto Reimport de UE5: un modelo cuyo
+// original (FBX, glTF, OBJ...) cambio en disco se reimporta solo.
+cvar::CVar<bool> g_auto_reimport("editor.assets.AutoReimport", true,
+                                 "Reimportar un modelo cuando cambia su archivo original (FBX, glTF, OBJ...): se mira "
+                                 "al volver a la ventana y cuando el vigilante de Assets/ lo ve cambiar",
+                                 cvar::Saved);
+
+// Clave de una ruta para comparar (separadores y, en Windows, mayusculas).
+std::string sourceKey(const std::filesystem::path& path) {
+    std::string text = dialogs::utf8(path.lexically_normal());
+    std::replace(text.begin(), text.end(), '\\', '/');
+#if defined(_WIN32)
+    text = lower(std::move(text));
+#endif
+    return text;
+}
+
+}  // namespace
+
 void EditorApp::watchAssets() {
     if (!has_project_ || !database_) {
         return;
     }
-    if (assets_watch_ == nullptr) {
-        const HANDLE handle = FindFirstChangeNotificationW(
-            project_.assetsFolder().wstring().c_str(), TRUE,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_SIZE |
-                FILE_NOTIFY_CHANGE_LAST_WRITE);
-        assets_watch_ = handle == INVALID_HANDLE_VALUE ? nullptr : handle;
+    if (!hot_reload_) {
+        hot_reload_ = std::make_shared<AssetHotReload>();
+        hot_reload_->watching = hot_reload_->watcher.start(project_.assetsFolder());
+        if (!hot_reload_->watching) {
+            std::cerr << "[Proyecto] No se pueden vigilar los cambios de Assets/ en este sistema: "
+                         "lo editado fuera no se vera hasta refrescar\n";
+        }
     }
-    const double now = ImGui::GetTime();
-    if (assets_watch_ != nullptr && WaitForSingleObject(assets_watch_, 0) == WAIT_OBJECT_0) {
-        refresh_at_ = now + 0.3;
-        FindNextChangeNotification(assets_watch_);
+    AssetHotReload& hot = *hot_reload_;
+    // --- Originales cambiados (editor.assets.AutoReimport) ---
+    {
+        const bool focused = window_.focused();
+        if (focused && !hot.focused) hot.sources_wanted = true;  // volvio el foco (como Godot)
+        hot.focused = focused;
+        if (hot.source_job && hot.source_job->done()) {
+            const bool failed = hot.source_job->failed();
+            hot.source_job.reset();
+            const std::shared_ptr<std::vector<SourceStamp>> result = std::move(hot.source_result);
+            int started = 0;
+            const std::vector<SourceStamp> none;
+            for (const SourceStamp& s : (!failed && result) ? *result : none) {
+                hot.source_keys.insert(s.key);
+                if (!s.exists) continue;  // el original ya no esta (otro equipo, borrado): nada
+                const auto it = hot.source_stamps.find(s.model);
+                if (it == hot.source_stamps.end()) {
+                    hot.source_stamps.emplace(s.model, s.time);  // primera vez: solo su fecha
+                    continue;
+                }
+                if (it->second == s.time) continue;
+                if (playing() || sceneLoading()) {
+                    // Ahora no: la fecha vieja se queda y se vuelve a mirar al acabar.
+                    hot.sources_wanted = true;
+                    continue;
+                }
+                it->second = s.time;
+                if (startReimport(s.model)) ++started;  // con sus ajustes de importacion
+            }
+            if (started > 0) {
+                std::cout << "[Proyecto] Original cambiado en disco: reimportando " << started << " modelo(s)\n";
+            }
+        }
+        if (hot.sources_wanted && !hot.source_job && g_auto_reimport.get() && !playing() && !sceneLoading()) {
+            hot.sources_wanted = false;
+            // Solo las rutas (sin disco aqui): las fechas, en un hilo de disco.
+            std::vector<std::pair<Uuid, std::filesystem::path>> sources;
+            for (const assets::AssetInfo& info : database_->all()) {
+                if (info.type == assets::AssetType::Model && !info.path.empty() && !info.source.empty()) {
+                    sources.emplace_back(info.uuid, info.source);
+                }
+            }
+            if (!sources.empty()) {
+                hot.source_result = std::make_shared<std::vector<SourceStamp>>();
+                hot.source_job = jobs::scheduleIo(
+                    [result = hot.source_result, sources = std::move(sources)] {
+                        result->reserve(sources.size());
+                        for (const auto& [uuid, path] : sources) {
+                            SourceStamp s;
+                            s.model = uuid;
+                            s.key = sourceKey(path);
+                            std::error_code ec;
+                            s.time = std::filesystem::last_write_time(path, ec);
+                            s.exists = !ec;
+                            result->push_back(std::move(s));
+                        }
+                    },
+                    jobs::Priority::Background, "Fechas de los originales");
+            }
+        }
     }
-    if (refresh_at_ >= 0.0 && now >= refresh_at_) {
-        refresh_at_ = -1.0;
+    if (hot.job) {
+        if (!hot.job->done()) {
+            // Mientras, lo nuevo espera su turno (no se lanzan dos a la vez).
+            assets::FileWatcher::Batch batch;
+            if (hot.watcher.poll(batch)) {
+                hot.overflow = hot.overflow || batch.overflow;
+                hot.queued.insert(hot.queued.end(), std::make_move_iterator(batch.changes.begin()),
+                                  std::make_move_iterator(batch.changes.end()));
+            }
+            return;
+        }
+        hot.job.reset();
+        if (!hot.overflow) applyAssetScan();
+    }
+    assets::FileWatcher::Batch batch;
+    hot.watcher.poll(batch);
+    hot.overflow = hot.overflow || batch.overflow;
+    batch.changes.insert(batch.changes.begin(), std::make_move_iterator(hot.queued.begin()),
+                         std::make_move_iterator(hot.queued.end()));
+    hot.queued.clear();
+    if (hot.overflow) {
+        // Se perdieron avisos: todo otra vez (como antes) y sin recarga fina.
+        hot.overflow = false;
         refreshDatabase();
+        return;
+    }
+    if (batch.changes.empty()) return;
+    // Un original de modelo dentro de Assets/ (el .fbx junto a su .crdata)
+    // cambio: se miran las fechas ya, sin esperar a que vuelva el foco.
+    if (!hot.source_keys.empty()) {
+        for (const assets::FileWatcher::Change& change : batch.changes) {
+            if (change.kind != assets::FileWatcher::Kind::Removed && hot.source_keys.contains(sourceKey(change.path))) {
+                hot.sources_wanted = true;
+                break;
+            }
+        }
+    }
+    std::vector<std::filesystem::path> paths;
+    paths.reserve(batch.changes.size());
+    for (const assets::FileWatcher::Change& change : batch.changes) paths.push_back(change.path);
+    hot.changes = std::move(batch.changes);
+    hot.scan = std::make_shared<assets::AssetScan>();
+    hot.job = jobs::scheduleIo(
+        [scan = hot.scan, root = project_.assetsFolder(), paths = std::move(paths)]() mutable {
+            *scan = assets::AssetDatabase::scanPaths(root, std::move(paths));
+        },
+        jobs::Priority::Normal, "Rescan de Assets");
+}
+
+void EditorApp::applyAssetScan() {
+    if (!hot_reload_ || !hot_reload_->scan || !database_) return;
+    AssetHotReload& hot = *hot_reload_;
+    const auto start = std::chrono::steady_clock::now();
+    ++frame_refreshes_;
+    const assets::AssetChanges changes = database_->applyScan(*hot.scan);
+    hot.scan.reset();
+
+    // Recarga por tipo de lo que cambio de contenido (o aparecio: lo que lo
+    // usaba y fallaba por no estar vuelve a probar).
+    int models = 0, materials = 0, clips = 0, textures = 0, others = 0;
+    bool prefabs = false;
+    bool clip_sources = false;
+    const auto reload = [&](const Uuid& uuid, bool added) {
+        const std::optional<assets::AssetInfo> info = database_->find(uuid);
+        if (!info) return;
+        switch (info->type) {
+            case assets::AssetType::Model:
+                if (sync_) sync_->reloadModel(uuid);
+                if (!added) ++models;
+                clip_sources = true;
+                break;
+            case assets::AssetType::Material:
+                if (sync_) sync_->reloadMaterial(uuid, /*from_disk=*/true);
+                if (!added) ++materials;
+                break;
+            case assets::AssetType::AnimationClip:
+                if (sync_ && !added) sync_->reloadAnimationClip(uuid);
+                if (!added) ++clips;
+                clip_sources = true;
+                break;
+            case assets::AssetType::AnimatorController:
+                if (sync_ && !added) sync_->reloadAnimatorController(uuid);
+                if (!added) ++others;
+                break;
+            case assets::AssetType::MotionDatabase:
+                if (sync_ && !added) sync_->reloadMotionDatabase(uuid);
+                if (!added) ++others;
+                break;
+            case assets::AssetType::Prefab:
+                prefabs = prefabs || !added;
+                break;
+            default:
+                break;
+        }
+    };
+    for (const Uuid& uuid : changes.modified) reload(uuid, false);
+    for (const Uuid& uuid : changes.added) reload(uuid, true);
+
+    // Archivos sin UUID: imagenes (las de los .crmat), .crshader y videos.
+    bool shaders = false;
+    for (const assets::FileWatcher::Change& change : hot.changes) {
+        if (change.kind == assets::FileWatcher::Kind::Removed) continue;
+        const std::string extension = lower(dialogs::utf8(change.path.extension()));
+        if (isTextureFile(extension)) {
+            if (sync_ && sync_->reloadTextureFile(assetRelative(change.path)) > 0) ++textures;
+        } else if (extension == assets::kSurfaceShaderExtension) {
+            shaders = true;
+        } else if (video::isVideoFile(change.path)) {
+            video_.invalidateFile(assetRelative(change.path));
+        }
+    }
+    hot.changes.clear();
+
+    ++database_version_;  // la cache del navegador se rehara
+    if (models > 0 || !changes.added.empty()) model_previews_.invalidate();
+    if (clip_sources) {
+        clip_source_.reset();
+        clip_source_uuid_ = {};
+    }
+    if (prefabs) syncPrefabInstances();  // un .crprefab cambiado en disco
+    if (shaders && sync_) sync_->reloadSurfaceShaders();  // compara fechas: solo los cambiados
+    if (models + materials + clips + textures + others > 0) {
+        std::cout << "[Proyecto] Recarga en caliente:";
+        if (models > 0) std::cout << " " << models << " modelo(s)";
+        if (materials > 0) std::cout << " " << materials << " material(es)";
+        if (textures > 0) std::cout << " " << textures << " textura(s) en uso";
+        if (clips > 0) std::cout << " " << clips << " clip(s)";
+        if (others > 0) std::cout << " " << others << " controlador(es)/base(s)";
+        std::cout << "\n";
+    }
+    frame_refresh_ms_ += std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+// --- Referencias por ruta al mover o renombrar ---------------------------------
+
+namespace {
+
+// Visita los campos de texto de un componente y cambia las rutas movidas (el
+// AudioSource, la imagen de la UI, el CppScript, el VideoPlayer, la escena
+// que carga un script...). Las listas se recorren sin cambiar su tamano.
+class PathRetargetVisitor final : public ecs::PropertyVisitor {
+public:
+    explicit PathRetargetVisitor(std::span<const assets::PathRename> renames) : renames_(renames) {}
+    int changed = 0;
+
+    bool field(const ecs::Meta&, float&, const ecs::FloatRange&) override { return false; }
+    bool field(const ecs::Meta&, int&, int, int) override { return false; }
+    bool field(const ecs::Meta&, bool&) override { return false; }
+    bool field(const ecs::Meta&, std::string& value) override {
+        if (!assets::rewritePath(value, renames_)) return false;
+        ++changed;
+        return true;
+    }
+    bool field(const ecs::Meta&, core::Vec3&, ecs::Vec3Kind) override { return false; }
+    bool field(const ecs::Meta&, core::Vec2&, float) override { return false; }
+    bool enumeration(const ecs::Meta&, int&, std::span<const char* const>) override { return false; }
+    bool asset(const ecs::Meta&, assets::AssetRef&, assets::AssetType) override { return false; }
+    bool entity(const ecs::Meta&, Uuid&) override { return false; }
+    bool layerMask(const ecs::Meta&, std::uint32_t&) override { return false; }
+    bool beginList(const ecs::Meta&, std::size_t&) override { return true; }
+
+private:
+    std::span<const assets::PathRename> renames_;
+};
+
+}  // namespace
+
+void EditorApp::updatePathReferences(const std::vector<std::pair<std::filesystem::path, std::filesystem::path>>& moves) {
+    if (!has_project_ || moves.empty()) return;
+    const auto start = std::chrono::steady_clock::now();
+    // Rutas como las guarda el editor (relativas a Assets, con '/').
+    const std::filesystem::path root = project_.assetsFolder().lexically_normal();
+    const auto relative = [&](const std::filesystem::path& path) -> std::string {
+        const std::filesystem::path rel = path.lexically_normal().lexically_relative(root);
+        if (rel.empty() || *rel.begin() == "..") return {};
+        std::string text = dialogs::utf8(rel);
+        std::replace(text.begin(), text.end(), '\\', '/');
+        return text;
+    };
+    std::vector<assets::PathRename> renames;
+    for (const auto& [from, to] : moves) {
+        assets::PathRename rename;
+        rename.from = relative(from);
+        rename.to = relative(to);
+        std::error_code error;
+        rename.folder = std::filesystem::is_directory(to, error);
+        if (rename.from.empty() || rename.to.empty() || rename.from == rename.to) continue;
+        renames.push_back(std::move(rename));
+    }
+    if (renames.empty()) return;
+
+    // 1) Todos los JSON del proyecto (escenas, prefabs, materiales...) en disco.
+    const assets::PathRewriteReport report = assets::rewriteProjectReferences(project_.assetsFolder(), renames);
+
+    // 2) La escena abierta, en memoria (puede tener cambios sin guardar).
+    PathRetargetVisitor visitor(renames);
+    const auto& types = ecs::ComponentRegistry::instance().types();
+    world_.forEachDepthFirst([&](ecs::Entity e) {
+        for (const ecs::ComponentType& type : types) {
+            if (type.has && type.reflect && type.has(world_, e.handle())) type.reflect(world_, e.handle(), visitor);
+        }
+    });
+    const int in_memory = visitor.changed;
+
+    // 3) Las otras pestanas guardadas en JSON (una escena no cargada, un prefab).
+    int in_tabs = 0;
+    for (Workspace& ws : workspaces_) {
+        if (ws.stashed) in_tabs += assets::rewritePathReferences(ws.world, renames);
+    }
+
+    // Lo que guardaban las caches por ruta.
+    for (const assets::PathRename& rename : renames) video_.invalidateFile(rename.from);
+    if (in_memory > 0) {
+        dirty_ = true;
+        commit();
+    }
+
+    const float ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::cout << "[Proyecto] Referencias por ruta: " << report.updated.size() << " archivo(s) actualizados ("
+              << report.references << " ruta(s)) de " << report.scanned << ", " << in_memory
+              << " en la escena abierta" << (in_tabs > 0 ? ", " + std::to_string(in_tabs) + " en otras pestanas" : std::string())
+              << " (" << static_cast<int>(ms) << " ms)\n";
+    for (const std::filesystem::path& file : report.updated) std::cout << "  " << assetRelative(file) << "\n";
+    if (!report.updated.empty() || in_memory > 0 || in_tabs > 0) {
+        std::string text = std::to_string(report.updated.size()) + " archivo(s) del proyecto";
+        if (in_memory > 0) text += " y " + std::to_string(in_memory) + " referencia(s) de la escena abierta";
+        if (in_tabs > 0) text += " (+" + std::to_string(in_tabs) + " en otras pestañas)";
+        pushToast("Referencias actualizadas", text, 0);
+    }
+    if (!report.failed.empty()) {
+        pushToast("Referencias", std::to_string(report.failed.size()) + " archivo(s) no se pudieron actualizar (ver Consola)", 2);
     }
 }
 
@@ -670,6 +1033,8 @@ void EditorApp::moveBrowserItems(const std::filesystem::path& folder, const std:
     const std::string target = dialogs::utf8(folder.lexically_normal());
     int moved = 0;
     int skipped = 0;
+    // Lo movido (de -> a): sus referencias por ruta se reescriben al final.
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> moves;
     for (const Item& item : items) {
         const std::filesystem::path from = item.kind == Kind::Asset ? item.info.path : item.path;
         if (from.empty() || from.parent_path() == folder) continue;  // integrado o ya esta ahi
@@ -678,6 +1043,8 @@ void EditorApp::moveBrowserItems(const std::filesystem::path& folder, const std:
         if (item.kind == Kind::Asset) {
             if (database_->move(item.info.uuid, to)) {
                 ++moved;
+                // (Con UUID, pero una escena tambien se carga por su ruta.)
+                moves.emplace_back(from, to);
                 blueprintMoved(item.info.uuid, from, to);  // un Blueprint se lleva su .crgraph
             } else {
                 ++skipped;
@@ -713,9 +1080,7 @@ void EditorApp::moveBrowserItems(const std::filesystem::path& folder, const std:
             std::filesystem::rename(meta, meta_to, error);
         }
         if (item.kind == Kind::Folder && current_folder_ == from) current_folder_ = to;
-        // Los VideoPlayer guardan la ruta (como AudioSource): los de la escena
-        // abierta pasan a la nueva (las otras escenas no se tocan).
-        if (item.kind == Kind::Video) retargetVideoClips(assetRelative(from), assetRelative(to));
+        moves.emplace_back(from, to);
         ++moved;
     }
     if (moved == 0 && skipped == 0) return;
@@ -723,6 +1088,10 @@ void EditorApp::moveBrowserItems(const std::filesystem::path& folder, const std:
               << (skipped > 0 ? " (" + std::to_string(skipped) + " no se pudieron: ya existian o es la misma carpeta)" : std::string())
               << "\n";
     browser_selection_.clear();
+    // Audio, imagenes de UI, scripts, videos, texturas de los .crmat, escenas
+    // por ruta...: en todo el proyecto (antes solo los VideoPlayer de la escena
+    // abierta) y en la escena abierta.
+    updatePathReferences(moves);
     refreshDatabase();
 }
 
@@ -1232,13 +1601,17 @@ void EditorApp::drawProject() {
                 const std::filesystem::path renamed =
                     item.info.path.parent_path() / (dialogs::fromUtf8(buffer).wstring() + item.info.path.extension().wstring());
                 // Un Blueprint renombrado se lleva su .crgraph (y las rutas que lo usan).
-                if (database_->move(item.info.uuid, renamed)) blueprintMoved(item.info.uuid, item.info.path, renamed);
+                if (database_->move(item.info.uuid, renamed)) {
+                    blueprintMoved(item.info.uuid, item.info.path, renamed);
+                    updatePathReferences({{item.info.path, renamed}});
+                }
                 refreshDatabase();
             } else if (folder && !buffer.empty()) {
                 const std::filesystem::path renamed = item.path.parent_path() / dialogs::fromUtf8(buffer);
                 if (renamed != item.path && !std::filesystem::exists(renamed)) {
                     std::filesystem::rename(item.path, renamed, error);
                     if (current_folder_ == item.path) current_folder_ = renamed;
+                    if (!error) updatePathReferences({{item.path, renamed}});  // todo lo de dentro
                     refreshDatabase();
                 }
             } else if (file && !buffer.empty()) {
@@ -1246,6 +1619,7 @@ void EditorApp::drawProject() {
                     item.path.parent_path() / (dialogs::fromUtf8(buffer).wstring() + item.path.extension().wstring());
                 if (renamed != item.path && !std::filesystem::exists(renamed)) {
                     std::filesystem::rename(item.path, renamed, error);
+                    if (!error) updatePathReferences({{item.path, renamed}});
                     refreshDatabase();
                 }
             }
@@ -1557,6 +1931,15 @@ void EditorApp::drawProject() {
                 window_.handle(), L"Modelos y cielos (*.obj;*.fbx;*.gltf;*.glb;*.dae;*.hdr)\0*.obj;*.fbx;*.gltf;*.glb;*.dae;*.hdr\0Todos\0*.*\0");
             startImport(files, target_folder);
         }
+        bool auto_reimport = g_auto_reimport.get();
+        if (ImGui::MenuItem("Reimportar al cambiar el original", nullptr, &auto_reimport)) {
+            g_auto_reimport.set(auto_reimport);
+            if (auto_reimport && hot_reload_) hot_reload_->sources_wanted = true;
+        }
+        ImGui::SetItemTooltip("Como el Auto Refresh de Unity: si el FBX/glTF/OBJ del que se importo un modelo\n"
+                              "cambia en disco, el modelo se reimporta solo (con sus ajustes) y sus instancias\n"
+                              "se rehacen. Se mira al volver a la ventana del editor y, si el original esta\n"
+                              "dentro de Assets/, en cuanto se guarda. Nunca en Play ni al abrir una escena.");
         ImGui::Separator();
         const bool favorite = std::find(browser_favorites_.begin(), browser_favorites_.end(), current_folder_) != browser_favorites_.end();
         if (ImGui::MenuItem(favorite ? "Quitar carpeta de favoritos" : "Añadir carpeta a favoritos")) {

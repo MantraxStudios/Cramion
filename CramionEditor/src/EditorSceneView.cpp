@@ -85,6 +85,33 @@ ImVec2 fitAspect(ImVec2 avail, float aspect) {
     return ImVec2(std::max(size.x, 1.0f), std::max(size.y, 1.0f));
 }
 
+// Entidades con icono en la Escena (luces, camaras, decals, particulas,
+// agua, camaras virtuales, rieles y secuencias) activas en la jerarquia, sin
+// repetir y en orden de handle (estable entre frames). Por las vistas de esos
+// componentes, que son pocas entidades: antes los iconos y el clic recorrian
+// el mundo entero en profundidad (decenas de miles de props) mirando ocho
+// componentes en cada una. El vector se reutiliza (hilo principal).
+const std::vector<entt::entity>& iconEntities(const ecs::World& world) {
+    static std::vector<entt::entity> out;
+    out.clear();
+    const entt::registry& registry = world.registry();
+    const auto gather = [&](auto view) {
+        for (const entt::entity e : view) out.push_back(e);
+    };
+    gather(registry.view<ecs::Light>());
+    gather(registry.view<ecs::Camera>());
+    gather(registry.view<ecs::Decal>());
+    gather(registry.view<physics::ParticleSystem>());
+    gather(registry.view<water::WaterBody>());
+    gather(registry.view<cinema::VirtualCamera>());
+    gather(registry.view<cinema::DollyTrack>());
+    gather(registry.view<cinema::CinematicSequence>());
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    std::erase_if(out, [&](entt::entity e) { return !world.wrap(e).activeInHierarchy(); });
+    return out;
+}
+
 }  // namespace
 
 ImVec2 EditorApp::layoutViewImage(std::uint32_t slot, ImVec2 avail, ImVec2& origin) {
@@ -651,21 +678,22 @@ void EditorApp::pickAt(float x, float y) {
         revealInHierarchy(uuid);
     };
 
-    // Iconos.
+    // Iconos: el mas cercano al clic a menos de 15 px (solo lo activo).
     Uuid icon_hit{};
-    world_.forEachDepthFirst([&](ecs::Entity e) {
-        if (!show_gizmos_ || icon_hit.valid() || !e.activeInHierarchy()) return;
-        if (!e.has<ecs::Light>() && !e.has<ecs::Camera>() && !e.has<ecs::Decal>() && !e.has<physics::ParticleSystem>() &&
-            !e.has<water::WaterBody>() &&
-            !e.has<cinema::VirtualCamera>() && !e.has<cinema::DollyTrack>() && !e.has<cinema::CinematicSequence>()) {
-            return;
+    if (show_gizmos_) {
+        float best = 15.0f;
+        for (const entt::entity h : iconEntities(world_)) {
+            const ecs::Entity e = world_.wrap(h);
+            float sx = 0.0f;
+            float sy = 0.0f;
+            if (!worldToScreen(e.worldPosition(), sx, sy)) continue;
+            const float d = std::hypot(sx - x, sy - y);
+            if (d < best) {
+                best = d;
+                icon_hit = e.uuid();
+            }
         }
-        float sx = 0.0f;
-        float sy = 0.0f;
-        if (worldToScreen(e.worldPosition(), sx, sy) && std::hypot(sx - x, sy - y) < 15.0f) {
-            icon_hit = e.uuid();
-        }
-    });
+    }
     if (icon_hit.valid()) {
         choose(icon_hit);
         return;
@@ -755,7 +783,6 @@ void EditorApp::drawSceneOverlays() {
     ImDrawList* draw = ImGui::GetWindowDrawList();
     draw->PushClipRect(ImVec2(view_x_, view_y_), ImVec2(view_x_ + view_w_, view_y_ + view_h_), true);
     const auto overlay = [&](ecs::Entity e) {
-        if (!e.activeInHierarchy()) return;
         float x = 0.0f;
         float y = 0.0f;
         if (!worldToScreen(e.worldPosition(), x, y)) return;
@@ -783,13 +810,15 @@ void EditorApp::drawSceneOverlays() {
             }
         }
     };
-    world_.forEachDepthFirst([&](ecs::Entity e) {
-        if (e.has<ecs::Light>() || e.has<ecs::Camera>() || e.has<ecs::Decal>() || e.has<physics::ParticleSystem>() ||
-            e.has<cinema::VirtualCamera>() || e.has<cinema::DollyTrack>() || e.has<cinema::CinematicSequence>() ||
-            e.has<water::WaterBody>()) {
-            overlay(e);
+    // Solo las entidades con icono y activas (iconEntities); las
+    // seleccionadas al final, encima de las demas.
+    const std::vector<entt::entity>& icons = iconEntities(world_);
+    for (int pass = 0; pass < 2; ++pass) {
+        for (const entt::entity h : icons) {
+            const ecs::Entity e = world_.wrap(h);
+            if (isSelected(e.uuid()) == (pass == 1)) overlay(e);
         }
-    });
+    }
     draw->PopClipRect();
 }
 

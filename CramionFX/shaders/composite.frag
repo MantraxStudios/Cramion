@@ -28,6 +28,9 @@
 layout(set = 0, binding = 0) uniform sampler2D scene_color;
 layout(set = 0, binding = 1) uniform sampler2D bloom;
 layout(set = 0, binding = 2) uniform sampler2D light_shafts;
+// Buffer de distorsion de las particulas (particle_distortion.frag, resolucion
+// interna): cuanto se desplaza donde se lee la escena, en UV. 0 sin ellas.
+layout(set = 0, binding = 5) uniform sampler2D distortion_map;
 
 layout(set = 0, binding = 3) readonly buffer Exposure {
     float exposure;
@@ -279,6 +282,9 @@ void main() {
         float zoom = k > 0.0 ? 1.0 / (1.0 + k * 0.5 * (settings.flare.y * settings.flare.y + 1.0) * 0.25 * 2.0) : 1.0;
         uv = 0.5 + (v_uv - 0.5) * (1.0 + k * r2) * zoom;
     }
+    // --- Distorsion de las particulas (calor, ondas de choque) ---
+    // Solo la escena (el bloom y los rayos, ya borrosos, no se desplazan).
+    vec2 scene_uv = clamp(uv + textureLod(distortion_map, uv, 0.0).xy, vec2(0.0), vec2(1.0));
     vec2 centered = uv - 0.5;
 
     // --- Aberracion cromatica (desplazamiento radial de rojo y azul) ---
@@ -286,11 +292,11 @@ void main() {
     float aberration = settings.look.w;
     if (aberration > 0.0) {
         vec2 offset = centered * dot(centered, centered) * aberration * 0.08;
-        color.r = texture(scene_color, uv - offset).r;
-        color.g = texture(scene_color, uv).g;
-        color.b = texture(scene_color, uv + offset).b;
+        color.r = texture(scene_color, scene_uv - offset).r;
+        color.g = texture(scene_color, scene_uv).g;
+        color.b = texture(scene_color, scene_uv + offset).b;
     } else {
-        color = texture(scene_color, uv).rgb;
+        color = texture(scene_color, scene_uv).rgb;
     }
 
     // --- Bloom ---

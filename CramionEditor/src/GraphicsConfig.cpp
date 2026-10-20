@@ -3,6 +3,7 @@
 #endif
 #include "GraphicsConfig.h"
 
+#include <CramionCore/vfx/VisualEffect.h>
 #include <CramionFX/vk/FrameBudget.h>
 #include <CramionFX/vk/GraphicsSettings.h>
 #include <CramionFX/vk/VulkanRenderer.h>
@@ -282,7 +283,11 @@ void applyQualityPreset(gfx::VulkanRenderer& renderer, int level) {
     renderer.setReflectionProbeEnabled(level >= 1);
     renderer.setOcclusionCullingEnabled(true);
     if (renderer.rayTracingSupported()) renderer.setRayTracingEnabled(level == 3);
+    // VFX Graph: la mezcla Distorsion, apagada en Baja (vfx::vfxDistortionForQuality).
+    renderer.vfx().setDistortionQuality(level >= 1);
     renderer.setGraphicsSettings(g);
+    // Efectos: la tabla de escalabilidad por tipo de esa calidad (vfx.quality manda si es >= 0).
+    vfx::setQualityPreset(level);
 }
 
 // -----------------------------------------------------------------------------

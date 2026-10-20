@@ -82,8 +82,10 @@ void pipelineBarrier(const vk::raii::CommandBuffer& cmd, const vk::DependencyInf
 
 // Crea un pipeline grafico (con la cache de pipelines del dispositivo). Sin
 // dynamic rendering, con un render pass compatible con su
-// VkPipelineRenderingCreateInfo.
-vk::raii::Pipeline makeGraphicsPipeline(const VulkanDevice& device, vk::GraphicsPipelineCreateInfo info);
+// VkPipelineRenderingCreateInfo. `name` (opcional): nombre de depuracion
+// (VulkanDevice::setObjectName; nada sin la validacion).
+vk::raii::Pipeline makeGraphicsPipeline(const VulkanDevice& device, vk::GraphicsPipelineCreateInfo info,
+                                        const char* name = nullptr);
 
 // Render pass compatible con estos formatos (para librerias que no saben de
 // dynamic rendering, como el backend de ImGui). VK_NULL_HANDLE con dynamic

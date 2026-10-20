@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 
 namespace cramion::ecs {
@@ -69,9 +70,37 @@ Entity restoreEntities(World& world, const std::string& json, Entity parent = {}
 struct ParsedEntities;
 std::shared_ptr<const ParsedEntities> parseEntities(const std::string& json);
 Entity restoreParsedEntities(World& world, const ParsedEntities& parsed, Entity parent = {});
+// UUID de la raiz (el primer registro); vacio si no tiene. Para saber, sin
+// recrear nada ni avisar, si ya esta en el mundo (World Partition en el editor).
+Uuid parsedRootUuid(const ParsedEntities& parsed);
 
 // Lee solo el UUID de un .crscene (para la base de datos de assets).
 Uuid readSceneUuid(const std::filesystem::path& path);
+
+// --- Registros sueltos (historial de deshacer del editor) ---------------------
+// Una sola entidad (sin hijos) como registro JSON compacto, el mismo de las
+// escenas: uuid, nombre, padre (su UUID o null), estado y componentes. Solo
+// lee (los visitantes de escritura no tocan nada): se puede llamar desde
+// varios hilos a la vez con entidades distintas mientras nadie cambie el mundo.
+std::string serializeEntityRecord(const World& world, Entity entity);
+// Pone `entity` como dice `record` (de serializeEntityRecord): nombre, estado
+// y componentes. Los que no esten en el registro se quitan; los que cambian se
+// rehacen desde cero, como al leer la escena (sin estado de ejecucion viejo),
+// salvo el Transform, que se escribe en su sitio. Con `current` (el registro
+// de como esta ahora) los componentes iguales en los dos no se tocan. No
+// cambia el padre ni el orden: el UUID del padre sale en `parent` (invalido =
+// raiz).
+bool applyEntityRecord(World& world, Entity entity, const std::string& record, const std::string* current = nullptr,
+                       Uuid* parent = nullptr, std::string* error = nullptr);
+// Una escena como la de serializeWorld (en compacto) a partir de registros ya
+// hechos, en profundidad (padres antes que hijos). No toca el mundo: puede ir
+// en otro hilo mientras los textos sigan vivos.
+struct SceneHeader {
+    Uuid uuid{};
+    std::string name;
+    DVec3 origin{};
+};
+std::string assembleScene(const SceneHeader& header, std::span<const std::string* const> records);
 
 }  // namespace cramion::ecs
 

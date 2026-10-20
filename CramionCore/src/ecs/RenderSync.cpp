@@ -104,6 +104,23 @@ cvar::CVar<float> g_min_pixels("render.streaming.MinPixels", 0.5f,
                                64.0f);
 cvar::CVar<float> g_idle_seconds("render.streaming.IdleSeconds", 5.0f,
                                  "Segundos sin verse antes de salir de la memoria de video", cvar::Saved, 0.5f, 600.0f);
+cvar::CVar<float> g_relaxed_idle_seconds("render.streaming.RelaxedIdleSeconds", 30.0f,
+                                         "Con VRAM de sobra (menos del 60 %), segundos sin verse antes de salir de "
+                                         "la memoria de video (0 = solo IdleSeconds); por encima del 80 % sale lo "
+                                         "menos visto antes",
+                                         cvar::Saved, 0.0f, 3600.0f);
+// RAM: los modelos fuera de la GPU y sin ninguna instancia sueltan los pixeles
+// de sus texturas (las que tienen archivo: se releen de el o de la cache BC al
+// volver, en el hilo de streaming). Antes cada modelo que salio alguna vez se
+// quedaba con todas sus texturas en la RAM hasta cambiar de escena.
+cvar::CVar<bool> g_release_cpu_textures("render.streaming.ReleaseCpuTextures", true,
+                                        "Soltar de la RAM las texturas de los modelos sin instancias y fuera de la "
+                                        "GPU (se releen de su archivo o de la cache al volver)",
+                                        cvar::Saved);
+cvar::CVar<float> g_cpu_release_seconds("render.streaming.CpuReleaseSeconds", 30.0f,
+                                        "Segundos sin instancias (y fuera de la GPU) antes de soltar las texturas "
+                                        "de un modelo de la RAM",
+                                        cvar::Saved, 2.0f, 3600.0f);
 
 // LOD de animacion (roadmap CR-CROWD-004): los personajes lejanos o que no se
 // ven no se animan cada frame. El tiempo que se salta se acumula y se aplica
@@ -132,6 +149,10 @@ cvar::CVar<bool> g_async_terrain_upload("render.terrain.AsyncUpload", true,
 cvar::CVar<int> g_terrain_prepares("render.terrain.AsyncPrepares", 2,
                                    "Terrenos preparandose a la vez en otro hilo (memoria de staging: ~12 MB cada uno)",
                                    cvar::Saved, 1, 16);
+cvar::CVar<bool> g_async_surface_shaders("render.AsyncSurfaceShaders", true,
+                                         "Compilar los .crshader en otro hilo la primera vez (mientras, sus materiales "
+                                         "se ven con el shader estandar); apagado: en el frame, como antes",
+                                         cvar::Saved);
 cvar::CVar<bool> g_async_foliage_upload("render.foliage.AsyncUpload", true,
                                         "Subir la vegetacion sembrada sin parar la GPU (se cambia al terminar de subir); "
                                         "apagado: se sube en el frame, como antes",
@@ -231,6 +252,11 @@ void copyFactors(asset::MaterialData& to, const asset::MaterialData& from) {
     to.hair_secondary = from.hair_secondary;
     to.ior = from.ior;
     to.transmission_thickness = from.transmission_thickness;
+    // Mezcla de lo transparente, sin luz y color de vertice: van en los bits
+    // del modelo de sombreado (SkinnedModel::shadingBits), en vivo.
+    to.transparent_blend = from.transparent_blend;
+    to.unlit = from.unlit;
+    to.vertex_color_albedo = from.vertex_color_albedo;
 }
 }  // namespace
 
@@ -250,7 +276,7 @@ std::shared_ptr<const assets::MaterialAsset> RenderSync::material(const Uuid& uu
     return data;
 }
 
-void RenderSync::reloadMaterial(const Uuid& uuid) {
+void RenderSync::reloadMaterial(const Uuid& uuid, bool from_disk) {
     ++resolve_epoch_;  // un material que fallaba puede dar ahora otra variante
     failed_materials_.erase(uuid);
     const auto it = materials_.find(uuid);
@@ -260,8 +286,214 @@ void RenderSync::reloadMaterial(const Uuid& uuid) {
     if (!material(uuid)) return;
     if (materials_[uuid].structure != old_structure) {
         rebuild_materials_.insert(uuid);
+        if (from_disk) hot_materials_.insert(uuid);
     } else {
         live_materials_.insert(uuid);
+    }
+}
+
+// --- Recarga en caliente ---------------------------------------------------------
+
+namespace {
+
+// Dos rutas dentro de Assets iguales (separadores y, en Windows, sin
+// distinguir mayusculas, como el sistema de archivos).
+bool sameAssetPath(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        char x = a[i] == '\\' ? '/' : a[i];
+        char y = b[i] == '\\' ? '/' : b[i];
+#if defined(_WIN32)
+        x = static_cast<char>(std::tolower(static_cast<unsigned char>(x)));
+        y = static_cast<char>(std::tolower(static_cast<unsigned char>(y)));
+#endif
+        if (x != y) return false;
+    }
+    return true;
+}
+
+// El .crmat usa la imagen `relative` (en un hueco o en su .crshader).
+bool materialUsesTexture(const assets::MaterialAsset& m, const std::string& relative) {
+    for (const std::string* path : {&m.albedo, &m.normal, &m.metallic_map, &m.roughness_map, &m.occlusion, &m.emissive_map,
+                                    &m.height_map, &m.cavity_map, &m.specular_map, &m.gloss_map, &m.bump_map}) {
+        if (sameAssetPath(*path, relative)) return true;
+    }
+    return std::any_of(m.shader_textures.begin(), m.shader_textures.end(),
+                       [&](const auto& entry) { return sameAssetPath(entry.second, relative); });
+}
+
+}  // namespace
+
+void RenderSync::reloadModel(const Uuid& uuid) {
+    failed_.erase(uuid);
+    // Lo que tenga el AssetManager (y lo que estuviera leyendo) es de antes.
+    assets_.unload(uuid);
+    // Si aun no se dibuja, la proxima vez que se use se lee el nuevo.
+    if (loaded_.contains(uuid)) model_reloads_.insert(uuid);
+}
+
+void RenderSync::reloadAnimationClip(const Uuid& uuid) {
+    if (uuid.valid()) clip_reload_requests_.insert(uuid);
+}
+
+int RenderSync::reloadTextureFile(const std::string& relative) {
+    if (relative.empty()) return 0;
+    // Las texturas perezosas con esta ruta (o con una receta que la lleva) ya
+    // no se comparten con las subidas: la siguiente subida la relee (y la
+    // cache BC la recomprime: su clave lleva la fecha del archivo).
+    gfx::invalidateSharedTextureFile(relative);
+    int count = 0;
+    for (const auto& [uuid, entry] : materials_) {
+        if (!entry.data || !materialUsesTexture(*entry.data, relative)) continue;
+        rebuild_materials_.insert(uuid);
+        hot_materials_.insert(uuid);
+        ++count;
+    }
+    return count;
+}
+
+void RenderSync::forgetModelState(std::uint32_t index) {
+    rest_poses_.erase(index);
+    humanoids_.erase(index);
+    // Los clips sueltos se anadieron a los datos de antes: se vuelven a pedir.
+    std::erase_if(external_clips_, [&](const auto& entry) { return entry.first.model == index; });
+    std::erase_if(pending_clips_, [&](const auto& entry) { return entry.first.model == index; });
+    std::erase_if(prefetched_controllers_, [&](const ClipKey& key) { return key.model == index; });
+    std::erase_if(motion_features_, [&](const auto& entry) { return entry.first.model == index; });
+    std::erase_if(clip_reloads_, [&](const ClipReload& reload) { return reload.key.model == index; });
+    // Sus objetos vuelven a crear su Animator con la jerarquia nueva.
+    std::erase_if(animations_, [&](const auto& entry) { return entry.second.model == index; });
+}
+
+void RenderSync::pollAssetReloads(scene::Scene& scene, gfx::VulkanRenderer& renderer) {
+    // --- Modelos: cuando el AssetManager los trae, sus piezas en el sitio.
+    for (auto it = model_reloads_.begin(); it != model_reloads_.end();) {
+        const Uuid uuid = *it;
+        std::shared_ptr<const assets::ModelAsset> asset =
+            g_async_models.get() ? assets_.requestModel(uuid) : assets_.loadModel(uuid);
+        if (!asset && g_async_models.get() && !assets_.loadFailed(uuid)) {
+            ++it;  // aun leyendose en su hilo
+            continue;
+        }
+        it = model_reloads_.erase(it);
+        if (!asset) {
+            std::cerr << "[RenderSync] Recarga: no se pudo leer el modelo " << uuid.toString()
+                      << " (se sigue viendo el de antes)\n";
+            continue;
+        }
+        CR_PROFILE_SCOPE("Recarga de modelo");
+        loaded_[uuid] = asset;
+        int replaced = 0;
+        for (const auto& [key, index] : models_) {
+            if (!(key.uuid == uuid) || index >= scene.models().size()) continue;
+            const auto part = static_cast<std::size_t>(key.part);
+            if (part >= asset->parts.size() || !asset->parts[part] || asset->parts[part]->indices.empty()) {
+                std::cerr << "[RenderSync] Recarga: el modelo " << asset->name << " ya no tiene la pieza " << key.part
+                          << " (se sigue viendo la de antes)\n";
+                continue;
+            }
+            forgetModelState(index);
+            // La pieza pasa a la escena como en resolveModel (sin copiar).
+            scene.replaceModel(index, std::move(*asset->parts[part]));
+            const asset::ModelData& data = *scene.models()[index];
+            anim::Animator bind(data);
+            bind.play(-1);
+            if (model_bounds_.size() <= index) model_bounds_.resize(index + 1);
+            model_bounds_[index] = anim::skinnedBounds(data, bind.boneMatrices());
+            renderer.reuploadModelAsync(scene, index);
+            // Sus variantes de material (.crmat del MeshRenderer) con la malla nueva.
+            for (const Variant& variant : variants_) {
+                if (variant.base != index || variant.index >= scene.models().size()) continue;
+                forgetModelState(variant.index);
+                try {
+                    scene.replaceModel(variant.index, buildVariant(data, variant.overrides, variant.video));
+                } catch (const std::exception& e) {
+                    std::cerr << "[RenderSync] Material: " << e.what() << "\n";
+                    continue;
+                }
+                if (model_bounds_.size() <= variant.index) model_bounds_.resize(variant.index + 1);
+                model_bounds_[variant.index] = model_bounds_[index];
+                renderer.reuploadModelAsync(scene, variant.index);
+            }
+            ++replaced;
+        }
+        // Las poses compartidas, huesos de sockets y cadenas se rehacen con la
+        // jerarquia nueva (guardan indices de nodo).
+        socket_bones_.clear();
+        shared_poses_.clear();
+        physbones_.clear();
+        ragdoll_tips_.clear();
+        ++resolve_epoch_;
+        std::cout << "[RenderSync] Recargado " << asset->name << " (" << replaced << " pieza(s))\n";
+    }
+
+    // --- Clips (.cranim): uno por modelo que lo usa, en los hilos de disco.
+    if (!clip_reload_requests_.empty()) {
+        for (const Uuid& clip : clip_reload_requests_) {
+            const auto info = assets_.database().find(clip);
+            // Leyendose aun la primera vez: podria traer lo de antes; se pide otra vez al usarlo.
+            std::erase_if(pending_clips_, [&](const auto& entry) { return entry.first.clip == clip; });
+            for (auto it = external_clips_.begin(); it != external_clips_.end();) {
+                const ClipKey key = it->first;
+                const int index = it->second;
+                if (!(key.clip == clip)) {
+                    ++it;
+                    continue;
+                }
+                // No servia para el modelo (o ya no es un clip): se vuelve a probar al usarlo.
+                if (index < 0 || !info || info->type != assets::AssetType::AnimationClip ||
+                    key.model >= scene.models().size()) {
+                    it = external_clips_.erase(it);
+                    continue;
+                }
+                ++it;
+                std::erase_if(clip_reloads_, [&](const ClipReload& r) { return r.key == key; });
+                // Como externalClip: con una copia de la jerarquia (lo unico que
+                // hace falta para emparejar las pistas), en los hilos de disco.
+                auto skeleton = std::make_shared<asset::ModelData>();
+                skeleton->nodes = scene.models()[key.model]->nodes;
+                auto promise = std::make_shared<std::promise<std::optional<asset::AnimationClip>>>();
+                clip_reloads_.push_back(ClipReload{key, index, promise->get_future()});
+                jobs::scheduleIo(
+                    [promise, skeleton, path = info->path, name = info->name]() {
+                        try {
+                            asset::AnimationClip loaded;
+                            std::string error;
+                            if (loadAnimationClip(path, *skeleton, loaded, &error) && !loaded.channels.empty()) {
+                                promise->set_value(std::move(loaded));
+                            } else {
+                                std::cerr << "[RenderSync] Recarga: el clip " << name << " no sirve " << error << "\n";
+                                promise->set_value(std::nullopt);
+                            }
+                        } catch (...) {
+                            promise->set_exception(std::current_exception());
+                        }
+                    },
+                    jobs::Priority::Background, "Recargar clip");
+            }
+        }
+        clip_reload_requests_.clear();
+    }
+    for (auto it = clip_reloads_.begin(); it != clip_reloads_.end();) {
+        if (it->clip.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            ++it;
+            continue;
+        }
+        std::optional<asset::AnimationClip> loaded;
+        try {
+            loaded = it->clip.get();
+        } catch (const std::exception&) {
+            // La tarea no llego a correr (el sistema de jobs se apago): sin clip.
+        }
+        const ClipKey key = it->key;
+        const int index = it->index;
+        it = clip_reloads_.erase(it);
+        if (!loaded || key.model >= scene.models().size()) continue;
+        asset::ModelData* data = scene.modelData(key.model);  // (avisa al streaming)
+        if (data == nullptr || index < 0 || static_cast<std::size_t>(index) >= data->animations.size()) continue;
+        // Mismo indice: los Animator que lo reproducen siguen con el nuevo.
+        data->animations[static_cast<std::size_t>(index)] = std::move(*loaded);
+        std::erase_if(motion_features_, [&](const auto& entry) { return entry.first.model == key.model; });
     }
 }
 
@@ -289,15 +521,31 @@ void RenderSync::compileSurfaceShader(const std::string& path, SurfaceShaderEntr
     entry.time = std::filesystem::last_write_time(file, ec);
     std::string error;
     entry.parsed = assets::loadSurfaceShader(file, entry.source, &error);
-    std::vector<std::uint32_t> vertex, fragment;
+    assets::SurfaceShaderPrograms programs;
     // Sin compilador (el juego en Android): el SPIR-V que dejo el editor al exportar.
     const bool compiled = gfx::shaders::compilerAvailable()
-                              ? assets::compileSurfaceShader(entry.source, assets::surfaceTemplateDirectory(), vertex, fragment, &error)
-                              : assets::loadPrecompiledSurfaceShader(file, vertex, fragment) ||
+                              ? assets::compileSurfaceShader(entry.source, assets::surfaceTemplateDirectory(), programs, &error)
+                              : assets::loadPrecompiledSurfaceShader(file, programs) ||
                                     (error = "sin compilador de shaders ni SPIR-V precompilado para " + path, false);
+    entry.awaiting_renderer = false;
+    entry.deferred = {};
+    // Aun sin renderizador (el editor lee el material antes del primer frame):
+    // el SPIR-V espera y pollSurfaceShaders lo instala con el primero que haya.
+    if (entry.parsed && compiled && renderer_ == nullptr) {
+        entry.deferred = std::move(programs);
+        entry.awaiting_renderer = true;
+        entry.error.clear();
+        std::cout << "[Shader] " << path << " compilado (se instala al haber renderizador)\n";
+        return;
+    }
+    // (domain transparent: su pipeline es de la pasada del vidrio.)
+    const bool transparent = entry.source.domain == assets::SurfaceDomain::Transparent;
     if (entry.parsed && renderer_ != nullptr && compiled) {
-        const bool ok = entry.id >= 0 ? renderer_->updateSurfaceShader(entry.id, vertex, fragment, &error)
-                                      : (entry.id = renderer_->createSurfaceShader(vertex, fragment, &error)) >= 0;
+        const bool ok = entry.id >= 0
+                            ? renderer_->updateSurfaceShader(entry.id, programs.vertex, programs.fragment,
+                                                             programs.shadow_vertex, transparent, &error)
+                            : (entry.id = renderer_->createSurfaceShader(programs.vertex, programs.fragment,
+                                                                         programs.shadow_vertex, transparent, &error)) >= 0;
         if (ok) {
             entry.error.clear();
             std::cout << "[Shader] " << path << " compilado\n";
@@ -309,14 +557,133 @@ void RenderSync::compileSurfaceShader(const std::string& path, SurfaceShaderEntr
     std::cerr << "[Shader] " << error << "\n";
 }
 
+// Lo que deja la compilacion en segundo plano de un .crshader.
+struct RenderSync::SurfaceShaderEntry::Pending {
+    std::filesystem::file_time_type time{};
+    assets::SurfaceShaderSource source;
+    bool parsed = false;
+    bool compiled = false;
+    assets::SurfaceShaderPrograms programs;
+    std::string error;
+    jobs::JobHandle job;
+};
+
 std::int32_t RenderSync::surfaceShader(const std::string& path) {
     if (path.empty()) return -1;
     auto it = surface_shaders_.find(path);
     if (it == surface_shaders_.end()) {
         it = surface_shaders_.emplace(path, SurfaceShaderEntry{}).first;
         compileSurfaceShader(path, it->second);
+    } else if (it->second.pending) {
+        // Quien pregunta quiere el resultado ya (el editor, MCP): se espera.
+        jobs::wait(it->second.pending->job);
+        pollSurfaceShaders();
     }
     return it->second.id;
+}
+
+std::int32_t RenderSync::surfaceShaderAsync(const std::string& path) {
+    if (path.empty()) return -1;
+    auto it = surface_shaders_.find(path);
+    if (it == surface_shaders_.end()) {
+        it = surface_shaders_.emplace(path, SurfaceShaderEntry{}).first;
+        // La primera vez, en otro hilo (glslang/slang: cientos de ms; medido
+        // 661 ms en un frame al entrar la primera antorcha de Ashbound). Los
+        // materiales que lo usan se ven con el shader estandar hasta que llega.
+        if (g_async_surface_shaders.get() && gfx::shaders::compilerAvailable() && renderer_ != nullptr) {
+            auto pending = std::make_shared<SurfaceShaderEntry::Pending>();
+            const std::filesystem::path file = assets_.database().root() / fromUtf8(path);
+            const std::filesystem::path templates = assets::surfaceTemplateDirectory();
+            pending->job = jobs::schedule(
+                [pending, file, templates]() {
+                    std::error_code ec;
+                    pending->time = std::filesystem::last_write_time(file, ec);
+                    pending->parsed = assets::loadSurfaceShader(file, pending->source, &pending->error);
+                    pending->compiled = pending->parsed && assets::compileSurfaceShader(pending->source, templates,
+                                                                                         pending->programs, &pending->error);
+                },
+                nullptr, jobs::Priority::High);
+            it->second.pending = std::move(pending);
+        } else {
+            compileSurfaceShader(path, it->second);
+        }
+    }
+    return it->second.pending ? -1 : it->second.id;
+}
+
+void RenderSync::pollSurfaceShaders() {
+    // Los compilados antes de haber renderizador se instalan con el primero.
+    if (renderer_ != nullptr) {
+        for (auto& [path, entry] : surface_shaders_) {
+            if (!entry.awaiting_renderer || entry.pending) continue;
+            entry.awaiting_renderer = false;
+            assets::SurfaceShaderPrograms programs = std::move(entry.deferred);
+            entry.deferred = {};
+            const bool transparent = entry.source.domain == assets::SurfaceDomain::Transparent;
+            std::string error;
+            const bool ok = entry.id >= 0
+                                ? renderer_->updateSurfaceShader(entry.id, programs.vertex, programs.fragment,
+                                                                 programs.shadow_vertex, transparent, &error)
+                                : (entry.id = renderer_->createSurfaceShader(programs.vertex, programs.fragment,
+                                                                             programs.shadow_vertex, transparent,
+                                                                             &error)) >= 0;
+            if (ok) {
+                entry.error.clear();
+                std::cout << "[Shader] " << path << " instalado (compilado antes del renderizador)\n";
+            } else {
+                entry.error = error.empty() ? "no se pudo crear el pipeline de " + path : error;
+                std::cerr << "[Shader] " << entry.error << "\n";
+            }
+            // Sus materiales se rehacen: con el shader propio o, si fallo, con
+            // el estandar y el dominio del shader (applySurface).
+            for (const auto& [uuid, material] : materials_) {
+                if (material.data && material.data->shader == path) rebuild_materials_.insert(uuid);
+            }
+        }
+    }
+    for (auto& [path, entry] : surface_shaders_) {
+        if (!entry.pending || !entry.pending->job || !entry.pending->job->done()) continue;
+        std::shared_ptr<SurfaceShaderEntry::Pending> done = std::move(entry.pending);
+        entry.time = done->time;
+        entry.source = std::move(done->source);
+        entry.parsed = done->parsed;
+        std::string error = done->error;
+        if (entry.parsed && done->compiled && renderer_ == nullptr) {
+            // (Como compileSurfaceShader: espera al renderizador.)
+            entry.deferred = std::move(done->programs);
+            entry.awaiting_renderer = true;
+            entry.error.clear();
+            continue;
+        }
+        if (entry.parsed && done->compiled && renderer_ != nullptr) {
+            const bool transparent = entry.source.domain == assets::SurfaceDomain::Transparent;
+            const assets::SurfaceShaderPrograms& p = done->programs;
+            const bool ok =
+                entry.id >= 0
+                    ? renderer_->updateSurfaceShader(entry.id, p.vertex, p.fragment, p.shadow_vertex, transparent, &error)
+                    : (entry.id = renderer_->createSurfaceShader(p.vertex, p.fragment, p.shadow_vertex, transparent,
+                                                                 &error)) >= 0;
+            if (ok) {
+                entry.error.clear();
+                std::cout << "[Shader] " << path << " compilado (en segundo plano)\n";
+                // Los materiales que lo usan se rehacen con el shader propio.
+                for (const auto& [uuid, material] : materials_) {
+                    if (material.data && material.data->shader == path) rebuild_materials_.insert(uuid);
+                }
+                continue;
+            }
+        }
+        if (renderer_ == nullptr && error.empty()) error = "sin renderizador";
+        entry.error = error;
+        std::cerr << "[Shader] " << error << "\n";
+        // Leido pero sin pipeline (modo compatible): sus materiales se rehacen
+        // con el estandar y el dominio del shader (applySurface).
+        if (entry.parsed) {
+            for (const auto& [uuid, material] : materials_) {
+                if (material.data && material.data->shader == path) rebuild_materials_.insert(uuid);
+            }
+        }
+    }
 }
 
 const assets::SurfaceShaderSource* RenderSync::surfaceShaderSource(const std::string& path) {
@@ -331,12 +698,17 @@ std::string RenderSync::surfaceShaderError(const std::string& path) const {
     return it != surface_shaders_.end() ? it->second.error : std::string{};
 }
 
+bool RenderSync::surfaceShaderAwaitingRenderer(const std::string& path) const {
+    const auto it = surface_shaders_.find(path);
+    return it != surface_shaders_.end() && it->second.awaiting_renderer;
+}
+
 int RenderSync::reloadSurfaceShaders() {
     int changed = 0;
     for (auto& [path, entry] : surface_shaders_) {
         std::error_code ec;
         const auto time = std::filesystem::last_write_time(assets_.database().root() / fromUtf8(path), ec);
-        if (ec || time == entry.time) continue;
+        if (ec || time == entry.time || entry.pending) continue;  // (aun compilandose la primera vez)
         compileSurfaceShader(path, entry);
         ++changed;
         // Las propiedades pueden haber cambiado de hueco: se rehacen sus materiales.
@@ -349,12 +721,37 @@ int RenderSync::reloadSurfaceShaders() {
 
 void RenderSync::applySurface(asset::MaterialData& data, const assets::MaterialAsset& material,
                               const std::function<std::int32_t(const std::string&)>* texture) {
-    data.surface_shader = material.shader.empty() ? -1 : surfaceShader(material.shader);
-    const assets::SurfaceShaderSource* source = data.surface_shader >= 0 ? surfaceShaderSource(material.shader) : nullptr;
+    data.surface_shader = material.shader.empty() ? -1 : surfaceShaderAsync(material.shader);
+    const assets::SurfaceShaderSource* source = nullptr;
+    if (data.surface_shader >= 0) {
+        const auto found = surface_shaders_.find(material.shader);
+        if (found != surface_shaders_.end() && found->second.parsed) source = &found->second.source;
+    }
     if (source == nullptr) {
         data.surface_shader = -1;
+        // Leido pero sin pipeline propio (modo compatible, Android o un error
+        // al compilar): el shader estandar conserva al menos su dominio, asi
+        // un escudo o un holograma no sale opaco. Transparente con mezcla
+        // alfa (no el vidrio) y sin luz si lo pide.
+        if (!material.shader.empty()) {
+            const auto found = surface_shaders_.find(material.shader);
+            if (found != surface_shaders_.end() && found->second.parsed && !found->second.pending) {
+                const assets::SurfaceShaderSource& fallback = found->second.source;
+                if (fallback.domain == assets::SurfaceDomain::Transparent) {
+                    data.transparent = true;
+                    if (data.transparent_blend == 0) data.transparent_blend = 1;
+                }
+                if (fallback.unlit) data.unlit = true;
+            }
+        }
         return;
     }
+    // domain transparent: a la pasada del vidrio (fuera del G-buffer y de las
+    // sombras), ordenado con el resto de lo transparente.
+    if (source->domain == assets::SurfaceDomain::Transparent) data.transparent = true;
+    // Sin luz (domain unlit / transparent unlit): lo pinta su pipeline; el
+    // indicador sirve a lo demas (rayos, sondas).
+    if (source->unlit) data.unlit = true;
     for (const assets::ShaderProperty& p : source->properties) {
         if (p.type == assets::ShaderPropertyType::Texture) {
             if (texture == nullptr || p.slot < 0 || p.slot >= assets::kMaxShaderTextures) continue;
@@ -718,6 +1115,7 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
     }
 
     v.vertices = base.vertices;
+    v.vertex_colors = base.vertex_colors;  // compartido, como los vertices
     v.indices = base.indices;
     v.nodes = base.nodes;
     v.bones = base.bones;
@@ -992,14 +1390,22 @@ void RenderSync::applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& 
     for (const Variant& variant : variants_) {
         if (variant.base >= scene.models().size()) continue;  // de una malla ya destruida
         bool rebuild = false;
+        bool hot = false;  // cambio en disco (recarga en caliente)
         for (const Uuid& uuid : variant.overrides) {
             rebuild = rebuild || (uuid.valid() && rebuild_materials_.contains(uuid));
+            hot = hot || (uuid.valid() && hot_materials_.contains(uuid));
         }
         if (rebuild) {
             try {
                 scene.replaceModel(variant.index, buildVariant(*scene.models()[variant.base], variant.overrides, variant.video));
-                // Ya en la GPU: se sube de nuevo (si no, la cola la subira).
-                if (variant.index < renderer.uploadedModelCount()) renderer.uploadModel(scene, variant.index);
+                // Ya en la GPU: se sube de nuevo (si no, la cola la subira). Lo
+                // que cambio en disco sube en los hilos de streaming (se ve el
+                // de antes mientras): una textura 4K no congela el editor.
+                if (hot) {
+                    renderer.reuploadModelAsync(scene, variant.index);
+                } else if (variant.index < renderer.uploadedModelCount()) {
+                    renderer.uploadModel(scene, variant.index);
+                }
             } catch (const std::exception& e) {
                 std::cerr << "[RenderSync] Material: " << e.what() << "\n";
             }
@@ -1018,6 +1424,7 @@ void RenderSync::applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& 
     }
     rebuild_materials_.clear();
     live_materials_.clear();
+    hot_materials_.clear();
 }
 
 std::shared_ptr<const AnimatorController> RenderSync::animatorController(const Uuid& uuid) {
@@ -1262,6 +1669,11 @@ void RenderSync::reset(scene::Scene& scene) {
     rebuild_materials_.clear();
     marca("live_materials_");
     live_materials_.clear();
+    hot_materials_.clear();
+    // Recargas en caliente pendientes: todo se vuelve a leer al usarlo.
+    model_reloads_.clear();
+    clip_reload_requests_.clear();
+    clip_reloads_.clear();  // (la tarea solo usa sus copias)
     marca("model_bounds_");
     model_bounds_.clear();
     marca("animations_");
@@ -1296,6 +1708,70 @@ void RenderSync::reset(scene::Scene& scene) {
     entity_actor_.clear();
     loaded_environment_ = {};
     failed_environment_ = {};
+    model_unused_since_.clear();
+}
+
+void RenderSync::releaseIdleModelMemory(scene::Scene& scene, gfx::VulkanRenderer& renderer) {
+    if (!g_release_cpu_textures.get() || !g_gpu_residency.get()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < cpu_release_at_) return;
+    cpu_release_at_ = now + std::chrono::seconds(1);  // una pasada por segundo
+    CR_PROFILE_SCOPE("Liberar RAM de modelos");
+    const auto& models = scene.models();
+    const auto count = static_cast<std::uint32_t>(models.size());
+    model_unused_since_.resize(count, std::chrono::steady_clock::time_point{});
+    // Instancias por modelo: los actores del frame anterior.
+    std::vector<std::uint8_t> used(count, 0);
+    for (const scene::Actor& actor : scene.actors()) {
+        if (actor.model < count) used[actor.model] = 1;
+    }
+    const auto releasable = [](const asset::TextureData& t) {
+        return !t.pixels.empty() && t.encoded.empty() && !t.source_path.empty();
+    };
+    const auto source_exists = [](const std::string& source) {
+        std::error_code ec;
+        return std::filesystem::exists(fromUtf8(source), ec) || std::filesystem::exists(std::filesystem::path(source), ec);
+    };
+    const auto wait = std::chrono::duration<float>(g_cpu_release_seconds.get());
+    std::uint64_t released_bytes = 0;
+    std::uint32_t released_models = 0;
+    for (std::uint32_t i = 0; i < count && released_models < 4; ++i) {
+        const asset::ModelData* model = models[i].get();
+        const bool any = model != nullptr && std::any_of(model->textures.begin(), model->textures.end(), releasable);
+        // (Un hilo subiendolo lee sus datos: modelData() lo esperaria.)
+        if (!any || used[i] != 0 || renderer.modelResident(i) || renderer.modelUploading(i)) {
+            model_unused_since_[i] = {};
+            continue;
+        }
+        if (model_unused_since_[i] == std::chrono::steady_clock::time_point{}) {
+            model_unused_since_[i] = now;
+            continue;
+        }
+        if (now - model_unused_since_[i] < wait) continue;
+        model_unused_since_[i] = {};
+        asset::ModelData* data = scene.modelData(i);
+        if (data == nullptr) continue;
+        for (asset::TextureData& texture : data->textures) {
+            if (!releasable(texture) || !source_exists(texture.source_path)) continue;
+            // Queda "perezosa" (asset::isLazyTexture), como las de los .crmat:
+            // SkinnedModel la decodifica en su hilo al volver a subirla.
+            asset::TextureData lazy;
+            lazy.name = std::move(texture.name);
+            lazy.source_path = std::move(texture.source_path);
+            lazy.height_map = texture.height_map;
+            lazy.alpha = texture.alpha;
+            lazy.usage = texture.usage;
+            released_bytes += texture.pixels.size();
+            texture = std::move(lazy);
+        }
+        ++released_models;
+    }
+    if (released_bytes > 0) {
+        cpu_released_bytes_ += released_bytes;
+        std::cout << "[Streaming] RAM: " << released_bytes / (1024 * 1024) << " MB de texturas soltadas de "
+                  << released_models << " modelo(s) sin instancias (" << cpu_released_bytes_ / (1024 * 1024)
+                  << " MB en total)\n";
+    }
 }
 
 std::optional<std::uint32_t> RenderSync::resolveModel(const assets::AssetRef& ref, int part,
@@ -1897,9 +2373,9 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
             for (std::size_t i = 0; i < gfx::kMaxWaterBodies; ++i) nearest_water.insert(candidates[i].second);
         }
     }
-    world.forEachDepthFirst([&](Entity e) {
+    world.forEachActiveDepthFirst([&](Entity e) {
         const water::WaterBody* body = e.tryGet<water::WaterBody>();
-        if (body == nullptr || !e.activeInHierarchy() || bodies.size() >= gfx::kMaxWaterBodies) return;
+        if (body == nullptr || bodies.size() >= gfx::kMaxWaterBodies) return;  // (recorrido de lo activo)
         if (limit_water && nearest_water.count(e.handle()) == 0) return;
         const Mat4& m = e.worldMatrix();
         const Vec3 origin = e.worldPosition();
@@ -2429,9 +2905,9 @@ void RenderSync::renderCameraTextures(World& world, scene::Scene& scene, gfx::Vu
         std::int32_t texture;
     };
     std::vector<Job> jobs;
-    world.forEachDepthFirst([&](Entity e) {
+    world.forEachActiveDepthFirst([&](Entity e) {
         const Camera* camera = e.tryGet<Camera>();
-        if (camera == nullptr || !camera->target_texture.valid() || !e.activeInHierarchy()) return;
+        if (camera == nullptr || !camera->target_texture.valid()) return;  // (recorrido de lo activo)
         const std::int32_t id = renderTextureFor(camera->target_texture.uuid);
         if (id >= 0) jobs.push_back({e, id});
     });
@@ -2492,6 +2968,8 @@ void RenderSync::clearSceneStreaming() {
     // esperar y su resultado no se sube nunca.
     foliage_job_.reset();
     foliage_result_.reset();
+    foliage_fresh_.reset();
+    foliage_forest_cache_.clear();
     foliage_job_signature_ = 0;
     foliage_job_generation_ = 0;
     foliage_signature_ = 0;
@@ -2519,9 +2997,21 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
         core::Vec3 center;
         std::vector<foliage::FoliageGround> ground;  // solo los terrenos que pisa su area
         bool no_ground = false;  // hay terrenos, pero ninguno bajo el bosque: no crece nada
+        std::uint64_t key = 1469598103934665603ull;  // firma propia (cache por bosque)
+        std::shared_ptr<const std::vector<gfx::FoliageInstance>> cached;  // ya sembrado antes
+    };
+    const auto mix_into = [](std::uint64_t& h, const void* data, std::size_t size) {
+        const auto* p = static_cast<const unsigned char*>(data);
+        for (std::size_t i = 0; i < size; ++i) h = (h ^ p[i]) * 1099511628211ull;
     };
     std::vector<Job> forests;
-    const foliage::Foliage* first = nullptr;
+    const foliage::Foliage* first = nullptr;  // el primero activo de la vista (orden inestable)
+    const foliage::Foliage* owner = nullptr;  // el que decide las especies (estable)
+    entt::entity first_handle = entt::null;
+    if (foliage_species_generation_ != world.sceneGeneration()) {
+        foliage_species_generation_ = world.sceneGeneration();
+        foliage_species_owner_ = entt::null;
+    }
     // Coordenadas absolutas (sin el origen flotante): desplazar el mundo no
     // cambia la firma ni obliga a sembrar otra vez.
     const core::Vec3 world_origin{static_cast<float>(world.origin().x), static_cast<float>(world.origin().y),
@@ -2531,7 +3021,11 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
         const Entity e = world.wrap(handle);
         if (!e.activeInHierarchy()) continue;
         const foliage::Foliage& f = e.get<foliage::Foliage>();
-        if (first == nullptr) first = &f;
+        if (first == nullptr) {
+            first = &f;
+            first_handle = handle;
+        }
+        if (handle == foliage_species_owner_) owner = &f;
         const core::Vec3 p = e.worldPosition() + world_origin;
         // Solo lo que cambia la siembra (no las distancias de dibujo).
         const float values[] = {f.area, f.density, f.pine, f.oak, f.birch, f.min_scale, f.max_scale, f.min_height,
@@ -2539,11 +3033,15 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
         hash_bytes(values, sizeof(values));
         const int ints[] = {f.seed, f.max_instances, f.on_terrain ? 1 : 0};
         hash_bytes(ints, sizeof(ints));
+        std::uint64_t forest_key = 1469598103934665603ull;
+        mix_into(forest_key, values, sizeof(values));
+        mix_into(forest_key, ints, sizeof(ints));
         for (const foliage::FoliageClearing& c : f.clearings) {
             const float cv[] = {c.center.x, c.center.z, c.radius};
             hash_bytes(cv, sizeof(cv));
+            mix_into(forest_key, cv, sizeof(cv));
         }
-        forests.push_back({f, p, {}, false});
+        forests.push_back({f, p, {}, false, forest_key, nullptr});
         for (foliage::FoliageClearing& c : forests.back().params.clearings) c.center = c.center + world_origin;
     }
     // El agua de la escena (rios y lagos): alli no crecen arboles. La lista
@@ -2612,7 +3110,10 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
             foliage_water_signature_ = water_signature;
         }
         hash_bytes(&foliage_water_signature_, sizeof(foliage_water_signature_));
-        for (Job& job : forests) job.params.water = foliage_water_;
+        for (Job& job : forests) {
+            job.params.water = foliage_water_;
+            mix_into(job.key, &foliage_water_signature_, sizeof(foliage_water_signature_));
+        }
     }
     // Terrenos: solo los que pisa algun bosque cuentan en la firma (cargar
     // una tesela lejana ya no vuelve a sembrar todo). Suma conmutativa: el
@@ -2632,6 +3133,7 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
             const core::Vec3 origin = e.worldPosition() + world_origin;
             const float size = std::max(t.size, 1.0f);
             bool used = false;
+            std::vector<Job*> users;  // los bosques que pisa (su firma propia lo incluye)
             for (Job& job : forests) {
                 if (!job.params.on_terrain) continue;
                 const float half = std::max(job.params.area, 1.0f) * 0.5f;
@@ -2640,6 +3142,7 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
                     continue;
                 }
                 job.ground.push_back({data, t, origin, nullptr});
+                users.push_back(&job);
                 used = true;
             }
             if (!used) continue;
@@ -2656,15 +3159,54 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
             const void* identity = data.get();
             mix(&identity, sizeof(identity));
             terrain_sum += h;
+            for (Job* user : users) user->key += h;  // suma: el orden de los terrenos no importa
         }
         hash_bytes(&terrain_sum, sizeof(terrain_sum));
         for (Job& job : forests) job.no_ground = job.params.on_terrain && any_terrain && job.ground.empty();
     }
-    if (first != nullptr) {
-        gfx::FoliageSettings foliage_settings = first->settings();
+    // Especies y ajustes: del bosque "dueño" mientras siga activo. Si se va
+    // (su celda sale), se adopta otro con las mismas especies; si no hay
+    // ninguno igual y quedan varios, se conservan las de ahora (no se rehacen
+    // los arboles por streaming). Con un solo bosque durante 2 s (el editor) o al cambiar
+    // de escena se adopta el que haya.
+    if (owner == nullptr && first != nullptr) {
+        const std::array<asset::TreeSpecies, gfx::FoliagePass::kSpecies>& current = renderer.foliageSpecies();
+        const bool had_owner = foliage_species_owner_ != entt::null;
+        for (const entt::entity handle : world.registry().view<foliage::Foliage>()) {
+            if (!had_owner) break;
+            const Entity e = world.wrap(handle);
+            if (!e.activeInHierarchy()) continue;
+            const foliage::Foliage& f = e.get<foliage::Foliage>();
+            if (f.species() == current) {
+                owner = &f;
+                foliage_species_owner_ = handle;
+                break;
+            }
+        }
+        // Uno solo y distinto: espera a que siga solo un rato (ver
+        // foliage_lone_since_); al empezar la escena, enseguida.
+        bool adopt_lone = false;
+        if (owner == nullptr && had_owner && forests.size() == 1) {
+            const auto now = std::chrono::steady_clock::now();
+            if (foliage_lone_forest_ != first_handle) {
+                foliage_lone_forest_ = first_handle;
+                foliage_lone_since_ = now;
+            }
+            adopt_lone = now - foliage_lone_since_ > std::chrono::seconds(2);
+        } else {
+            foliage_lone_forest_ = entt::null;
+        }
+        if (owner == nullptr && (!had_owner || adopt_lone)) {
+            owner = first;
+            foliage_species_owner_ = first_handle;
+            foliage_lone_forest_ = entt::null;
+        }
+    }
+    if (owner != nullptr) {
+        gfx::FoliageSettings foliage_settings = owner->settings();
         environment::applyToFoliage(environment_frame_, foliage_settings);  // viento del ambiente
         renderer.setFoliageSettings(foliage_settings);
-        renderer.setFoliageSpecies(first->species());
+        renderer.setFoliageSpecies(owner->species());  // en segundo plano si cambian (sin waitIdle)
     }
 
     // Termino una siembra: a la GPU (sin parar la GPU: se cambia al subirse).
@@ -2672,12 +3214,22 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
         // Sembrada para otra escena: no se sube (se vuelve a sembrar abajo).
         foliage_job_.reset();
         foliage_result_.reset();
+        foliage_fresh_.reset();  // ni a la cache por bosque
         foliage_signature_ = 0;
     }
     if (foliage_job_ && foliage_job_->done()) {
         std::shared_ptr<std::vector<gfx::FoliageInstance>> instances = std::move(foliage_result_);
         foliage_job_.reset();
         foliage_result_.reset();
+        // Lo sembrado de nuevo, a la cache por bosque.
+        if (foliage_fresh_) {
+            for (auto& [key, seeded] : *foliage_fresh_) foliage_forest_cache_[key] = ForestSeed{std::move(seeded), foliage_seed_serial_};
+            foliage_fresh_.reset();
+        }
+        if (foliage_forest_cache_.size() > 512) {
+            std::erase_if(foliage_forest_cache_,
+                          [&](const auto& entry) { return entry.second.used + 32 < foliage_seed_serial_; });
+        }
         if (!instances) instances = std::make_shared<std::vector<gfx::FoliageInstance>>();
         foliage_count_ = instances->size();
         if (g_async_foliage_upload.get()) {
@@ -2700,6 +3252,21 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
     if (signature != foliage_signature_ && !foliage_job_) {
         foliage_job_signature_ = signature;
         foliage_job_generation_ = world.sceneGeneration();
+        // Los bosques ya sembrados (misma firma propia) salen de la cache: al
+        // entrar una celda solo se siembra la suya.
+        if (foliage_cache_generation_ != world.sceneGeneration()) {
+            foliage_cache_generation_ = world.sceneGeneration();
+            foliage_forest_cache_.clear();
+        }
+        ++foliage_seed_serial_;
+        for (Job& job : forests) {
+            if (job.no_ground) continue;
+            const auto hit = foliage_forest_cache_.find(job.key);
+            if (hit == foliage_forest_cache_.end()) continue;
+            hit->second.used = foliage_seed_serial_;
+            job.cached = hit->second.instances;
+            job.ground.clear();  // no hace falta su foto del terreno (ni hacerla)
+        }
         // El job solo ve snapshots inmutables del terreno (no los datos vivos,
         // que el editor esculpe y el streamer cose en este hilo).
         for (Job& job : forests) {
@@ -2709,14 +3276,22 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
             }
         }
         auto result = std::make_shared<std::vector<gfx::FoliageInstance>>();
+        auto fresh = std::make_shared<ForestFresh>();
         foliage_result_ = result;
+        foliage_fresh_ = fresh;
         foliage_job_ = jobs::schedule(
-            [forests = std::move(forests), result]() {
+            [forests = std::move(forests), result, fresh]() {
                 std::vector<gfx::FoliageInstance>& all = *result;
                 for (const Job& job : forests) {
                     if (job.no_ground) continue;  // como antes: ningun terreno debajo, ningun arbol
-                    foliage::FoliageResult r = foliage::generateFoliage(job.params, job.center, job.ground);
-                    all.insert(all.end(), r.instances.begin(), r.instances.end());
+                    if (job.cached) {
+                        all.insert(all.end(), job.cached->begin(), job.cached->end());
+                    } else {
+                        foliage::FoliageResult r = foliage::generateFoliage(job.params, job.center, job.ground);
+                        all.insert(all.end(), r.instances.begin(), r.instances.end());
+                        fresh->emplace_back(job.key, std::make_shared<const std::vector<gfx::FoliageInstance>>(
+                                                         std::move(r.instances)));
+                    }
                     if (all.size() >= gfx::FoliagePass::kMaxInstances) break;
                 }
             },
@@ -3022,6 +3597,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         assets_.pollLoads();
     }
     renderer.setModelStreaming(g_gpu_residency.get(), g_min_pixels.get(), g_idle_seconds.get());
+    renderer.setModelStreamingRelaxed(g_relaxed_idle_seconds.get());
+    releaseIdleModelMemory(scene, renderer);
     renderer.setTextureStreaming(g_texture_mips.get(), g_texture_bias.get());
     renderer.setDynamicProbes(g_dynamic_probes.get(), static_cast<std::uint32_t>(g_probes_per_frame.get()));
     {
@@ -3031,6 +3608,13 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         probe_limits.draw_distance = g_probe_draw_distance.get();
         probe_limits.terrain = g_probe_terrain.get();
         renderer.setReflectionProbeLimits(probe_limits);
+    }
+    // Shaders de superficie compilados en segundo plano: sus materiales se rehacen.
+    pollSurfaceShaders();
+    // Recarga en caliente: modelos y clips releidos en otro hilo, en el sitio.
+    if (reloadsPending()) {
+        CR_PROFILE_SCOPE("Recarga en caliente");
+        pollAssetReloads(scene, renderer);
     }
     // Materiales guardados desde el editor: factores en vivo o variantes rehechas.
     if (!rebuild_materials_.empty() || !live_materials_.empty()) {
@@ -3046,20 +3630,25 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
     actor_models_.clear();
     std::size_t count = 0;
     ++frame_;
+    // Cuantos estados se marcaron este frame: si son todos, no hay nada que
+    // olvidar y no se recorre la tabla entera al final (con miles de props
+    // estaticos, cada frame).
+    std::size_t states_seen = 0;
 
     // En profundidad: el orden de los actores sigue al de la Jerarquia (estable
     // entre frames, lo que agradecen las cascadas de sombra).
     std::optional<prof::Scope> walk_scope;
     walk_scope.emplace("Recorrer entidades");
-    world.forEachDepthFirst([&](Entity e) {
+    // Solo lo activo: las celdas en cache y los mapas desactivados ni se visitan
+    // (antes se recorrian enteros y activeInHierarchy subia por los padres).
+    world.forEachActiveDepthFirst([&](Entity e) {
         const MeshRenderer* renderer_component = e.tryGet<MeshRenderer>();
         // Una tela se dibuja aunque no tenga Mesh Renderer (con su color).
         static const MeshRenderer kClothRenderer{};
         if (renderer_component == nullptr && (e.has<physics::Cloth>() || e.has<physics::SoftBody>())) {
             renderer_component = &kClothRenderer;
         }
-        if (renderer_component == nullptr || !renderer_component->visible ||
-            !e.activeInHierarchy()) {
+        if (renderer_component == nullptr || !renderer_component->visible) {
             return;
         }
         // Ya va dentro del lote estatico de la escena (juego exportado), o es
@@ -3176,6 +3765,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             }
             state.resolved = *model;
         }
+        if (state.seen != frame_) ++states_seen;
         state.seen = frame_;
 
         // LOD de animacion: lejos o detras de la camara no se evalua cada frame
@@ -3610,6 +4200,17 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         actor.shadows_only = renderer_component->cast_shadows == ShadowCasting::ShadowsOnly;
         // Su lightmap horneado, si lo tiene (RenderSyncLightmaps.cpp).
         assignLightmap(actor, e, *renderer_component, data, renderer);
+        // Parametros por instancia (tinte, opacidad, escala de la emision).
+        actor.tint = core::Vec4{std::clamp(renderer_component->tint.x, 0.0f, 1.0f),
+                          std::clamp(renderer_component->tint.y, 0.0f, 1.0f),
+                          std::clamp(renderer_component->tint.z, 0.0f, 1.0f),
+                          std::clamp(renderer_component->alpha, 0.0f, 1.0f)};
+        actor.emission_scale = std::max(renderer_component->emission_scale, 0.0f);
+        actor.receive_decals = renderer_component->receive_decals;
+        // INSTANCE_DATA(i) de su .crshader.
+        for (int k = 0; k < MeshRenderer::kInstanceDataCount; ++k) {
+            actor.instance_data[k] = renderer_component->instance_data[k];
+        }
 
         actor_entities_.push_back(e.handle());
         actor_models_.push_back(*model);
@@ -3629,6 +4230,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
     // El indice entidad -> actor solo se rehace si la lista cambio.
     if (actor_entities_ != previous_entities_) {
         entity_actor_.clear();
+        entity_actor_.reserve(actor_entities_.size());  // sin rehash a mitad (celdas de miles)
         for (std::size_t i = 0; i < actor_entities_.size(); ++i) {
             entity_actor_[actor_entities_[i]] = static_cast<std::uint32_t>(i);
         }
@@ -3638,8 +4240,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
     releaseRuntimeMeshes();
     releaseClothModels();
 
-    // Olvida los animadores de lo que ya no se dibuja.
-    for (auto it = animations_.begin(); it != animations_.end();) {
+    // Olvida los animadores de lo que ya no se dibuja (solo si sobra alguno).
+    for (auto it = animations_.size() == states_seen ? animations_.end() : animations_.begin(); it != animations_.end();) {
         if (it->second.seen == frame_) {
             ++it;
             continue;
@@ -3702,17 +4304,14 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
     // en modo horneado no se dibujan otra vez (ni sus mapas de sombra).
     const bool baked_active = renderer.bakedGiActive() && !renderer.bakedLighting().baked_lights.empty();
 
-    world.forEachDepthFirst([&](Entity e) {
+    world.forEachActiveDepthFirst([&](Entity e) {
         // Primero si tiene algo que interese (casi ningun objeto): subir por la
         // jerarquia para saber si esta activo cuesta mas que mirar sus componentes.
         if (!e.has<Light>() && !e.has<PostProcessing>() && (sky_entity.valid() || !e.has<Sky>()) &&
             (weather_entity.valid() || !e.has<Weather>())) {
             return;
         }
-        if (!e.activeInHierarchy()) {
-            return;
-        }
-        const Light* light = e.tryGet<Light>();
+        const Light* light = e.tryGet<Light>();  // (recorrido de lo activo)
         if (light != nullptr && baked_active && light->type != LightType::Directional &&
             light->bake_mode == LightBakeMode::Baked && renderer.bakedLighting().lightBaked(e.uuid().high, e.uuid().low)) {
             light = nullptr;
@@ -3782,21 +4381,35 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
         lights.points.insert(lights.points.end(), fire_lights.begin(), fire_lights.end());
     }
 
-    // Mas luces que huecos (32 puntuales, 8 focos): se quedan las que mas
-    // cuentan para la camara (cerca de ella o con mucho alcance), no las
-    // primeras de la Jerarquia. Antes, en un mapa grande, las salas del final
-    // se quedaban a oscuras aunque fueran las unicas a la vista.
+    // Mas luces que huecos principales (32 puntuales, 8 focos): primero las
+    // que mas cuentan para la camara (cerca de ella o con mucho alcance), no
+    // las primeras de la Jerarquia. El renderizador llena GpuLights con las
+    // primeras que se ven y manda las demas por clusteres (sin tope); solo se
+    // corta en kMaxSceneLights, una red de seguridad. Antes se quedaban 32:
+    // en Ashbound (~1300 antorchas) casi todo el mapa estaba a oscuras.
     {
         const Vec3 eye = scene.camera().position();
-        const auto keepNearest = [&](auto& list, std::size_t max) {
-            if (list.size() <= max) return;
-            std::stable_sort(list.begin(), list.end(), [&](const auto& a, const auto& b) {
-                return core::length(a.position - eye) - a.range < core::length(b.position - eye) - b.range;
-            });
-            list.resize(max);
+        const auto sortNearest = [&](auto& list, std::size_t principal) {
+            using Light = typename std::decay_t<decltype(list)>::value_type;
+            if (list.size() > principal) {
+                // La distancia una vez por luz (no dos raices por comparacion)
+                // y el indice como desempate: el orden es estable entre frames.
+                thread_local std::vector<std::pair<float, std::uint32_t>> keys;
+                thread_local std::vector<Light> sorted;
+                keys.resize(list.size());
+                for (std::size_t i = 0; i < list.size(); ++i) {
+                    keys[i] = {core::length(list[i].position - eye) - list[i].range, static_cast<std::uint32_t>(i)};
+                }
+                std::sort(keys.begin(), keys.end());
+                const std::size_t kept = std::min<std::size_t>(list.size(), scene::kMaxSceneLights);
+                sorted.clear();
+                sorted.reserve(kept);
+                for (std::size_t i = 0; i < kept; ++i) sorted.push_back(list[keys[i].second]);
+                list.swap(sorted);
+            }
         };
-        keepNearest(lights.points, scene::kMaxPointLights);
-        keepNearest(lights.spots, scene::kMaxSpotLights);
+        sortNearest(lights.points, scene::kMaxPointLights);
+        sortNearest(lights.spots, scene::kMaxSpotLights);
     }
 
     // --- Cielo HDR ---
@@ -3884,6 +4497,17 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
     const Weather* global_weather = weather_entity.valid() ? weather_entity.tryGet<Weather>() : nullptr;
     const float rain_puddles = global_weather != nullptr && global_weather->rain ? global_weather->puddles : 0.0f;
     std::vector<gfx::VulkanRenderer::Decal> decals;
+    // Ruta dentro de Assets/ -> ranura del renderizador (se carga una vez).
+    const auto decal_texture = [&](const std::string& path) -> int {
+        if (path.empty()) return -1;
+        const auto it = decal_textures_.find(path);
+        if (it != decal_textures_.end()) return it->second;
+        const std::filesystem::path file =
+            assets_.database().root() / std::filesystem::path(std::u8string(path.begin(), path.end()));
+        const int slot = renderer.loadDecalTexture(file);
+        decal_textures_[path] = slot;
+        return slot;
+    };
     for (const entt::entity handle : world.registry().view<Decal>()) {
         const Entity e = world.wrap(handle);
         if (!e.activeInHierarchy()) continue;
@@ -3900,16 +4524,17 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
         out.roughness_amount = d.roughness_amount;
         out.metallic = d.metallic;
         out.amount = d.amount * (d.type != DecalType::Stamp && d.follow_rain ? std::min(rain_puddles * 2.0f, 1.0f) : 1.0f);
-        if (!d.texture.empty()) {
-            const auto it = decal_textures_.find(d.texture);
-            if (it != decal_textures_.end()) {
-                out.texture = it->second;
-            } else {
-                const std::filesystem::path file = assets_.database().root() /
-                    std::filesystem::path(std::u8string(d.texture.begin(), d.texture.end()));
-                out.texture = renderer.loadDecalTexture(file);
-                decal_textures_[d.texture] = out.texture;
-            }
+        out.texture = decal_texture(d.texture);
+        if (d.type == DecalType::Stamp) {
+            // Canales opcionales (atlas de decals): relieve, ORM y emision (lineal).
+            out.normal_texture = decal_texture(d.normal_texture);
+            out.normal_strength = d.normal_strength;
+            out.orm_texture = decal_texture(d.orm_texture);
+            out.emission_texture = decal_texture(d.emission_texture);
+            const auto lin = [](float c) { return std::pow(std::max(c, 0.0f), 2.2f); };
+            // x6: la misma escala que la emision de los materiales (kEmissiveIntensity).
+            const float intensity = std::max(d.emission_intensity, 0.0f) * 6.0f;
+            out.emission = core::Vec3{lin(d.emission_color.x), lin(d.emission_color.y), lin(d.emission_color.z)} * intensity;
         }
         if (out.amount <= 0.0f && d.type != DecalType::Stamp) continue;
         decals.push_back(out);
@@ -3943,11 +4568,11 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
 
 void RenderSync::syncCamera(World& world, scene::Scene& scene) {
     Entity main;
-    world.forEachDepthFirst([&](Entity e) {
+    world.forEachActiveDepthFirst([&](Entity e) {
         const Camera* camera = e.tryGet<Camera>();
         // Las que dibujan en una Render Texture no son la del juego.
         if (camera != nullptr && camera->target_texture.valid()) return;
-        if (camera != nullptr && e.activeInHierarchy() && (!main.valid() || camera->is_main)) {
+        if (camera != nullptr && (!main.valid() || camera->is_main)) {  // (recorrido de lo activo)
             if (!main.valid() || !main.get<Camera>().is_main) {
                 main = e;
             }

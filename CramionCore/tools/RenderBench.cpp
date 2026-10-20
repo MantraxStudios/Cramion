@@ -99,6 +99,11 @@ struct Options {
     int shadow_res = 0;  // 0 = la del perfil de hardware
     std::string tier;    // perfil forzado (CRAMION_HARDWARE_TIER)
     bool freeze_budget = false;
+    // --far: escena larga (suelo de 300 m con columnas y cajas hasta 140 m) y
+    // la niebla del Overthrow Arena: para ver las sombras de contacto y la luz
+    // volumetrica lejos (fundidos por distancia, cortes entre cascadas).
+    bool far_scene = false;
+    float hour = 15.5f;  // --hour: hora del dia (sol bajo = sombras largas)
 };
 
 Options parse(int argc, char** argv) {
@@ -132,6 +137,8 @@ Options parse(int argc, char** argv) {
         else if (a == "--shadow-res") o.shadow_res = std::atoi(next().c_str());
         else if (a == "--tier") o.tier = next();
         else if (a == "--freeze-budget") o.freeze_budget = true;
+        else if (a == "--far") o.far_scene = true;
+        else if (a == "--hour") o.hour = static_cast<float>(std::atof(next().c_str()));
         else std::cerr << "Opcion desconocida: " << a << "\n";
     }
     return o;
@@ -514,7 +521,7 @@ int main(int argc, char** argv) {
         scene::Scene scene;
         scene.initialize();
         scene.setDayCycleEnabled(false);
-        scene.setTimeOfDayHours(15.5f);
+        scene.setTimeOfDayHours(options.hour);
 
         const demo::SceneEntry* demo_entry = nullptr;
         for (const demo::SceneEntry& entry : demo::kScenes) {
@@ -542,6 +549,24 @@ int main(int argc, char** argv) {
             if (demo_entry->environment != nullptr && renderer.loadEnvironment(assets_root / demo_entry->environment)) {
                 scene.setFixedSun(renderer.environmentSunDirection());
             }
+        } else if (options.far_scene) {
+        add(box({150.0f, 0.05f, 150.0f}, {0.55f, 0.55f, 0.52f, 1.0f}, 0.6f, 0.0f, "Suelo"),
+            core::translate(core::Vec3{0.0f, -0.05f, -100.0f}));
+        for (int i = 0; i < 24; ++i) {
+            const float z = 2.0f - 6.0f * static_cast<float>(i);
+            const float x = (i % 2 == 0 ? -1.0f : 1.0f) * (2.0f + 0.15f * static_cast<float>(i));
+            add(box({0.25f, 1.5f, 0.25f}, {0.6f, 0.58f, 0.55f, 1.0f}, 0.5f, 0.0f, "Columna"),
+                core::translate(core::Vec3{x, 1.5f, z}));
+            add(box({0.3f, 0.15f, 0.3f}, {0.7f, 0.4f, 0.3f, 1.0f}, 0.5f, 0.0f, "Caja"),
+                core::translate(core::Vec3{-x * 0.4f, 0.15f, z - 2.0f}));
+        }
+        scene.placeCamera(core::Vec3{0.0f, 1.8f, 8.0f}, core::Vec3{0.0f, 0.6f, -40.0f});
+        gfx::PostProcessSettings post = renderer.postProcess();
+        post.volumetric_light = true;
+        post.volumetric_density = 0.0015f;
+        post.fog_density = 0.0006f;
+        post.contact_shadow_length = 1.0f;  // el del Overthrow Arena
+        renderer.setPostProcess(post);
         } else {
         add(box({12.0f, 0.05f, 12.0f}, {0.55f, 0.55f, 0.52f, 1.0f}, 0.32f, 0.0f, "Suelo"),
             core::translate(core::Vec3{0.0f, -0.05f, 0.0f}));
@@ -579,8 +604,12 @@ int main(int argc, char** argv) {
         scene.placeCamera(core::Vec3{0.4f, 2.1f, 6.2f}, core::Vec3{0.0f, 0.8f, 0.0f});
         }
         if (demo_entry != nullptr) scene.placeCamera(demo_entry->camera, demo_entry->target);
-        const core::Vec3 camera_home = demo_entry != nullptr ? demo_entry->camera : core::Vec3{0.4f, 2.1f, 6.2f};
-        const core::Vec3 camera_target = demo_entry != nullptr ? demo_entry->target : core::Vec3{0.0f, 0.8f, 0.0f};
+        const core::Vec3 camera_home = demo_entry != nullptr ? demo_entry->camera
+                                       : options.far_scene          ? core::Vec3{0.0f, 1.8f, 8.0f}
+                                                              : core::Vec3{0.4f, 2.1f, 6.2f};
+        const core::Vec3 camera_target = demo_entry != nullptr ? demo_entry->target
+                                         : options.far_scene          ? core::Vec3{0.0f, 0.6f, -40.0f}
+                                                                : core::Vec3{0.0f, 0.8f, 0.0f};
         if (!options.animated.empty()) {
             // Entre la camara y su objetivo, a un tercio, mirando a la camara.
             const core::Vec3 spot = camera_home + (camera_target - camera_home) * 0.33f;

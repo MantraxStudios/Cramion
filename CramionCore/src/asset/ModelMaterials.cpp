@@ -101,6 +101,92 @@ bool looksLikeColor(const std::filesystem::path& file) {
     return true;
 }
 
+// --- Emparejar por nombre: palabras completas y nombres genericos ---
+
+// Palabras de un nombre en minusculas: corta en separadores, en el paso de
+// minuscula a mayuscula y entre letras y cifras ("T_OrcGear01" -> t, orc,
+// gear, 01; "ORMMap" -> orm, map). Asi "Gear" casa con "OrcGear" pero "ar" no.
+std::vector<std::string> nameTokens(const std::string& text) {
+    std::vector<std::string> out;
+    std::string word;
+    const auto flush = [&] {
+        if (!word.empty()) out.push_back(lower(word));
+        word.clear();
+    };
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        if (!(std::isalnum(c) || c >= 0x80)) {
+            flush();
+            continue;
+        }
+        if (!word.empty() && c < 0x80) {
+            const unsigned char prev = static_cast<unsigned char>(word.back());
+            const bool digit = std::isdigit(c) != 0;
+            const bool prev_digit = prev < 0x80 && std::isdigit(prev) != 0;
+            const bool upper = std::isupper(c) != 0;
+            const bool prev_upper = prev < 0x80 && std::isupper(prev) != 0;
+            const bool prev_lower = prev < 0x80 && std::islower(prev) != 0;
+            const unsigned char next = i + 1 < text.size() ? static_cast<unsigned char>(text[i + 1]) : 0;
+            const bool next_lower = next != 0 && next < 0x80 && std::islower(next) != 0;
+            // Letra <-> cifra, minuscula -> Mayuscula, y fin de siglas
+            // ("ORMMap": la M de Map empieza palabra).
+            if (digit != prev_digit || (upper && prev_lower) || (upper && prev_upper && next_lower)) flush();
+        }
+        word.push_back(static_cast<char>(c));
+    }
+    flush();
+    return out;
+}
+
+// Nombres que ponen las herramientas por defecto (Blender, Maya, 3ds Max,
+// Unity, assimp...) o de primitivas: no dicen nada de la textura y casaban con
+// cualquier imagen ("Material" con "Material_BaseColor" de otro pack). Se
+// comparan sin cifras ni separadores: "Material.001", "lambert1", "01 -
+// Default", "Material #25", "pCube3" valen igual.
+bool isGenericName(const std::string& name) {
+    std::string core;
+    for (const unsigned char c : name) {
+        if (std::isalpha(c) || c >= 0x80) core.push_back(static_cast<char>(std::tolower(c)));
+    }
+    if (core.size() < 2) return true;
+    static constexpr std::array kGeneric = {
+        "material", "materials", "mat", "mtl", "default", "defaultmaterial", "defaultmat", "materialdefault",
+        "lambert", "phong", "blinn", "standardsurface", "aistandardsurface", "standard", "surface", "shader",
+        "noname", "none", "null", "unnamed", "untitled", "dummy", "initialshadinggroup", "wiredefault",
+        "principledbsdf", "bsdf", "pbr", "pbrmaterial", "lit", "unlit", "new", "newmaterial", "mesh", "object",
+        "model", "geometry", "scene", "root", "rootnode", "node", "group", "cube", "pcube", "sphere", "psphere",
+        "plane", "pplane", "cylinder", "pcylinder", "polysurface", "box", "texture", "tex"};
+    return std::find(kGeneric.begin(), kGeneric.end(), core) != kGeneric.end();
+}
+
+// Palabras que solas no identifican nada (un trozo de nombre que sea solo
+// esto no basta para casar).
+bool isFillerToken(const std::string& token) {
+    if (token.empty() || std::isdigit(static_cast<unsigned char>(token.front()))) return true;
+    static constexpr std::array kFiller = {"material", "mat", "mtl", "default", "mesh", "object", "base", "color",
+                                           "colour", "tex", "texture", "map", "new", "lambert", "phong", "blinn",
+                                           "standard", "surface", "no", "name", "none", "m", "mi", "t", "tx",
+                                           "low", "high", "lod", "geo", "the", "of"};
+    return std::find(kFiller.begin(), kFiller.end(), token) != kFiller.end();
+}
+
+// `part` aparece en `whole` como palabras seguidas y completas, con al menos
+// una palabra con significado y 3 letras en total.
+bool containsTokens(const std::vector<std::string>& whole, const std::vector<std::string>& part) {
+    if (part.empty() || part.size() > whole.size()) return false;
+    std::size_t letters = 0;
+    bool meaningful = false;
+    for (const std::string& t : part) {
+        letters += t.size();
+        meaningful = meaningful || !isFillerToken(t);
+    }
+    if (letters < 3 || !meaningful) return false;
+    for (std::size_t start = 0; start + part.size() <= whole.size(); ++start) {
+        if (std::equal(part.begin(), part.end(), whole.begin() + static_cast<std::ptrdiff_t>(start))) return true;
+    }
+    return false;
+}
+
 // Parte final del nombre tras el ultimo separador ('_', '-', ' ', '.').
 std::pair<std::string, std::string> splitSuffix(const std::string& stem) {
     const std::size_t at = stem.find_last_of("_- .");
@@ -111,6 +197,7 @@ std::pair<std::string, std::string> splitSuffix(const std::string& stem) {
 struct Candidate {
     std::filesystem::path file;
     std::string base;      // nombre normalizado sin el sufijo de color
+    std::vector<std::string> tokens;  // las palabras de `base`
     bool in_model_folder;  // en la carpeta del modelo (o debajo)
     bool external;         // fuera de Assets (junto al archivo original): se copia
 };
@@ -129,18 +216,26 @@ std::string withoutTexturePrefix(const std::string& name) {
 
 // Una imagen es candidata a color si su sufijo es de color o no es de otro
 // mapa ("madera.png").
-bool colorCandidate(const std::filesystem::path& file, std::string& base) {
+bool colorCandidate(const std::filesystem::path& file, std::string& base, std::vector<std::string>& tokens) {
     if (!looksLikeColor(file)) return false;
     const std::string stem = crdata::utf8(file.stem());
-    const auto [head, suffix] = splitSuffix(stem);
+    auto [head, suffix] = splitSuffix(stem);
+    std::string named = stem;
     if (!suffix.empty()) {
         if (std::find(kColorSuffixes.begin(), kColorSuffixes.end(), suffix) != kColorSuffixes.end()) {
-            base = normalized(withoutTexturePrefix(head));
-            return !base.empty();
+            // "Rock_Base_Color": tambien fuera el "Base" que queda delante.
+            if (suffix == "color" || suffix == "colour") {
+                const auto [before, word] = splitSuffix(head);
+                if (word == "base" && !before.empty()) head = before;
+            }
+            named = head;
+        } else if (std::find(kOtherSuffixes.begin(), kOtherSuffixes.end(), suffix) != kOtherSuffixes.end()) {
+            return false;
         }
-        if (std::find(kOtherSuffixes.begin(), kOtherSuffixes.end(), suffix) != kOtherSuffixes.end()) return false;
     }
-    base = normalized(withoutTexturePrefix(stem));
+    named = withoutTexturePrefix(named);
+    base = normalized(named);
+    tokens = nameTokens(named);
     return !base.empty();
 }
 
@@ -156,24 +251,44 @@ void collectImages(const std::filesystem::path& folder, int depth, bool external
         }
         if (!it->is_regular_file(ec2) || !isImageExtension(it->path().extension().string())) continue;
         std::string base;
-        if (!colorCandidate(it->path(), base)) continue;
+        std::vector<std::string> tokens;
+        if (!colorCandidate(it->path(), base, tokens)) continue;
         const std::string rel = crdata::utf8(std::filesystem::relative(it->path(), model_folder, ec2));
         const bool inside = !external && !ec2 && !rel.empty() && rel.rfind("..", 0) != 0;
-        out.push_back(Candidate{it->path(), base, inside, external});
+        out.push_back(Candidate{it->path(), base, std::move(tokens), inside, external});
     }
 }
 
-// Puntua lo bien que casa una imagen con un material. 0 = nada.
-int matchScore(const Candidate& c, const std::vector<std::pair<std::string, int>>& keys) {
+// Un nombre con el que buscar (material, pieza o modelo) y su peso.
+struct MatchKey {
+    std::string base;                 // normalizado
+    std::vector<std::string> tokens;  // sus palabras
+    int weight = 0;
+};
+
+// Las claves de busqueda sin las vacias ni las genericas ("Material.001",
+// "lambert1", "pCube1"...: casaban con cualquier cosa).
+std::vector<MatchKey> matchKeys(std::initializer_list<std::pair<std::string, int>> names) {
+    std::vector<MatchKey> keys;
+    for (const auto& [name, weight] : names) {
+        if (name.empty() || isGenericName(name)) continue;
+        MatchKey key{normalized(name), nameTokens(name), weight};
+        if (key.base.size() < 2) continue;
+        keys.push_back(std::move(key));
+    }
+    return keys;
+}
+
+// Puntua lo bien que casa una imagen con un material. 0 = nada. Igual = el
+// peso; si uno lleva al otro como palabras completas seguidas ("Gear" en
+// "OrcGear_BaseColor"), la mitad. Antes bastaba una subcadena de 3 letras
+// ("ore" en "Forest", "ock" en "Rock" y "Lock").
+int matchScore(const Candidate& c, const std::vector<MatchKey>& keys) {
     int best = 0;
-    for (const auto& [key, weight] : keys) {
-        if (key.size() < 2) continue;
+    for (const MatchKey& key : keys) {
         int score = 0;
-        if (c.base == key) score = weight;
-        else if (key.size() >= 3 && c.base.size() >= 3 &&
-                 (c.base.find(key) != std::string::npos || key.find(c.base) != std::string::npos)) {
-            score = weight / 2;
-        }
+        if (c.base == key.base) score = key.weight;
+        else if (containsTokens(c.tokens, key.tokens) || containsTokens(key.tokens, c.tokens)) score = key.weight / 2;
         best = std::max(best, score);
     }
     if (best > 0 && c.in_model_folder) best += 5;
@@ -458,13 +573,39 @@ ExtractMaterialsResult extractModelMaterials(const AssetInfo& info, const std::f
     TextureWriter writer(texture_folder, assets_root);
 
     // Imagenes donde buscar las texturas que el modelo no trae: la carpeta
-    // del modelo (y debajo), todo Assets y, fuera, junto al archivo original.
+    // del modelo (y debajo; si el modelo esta suelto en la raiz de Assets,
+    // solo ella y su Textures), las carpetas Textures de sus carpetas padre
+    // hasta Assets (como el "Recursive-Up" de Unity: Pack/Textures para
+    // Pack/Models/x.fbx) y, fuera, junto al archivo original. Nunca todo el
+    // proyecto: con nombres parecidos se cogia la textura de otro pack.
     std::vector<Candidate> candidates;
     bool searched = false;
     const auto search_pool = [&]() -> const std::vector<Candidate>& {
         if (!searched) {
             searched = true;
-            collectImages(assets_root, 12, false, model_folder, candidates);
+            std::error_code ec;
+            const bool at_root = std::filesystem::equivalent(model_folder, assets_root, ec);
+            collectImages(model_folder, at_root ? 0 : 3, false, model_folder, candidates);
+            if (at_root) collectImages(model_folder / "Textures", 1, false, model_folder, candidates);
+            const std::string up = crdata::utf8(model_folder.lexically_relative(assets_root));
+            if (!at_root && !up.empty() && up.rfind("..", 0) != 0) {
+                // (En Windows "Textures" y "textures" son la misma carpeta: una vez.)
+                std::set<std::string> visited;
+                for (std::filesystem::path folder = model_folder.parent_path();; folder = folder.parent_path()) {
+                    for (const char* name : {"Textures", "textures", "Texture", "Tex"}) {
+                        const std::filesystem::path sub = folder / name;
+                        std::error_code ec2;
+                        if (!std::filesystem::is_directory(sub, ec2)) continue;
+                        if (!visited.insert(lower(crdata::utf8(std::filesystem::weakly_canonical(sub, ec2)))).second) continue;
+                        collectImages(sub, 1, false, model_folder, candidates);
+                    }
+                    std::error_code ec2;
+                    if (std::filesystem::equivalent(folder, assets_root, ec2) || folder == folder.parent_path() ||
+                        crdata::utf8(folder.lexically_relative(assets_root)).rfind("..", 0) == 0) {
+                        break;
+                    }
+                }
+            }
             if (!info.source.empty()) {
                 const std::filesystem::path source_folder = info.source.parent_path();
                 std::error_code ec;
@@ -512,13 +653,15 @@ ExtractMaterialsResult extractModelMaterials(const AssetInfo& info, const std::f
     // Sin textura de color: se busca en el proyecto por el nombre del
     // material, de la pieza o del modelo. Conserva el UUID de `m`.
     const auto search_color = [&](MaterialAsset& m, const asset::ModelData& part, const asset::MaterialData& data) -> bool {
-        const std::vector<std::pair<std::string, int>> keys = {
-            {normalized(withoutMaterialPrefix(data.name)), 100},
-            {normalized(data.name), 100},
-            {normalized(part.name), 70},
-            {normalized(model->name), 50},
-            {normalized(stem), 50},
-        };
+        const std::vector<MatchKey> keys = matchKeys({
+            {withoutMaterialPrefix(data.name), 100},
+            {data.name, 100},
+            {part.name, 70},
+            {model->name, 50},
+            {stem, 50},
+        });
+        // (Con solo nombres genericos no casa nada por nombre, pero sigue
+        // valiendo el unico juego de la carpeta del modelo.)
         // Primero las de la carpeta del modelo (lo que trae su pack); si no
         // casa ninguna por nombre pero solo hay un juego, es el suyo. Solo
         // despues el resto del proyecto ("base" no debe coger la textura de

@@ -121,6 +121,11 @@ public:
     Entity create(std::string name = "GameObject", Entity parent = {}, const Uuid& uuid = {});
     // Destruye la entidad y todos sus descendientes.
     void destroy(Entity entity);
+    // Suelta los UUID de la entidad y de sus descendientes (find ya no los
+    // encuentra y otra entidad puede usarlos) sin destruirlos: lo que se va a
+    // borrar en varios frames (World Partition en el editor) no choca con lo
+    // que vuelve con el mismo UUID (deshacer, recargar la celda).
+    void releaseUuids(Entity entity);
     // Copia profunda (componentes e hijos) con UUIDs nuevos, justo despues
     // del original entre sus hermanos.
     Entity duplicate(Entity entity);
@@ -156,6 +161,11 @@ public:
     // Recorre en profundidad (padre antes que hijos, en orden de hermanos).
     template <typename Fn>
     void forEachDepthFirst(Fn&& fn) const;
+    // Igual, pero solo lo activo en la jerarquia: no baja a los hijos de una
+    // entidad desactivada (celdas en cache, mapas ocultos). `fn` no necesita
+    // llamar a activeInHierarchy (que sube por los padres en cada entidad).
+    template <typename Fn>
+    void forEachActiveDepthFirst(Fn&& fn) const;
 
     // --- Transform ---
     void markTransformDirty(entt::entity entity);
@@ -277,6 +287,21 @@ void World::forEachDepthFirst(Fn&& fn) const {
     }
 }
 
+template <typename Fn>
+void World::forEachActiveDepthFirst(Fn&& fn) const {
+    std::vector<entt::entity> stack;
+    stack.reserve(roots_.size() + 64);
+    stack.assign(roots_.rbegin(), roots_.rend());
+    while (!stack.empty()) {
+        const entt::entity e = stack.back();
+        stack.pop_back();
+        if (const EntityInfo* info = registry_.try_get<EntityInfo>(e); info != nullptr && !info->active) continue;
+        fn(wrap(e));
+        const Hierarchy& h = registry_.get<Hierarchy>(e);
+        stack.insert(stack.end(), h.children.rbegin(), h.children.rend());
+    }
+}
+
 namespace detail {
 template <typename T>
 concept HasOnChanged = requires(World& w, entt::entity e) { T::onChanged(w, e); };
@@ -363,6 +388,7 @@ void ComponentRegistry::registerComponent(std::string name, std::string label,
             }
         }
     };
+    type.pool = [](const World& w) -> const entt::sparse_set* { return w.registry().storage<T>(); };
     types_.push_back(std::move(type));
 }
 

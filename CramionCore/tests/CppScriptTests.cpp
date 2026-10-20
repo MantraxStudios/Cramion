@@ -246,6 +246,49 @@ CRAMION_SCRIPT(Recursion)
 CRAMION_SCRIPT(Memoria)
 CRAMION_SCRIPT(Aborta)
 )");
+    // Ciclo de vida (onEnable/onDisable: desactivar no destruye), la API desde
+    // otro hilo y un script vacio para medir el lote de eventos (CallMany).
+    write(assets / "Scripts" / "Pool.cpp", R"(#include <cramion/Script.h>
+#include <cstdint>
+#include <string>
+#include <thread>
+using namespace cramion;
+class Pool : public Script {
+public:
+    int a = 0, e = 0, s = 0, u = 0, d = 0;
+    void awake() override { ++a; show(); }
+    void onEnable() override { ++e; show(); }
+    void start() override { ++s; show(); }
+    void update(float) override { ++u; show(); }
+    void onDisable() override { ++d; show(); }
+    void onDestroy() override { Scene::find("Padre").setName("destruido d" + std::to_string(d)); }
+private:
+    void show() {
+        entity().setName("a" + std::to_string(a) + " e" + std::to_string(e) + " s" + std::to_string(s) + " u" +
+                         std::to_string(u) + " d" + std::to_string(d));
+    }
+};
+class Hilo : public Script {
+public:
+    void start() override {
+        std::uint64_t found = 1;
+        std::thread t([&found] {
+            Debug::log("desde otro hilo");
+            found = Scene::find("Hilo").id();
+            Api::call("Debug.log", {"otro hilo"});
+        });
+        t.join();
+        entity().setName(found == 0 ? "hilo vacio" : "hilo " + std::to_string(found));
+    }
+};
+class Vacio : public Script {
+public:
+    void update(float) override {}
+};
+CRAMION_SCRIPT(Pool)
+CRAMION_SCRIPT(Hilo)
+CRAMION_SCRIPT(Vacio)
+)");
     // La plantilla de un script nuevo: Plantilla.h (clase) + Plantilla.cpp (metodos).
     write(assets / "Scripts" / "Plantilla.h", scripting::cppScriptHeaderTemplate("Plantilla"));
     write(assets / "Scripts" / "Plantilla.cpp", scripting::cppScriptTemplate("Plantilla"));
@@ -413,6 +456,82 @@ CRAMION_SCRIPT(Aborta)
     cpp.stop();
     scripts.stop();
     check(!cpp.running(), "parar cierra el proceso");
+
+    // Desactivar el objeto o el script no destruye la instancia (pool de objetos).
+    {
+        ecs::World pool_world;
+        ecs::Entity padre = pool_world.create("Padre");
+        ecs::Entity bala = pool_world.create("Bala", padre);
+        bala.add<scripting::CppScript>().class_name = "Pool";
+        ecs::Entity hilo = pool_world.create("Hilo");
+        hilo.add<scripting::CppScript>().class_name = "Hilo";
+        scripting::ScriptSystem pool_scripts;
+        pool_scripts.start(pool_world);
+        cpp.setScriptSystem(&pool_scripts);
+        cpp.start(pool_world);
+        const float dt = 1.0f / 60.0f;
+        for (int i = 0; i < 3; ++i) cpp.update(pool_world, dt);
+        check(bala.name() == "a1 e1 s1 u3 d0", "orden: awake, onEnable, start y update (" + bala.name() + ")");
+        padre.setActive(false);
+        cpp.update(pool_world, dt);
+        cpp.update(pool_world, dt);
+        check(bala.name() == "a1 e1 s1 u3 d1", "desactivar el padre: onDisable y sin update (" + bala.name() + ")");
+        padre.setActive(true);
+        cpp.update(pool_world, dt);
+        check(bala.name() == "a1 e2 s1 u4 d1", "reactivar: onEnable sin awake ni start, con sus variables (" + bala.name() + ")");
+        bala.get<scripting::CppScript>().enabled = false;
+        cpp.update(pool_world, dt);
+        bala.get<scripting::CppScript>().enabled = true;
+        cpp.update(pool_world, dt);
+        check(bala.name() == "a1 e3 s1 u5 d2", "desactivar y activar el componente: onDisable / onEnable (" + bala.name() + ")");
+        bala.remove<scripting::CppScript>();
+        cpp.update(pool_world, dt);
+        check(padre.name() == "destruido d3", "quitar el componente: onDisable y despues onDestroy (" + padre.name() + ")");
+        check(hilo.name() == "hilo vacio", "la API desde otro hilo devuelve vacio sin romper el canal (" + hilo.name() + ")");
+        check(cpp.stats().faulted == 0 && cpp.running(), "el proceso sigue sano tras las llamadas desde otro hilo");
+        cpp.stop();
+        pool_scripts.stop();
+    }
+
+    // Un viaje por fase (script.cpp.BatchCalls) frente a uno por script y evento.
+    {
+        ecs::World bench;
+        constexpr int kScripts = 300;
+        constexpr int kFrames = 30;
+        for (int i = 0; i < kScripts; ++i) bench.create("Vacio").add<scripting::CppScript>().class_name = "Vacio";
+        scripting::ScriptSystem bench_scripts;
+        bench_scripts.start(bench);
+        cpp.setScriptSystem(&bench_scripts);
+        const auto run = [&](bool batched, std::uint64_t& requests) {
+            cvar::Registry::instance().set("script.cpp.BatchCalls", batched ? "true" : "false");
+            cpp.start(bench);
+            cpp.update(bench, 1.0f / 60.0f);  // crea las instancias (awake, onEnable, start)
+            const auto t = std::chrono::steady_clock::now();
+            for (int f = 0; f < kFrames; ++f) cpp.update(bench, 1.0f / 60.0f);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count() / kFrames;
+            requests = cpp.stats().requests;
+            cpp.stop();
+            return ms;
+        };
+        // Vacio solo tiene update: con script.cpp.SkipEmptyEvents su lateUpdate
+        // ni se envia. El lote se mide con todos los eventos.
+        std::uint64_t skip_requests = 0, one_requests = 0, batch_requests = 0;
+        run(false, skip_requests);
+        cvar::Registry::instance().set("script.cpp.SkipEmptyEvents", "false");
+        const double one_ms = run(false, one_requests);
+        const double batch_ms = run(true, batch_requests);
+        cvar::Registry::instance().set("script.cpp.SkipEmptyEvents", "true");
+        check(skip_requests < one_requests, "sin enviar lateUpdate a quien no lo tiene (" + std::to_string(skip_requests) +
+                                                " viajes frente a " + std::to_string(one_requests) + ")");
+        char text[200];
+        std::snprintf(text, sizeof(text), "%d scripts: %.3f ms y %llu viajes por frame uno a uno, %.3f ms y %llu en lote", kScripts,
+                      one_ms, static_cast<unsigned long long>(one_requests), batch_ms, static_cast<unsigned long long>(batch_requests));
+        std::printf("    %s\n", text);
+        check(one_requests >= 2u * kScripts && batch_requests <= 2, std::string("update y lateUpdate en un viaje (") + text + ")");
+        check(batch_ms < one_ms, "el lote es mas rapido");
+        bench_scripts.stop();
+        cvar::Registry::instance().find("script.cpp.BatchCalls")->reset();
+    }
     cvar::Registry::instance().clearDynamic();
     cvar::Registry::instance().find("script.cpp.TimeoutMs")->reset();
     cvar::Registry::instance().find("script.cpp.MemoryLimitMB")->reset();

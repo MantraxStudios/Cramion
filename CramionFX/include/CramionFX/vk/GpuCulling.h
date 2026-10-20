@@ -76,8 +76,10 @@ public:
     // ventana o cambiar su tamano).
     void resize(const VulkanDevice& device, const VulkanImage& depth);
 
-    // Sube los clusteres del frame. Si hay mas que antes se rehacen los
-    // buffers (espera a la GPU) y se olvida la visibilidad.
+    // Sube los clusteres del frame (con la fence de `frame_index` ya
+    // esperada). Si hay mas que antes se rehacen los buffers y se olvida la
+    // visibilidad, sin parar la GPU: los viejos se retiran por fence y los
+    // sets de cada frame pasan a los nuevos en su siguiente setClusters.
     void setClusters(const VulkanDevice& device, std::uint32_t frame_index,
                      const std::vector<GpuCluster>& clusters, std::uint32_t group_count,
                      std::uint32_t slot_count, const std::vector<VulkanBuffer>& camera_buffers);
@@ -110,10 +112,17 @@ public:
 private:
     void createBuffers(const VulkanDevice& device, std::uint32_t cluster_capacity,
                        std::uint32_t group_capacity, std::uint32_t slot_capacity);
-    void writeCullSets(const VulkanDevice& device,
-                       const std::vector<VulkanBuffer>& camera_buffers);
+    // Los sets (de las dos fases) de un frame con los buffers de ahora.
+    void writeCullSets(const VulkanDevice& device, const std::vector<VulkanBuffer>& camera_buffers,
+                       std::uint32_t frame_index);
 
     bool created_ = false;
+    // Frames (bit por hueco) cuyos sets aun apuntan a los buffers de antes
+    // del ultimo crecimiento: se reescriben en su setClusters.
+    std::uint32_t sets_dirty_ = 0;
+    // La visibilidad de unos buffers nuevos aun sin borrar (lo hace recordCull,
+    // que es const: por eso mutable).
+    mutable bool visibility_cleared_ = true;
     std::uint32_t cluster_count_ = 0;
     std::uint32_t cluster_capacity_ = 0;
     std::uint32_t group_capacity_ = 0;

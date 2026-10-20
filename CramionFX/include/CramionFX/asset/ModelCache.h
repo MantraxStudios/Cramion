@@ -34,8 +34,13 @@ void writeModelCache(const std::filesystem::path& cache, const std::filesystem::
 void writeModelPayload(std::ostream& stream, const ModelData& model);
 // `skip_texture_bytes`: los pixeles y los bytes codificados de las texturas
 // se saltan en el stream sin leerlos (quedan su nombre, tamano y formato):
-// para quien solo quiere la geometria.
-bool readModelPayload(std::istream& stream, ModelData& out, bool skip_texture_bytes = false);
+// para quien solo quiere la geometria. `payload_end`: donde acaba este
+// contenido en el stream (los bloques opcionales del final, como el color de
+// vertice, se leen hasta ahi); -1 = hasta el final del stream. Con contenido
+// de una version anterior (sin bloques) hay que darlo: si no, se leeria lo
+// que venga detras.
+bool readModelPayload(std::istream& stream, ModelData& out, bool skip_texture_bytes = false,
+                      std::streampos payload_end = -1);
 
 }  // namespace cramion::asset
 

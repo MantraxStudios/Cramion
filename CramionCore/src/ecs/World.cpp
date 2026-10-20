@@ -439,6 +439,21 @@ void World::shiftOrigin(const core::Vec3& offset) {
     origin_.z += offset.z;
 }
 
+void World::releaseUuids(Entity entity) {
+    if (!entity.valid() || entity.world() != this) return;
+    std::vector<entt::entity> stack{entity.handle()};
+    while (!stack.empty()) {
+        const entt::entity e = stack.back();
+        stack.pop_back();
+        // Solo si el UUID apunta a ESTA entidad (como destroyRecursive).
+        if (const auto it = uuid_map_.find(registry_.get<IdComponent>(e).uuid); it != uuid_map_.end() && it->second == e) {
+            uuid_map_.erase(it);
+        }
+        const auto& children = registry_.get<Hierarchy>(e).children;
+        stack.insert(stack.end(), children.begin(), children.end());
+    }
+}
+
 Entity World::find(const Uuid& uuid) const {
     const auto it = uuid_map_.find(uuid);
     return it == uuid_map_.end() ? Entity{} : wrap(it->second);

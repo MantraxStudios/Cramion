@@ -41,6 +41,7 @@ constexpr auto kTerrainUpdateInterval = std::chrono::milliseconds(250);
 // Terrenos que aparecen o desaparecen: reconstruir la escena de rayos como
 // mucho una vez cada tanto (VulkanRenderer::prepareRayTracingScene).
 constexpr auto kTerrainRebuildCooldown = std::chrono::seconds(2);
+constexpr auto kModelRebuildCooldown = std::chrono::seconds(4);  // modelos nuevos o que vuelven
 
 float sampleHeight(const TerrainPass::RayTracingSource& s, std::int64_t x, std::int64_t y) {
     const auto res = static_cast<std::int64_t>(s.resolution);
@@ -303,7 +304,8 @@ std::uint64_t treeCellKey(std::int64_t x, std::int64_t z) {
 
 void VulkanRenderer::buildRayTracingScene(const scene::Scene& scene) {
     const auto started = std::chrono::steady_clock::now();
-    device_.waitIdle();
+    // Sin waitIdle: la escena anterior (y las texturas fijadas para ella) la
+    // sueltan los frames en vuelo (RayTracing::releaseScene, retireAfterGpu).
     std::vector<const asset::ModelData*> models;
     // Los que salieron de la GPU (streaming) van vacios: no tienen texturas
     // ni materiales que enlazar.
@@ -405,14 +407,28 @@ void VulkanRenderer::buildRayTracingScene(const scene::Scene& scene) {
     for (const ActorDraw& draw : actor_draws_) {
         if (draw.per_submesh && draw.model < used.size()) used[draw.model] = true;
     }
-    ray_tracing_.build(device_, models, skinned_models_, ibl_probe_.irradianceBuffer(), extra, used);
+    // Lo que ya tuvo BLAS la conserva aunque ahora no tenga instancias: con
+    // streaming de celdas los modelos salen y vuelven, y cada vuelta pedia otra
+    // reconstruccion entera (medido: ~8 por ciclo del banco, 50-120 ms cada una).
+    for (std::size_t i = 0; i < used.size() && i < rt_scene_used_.size(); ++i) {
+        if (rt_scene_used_[i]) used[i] = true;
+    }
+    // Filas de sobra para los modelos que lleguen despues (streaming, variantes
+    // nuevas): entran con addModel sin rehacerla. Solo si no caben se rehace.
+    const auto slots = static_cast<std::uint32_t>(models.size() + std::max<std::size_t>(256, models.size() / 2));
+    ray_tracing_.build(device_, models, skinned_models_, ibl_probe_.irradianceBuffer(), extra, used, slots);
     rt_scene_used_ = std::move(used);
     rt_scene_evicted_ = model_evicted_;
     rt_scene_evicted_.resize(models.size(), false);
-    rt_extra_base_ = static_cast<std::uint32_t>(models.size());
+    rt_extra_base_ = slots;
     ray_traced_models_ = static_cast<std::uint32_t>(models.size());
     ray_pinned_.assign(skinned_models_.size(), false);
-    ray_pinned_models_.clear();
+    // Las de la escena anterior: aun las pueden leer los frames en vuelo.
+    if (!ray_pinned_textures_.empty()) {
+        device_.retireAfterGpu(
+            std::vector<std::shared_ptr<const void>>(ray_pinned_textures_.begin(), ray_pinned_textures_.end()));
+        ray_pinned_textures_.clear();
+    }
     rt_scene_dirty_ = false;
     rt_model_edit_pending_ = false;
     rt_scene_build_time_ = std::chrono::steady_clock::now();
@@ -426,9 +442,47 @@ void VulkanRenderer::buildRayTracingScene(const scene::Scene& scene) {
 
 void VulkanRenderer::prepareRayTracingScene(const scene::Scene& scene, std::vector<RayTracing::Instance>& instances) {
     const auto now = std::chrono::steady_clock::now();
-    // Modelos cambiados con uploadModel: los rayos los ven al poco (rehacer la
-    // escena entera es un tiron: no mientras se editan).
-    if (rt_model_edit_pending_ && now - rt_model_edit_time_ > std::chrono::seconds(1)) rt_scene_dirty_ = true;
+    // --- Modelos que entran (streaming, variantes nuevas, sin instancias al
+    // construirla): solo los suyos, con addModel (su BLAS en el command buffer
+    // de este frame). Antes cada uno pedia rehacer la escena entera (todas las
+    // BLAS, 100-1000 ms con Ashbound). Lo que vuelve tras salir de la GPU ya
+    // esta (la escena conserva su copia y sus texturas fijadas). Con un tope de
+    // triangulos por frame: una celda de golpe no es un tiron de la GPU.
+    if (ray_tracing_.sceneBuilt() && !rt_scene_dirty_) {
+        constexpr std::size_t kRtAddTrianglesPerFrame = 1500000;
+        std::size_t added_triangles = 0;
+        const std::size_t count = std::min({rt_scene_used_.size(), skinned_models_.size(), scene.models().size()});
+        for (std::uint32_t m = 0; m < count && added_triangles < kRtAddTrianglesPerFrame; ++m) {
+            if (!rt_scene_used_[m] || ray_tracing_.hasModel(m) || !modelResident(m)) continue;
+            if (!ray_tracing_.addModel(m, *scene.models()[m], skinned_models_)) {
+                // Sin fila libre (muchos mas modelos que al construirla): como
+                // antes, una reconstruccion entera con su espera.
+                if (!rt_model_edit_pending_) rt_model_edit_time_ = now;
+                rt_model_edit_pending_ = true;
+                continue;
+            }
+            if (!ray_tracing_.hasModel(m)) continue;  // (vacio: nada que trazar)
+            added_triangles += scene.models()[m]->indices.size() / 3;
+            // Visto por los rayos: sus texturas se fijan si se aparta (pinRayTracedTextures).
+            ray_traced_models_ = std::max(ray_traced_models_, m + 1);
+            if (ray_pinned_.size() <= m) ray_pinned_.resize(m + 1, false);
+            ray_pinned_[m] = false;
+            if (m < rt_scene_evicted_.size()) rt_scene_evicted_[m] = false;
+            path_tracing_reset_ = true;
+        }
+        if (added_triangles > 0 && VulkanDevice::debugLog()) {
+            std::cout << "[Vulkan] Escena de rayos: modelos anadidos (" << added_triangles
+                      << " triangulos), sin reconstruirla\n";
+        }
+    }
+    // Modelos cambiados con uploadModel (edicion: otra geometria) o sin fila:
+    // los rayos los ven al poco (rehacer la escena entera es un tiron: no
+    // mientras se editan). Como mucho una reconstruccion por
+    // kModelRebuildCooldown; asi se juntan los que lleguen entre medias.
+    if (rt_model_edit_pending_ && now - rt_model_edit_time_ > std::chrono::seconds(1) &&
+        (!ray_tracing_.sceneBuilt() || now - rt_scene_build_time_ > kModelRebuildCooldown)) {
+        rt_scene_dirty_ = true;
+    }
     // Terrenos nuevos, quitados o con otra resolucion; arboles regenerados.
     std::vector<TerrainPass::RayTracingSource> sources = terrain_pass_.rayTracingSources();
     std::sort(sources.begin(), sources.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
@@ -447,7 +501,7 @@ void VulkanRenderer::prepareRayTracingScene(const scene::Scene& scene, std::vect
     }
     // Solo se reconstruye cuando todos los terrenos tienen ya su malla y su
     // color (calculados en otro hilo): si no, la reconstruccion los dejaria
-    // fuera y habria que repetirla (cada una espera a la GPU).
+    // fuera y habria que repetirla (cada una es un tiron).
     if (terrains_changed && rt_async_terrain_) {
         for (const auto& source : sources) {
             if (source.resolution < 3 || source.splat_resolution < 2 || source.size <= 0.0f) continue;
@@ -464,14 +518,24 @@ void VulkanRenderer::prepareRayTracingScene(const scene::Scene& scene, std::vect
         }
     }
     // Con world partition entran y salen trozos de terreno a menudo: cada
-    // reconstruccion espera a la GPU (waitIdle), asi que como mucho una cada
+    // reconstruccion rehace todas las BLAS (sus envios esperan a los frames
+    // en vuelo, ya sin waitIdle), asi que como mucho una cada
     // kTerrainRebuildCooldown. Mientras, los rayos siguen con los de antes (el
     // cambio se vuelve a detectar cada frame hasta que toca).
     if (terrains_changed && ray_tracing_.sceneBuilt() && now - rt_scene_build_time_ < kTerrainRebuildCooldown) {
         terrains_changed = false;
     }
-    if (terrains_changed || foliage_pass_.speciesRevision() != rt_species_revision_) rt_scene_dirty_ = true;
-    if (rt_scene_dirty_) buildRayTracingScene(scene);
+    const bool species_changed = foliage_pass_.speciesRevision() != rt_species_revision_;
+    const bool models_due = rt_scene_dirty_;  // (modelos nuevos, vueltos o la primera)
+    if (terrains_changed || species_changed) rt_scene_dirty_ = true;
+    if (rt_scene_dirty_) {
+        // Por que se rehace (cada una es un tiron: para atribuirlos en el log).
+        if (ray_tracing_.sceneBuilt()) {
+            std::cout << "[Vulkan] Escena de rayos: se rehace por" << (models_due ? " modelos" : "")
+                      << (terrains_changed ? " terrenos" : "") << (species_changed ? " especies de arboles" : "") << '\n';
+        }
+        buildRayTracingScene(scene);
+    }
     if (!ray_tracing_.sceneBuilt()) return;
 
     // --- Terrenos: esculpido o pintado en su sitio (como mucho 4 veces por

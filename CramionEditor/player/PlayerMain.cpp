@@ -77,8 +77,12 @@
 #include <chrono>
 #include <thread>
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 #include <cmath>
@@ -950,6 +954,9 @@ int runPlayer() {
             const std::filesystem::path game_dll = std::filesystem::path(exe_buffer).parent_path() / "scripts" / "game_scripts.dll";
             std::error_code dll_error;
             if (std::filesystem::exists(game_dll, dll_error)) cpp_scripts.usePrebuilt(game_dll);
+            // La DLL en el propio juego (sin CramionScriptHost.exe ni cambios de
+            // contexto); script.cpp.InProcess = false vuelve al proceso aislado.
+            cpp_scripts.setInProcess(true);
         }
 #else
         // Android: los scripts (libgame_scripts.so) y su proceso aislado
@@ -1164,8 +1171,8 @@ int runPlayer() {
         const auto main_camera = [&](core::Vec3& position, core::Vec3& forward) {
             position = scene.camera().position();
             forward = scene.camera().forward();
-            world.forEachDepthFirst([&](ecs::Entity e) {
-                if (const ecs::Camera* c = e.tryGet<ecs::Camera>(); c != nullptr && c->is_main && e.activeInHierarchy()) {
+            world.forEachActiveDepthFirst([&](ecs::Entity e) {
+                if (const ecs::Camera* c = e.tryGet<ecs::Camera>(); c != nullptr && c->is_main) {
                     position = e.worldPosition();
                     forward = e.forward();
                 }
@@ -1438,8 +1445,8 @@ int runPlayer() {
         // Camera, manda esa.
         const auto has_camera = [&] {
             bool found = false;
-            world.forEachDepthFirst([&](ecs::Entity e) {
-                if (!found && e.has<ecs::Camera>() && e.activeInHierarchy()) found = true;
+            world.forEachActiveDepthFirst([&](ecs::Entity e) {
+                if (!found && e.has<ecs::Camera>()) found = true;
             });
             return found;
         };
@@ -1983,6 +1990,8 @@ int runPlayer() {
                 sync.sync(world, scene, renderer, running ? dt : 0.0f, sync_options);
                 sync_ms = ms_since(t);
                 renderer.setParticles(particles.drawList(scene.camera().position()));
+                // La camara (tras sync): distancia y vista de los efectos con tipo.
+                vfx_system.setCamera(scene.camera().position(), scene.camera().projection() * scene.camera().view());
                 vfx_system.update(world, running ? dt : 0.0f, true, {}, renderer);
                 renderer.setSprites(twod_system.drawList(world, scene.camera().position(), scene.camera().forward()));
                 voxels.syncRenderer(renderer);

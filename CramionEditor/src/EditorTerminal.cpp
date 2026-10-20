@@ -100,9 +100,12 @@ void EditorApp::openTerminal(TerminalKind kind) {
             const std::filesystem::path config = folder / "claude_mcp.json";
             {
                 std::ofstream out(config, std::ios::binary | std::ios::trunc);
+                // Con el token de la sesion (McpServer.h): el archivo es de
+                // esta terminal y se rehace al abrir otra.
                 out << "{\n  \"mcpServers\": {\n    \"cramion\": {\n      \"type\": \"http\",\n      \"url\": "
                        "\"http://127.0.0.1:"
-                    << mcp_.port() << "/mcp\"\n    }\n  }\n}\n";
+                    << mcp_.port() << "/mcp\",\n      \"headers\": { \"Authorization\": \"Bearer " << mcp_.token()
+                    << "\" }\n    }\n  }\n}\n";
             }
             const std::string prompt =
                 "Estas dentro del editor del motor de juegos Cramion. Usa las herramientas MCP del servidor cramion "

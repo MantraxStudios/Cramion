@@ -55,13 +55,17 @@ extern char** environ;
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -84,6 +88,17 @@ const void* g_dll_base = nullptr;
 #endif
 std::vector<std::uint8_t> g_reply;
 const char* g_current = "";  // lo que se esta ejecutando (para el informe de un fallo)
+
+// El canal va por turnos y solo lo usa el hilo principal (el que ejecuta los
+// scripts). Una llamada desde otro hilo (un std::thread del script) cruzaria
+// su mensaje con los del script y las respuestas: no sale, devuelve vacio y se
+// avisa en la Consola desde el hilo principal antes de contestar al motor. El
+// SDK ya lo comprueba; esto es la red de seguridad para las llamadas directas.
+std::thread::id g_main_thread;
+std::mutex g_off_thread_mutex;
+std::vector<std::uint32_t> g_off_thread_ops;  // como mucho 16 distintas hasta el siguiente aviso
+std::uint32_t g_off_thread_count = 0;
+std::atomic<bool> g_off_thread_pending{false};
 
 // --- Exportaciones de la DLL ---
 using AbiFn = std::uint32_t (*)();
@@ -108,6 +123,20 @@ SnapshotFn g_snapshot = nullptr;  // opcional (recarga en caliente)
 RestoreFn g_restore = nullptr;    // opcional
 
 std::unordered_map<std::uint32_t, void*> g_instances;
+
+// Los eventos que sobrescribe cada clase (cramion_class_events, opcional: una
+// DLL anterior no la tiene y se dan todos). Van tras los nombres en la
+// respuesta de Load; un motor anterior no los lee.
+using EventsFn = std::uint32_t (*)(int);
+void writeClassEvents(proto::Writer& extra, int n) {
+#if defined(_WIN32)
+    const auto events = reinterpret_cast<EventsFn>(GetProcAddress(g_dll, "cramion_class_events"));
+#else
+    const auto events = reinterpret_cast<EventsFn>(dlsym(g_dll, "cramion_class_events"));
+#endif
+    extra.u32(static_cast<std::uint32_t>(n));
+    for (int i = 0; i < n; ++i) extra.u32(events != nullptr ? events(i) : ~0u);
+}
 
 // --- Turnos ---
 #if defined(_WIN32)
@@ -169,7 +198,30 @@ void send(ipc::Op op, const std::uint8_t* data, std::size_t size) {
 #endif
 }
 
+std::uint32_t hostRpc(std::uint32_t op, const void* data, std::uint32_t size, const void** reply);
+
+// Los avisos de las llamadas desde otro hilo, como Log del script (el motor
+// aun espera la respuesta, asi que se le puede llamar).
+void reportOffThread() {
+    if (!g_off_thread_pending.exchange(false, std::memory_order_acq_rel)) return;
+    std::vector<std::uint32_t> ops;
+    std::uint32_t count = 0;
+    {
+        const std::lock_guard<std::mutex> lock(g_off_thread_mutex);
+        ops.swap(g_off_thread_ops);
+        count = std::exchange(g_off_thread_count, 0u);
+    }
+    std::string list;
+    for (const std::uint32_t op : ops) list += (list.empty() ? "" : ", ") + std::to_string(op);
+    proto::Writer w;
+    w.u32(2).str(std::to_string(count) + " llamadas a la API desde otro hilo (rpc " + list +
+                 "): no se enviaron y devolvieron vacio. La API de Cramion solo funciona en el hilo de los scripts");
+    const void* reply = nullptr;
+    hostRpc(static_cast<std::uint32_t>(proto::Rpc::Log), w.bytes.data(), static_cast<std::uint32_t>(w.bytes.size()), &reply);
+}
+
 void sendDone(ipc::Status status, const std::string& error, const proto::Writer* extra = nullptr) {
+    reportOffThread();
     proto::Writer w;
     w.u32(static_cast<std::uint32_t>(status)).str(error);
     if (extra != nullptr) w.raw(extra->bytes.data(), extra->bytes.size());
@@ -178,6 +230,18 @@ void sendDone(ipc::Status status, const std::string& error, const proto::Writer*
 
 // La puerta de la DLL al motor: un mensaje y se espera la respuesta.
 std::uint32_t hostRpc(std::uint32_t op, const void* data, std::uint32_t size, const void** reply) {
+    if (std::this_thread::get_id() != g_main_thread) {
+        {
+            const std::lock_guard<std::mutex> lock(g_off_thread_mutex);
+            if (g_off_thread_ops.size() < 16 && std::find(g_off_thread_ops.begin(), g_off_thread_ops.end(), op) == g_off_thread_ops.end()) {
+                g_off_thread_ops.push_back(op);
+            }
+            ++g_off_thread_count;
+        }
+        g_off_thread_pending.store(true, std::memory_order_release);
+        if (reply != nullptr) *reply = nullptr;
+        return 0;
+    }
     proto::Writer w;
     w.u32(op).raw(data, size);
     send(ipc::Op::Rpc, w.bytes.data(), w.bytes.size());
@@ -789,6 +853,7 @@ void load(proto::Reader& r) {
     const int n = count();
     extra.u32(static_cast<std::uint32_t>(n));
     for (int i = 0; i < n; ++i) extra.str(name(i));
+    writeClassEvents(extra, n);
     sendDone(ipc::Status::Ok, {}, &extra);
 }
 #else
@@ -838,6 +903,7 @@ void load(proto::Reader& r) {
     const int n = count();
     extra.u32(static_cast<std::uint32_t>(n));
     for (int i = 0; i < n; ++i) extra.str(name(i));
+    writeClassEvents(extra, n);
     sendDone(ipc::Status::Ok, {}, &extra);
 }
 #endif
@@ -945,6 +1011,55 @@ void restore(proto::Reader& r) {
     else sendDone(ipc::Status::Ok, {});
 }
 
+// Los eventos de una fase en un mensaje (Op::CallMany). Cada llamada va
+// protegida por separado, como un Call: si una falla, las demas siguen y esa
+// instancia se salta en el resto del lote (el motor la desactiva al leer la
+// respuesta). `progress` dice al motor cual va (tiempo maximo por llamada y a
+// quien culpar si el proceso cae).
+void callMany(proto::Reader& r) {
+    static std::vector<std::uint32_t> broken;  // ids que fallaron en este lote
+    broken.clear();
+    const std::uint32_t n = r.u32();
+    proto::Writer failures;
+    std::uint32_t failed = 0;
+    char error[2048];
+    g_current = "un evento";
+    for (std::uint32_t i = 0; i < n && r.ok(); ++i) {
+        const std::uint32_t id = r.u32();
+        const std::uint32_t event = r.u32();
+        const std::uint8_t* raw = r.bytes(sizeof(proto::EventArgs));
+        if (raw == nullptr) break;
+        proto::EventArgs args{};
+        std::memcpy(&args, raw, sizeof(args));
+        g_block->progress.store(i + 1, std::memory_order_release);
+        if (std::find(broken.begin(), broken.end(), id) != broken.end()) continue;
+        const auto it = g_instances.find(id);
+        if (it == g_instances.end()) continue;  // ya destruida (o de antes de un reinicio): nada que hacer
+        error[0] = 0;
+        Job job{1, nullptr, 0, nullptr, nullptr, 0, it->second, event, &args, error, sizeof(error), nullptr, 0};
+        ipc::Status status = ipc::Status::Ok;
+        std::string text;
+        if (!guarded(&job)) {
+            status = ipc::Status::Crash;
+            text = describeFault();
+        } else if (job.result != 0) {
+            status = ipc::Status::Exception;
+            text = error;
+        } else {
+            continue;
+        }
+        broken.push_back(id);
+        // Sin pasarse del bloque: con muchos fallos, los ultimos van sin texto.
+        if (failures.bytes.size() + text.size() > ipc::kDataSize / 2) text.clear();
+        failures.u32(i).u32(static_cast<std::uint32_t>(status)).str(text);
+        ++failed;
+    }
+    g_block->progress.store(0, std::memory_order_release);
+    proto::Writer extra;
+    extra.u32(failed).raw(failures.bytes.data(), failures.bytes.size());
+    sendDone(ipc::Status::Ok, {}, &extra);
+}
+
 void destroy(proto::Reader& r) {
     const std::uint32_t id = r.u32();
     const auto it = g_instances.find(id);
@@ -967,6 +1082,7 @@ void destroy(proto::Reader& r) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    g_main_thread = std::this_thread::get_id();
 #if defined(_WIN32)
     // Sin cuadros de dialogo de Windows si algo falla: el motor da el error.
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
@@ -1073,6 +1189,7 @@ int main(int argc, char** argv) {
                 else sendDone(ipc::Status::Ok, {});
                 break;
             }
+            case ipc::Op::CallMany: callMany(r); break;
             case ipc::Op::Destroy: destroy(r); break;
             case ipc::Op::Describe: describe(); break;
             case ipc::Op::Snapshot: snapshot(r); break;

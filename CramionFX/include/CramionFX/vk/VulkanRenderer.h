@@ -25,6 +25,7 @@
 #include "CramionFX/vk/VideoTextures.h"
 #include "CramionFX/vk/BakedGi.h"
 #include "CramionFX/vk/LightmapAtlas.h"
+#include "CramionFX/vk/DecalAtlas.h"
 #include "CramionFX/vk/WaterPass.h"
 #include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/GraphicsSettings.h"
@@ -57,6 +58,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -185,6 +187,15 @@ public:
     // parar la GPU ni resubir lo demas. Para las mallas creadas por codigo
     // (el trazado de rayos no las ve hasta la siguiente uploadModels).
     void uploadModel(const scene::Scene& scene, std::uint32_t index);
+    // Igual, pero en los hilos de streaming (recarga en caliente de assets):
+    // mientras se hace se sigue viendo el de antes y entra al terminar, sin
+    // esperar a la GPU, con el detalle de texturas que ya tenia. Fuera de la
+    // GPU (streaming) no hace nada: vuelve solo con los datos nuevos. Lo que
+    // aun no se subio lo sube la cola normal. Llamarlo despues de cambiar el
+    // modelo (Scene::replaceModel), que espera y tira la subida de antes.
+    // (Los trabajos terminados entran en streamModels, en los frames que se
+    // presentan.)
+    void reuploadModelAsync(const scene::Scene& scene, std::uint32_t index);
     // Lo nuevo de la escena (de uploadedModelCount() en adelante) a la GPU en
     // hilos aparte: cada llamada mete en orden lo que ya esta listo y lanza lo
     // siguiente, sin esperar nunca. Si la escena se vacio (otra escena), suelta
@@ -205,6 +216,10 @@ public:
         streaming_min_pixels_ = std::max(min_pixels, 0.05f);
         streaming_idle_seconds_ = std::max(idle_seconds, 0.5f);
     }
+    // Con la VRAM por debajo del 60 % del presupuesto, lo que no se ve espera
+    // al menos esto antes de salir (0 = solo IdleSeconds). Por encima del 80 %
+    // sale lo menos visto aunque no lleve IdleSeconds (ver streamModels).
+    void setModelStreamingRelaxed(float seconds) { streaming_relaxed_seconds_ = std::max(seconds, 0.0f); }
     // Streaming de texturas por mips: cada modelo sube sus texturas al
     // detalle que pide su tamano en pantalla (sube enseguida, baja tras unos
     // segundos pequeno). `bias` > 0 = menos detalle (memoria), < 0 = mas.
@@ -220,12 +235,20 @@ public:
     bool modelResident(std::uint32_t index) const {
         return index < skinned_models_.size() && (index >= model_evicted_.size() || !model_evicted_[index]);
     }
+    // Algun hilo de streaming esta subiendo (o tiene en cola) ese modelo: sus
+    // datos de la CPU no se pueden tocar sin esperarlo (Scene::modelData).
+    bool modelUploading(std::uint32_t index) const { return modelJobPending(index); }
     std::uint32_t evictedModelCount() const;
 
     // Dibuja un frame de la escena indicada.
     // `present` = false: dibuja la vista (a su imagen de vista) sin
     // presentarla ni la interfaz: el editor la usa para la segunda vista.
+    // Si la GPU se pierde (vk::DeviceLostError, o una fence que agota su tope)
+    // escribe el informe (VulkanDevice::reportDeviceLost: marcas y
+    // VK_EXT_device_fault), llama al aviso de VulkanDevice::setDeviceLostHandler
+    // (autoguardado) y relanza la excepcion. Despues no dibuja nada.
     void drawFrame(const scene::Scene& scene, bool present = true);
+    bool deviceLost() const { return VulkanDevice::deviceLostOccurred(); }
     // Ayudas del editor (contorno, gizmos, picking): solo en la vista Escena.
     void setEditorHelpersEnabled(bool enabled) { editor_helpers_ = enabled; }
 
@@ -249,6 +272,11 @@ public:
     // para no apuntar a una imagen que se va a destruir. true = se recreo.
     bool applyPendingResize();
     void waitIdle() const;
+    // Espera solo a los frames en vuelo (sus fences, con tope), no a toda la
+    // GPU: las subidas del streaming y la cola de transferencia siguen. Para
+    // reescribir un descriptor set compartido por todos los frames (los de
+    // material de las Render Textures). Fuera de drawFrame.
+    void waitFramesInFlight() const;
 
     // --- Ajustes de sombras ---
     void setShadowsEnabled(bool enabled) {
@@ -285,6 +313,9 @@ public:
     std::uint32_t maxTextureAnisotropy() const;
     // Objetos de menos de un pixel que no se dibujaron el ultimo frame.
     std::uint32_t culledSmallActors() const { return culled_small_; }
+    // Luces locales que fueron por clusteres el ultimo frame de pantalla (las
+    // que tocan la vista y no caben entre las 32 puntuales y 8 focos principales).
+    std::uint32_t clusteredLights() const { return cluster_light_count_; }
     // Resolucion a la que se dibuja la escena (la de pantalla por la escala).
     vk::Extent2D renderExtent() const { return render_extent_; }
     bool shadowsEnabled() const { return shadows_enabled_; }
@@ -455,6 +486,14 @@ public:
         float submit_ms = 0.0f;      // enviar y presentar
         float upload_ms = 0.0f;      // uploadModels / uploadModel (subir mallas y texturas)
         int uploads = 0;
+        // Dentro de actors_ms (para atribuir los tirones): streaming de la
+        // GPU, buffers del culling, escena de rayos (con sus reconstrucciones)
+        // y su TLAS. Fuera: vegetacion y terreno subidos en segundo plano.
+        float stream_ms = 0.0f;
+        float culling_ms = 0.0f;
+        float rt_scene_ms = 0.0f;
+        float rt_tlas_ms = 0.0f;
+        float async_poll_ms = 0.0f;
         // Tiempo de CPU de grabar cada pase (nombre de la marca de la GPU).
         std::vector<std::pair<std::string, float>> passes;
     };
@@ -483,6 +522,18 @@ public:
     // .crshader): los materiales que lo usan lo ven en el frame siguiente.
     bool updateSurfaceShader(std::int32_t id, const std::vector<std::uint32_t>& vertex_spirv,
                              const std::vector<std::uint32_t>& fragment_spirv, std::string* error = nullptr);
+    // Con la sombra de vertex() (surface_shadow.vert; vacio = la estandar) y
+    // el dominio: `transparent` (domain transparent) se dibuja en la pasada
+    // del vidrio con el layout del vidrio (lee la copia de la escena y su
+    // profundidad); sus materiales van como transparentes (MaterialData).
+    std::int32_t createSurfaceShader(const std::vector<std::uint32_t>& vertex_spirv,
+                                     const std::vector<std::uint32_t>& fragment_spirv,
+                                     const std::vector<std::uint32_t>& shadow_vertex_spirv, bool transparent,
+                                     std::string* error = nullptr);
+    bool updateSurfaceShader(std::int32_t id, const std::vector<std::uint32_t>& vertex_spirv,
+                             const std::vector<std::uint32_t>& fragment_spirv,
+                             const std::vector<std::uint32_t>& shadow_vertex_spirv, bool transparent,
+                             std::string* error = nullptr);
     std::optional<PickResult> takePickResult();
     bool pickPending() const;
 
@@ -557,13 +608,17 @@ public:
     // Otra escena: la cache de radiancia de los rayos (luz rebotada guardada
     // en el mundo) era de la anterior. Rehacer la escena de rayos ya no la
     // vacia (en el mismo nivel sigue valiendo).
-    void resetRayTracingCache() { ray_tracing_.resetCache(); }
+    void resetRayTracingCache() {
+        ray_tracing_.resetCache();
+        rt_scene_used_.clear();  // otra escena: los indices de modelo ya son otros
+    }
     // Otra escena: los dos cubos de la sonda (y lo que ven, y con que luz) eran
     // de la anterior, y probeCaptureDue podia volver a uno de ellos. Como al
     // arrancar: solo cielo hasta la primera captura, que entra sin fundido.
     void resetReflectionProbe() {
         probe_ready_ = false;
         probe_face_ = -1;
+        probe_finish_pending_ = false;
         probe_fade_ = 1.0f;
         probe_slow_seconds_ = 0.0f;
         probe_still_seconds_ = 0.0f;
@@ -671,7 +726,7 @@ public:
     // Decals: estampas (textura o color), charcos locales y manchas de
     // humedad proyectados sobre lo que haya dentro de su caja, como los
     // Decal Actors de Unreal. Los charcos se suman a los de la lluvia global.
-    // Hasta kMaxDecals por frame (el resto se ignora).
+    // Hasta kMaxDecals que toquen la vista por frame (el resto se ignora).
     struct Decal {
         core::Mat4 world_to_decal = core::Mat4::identity();  // mundo -> caja [-0.5, 0.5]^3
         core::Vec3 axis{0.0f, 1.0f, 0.0f};  // eje Y de la caja en el mundo (se proyecta a lo largo)
@@ -685,12 +740,19 @@ public:
         float roughness_amount = 0.0f;
         float metallic = 0.0f;
         float amount = 1.0f;  // charco: nivel del agua; humedad: cuanto moja
+        // Canales opcionales de la estampa (ranuras de loadDecalTexture, -1 = ninguno).
+        int normal_texture = -1;
+        float normal_strength = 1.0f;  // negativa: verde invertido (DirectX)
+        int orm_texture = -1;          // r oclusion, g rugosidad, b metalicidad
+        int emission_texture = -1;     // sin ella, emite el color de la estampa
+        core::Vec3 emission{};         // HDR lineal (color x intensidad; 0 = sin emision)
     };
     void setDecals(std::vector<Decal> decals) { decals_ = std::move(decals); }
     const std::vector<Decal>& decals() const { return decals_; }
-    // Carga una imagen (PNG, JPG, TGA...) para los decals y devuelve su
-    // ranura (0..kMaxDecalTextures-1); la misma ruta devuelve la misma
-    // ranura. -1 si no se pudo leer o no quedan ranuras.
+    // Carga una imagen (PNG, JPG, TGA...) para los decals (color, normal, ORM
+    // o emision) y devuelve su ranura (0..kMaxDecalTextures-1); la misma ruta
+    // devuelve la misma ranura. -1 si no se pudo leer o no quedan ranuras. Se
+    // lee en otro hilo y acaba en una capa del atlas de decals.
     int loadDecalTexture(const std::filesystem::path& file);
 
     // Nubes volumetricas.
@@ -886,6 +948,10 @@ public:
     void setFoliageSettings(const FoliageSettings& settings) { foliage_pass_.setSettings(settings); }
     void setFoliageSpecies(const std::array<asset::TreeSpecies, FoliagePass::kSpecies>& species) {
         foliage_pass_.setSpecies(species);
+    }
+    // Las especies que se dibujan ahora (las pendientes aun no cuentan).
+    const std::array<asset::TreeSpecies, FoliagePass::kSpecies>& foliageSpecies() const {
+        return foliage_pass_.species();
     }
     // Origen del mundo (origen flotante): las instancias van en coordenadas absolutas.
     void setFoliageOrigin(const core::Vec3& origin) { foliage_pass_.setOrigin(origin); }
@@ -1116,6 +1182,18 @@ private:
     void updateUniforms(const scene::Scene& scene, const scene::Camera& camera,
                         std::uint32_t frame_index);
 
+    // --- Luces locales por clusteres (VulkanRendererLights.cpp) ---
+    // Reparte cluster_lights_ (las que tocan la vista y no caben en GpuLights)
+    // en los clusteres de la vista y las sube al buffer de este frame.
+    // `screen_grid`: columnas y filas de pantalla (solo la vista principal; las
+    // demas, una tesela con sus rebanadas de profundidad).
+    void buildLightClusters(const core::Mat4& view_projection, const scene::Camera& camera, bool screen_grid,
+                            std::uint32_t frame_index);
+    void createLightClusterBuffers();
+    void destroyLightClusterBuffers();
+    // Bindings 29 y 30 del set de la iluminacion y 9 y 10 del set 2 del vidrio.
+    void writeLightClusterDescriptors(std::uint32_t frame_index);
+
     // Sonda de reflexion: si toca (re)capturarla, empieza o sigue la captura.
     bool probeCaptureDue(const scene::Scene& scene);
     // Limites efectivos de la sonda (los de probe_limits_, o los del nivel de
@@ -1130,6 +1208,11 @@ private:
     // Dibuja la cara que toca desde la sonda y la copia al cubo (con la sexta,
     // lo prefiltra). Se envia y se espera aparte, antes del frame normal.
     void captureProbeFace(const scene::Scene& scene);
+    // Ultima cara de una captura ya terminada en la GPU (su fence): lee lo que
+    // ve el cubo y lo pone en uso. Sin esperar: si aun no termino, otro frame.
+    void finishProbeCapture();
+    // El frame en si (drawFrame lo envuelve con la captura del DeviceLost).
+    void drawFrameUnguarded(const scene::Scene& scene, bool present);
     void recordCommandBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t image_index,
                              std::uint32_t frame_index);
     void recordShadowPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
@@ -1186,9 +1269,12 @@ private:
     void drawCpuActors(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Deja lista la pipeline del material (la estandar o la de su shader de
     // superficie) y rellena lo que el push constant lleva de ese shader.
+    // `dissolve`: algun objeto del dibujo tiene opacidad por instancia < 1: la
+    // pipeline con recorte aunque el material sea opaco (su disolucion por
+    // tramado necesita el discard; la opaca no lo tiene, por el early-Z).
     void bindMaterialPipeline(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                               const SkinnedModel::Material& material, std::int32_t& bound_shader,
-                              GpuSkinnedPush& push);
+                              GpuSkinnedPush& push, bool dissolve = false);
     std::uint32_t pushSurfaceParams(std::uint32_t frame_index, const std::array<core::Vec4, 8>& params);
     void drawGpuClusters(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                          std::uint32_t phase);
@@ -1239,6 +1325,12 @@ private:
     void recordOutlinePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Particulas sobre la imagen HDR (despues del vidrio, antes del bloom).
     void recordParticlePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Buffer de distorsion (distortion_): lo borra y dibuja las particulas de
+    // distorsion si `draw` (las particulas se prepararon este frame). Se llama
+    // cada frame: sin ellas solo borra una vez. `vfx_draw`: se grabo el pase
+    // del VFX Graph este frame (sus efectos con mezcla Distorsion tambien).
+    void recordDistortionPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index, bool draw,
+                              bool vfx_draw = false);
     // Sprites 2D (VulkanRendererSprites.cpp), antes de las particulas.
     void recordSpritePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Liquidos (VulkanRendererFluid.cpp): profundidad, grosor, suavizado y sombreado.
@@ -1349,6 +1441,10 @@ private:
     IblProbe ibl_probe_{};
     // Rayos de luz, a media resolucion.
     VulkanImage light_shafts_{};
+    // Desplazamiento en UV de las particulas de distorsion (RG16F, resolucion
+    // interna; ParticlePass::kDistortionFormat). Lo lee composite.frag.
+    VulkanImage distortion_{};
+    bool distortion_dirty_ = true;  // tiene algo (o nunca se borro): hay que borrarlo
     // Escalado (resolucion de pantalla): resultado del TAA/EASU, historia del
     // TAA, imagen final (tras la nitidez) y la profundidad escalada para los
     // gizmos.
@@ -1380,11 +1476,42 @@ private:
     bool rain_map_ready_ = false;
     std::vector<VulkanBuffer> weather_buffers_;
     std::vector<Decal> decals_;
-    std::array<VulkanTexture, kMaxDecalTextures> decal_textures_;
+    // Ranura de loadDecalTexture -> capa del atlas + 1 (0 = aun cargandose o
+    // sin sitio: el decal se dibuja sin esa imagen).
+    std::array<int, kMaxDecalTextures> decal_layers_{};
     std::array<std::filesystem::path, kMaxDecalTextures> decal_texture_paths_;
+    DecalAtlas decal_atlas_;
     VulkanTexture decal_white_;
     vk::raii::Sampler decal_sampler_{nullptr};
-    void writeDecalTextureDescriptors();
+    // Los decals de cada hueco de frame (GpuDecalBuffer, binding 9 del set de
+    // la geometria) y lo que se junta en la CPU (sin reservar cada frame).
+    std::vector<VulkanBuffer> decal_buffers_;
+    std::vector<GpuDecal> decal_scratch_;
+    std::vector<std::uint32_t> decal_mask_scratch_;
+    int decalLayer(int slot) const {
+        return slot >= 0 && slot < static_cast<int>(kMaxDecalTextures) ? decal_layers_[static_cast<std::size_t>(slot)] - 1
+                                                                       : -1;
+    }
+    // El atlas de los decals en el set de geometria. `frame` < 0: todos
+    // los frames (al crear, con la GPU parada); si no, solo el de ese hueco
+    // (con su fence esperada).
+    void writeDecalTextureDescriptors(int frame = -1);
+    // Huecos de frame (bit por hueco) cuyo set aun no tiene las texturas de
+    // decal de ahora: drawFrame los escribe al esperar su fence (sin waitIdle
+    // al cargar una textura de decal).
+    std::uint32_t decal_sets_dirty_ = 0;
+    // Texturas de decal leyendose (stbi) en un hilo de streaming: la ranura
+    // queda apartada (su ruta) y el decal va sin esa imagen hasta que llega
+    // (adoptDecalTextures, al empezar cada frame, la sube a su capa del atlas
+    // sin esperar a la GPU). Antes, en el hilo principal.
+    struct DecalTextureLoad {
+        std::atomic<int> state{0};  // 0 = en curso, 1 = lista, 2 = fallo
+        std::vector<std::uint8_t> pixels;  // RGBA8
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+    };
+    std::array<std::shared_ptr<DecalTextureLoad>, kMaxDecalTextures> decal_loads_{};
+    void adoptDecalTextures();
     float wetness_ = 0.0f;
     float puddles_ = 0.0f;
     float weather_time_ = 0.0f;
@@ -1480,23 +1607,30 @@ private:
     };
     std::vector<RetiredModel> retired_models_;
     // Los que conoce el trazado de rayos (sus descriptores apuntan a sus
-    // texturas y buffers): si uploadModel los reemplaza, siguen vivos hasta la
-    // siguiente uploadModels (los rayos ven la version anterior).
+    // texturas): si uploadModel los reemplaza o el streaming los saca, sus
+    // texturas siguen vivas hasta la siguiente reconstruccion (los rayos ven
+    // la version anterior). Solo las texturas: los triangulos ya los copio la
+    // escena de rayos, asi que mallas, sets y uniformes del modelo salen como
+    // los demas (antes se quedaba el SkinnedModel entero: con RT, expulsar no
+    // liberaba nada y un cambio de detalle de texturas duplicaba el modelo).
     std::uint32_t ray_traced_models_ = 0;
     std::vector<bool> ray_pinned_;
-    std::vector<SkinnedModel> ray_pinned_models_;
+    std::vector<std::shared_ptr<VulkanTexture>> ray_pinned_textures_;
+    void pinRayTracedTextures(std::uint32_t index);
     // Residencia (setModelStreaming): fuera de la GPU, lo grande que se vio cada
     // modelo este frame (pixeles) y desde cuando no se ve.
     bool model_streaming_ = true;
     float streaming_min_pixels_ = 0.5f;
     float streaming_idle_seconds_ = 5.0f;
+    float streaming_relaxed_seconds_ = 30.0f;
     std::vector<bool> model_evicted_;
     // Subiendo de vuelta un modelo que salio (no es un cambio: la escena de
     // rayos conserva su copia) y los que estaban fuera al construirla.
     bool streaming_restore_ = false;
     std::vector<bool> rt_scene_evicted_;
     // Los modelos que entraron en la escena de rayos (tenian instancias al
-    // construirla); uno que se dibuja sin estar la pide otra vez.
+    // construirla) o que la piden: uno que se dibuja sin estar se apunta y la
+    // pide otra vez; la siguiente le hace BLAS aunque ya no se dibuje.
     std::vector<bool> rt_scene_used_;
     std::vector<float> model_pixels_;
     bool texture_streaming_ = true;
@@ -1653,6 +1787,11 @@ private:
         std::uint64_t id = 0;
         bool cast_shadows = true;
         bool shadows_only = false;
+        // Opacidad por instancia < 1 (scene::Actor::tint.w): se disuelve, con
+        // la pipeline con recorte (bindMaterialPipeline).
+        bool dissolve = false;
+        // Esa opacidad (0..1): la sombra se disuelve igual (recordActorShadows).
+        float opacity = 1.0f;
         // Matrices en el buffer de huesos (huesos + la instancia, si hay).
         std::uint32_t bone_entries = 0;
         // LOD elegido este frame (0 = la malla original) y, si no es 0, las
@@ -1665,8 +1804,27 @@ private:
         // Escala mayor del objeto (el error de los LODs va en unidades del
         // modelo).
         float max_scale = 1.0f;
+        // --- Fundido de LOD (dither crossfade) ---
+        // lod_fade < 1: viene de lod_fade_from y entra `lod` (0..1). El nivel
+        // que sale va en los lotes de la GPU con su propio hueco
+        // (lod_fade_slot, una copia de la matriz de la instancia detras de
+        // ella), y el registro de cada hueco lleva la trama (VulkanRendererLightmaps).
+        std::uint32_t lod_fade_from = 0;
+        float lod_fade = 1.0f;
+        std::uint32_t lod_fade_slot = UINT32_MAX;
     };
     std::vector<ActorDraw> actor_draws_;
+    // Fundidos de LOD en curso (vista principal), por identidad del actor.
+    struct LodFade {
+        std::uint32_t from = 0;
+        std::uint32_t to = 0;
+        float progress = 0.0f;
+        std::uint64_t frame = 0;  // ultimo frame en que se vio (los demas se borran)
+    };
+    std::unordered_map<std::uint64_t, LodFade> lod_fades_;
+    std::chrono::steady_clock::time_point lod_fade_clock_{};
+    float lod_fade_dt_ = 0.0f;
+    std::uint64_t lod_fade_frame_ = 0;
     // Material batching: los escenarios del mismo modelo y material (de
     // todos los actores) son UN lote, una sola llamada indirecta instanciada.
     struct DrawBatch {
@@ -1676,6 +1834,7 @@ private:
         std::uint32_t capacity = 0;
         bool mesh = false;    // por mesh shaders (gbuffer_meshlet.*): comandos en formato meshlet
         bool closed = false;  // malla cerrada: el task shader descarta por cono
+        bool dissolve = false;  // algun actor del lote con opacidad por instancia < 1
     };
     std::vector<DrawBatch> draw_batches_;
     // Caja en el mundo de la submalla `i` del LOD que dibuja el actor (nullptr:
@@ -1729,6 +1888,9 @@ private:
         core::Vec3 center{};
         float radius = 0.0f;
         bool cast_shadows = true;
+        // Opacidad por instancia (ActorDraw::opacity): si cambia, su sombra
+        // tambien (disuelta), como si se moviera.
+        float opacity = 1.0f;
         bool animated = false;     // con esqueleto (no va en la cache de las cascadas)
         bool per_submesh = false;
         bool lod0_bounds = false;
@@ -1954,7 +2116,7 @@ private:
     // De que ojo son los tiempos de GPU que guarda cada hueco de frame (-1:
     // de otra vista). El presupuesto en VR suma los dos ojos del mismo frame
     // (el primero lleva sombras y cielo); el espejo de la ventana no mide.
-    std::array<int, kMaxFramesInFlight> slot_xr_eye_{-1, -1};
+    std::array<int, kMaxFramesInFlight> slot_xr_eye_{-1, -1, -1};
     float xr_right_eye_gpu_ms_ = 0.0f;
     bool xr_budget_applied_ = false;
     float frame_rate_cap_ = 0.0f;  // setFrameRateCap
@@ -2003,6 +2165,7 @@ private:
     PrecipitationSettings precipitation_{};
     PrecipitationPass precipitation_pass_{};
     core::Vec3 precipitation_light_{0.5f, 0.5f, 0.5f};  // luz de las gotas (de las luces del frame)
+    core::Vec3 vfx_ambient_light_{0.3f, 0.3f, 0.3f};    // la misma sin el sol (VFX "lit": el sol va aparte)
     core::Mat4 camera_view_ = core::Mat4::identity();
     // Post-proceso y efectos de pantalla (unica fuente de verdad).
     PostProcessSettings post_{};
@@ -2046,6 +2209,10 @@ private:
     bool capturing_ = false;
     // Cara que toca capturar (-1 = ninguna captura en curso).
     int probe_face_ = -1;
+    // La ultima cara se envio y falta recogerla (finishProbeCapture), y en
+    // que cubo se escribio.
+    bool probe_finish_pending_ = false;
+    std::uint32_t probe_finish_cube_ = 0;
     // Donde y con que sol se hace la captura en curso...
     core::Vec3 probe_capture_position_{};
     core::Vec3 probe_capture_sun_{0.0f, 1.0f, 0.0f};
@@ -2129,6 +2296,25 @@ private:
     std::vector<std::uint32_t> surface_param_used_;
     // Pipelines de los shaders de superficie del usuario (por id).
     std::vector<vk::raii::Pipeline> surface_pipelines_;
+    // Por id: dominio transparente (su pipeline es de la pasada del vidrio, no
+    // del G-buffer) y sombra con vertex() (cascadas y luces locales; nulas =
+    // la estandar).
+    std::vector<std::uint8_t> surface_transparent_;
+    std::vector<std::array<vk::raii::Pipeline, 2>> surface_shadow_pipelines_;
+    // Ultimo frame que dibujo la sombra de un vertex(): mientras sigan en la
+    // escena las cascadas no se saltan su turno (como el viento de la
+    // vegetacion), porque esa sombra se mueve sin cambiar ningun transform.
+    std::uint64_t surface_shadow_frame_ = 0;
+    bool surfaceTransparent(std::int32_t shader) const {
+        return shader >= 0 && static_cast<std::size_t>(shader) < surface_transparent_.size() &&
+               surface_transparent_[static_cast<std::size_t>(shader)] != 0;
+    }
+    // La sombra de vertex() del material (nula: la estandar).
+    vk::Pipeline surfaceShadowPipeline(const SkinnedModel::Material& material, bool local) const {
+        const std::int32_t shader = material.surface_shader;
+        if (shader < 0 || static_cast<std::size_t>(shader) >= surface_shadow_pipelines_.size()) return vk::Pipeline{};
+        return *surface_shadow_pipelines_[static_cast<std::size_t>(shader)][local ? 1 : 0];
+    }
     vk::raii::DescriptorPool skin_pool_{nullptr};
     std::vector<vk::raii::DescriptorSet> skin_sets_;
     // Set 2 del vidrio, por frame (SkinnedPass::glassSetLayout).
@@ -2295,6 +2481,18 @@ private:
 
     std::vector<VulkanBuffer> camera_buffers_;
     std::vector<VulkanBuffer> light_buffers_;
+    // Luces por clusteres, por frame en vuelo (crecen al doble; la fence del
+    // frame garantiza que la GPU ya no los lee): cabecera + GpuClusterLight y
+    // las listas de cada cluster. En la CPU, lo de este frame (se reutiliza).
+    std::vector<VulkanBuffer> cluster_light_buffers_;
+    std::vector<VulkanBuffer> cluster_grid_buffers_;
+    std::vector<GpuClusterLight> cluster_lights_;
+    std::vector<std::uint32_t> cluster_items_;
+    struct ClusterSpan {
+        std::uint16_t c0, c1, r0, r1, s0, s1;  // columnas, filas y rebanadas (inclusive)
+    };
+    std::vector<ClusterSpan> cluster_spans_;
+    std::uint32_t cluster_light_count_ = 0;  // estadistica: luces por clusteres este frame
     std::vector<VulkanBuffer> fog_volume_buffers_;  // GpuFogVolumes por frame (luz volumetrica)
     std::vector<FogVolume> fog_volumes_;
     std::vector<VulkanBuffer> shadow_buffers_;

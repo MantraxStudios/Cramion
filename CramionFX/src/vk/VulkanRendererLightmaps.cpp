@@ -23,6 +23,24 @@ namespace {
 
 constexpr std::size_t kInitialRecords = 256;
 
+// Half float de un valor positivo (la escala de la emision por instancia:
+// unpackHalf2x16 en lightmap_common.glsl). Sin subnormales: por debajo de
+// 6e-5, 0. Redondeo al mas cercano.
+std::uint32_t packPositiveHalf(float value) {
+    value = std::clamp(value, 0.0f, 65504.0f);
+    if (value < 6.1035e-5f) return 0u;
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    bits += 0x1000u;  // redondeo de los 13 bits que se pierden
+    const std::uint32_t exponent = ((bits >> 23) & 0xFFu) - 127u + 15u;
+    return std::min((exponent << 10) | ((bits >> 13) & 0x3FFu), 0x7BFFu);
+}
+
+std::uint32_t packUnorm8(const core::Vec4& v) {
+    const auto byte = [](float c) { return static_cast<std::uint32_t>(std::clamp(c, 0.0f, 1.0f) * 255.0f + 0.5f); };
+    return byte(v.x) | (byte(v.y) << 8) | (byte(v.z) << 16) | (byte(v.w) << 24);
+}
+
 }  // namespace
 
 void VulkanRenderer::createLightmapResources() {
@@ -131,9 +149,34 @@ void VulkanRenderer::writeLightmapRecords(const scene::Scene& scene, std::uint32
     const std::size_t count = motion_offset_;  // huecos de este frame (la mitad de bone_staging_)
     if (count == 0) return;
     lightmap_record_staging_.assign(count, GpuLightmapRecord{});
+    const std::vector<scene::Actor>& actors = scene.actors();
+    // Parametros por instancia (tinte, opacidad, escala de la emision, sin
+    // decals, INSTANCE_DATA): en el
+    // primer hueco de cada dibujo (lo que lee la GPU con bone_offset) y en el
+    // de su matriz (gl_InstanceIndex en los lotes). Solo los que no son los
+    // de por defecto: casi ninguno.
+    for (const ActorDraw& draw : actor_draws_) {
+        if (draw.bone_entries == 0 || draw.scene_actor >= actors.size()) continue;
+        const scene::Actor& actor = actors[draw.scene_actor];
+        if (!actor.hasInstanceParams()) continue;
+        const std::uint32_t tint = packUnorm8(actor.tint);
+        const std::uint32_t emission = packPositiveHalf(actor.emission_scale);
+        const std::size_t first = draw.bone_offset;
+        const std::size_t last = static_cast<std::size_t>(draw.bone_offset) + draw.bone_entries - 1;
+        for (const std::size_t slot : {first, last}) {
+            if (slot >= count) continue;
+            lightmap_record_staging_[slot].tint = tint;
+            lightmap_record_staging_[slot].emission = emission;
+            lightmap_record_staging_[slot].flags = actor.receive_decals ? 0u : GpuLightmapRecord::kFlagNoDecals;
+            // INSTANCE_DATA(i) de los .crshader.
+            static_assert(sizeof(scene::Actor::instance_data) == sizeof(core::Vec4) * kInstanceDataCount);
+            for (std::uint32_t k = 0; k < kInstanceDataCount; ++k) {
+                lightmap_record_staging_[slot].data[k] = actor.instance_data[k];
+            }
+        }
+    }
     const bool active = lightmapsActive() || (lightmaps_uploaded_ && lightmapDebugView() > 0);
     if (active) {
-        const std::vector<scene::Actor>& actors = scene.actors();
         for (const ActorDraw& draw : actor_draws_) {
             if (!draw.per_submesh || draw.bone_entries == 0 || draw.model >= skinned_models_.size()) continue;
             if (!skinned_models_[draw.model].hasLightmapUvs() || draw.scene_actor >= actors.size()) continue;
@@ -146,6 +189,24 @@ void VulkanRenderer::writeLightmapRecords(const scene::Scene& scene, std::uint32
             record.scale_offset = actor.lightmap_scale_offset;
             record.layer = static_cast<std::uint32_t>(actor.lightmap_layer);
         }
+    }
+    // --- Fundido de LOD (dither crossfade) ---
+    // 16 bits altos de `emission` (los bajos son la escala de la emision):
+    // 0 = sin fundido; bits 0..14 = avance (0..1) y bit 15 = este hueco es el
+    // nivel que sale (lodFadeDiscard en lightmap_common.glsl). El hueco del
+    // que sale es una copia del de la instancia (tinte, lightmap...).
+    for (const ActorDraw& draw : actor_draws_) {
+        if (draw.lod_fade_slot == UINT32_MAX || draw.bone_entries == 0) continue;
+        const std::size_t incoming = static_cast<std::size_t>(draw.bone_offset) + draw.bone_entries - 1;
+        const std::size_t outgoing = draw.lod_fade_slot;
+        if (incoming >= count || outgoing >= count) continue;
+        const auto progress = static_cast<std::uint32_t>(std::clamp(draw.lod_fade, 0.0f, 1.0f) * 32767.0f + 0.5f);
+        const std::uint32_t fade = std::clamp(progress, 1u, 32767u);
+        lightmap_record_staging_[outgoing] = lightmap_record_staging_[incoming];
+        GpuLightmapRecord& in = lightmap_record_staging_[incoming];
+        GpuLightmapRecord& out = lightmap_record_staging_[outgoing];
+        in.emission = (in.emission & 0xFFFFu) | (fade << 16);
+        out.emission = (out.emission & 0xFFFFu) | ((fade | 0x8000u) << 16);
     }
     VulkanBuffer& buffer = lightmap_record_buffers_[frame_index];
     const std::size_t bytes = count * sizeof(GpuLightmapRecord);

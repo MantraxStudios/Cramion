@@ -170,6 +170,7 @@ void GpuCulling::destroy() {
     cluster_capacity_ = 0;
     group_capacity_ = 0;
     slot_capacity_ = 0;
+    sets_dirty_ = 0;
 }
 
 void GpuCulling::resize(const VulkanDevice& device, const VulkanImage& depth) {
@@ -322,11 +323,13 @@ void GpuCulling::createBuffers(const VulkanDevice& device, std::uint32_t cluster
                           vk::MemoryPropertyFlagBits::eHostCoherent);
     }
 
-    // Visibilidad a 0: el primer frame todo se prueba en la fase tardia.
-    const std::vector<std::uint32_t> zeros(cluster_capacity, 0);
-    visibility_ = VulkanBuffer::createDeviceLocal(device, zeros.data(),
-                                                  sizeof(std::uint32_t) * cluster_capacity,
-                                                  vk::BufferUsageFlagBits::eStorageBuffer);
+    // Visibilidad a 0: el primer frame todo se prueba en la fase tardia. Se
+    // borra en la GPU con el primer recordCull (antes, una subida con
+    // submitOneTime: su fence espera tambien a los frames en vuelo).
+    visibility_.create(device, sizeof(std::uint32_t) * cluster_capacity,
+                       vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
+                       vk::MemoryPropertyFlagBits::eDeviceLocal);
+    visibility_cleared_ = false;
 
     for (std::uint32_t phase = 0; phase < 2; ++phase) {
         commands_[phase].create(device, static_cast<vk::DeviceSize>(kCommandSize) * slot_capacity,
@@ -346,8 +349,8 @@ void GpuCulling::createBuffers(const VulkanDevice& device, std::uint32_t cluster
     slot_capacity_ = slot_capacity;
 }
 
-void GpuCulling::writeCullSets(const VulkanDevice& device,
-                               const std::vector<VulkanBuffer>& camera_buffers) {
+void GpuCulling::writeCullSets(const VulkanDevice& device, const std::vector<VulkanBuffer>& camera_buffers,
+                               std::uint32_t frame) {
     const auto buffer_info = [](const VulkanBuffer& buffer) {
         vk::DescriptorBufferInfo info{};
         info.buffer = *buffer.handle();
@@ -355,7 +358,7 @@ void GpuCulling::writeCullSets(const VulkanDevice& device,
         return info;
     };
 
-    for (std::uint32_t frame = 0; frame < kMaxFramesInFlight; ++frame) {
+    {
         for (std::uint32_t phase = 0; phase < 2; ++phase) {
             const vk::raii::DescriptorSet& set = cull_sets_[frame * 2 + phase];
 
@@ -396,14 +399,47 @@ void GpuCulling::setClusters(const VulkanDevice& device, std::uint32_t frame_ind
     const auto count = static_cast<std::uint32_t>(clusters.size());
     if (count > cluster_capacity_ || group_count > group_capacity_ ||
         slot_count > slot_capacity_) {
-        // Pasa al cargar el escenario: la GPU puede estar usando los buffers
-        // viejos en otro frame en vuelo.
-        device.waitIdle();
-        createBuffers(device, std::max(count, 1u), std::max(group_count, 1u),
-                      std::max(slot_count, 1u));
-        writeCullSets(device, camera_buffers);
+        // Pasa al cargar el escenario. Crecimiento geometrico (x1,5 y con
+        // margen) y sin encoger nunca: antes se recreaba a la medida justa y
+        // con streaming de celdas eran decenas de waitIdle seguidos
+        // ("5094 / 5096 / 5098 ... clusteres"), uno por frame.
+        // Sin waitIdle: el otro frame en vuelo sigue con los buffers viejos
+        // (sus sets apuntan alli), que se retiran por fence
+        // (VulkanDevice::retireAfterGpu). Los sets de cada frame pasan a los
+        // nuevos cuando le toca a ese frame (aqui mismo, con su fence ya
+        // esperada); la visibilidad empieza de cero, como antes.
+        std::vector<std::shared_ptr<const void>> retired;
+        for (VulkanBuffer& buffer : clusters_) {
+            if (buffer.isValid()) retired.push_back(VulkanDevice::keepAlive(std::move(buffer)));
+            buffer = VulkanBuffer{};
+        }
+        if (visibility_.isValid()) retired.push_back(VulkanDevice::keepAlive(std::move(visibility_)));
+        visibility_ = VulkanBuffer{};
+        for (std::uint32_t phase = 0; phase < 2; ++phase) {
+            if (commands_[phase].isValid()) retired.push_back(VulkanDevice::keepAlive(std::move(commands_[phase])));
+            if (counts_[phase].isValid()) retired.push_back(VulkanDevice::keepAlive(std::move(counts_[phase])));
+            commands_[phase] = VulkanBuffer{};
+            counts_[phase] = VulkanBuffer{};
+        }
+        device.retireAfterGpu(std::move(retired));
+        const auto grow = [](std::uint32_t needed, std::uint32_t current, std::uint32_t minimum) {
+            if (needed <= current) return std::max(current, 1u);
+            const std::uint64_t target =
+                std::max<std::uint64_t>({static_cast<std::uint64_t>(needed) * 3 / 2,
+                                         static_cast<std::uint64_t>(needed) + minimum, minimum});
+            return static_cast<std::uint32_t>(std::min<std::uint64_t>(target, 0x7fffffffu));
+        };
+        createBuffers(device, grow(count, cluster_capacity_, 4096u), grow(group_count, group_capacity_, 256u),
+                      grow(slot_count, slot_capacity_, 1024u));
+        sets_dirty_ = (1u << kMaxFramesInFlight) - 1u;
         std::cout << "[Vulkan] Culling en GPU: " << count << " clusteres, " << group_count
                   << " grupos de dibujo\n";
+    }
+    // Los sets de este frame, si aun apuntan a los buffers de antes del ultimo
+    // crecimiento (su command buffer anterior ya termino: fence esperada).
+    if (frame_index < kMaxFramesInFlight && (sets_dirty_ & (1u << frame_index)) != 0) {
+        writeCullSets(device, camera_buffers, frame_index);
+        sets_dirty_ &= ~(1u << frame_index);
     }
 
     cluster_count_ = count;
@@ -431,6 +467,11 @@ void GpuCulling::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t fr
                       Access::eTransferWrite | Access::eShaderRead | Access::eShaderWrite);
         cmd.fillBuffer(*counts_[0].handle(), 0, VK_WHOLE_SIZE, 0);
         cmd.fillBuffer(*counts_[1].handle(), 0, VK_WHOLE_SIZE, 0);
+        if (!visibility_cleared_) {
+            // Buffers recien creados (crecimiento): visibilidad a 0.
+            cmd.fillBuffer(*visibility_.handle(), 0, VK_WHOLE_SIZE, 0);
+            visibility_cleared_ = true;
+        }
         if (clear_commands_) {
             // Sin drawIndirectCount se dibujan todos los huecos: los que el
             // culling no llene quedan a cero (0 indices = nada).
@@ -506,8 +547,17 @@ bool GpuCulling::recordGlassCull(const VulkanDevice& device, const vk::raii::Com
     using Access = vk::AccessFlagBits2;
     const auto count = static_cast<std::uint32_t>(items.size());
     if (count > glass_capacity_) {
-        // Los buffers de los otros frames los puede estar usando la GPU.
-        device.waitIdle();
+        // Los buffers de los otros frames los puede estar usando la GPU: se
+        // retiran por fence (antes, waitIdle). Los sets se reescriben abajo
+        // en cada llamada, asi que cada frame pasa a los nuevos en la suya.
+        std::vector<std::shared_ptr<const void>> retired;
+        for (std::uint32_t f = 0; f < kMaxFramesInFlight; ++f) {
+            if (glass_items_[f].isValid()) retired.push_back(VulkanDevice::keepAlive(std::move(glass_items_[f])));
+            if (glass_commands_[f].isValid()) retired.push_back(VulkanDevice::keepAlive(std::move(glass_commands_[f])));
+            glass_items_[f] = VulkanBuffer{};
+            glass_commands_[f] = VulkanBuffer{};
+        }
+        device.retireAfterGpu(std::move(retired));
         glass_capacity_ = std::max(count * 2, 256u);
         for (std::uint32_t f = 0; f < kMaxFramesInFlight; ++f) {
             glass_items_[f].create(device, sizeof(GpuGlassItem) * glass_capacity_, vk::BufferUsageFlagBits::eStorageBuffer,

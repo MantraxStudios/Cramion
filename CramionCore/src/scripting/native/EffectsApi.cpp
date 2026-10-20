@@ -2,6 +2,7 @@
 //
 //   entity().playEffect()                       VisualEffect
 //   entity().sendEffectEvent("Explode")
+//   Effects.pushEvent("Impactos", 1, punto, vel, Vec3(1, 0.5, 0), 2)   canal de datos
 //   entity.velocity2D = Vec3(3, 0, 0)         Rigidbody2D
 //   Physics2D.raycast(posicion, Vec3(0, -1, 0), 1.2)
 //   entity().fracture(punto, 6)                 Destructible
@@ -192,6 +193,25 @@ void registerVfx(Runtime& rt) {
         const vfx::VfxSystem* s = vfx::activeSystem();
         return api::Value(s != nullptr ? static_cast<int>(s->aliveCount(e)) : 0);
     }, {}, {"", "particulas vivas de su VisualEffect", "numero"}, true);
+
+    // Canal de datos: el juego apunta eventos (impactos que confirma el
+    // servidor...) y un solo efecto con "Al recibir un evento de la GPU" en
+    // ese canal los dibuja todos (en la GPU, el frame siguiente).
+    api.function("Effects.pushEvent", [](api::Call& c) {
+        const std::string channel = c.string(0);
+        gfx::VfxEventRecord event;
+        event.type = static_cast<float>(std::max<long long>(c.integer(1, 0), 0));
+        event.position = c.vec3(2, Vec3{});
+        event.velocity = c.vec3(3, Vec3{});
+        const Vec3 rgb = c.vec3(4, Vec3{1.0f, 1.0f, 1.0f});
+        event.color = core::Vec4{rgb, 1.0f};
+        event.value = static_cast<float>(c.number(5, 1.0));
+        // Sin valor de vuelta: los scripts de C++ lo mandan en el lote (cientos
+        // por segundo sin esperas).
+        if (vfx::VfxSystem* s = vfx::activeSystem()) s->pushGpuEvent(channel, event);
+        return api::Value{};
+    }, {"\"Impactos\", tipo, posicion, velocidad, color, valor",
+        "evento en un canal de datos del VFX (lo dibujan los efectos con 'Al recibir un evento de la GPU' en ese canal)"});
 }
 
 void register2D(Runtime& rt) {

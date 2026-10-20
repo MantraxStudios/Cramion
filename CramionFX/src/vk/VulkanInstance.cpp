@@ -1,6 +1,7 @@
 #include "CramionFX/vk/VulkanInstance.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -17,6 +18,12 @@ bool contains(const std::vector<Properties>& list, const char* name, NameGetter 
     return std::any_of(list.begin(), list.end(), [&](const Properties& item) {
         return std::strcmp(get_name(item), name) == 0;
     });
+}
+
+// Variable de entorno encendida (no vacia y no "0").
+bool envFlag(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
 }  // namespace
@@ -40,7 +47,47 @@ void VulkanInstance::initialize(const EngineInfo& info, const std::vector<std::s
 
     // 2) Capas y extensiones.
     const std::vector<const char*> layers = selectLayers();
-    const std::vector<const char*> extensions = selectExtensions(extra_extensions, optional_extensions);
+    std::vector<const char*> extensions = selectExtensions(extra_extensions, optional_extensions);
+
+    // 2b) Validacion ampliada (solo con la validacion activa), para cazar
+    //     DeviceLost y carreras entre pases:
+    //     CRAMION_VK_SYNC_VALIDATION=1: validacion de sincronizacion (barreras
+    //       que faltan o sobran, lecturas y escrituras que se pisan).
+    //     CRAMION_VK_GPU_AV=1: validacion asistida por la GPU (accesos fuera
+    //       de rango en los shaders, descriptores sin escribir). Muy lenta;
+    //       reserva un set de descriptores (el ultimo) para la capa.
+    //     Van en VkValidationFeaturesEXT (VK_EXT_validation_features, que da
+    //     la propia capa de validacion).
+    std::vector<vk::ValidationFeatureEnableEXT> validation_features;
+    if (validation_enabled_) {
+        const bool want_sync = envFlag("CRAMION_VK_SYNC_VALIDATION");
+        const bool want_gpu_av = envFlag("CRAMION_VK_GPU_AV");
+        if (want_sync || want_gpu_av) {
+            // (La macro de C: el nombre de vulkan-hpp esta marcado como obsoleto,
+            // lo sustituye VK_EXT_layer_settings, y daria un aviso.)
+            const char* const features_extension = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+            const std::string layer_name = kValidationLayer;
+            const auto layer_extensions = context_.enumerateInstanceExtensionProperties(layer_name);
+            const bool has_features =
+                contains(layer_extensions, features_extension,
+                         [](const vk::ExtensionProperties& p) { return p.extensionName.data(); });
+            if (!has_features) {
+                std::cout << "[Vulkan] La capa de validacion no trae VK_EXT_validation_features; "
+                             "se ignoran CRAMION_VK_SYNC_VALIDATION y CRAMION_VK_GPU_AV.\n";
+            } else {
+                extensions.push_back(features_extension);
+                if (want_sync) {
+                    validation_features.push_back(vk::ValidationFeatureEnableEXT::eSynchronizationValidation);
+                }
+                if (want_gpu_av) {
+                    validation_features.push_back(vk::ValidationFeatureEnableEXT::eGpuAssisted);
+                    validation_features.push_back(vk::ValidationFeatureEnableEXT::eGpuAssistedReserveBindingSlot);
+                }
+                std::cout << "[Vulkan] Validacion ampliada:" << (want_sync ? " sincronizacion" : "")
+                          << (want_gpu_av ? " GPU-AV" : "") << "\n";
+            }
+        }
+    }
     enabled_extensions_.assign(extensions.begin(), extensions.end());
 
     // 3) Descripcion de la aplicacion.
@@ -55,6 +102,11 @@ void VulkanInstance::initialize(const EngineInfo& info, const std::vector<std::s
     create_info.pApplicationInfo = &app_info;
     create_info.setPEnabledLayerNames(layers);
     create_info.setPEnabledExtensionNames(extensions);
+    vk::ValidationFeaturesEXT validation_features_info{};
+    if (!validation_features.empty()) {
+        validation_features_info.setEnabledValidationFeatures(validation_features);
+        create_info.pNext = &validation_features_info;
+    }
 
     instance_ = vk::raii::Instance(context_, create_info);
 

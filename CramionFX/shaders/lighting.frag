@@ -188,6 +188,12 @@ layout(set = 0, binding = 26) uniform sampler2D g_shading;
 layout(set = 0, binding = 27) uniform sampler2D sky_map_terrain;
 layout(set = 0, binding = 28) uniform sampler2D sky_map_scene;
 #endif
+// Luces locales por clusteres (29 = cabecera y luces, 30 = listas): todas las
+// que tocan la vista y no caben en lights.points / lights.spots.
+#define CLUSTER_SET 0
+#define CLUSTER_LIGHTS_BINDING 29
+#define CLUSTER_GRID_BINDING 30
+#include "light_clusters.glsl"
 
 // Iluminacion ligera: sin las sombras suaves de contacto del sol (PCSS: 28
 // lecturas del mapa por pixel), sin la oclusion del cielo desde arriba (12) y
@@ -1285,6 +1291,27 @@ float interleavedGradientNoise(vec2 pixel) {
     return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
 }
 
+// Tamano del texel de las cascadas a esa distancia, CONTINUO: dentro de cada
+// cascada va del texel de la anterior al suyo. Con el texel de la cascada
+// elegida, el largo de las sombras de contacto saltaba en cada corte entre
+// cascadas (una franja donde de pronto eran el doble de largas o
+// desaparecian).
+float continuousCascadeTexel(float view_depth) {
+    float previous_split = 0.0;
+    float previous_texel = shadows.texel_world_sizes[0];
+    for (int i = 0; i < kShadowCascadeCount; ++i) {
+        float split = shadows.split_distances[i];
+        float texel = shadows.texel_world_sizes[i];
+        if (view_depth < split || i == kShadowCascadeCount - 1) {
+            float f = clamp((view_depth - previous_split) / max(split - previous_split, 1e-3), 0.0, 1.0);
+            return mix(previous_texel, texel, f);
+        }
+        previous_split = split;
+        previous_texel = texel;
+    }
+    return previous_texel;
+}
+
 // Sombras de contacto en pantalla (las "contact shadows" de Unreal/HDRP): un
 // rayo corto hacia el sol marchado en ESPACIO DE VISTA sobre el depth buffer.
 // Las cascadas no tienen detalle para las sombras pequenas (los pies en el
@@ -1321,12 +1348,21 @@ float interleavedGradientNoise(vec2 pixel) {
 // (escalones en el borde) y cambiaba al mover la camara (lo que hay detras
 // del personaje se adivina con el grosor). Como Unreal/HDRP: la sombra de
 // contacto es solo el ultimo tramo, pegado al suelo.
+//
+// DISTANCIA: se funden suave hasta lights.sky_map_depth.z (60 m por defecto,
+// PostProcessSettings::contact_shadow_distance) y nunca mas alla de donde se
+// desvanecen las cascadas (`max_distance`). Antes se cortaban de golpe a 60 m
+// (un borde visible delante de la camara, justo donde acaba la luz
+// volumetrica) y, si las cascadas acababan antes, quedaban solas: manchas
+// negras sueltas sin la sombra grande que las explica.
 float contactShadow(vec3 view_position, vec3 view_normal, vec3 view_to_light, float geometric_n_dot_l,
-                    float cascade_texel) {
+                    float cascade_texel, float max_distance) {
     float ray_length = lights.environment.z;
     float view_depth = -view_position.z;
-    if (ray_length <= 0.0 || view_depth > 60.0) return 1.0;
-    float grazing_fade = smoothstep(0.08, 0.3, geometric_n_dot_l);
+    float fade_end = min(lights.sky_map_depth.z > 0.0 ? lights.sky_map_depth.z : 60.0, max_distance);
+    float distance_fade = 1.0 - smoothstep(fade_end * 0.65, fade_end, view_depth);
+    if (ray_length <= 0.0 || distance_fade <= 0.0) return 1.0;
+    float grazing_fade = smoothstep(0.08, 0.3, geometric_n_dot_l) * distance_fade;
     if (grazing_fade <= 0.0) return 1.0;
 
     ray_length = min(ray_length, max(cascade_texel * 10.0, 0.05));
@@ -1360,7 +1396,10 @@ float contactShadow(vec3 view_position, vec3 view_normal, vec3 view_to_light, fl
 
     // El grosor supuesto de lo que tapa, y el sesgo: relativo a la
     // profundidad (precision del depth) + medio pixel de pendiente.
-    float thickness = clamp(ray_length * 1.5, 0.05, 0.5);
+    // Lejos el sesgo crece con la profundidad: el grosor siempre le deja
+    // margen (si no, la ventana [sesgo, grosor] quedaba en nada y salian
+    // choques sueltos a manchas).
+    float thickness = max(clamp(ray_length * 1.5, 0.05, 0.5), (view_depth * 0.003 + pixel_size) * 3.0);
     float frame = lights.environment.w;
     float jitter = frame >= 0.0 ? interleavedGradientNoise(gl_FragCoord.xy + 5.588238 * frame) : 0.0;
 
@@ -1378,9 +1417,12 @@ float contactShadow(vec3 view_position, vec3 view_normal, vec3 view_to_light, fl
         // Cuanto esta el rayo por detras de lo que se ve.
         float penetration = ray_depth - scene_depth - bias;
         if (penetration > 0.0 && penetration < thickness) {
-            vec2 uv = pixel / vec2(size);
-            vec2 edge = min(uv, 1.0 - uv);
-            float edge_fade = clamp(min(edge.x, edge.y) * 20.0, 0.0, 1.0);
+            // Fundido en el borde de la pantalla (ahi el rayo se queda sin
+            // datos), en PIXELES: antes era el 5 % de la imagen (80-100 px) y
+            // las sombras de contacto se borraban bastante antes del borde
+            // de la vista.
+            vec2 edge = min(pixel, vec2(size) - pixel);
+            float edge_fade = clamp(min(edge.x, edge.y) / 16.0, 0.0, 1.0);
             // Entra suave (sin corte duro en el sesgo) y sale suave al
             // acercarse al grosor; lejos del origen, mas debil (penumbra).
             float soft = smoothstep(0.0, bias + pixel_size, penetration) *
@@ -1659,7 +1701,8 @@ void main() {
             shadow = 1.0;
             if (!kLite) {
                 shadow = mix(1.0, contactShadow(viewFromDepth(v_uv, depth), mat3(camera.view) * geometric_normal,
-                                                mat3(camera.view) * sun_direction, geometric_n_dot_l, 0.02),
+                                                mat3(camera.view) * sun_direction, geometric_n_dot_l, 0.02,
+                                                1.0e6),
                              shadows.params.y);
             }
         } else if (sun_lit) {
@@ -1689,11 +1732,17 @@ void main() {
             } else {
                 shadow = shadowFactor(world_position, geometric_normal, geometric_n_dot_l,
                                       cascade_index);
-                // Detalle cercano que la cascada no resuelve.
-                if (shadow > 0.02) {
+                // Detalle cercano que la cascada no resuelve. Se apaga antes de
+                // que la cascada se desvanezca (85 % de su alcance, shadowFactor):
+                // sola, sin la sombra grande, era una mancha negra suelta. La
+                // hierba no: el depth de sus briznas es ruido (motas negras) y
+                // su auto-sombra ya llega en relief_shadow.
+                if (shadow > 0.02 && surface_model.model != kShadingGrass) {
+                    float contact_view_depth = distance_to_camera_z;
                     shadow *= contactShadow(viewFromDepth(v_uv, depth), mat3(camera.view) * geometric_normal,
                                             mat3(camera.view) * sun_direction, geometric_n_dot_l,
-                                            shadows.texel_world_sizes[cascade_index]);
+                                            continuousCascadeTexel(contact_view_depth),
+                                            shadows.split_distances[kShadowCascadeCount - 1] * 0.85);
                 }
                 shadow = min(shadow, traced_term);
             }
@@ -1853,10 +1902,54 @@ void main() {
                      spot_shadow;
         }
 
+        // --- Luces por clusteres (las que no caben arriba) ---
+        // Solo las del cluster del pixel. Sin sombras por rayos; el mapa de
+        // sombra si, si la luz tiene hueco.
+        uvec2 cluster_range = clusterRange(gl_FragCoord.xy, world_position);
+        for (uint k = 0u; k < cluster_range.y; ++k) {
+            ClusterLight light = cluster_lights[cluster_items[cluster_range.x + k]];
+            vec3 light_direction;
+            float distance_to_light;
+            vec3 radiance;
+            if (!clusterLightIncoming(light, world_position, light_direction, distance_to_light, radiance)) {
+                continue;
+            }
+            bool from_behind = dot(normal, light_direction) <= 0.0;
+            if (from_behind && !translucent) {
+                continue;
+            }
+            vec3 shadow_position = from_behind ? world_position - geometric_normal * translucent_thickness : world_position;
+            vec3 shadow_normal = from_behind ? -geometric_normal : geometric_normal;
+            float light_shadow = 1.0;
+            int slot = shadowSlot(light.params.y);
+            if (slot >= 0 && local_shadows.params.z > 0.0) {
+                float n_dot_shadow = max(dot(shadow_normal, light_direction), 0.0);
+                if (light.params.x < -1.5) {
+                    light_shadow = pointShadow(slot, light.position_range.xyz, shadow_position, shadow_normal, n_dot_shadow);
+                    light_shadow = mix(1.0, light_shadow,
+                                       local_shadows.params.z * local_shadows.point_params[slot].y * light.params.z);
+                } else {
+                    light_shadow = spotShadow(slot, distance_to_light, shadow_position, shadow_normal, n_dot_shadow);
+                    light_shadow = mix(1.0, light_shadow, local_shadows.params.z * light.params.z);
+                }
+            }
+            float light_size = light.params.w / max(distance_to_light, 0.01);
+            color += (from_behind ? radiance * disneyTranslucency(surface_model, normal, view_direction,
+                                                                  light_direction, albedo, metallic)
+                                  : shade(light_direction, radiance, normal, view_direction, albedo, roughness,
+                                          metallic, f0, energy, min(light_size, 1.0))) *
+                     light_shadow;
+        }
+
         // --- Emision propia (bloques luminosos, materiales emisivos) ---
         // Con lightmap lleva tambien su luz horneada: el SSAO la oscurece (lo
         // que diga "SSAO sobre lo horneado").
         color += lm_irradiance ? emission * mix(vec3(1.0), multiBounceAo(ssao, albedo), lights.probe_trust.w) : emission;
+        // --- Sin luz (dominio Unlit, modelo 8): el color del material tal
+        // cual mas su emision (en el modo compatible no hay modelo: con luz) ---
+        if (surface_model.model == kShadingUnlit) {
+            color = albedo + emission;
+        }
 
         // --- Visualizacion de cascadas ---
         // Se sustituye el color, no se multiplica: mezclado con el albedo y las

@@ -4,12 +4,13 @@
 #include "CramionFX/vk/VulkanDevice.h"
 
 #include <stdexcept>
+#include <string>
 
 namespace cramion::gfx {
 
 void VulkanImage::create(const VulkanDevice& device, vk::Extent2D extent, vk::Format format,
                          vk::ImageUsageFlags usage, vk::ImageAspectFlags aspect,
-                         std::uint32_t layers, vk::Format view_format) {
+                         std::uint32_t layers, vk::Format view_format, const char* name) {
     if (extent.width == 0 || extent.height == 0) {
         throw std::runtime_error("No se puede crear una imagen de area 0.");
     }
@@ -70,6 +71,18 @@ void VulkanImage::create(const VulkanDevice& device, vk::Extent2D extent, vk::Fo
     extent_ = extent;
     aspect_ = aspect;
     layers_ = layers;
+    if (name != nullptr) setName(device, name);
+}
+
+void VulkanImage::setName(const VulkanDevice& device, const char* name) const {
+    if (!device.debugLabelsEnabled() || !isValid() || name == nullptr) return;
+    device.setObjectName(*image_, name);
+    if (*view_ != VK_NULL_HANDLE) device.setObjectName(*view_, name);
+    // Las vistas por capa, con el indice (cascada de sombras, capa del array).
+    for (std::size_t layer = 0; layer < layer_views_.size(); ++layer) {
+        const std::string layer_name = std::string(name) + "[" + std::to_string(layer) + "]";
+        device.setObjectName(*layer_views_[layer], layer_name.c_str());
+    }
 }
 
 void VulkanImage::destroy() {

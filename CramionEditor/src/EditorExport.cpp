@@ -629,11 +629,14 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 std::transform(extension.begin(), extension.end(), extension.begin(),
                                [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
                 if (extension != ".crshader") continue;
+                // Con el mismo montaje que en el editor (RenderSync): domain
+                // transparent sale con surface_forward.frag y, con vertex() en
+                // lo opaco, tambien su sombra (<archivo>.shadow.vert.spv).
                 assets::SurfaceShaderSource shader;
-                std::vector<std::uint32_t> vertex, fragment;
+                assets::SurfaceShaderPrograms programs;
                 std::string error;
                 if (!assets::loadSurfaceShader(j->pack[i].source, shader, &error) ||
-                    !assets::compileSurfaceShader(shader, assets::surfaceTemplateDirectory(), vertex, fragment, &error)) {
+                    !assets::compileSurfaceShader(shader, assets::surfaceTemplateDirectory(), programs, &error)) {
                     std::cerr << "[Exportar] El shader " << j->pack[i].path << " no compila (en el movil se vera sin el): " << error
                               << '\n';
                     continue;
@@ -641,9 +644,13 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 const std::filesystem::path base = spv_cache / std::to_string(i);
                 const std::filesystem::path vfile = std::filesystem::path(base).concat(".vert.spv");
                 const std::filesystem::path ffile = std::filesystem::path(base).concat(".frag.spv");
-                if (assets::writePrecompiledSurfaceShader(vfile, ffile, vertex, fragment)) {
+                const std::filesystem::path sfile = std::filesystem::path(base).concat(".shadow.vert.spv");
+                if (assets::writePrecompiledSurfaceShader(vfile, ffile, programs.vertex, programs.fragment)) {
                     j->pack.push_back(project::PackInput{vfile, j->pack[i].path + ".vert.spv"});
                     j->pack.push_back(project::PackInput{ffile, j->pack[i].path + ".frag.spv"});
+                    if (assets::writePrecompiledSurfaceShadow(sfile, programs.shadow_vertex)) {
+                        j->pack.push_back(project::PackInput{sfile, j->pack[i].path + ".shadow.vert.spv"});
+                    }
                 }
             }
         }

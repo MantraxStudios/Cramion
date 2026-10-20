@@ -403,6 +403,8 @@ target_compile_options(CramionTerrainTests PRIVATE -Wall -Wextra)
 add_executable(CramionMaterialTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MaterialTests.cpp")
 target_link_libraries(CramionMaterialTests PRIVATE Cramion::Core)
 target_compile_options(CramionMaterialTests PRIVATE -Wall -Wextra)
+# (shaderc y las plantillas: un .crshader compilado sin renderizador)
+cramionfx_deploy(CramionMaterialTests)
 
 # --- Pruebas del VideoPlayer (consola, sin GPU ni codecs) ---
 # Decodificador sintetico (cramion://test), AudioSystem Offline y un
@@ -583,3 +585,13 @@ add_executable(cramion_render_bench "${CMAKE_CURRENT_SOURCE_DIR}/tools/RenderBen
 target_link_libraries(cramion_render_bench PRIVATE Cramion::FX)
 set_target_properties(cramion_render_bench PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bench")
 cramionfx_deploy(cramion_render_bench)
+
+# Herramienta: banco de pruebas del streaming por prefabs (ventana invisible):
+# instancia, activa/desactiva y destruye celdas de un proyecto (por defecto las
+# de Ashbound de Overthrow_Arena) con el bucle de frames de verdad (RenderSync
+# + drawFrame) y mide max/p99 del frame, el reparto y la memoria (fugas).
+# En su propia carpeta (streambench/) con sus shaders.
+add_executable(cramion_stream_bench "${CMAKE_CURRENT_SOURCE_DIR}/tools/StreamingBench.cpp")
+target_link_libraries(cramion_stream_bench PRIVATE Cramion::Core $<$<PLATFORM_ID:Windows>:psapi>)
+set_target_properties(cramion_stream_bench PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/streambench")
+cramionfx_deploy(cramion_stream_bench)

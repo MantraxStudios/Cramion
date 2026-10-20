@@ -387,10 +387,14 @@ endforeach()
 
 # Fuentes de los shaders de superficie del usuario (.crshader): el motor
 # junta en tiempo de ejecucion surface.vert/.frag con el codigo del usuario y
-# sus includes (shaders/source), y los compila con shaderc_shared.dll.
+# sus includes (shaders/source), y los compila con shaderc_shared.dll. Tambien
+# la sombra de vertex() (surface_shadow.vert) y la de domain transparent
+# (surface_forward.frag).
 set(CRAMIONFX_SURFACE_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/surface.vert"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/surface.frag"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/surface_shadow.vert"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/surface_forward.frag"
     ${CRAMIONFX_SHADER_INCLUDES})
 set(CRAMIONFX_SURFACE_STAMP "${CRAMIONFX_SHADER_DIR}/source/.copiado")
 add_custom_command(

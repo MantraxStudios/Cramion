@@ -8,10 +8,16 @@
 
 namespace cramion::scene {
 
-// Topes de luces por frame. Deben coincidir con las constantes del shader
-// shaders/lighting.frag.
+// Luces principales por frame: las que van en el uniform de las luces
+// (GpuLights) con teselas, sombras por rayos, niebla volumetrica, agua y
+// vidrio. Deben coincidir con las constantes del shader shaders/lighting.frag.
+// No son un tope: las demas que tocan la vista van por clusteres (lighting.frag,
+// bindings 29 y 30; ver GpuClusterLight), sin sombras por rayos ni niebla.
 inline constexpr std::uint32_t kMaxPointLights = 32;
 inline constexpr std::uint32_t kMaxSpotLights = 8;
+// Lo que se envia como mucho al renderizador por frame (RenderSync ordena por
+// cercania y corta aqui): una red de seguridad, no un limite de diseno.
+inline constexpr std::uint32_t kMaxSceneLights = 16384;
 
 // Luz direccional: el sol. No tiene posicion, solo direccion de incidencia.
 struct DirectionalLight {

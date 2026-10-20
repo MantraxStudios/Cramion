@@ -9,14 +9,20 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <exception>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string_view>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -101,6 +107,9 @@ void VulkanDevice::initialize(const VulkanInstance& instance, const VulkanSurfac
     extra_extensions_ = extra_extensions;
     optional_extensions_ = optional_extensions;
     g_instance_api = instance.apiVersion();
+    // Las etiquetas de debug utils solo existen si la instancia trae la
+    // extension (la pide con la validacion).
+    debug_labels_enabled_ = instance.validationEnabled();
     pickPhysicalDevice(instance, surface, required);
     queue_families_ = findQueueFamilies(physical_device_, surface.handle());
     createLogicalDevice();
@@ -339,7 +348,8 @@ void VulkanDevice::createLogicalDevice() {
                        vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
                        vk::PhysicalDeviceRayQueryFeaturesKHR, vk::PhysicalDeviceOpacityMicromapFeaturesEXT,
                        vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,
-                       vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT, vk::PhysicalDeviceMeshShaderFeaturesEXT>
+                       vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT, vk::PhysicalDeviceMeshShaderFeaturesEXT,
+                       vk::PhysicalDeviceFaultFeaturesEXT>
         chain{};
 
     ray_tracing_supported_ = supportsRayTracing(physical_device_);
@@ -419,6 +429,37 @@ void VulkanDevice::createLogicalDevice() {
             memory_budget_supported_ = true;
             extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
             break;
+        }
+    }
+    // Diagnostico (CRAMION_GPU_CHECKPOINTS=1): en que pase iba la GPU cuando
+    // se perdio el dispositivo (ErrorDeviceLost no da mas pistas).
+    if (std::getenv("CRAMION_GPU_CHECKPOINTS") != nullptr) {
+        for (const vk::ExtensionProperties& extension : physical_device_.enumerateDeviceExtensionProperties()) {
+            if (std::string_view(extension.extensionName.data()) == VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME) {
+                checkpoints_enabled_ = true;
+                extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+                std::cout << "[Vulkan] Marcas de diagnostico de la GPU (VK_NV_device_diagnostic_checkpoints)\n";
+                break;
+            }
+        }
+    }
+    // VK_EXT_device_fault: que fallo cuando se pierde el dispositivo. Sin coste
+    // por frame, asi que siempre que la GPU lo tenga (sin el binario del
+    // fabricante: deviceFaultVendorBinary pide memoria y no lo lee nadie).
+    {
+        const auto available = physical_device_.enumerateDeviceExtensionProperties();
+        device_fault_enabled_ = false;
+        if (hasExtension(available, VK_EXT_DEVICE_FAULT_EXTENSION_NAME)) {
+            const auto fault = physical_device_.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceFaultFeaturesEXT>();
+            device_fault_enabled_ = fault.get<vk::PhysicalDeviceFaultFeaturesEXT>().deviceFault == VK_TRUE;
+        }
+        if (device_fault_enabled_) {
+            extensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+            chain.get<vk::PhysicalDeviceFaultFeaturesEXT>().deviceFault = VK_TRUE;
+            chain.get<vk::PhysicalDeviceFaultFeaturesEXT>().deviceFaultVendorBinary = VK_FALSE;
+            std::cout << "[Vulkan] Diagnostico de fallos de la GPU (VK_EXT_device_fault)\n";
+        } else {
+            chain.unlink<vk::PhysicalDeviceFaultFeaturesEXT>();
         }
     }
 
@@ -794,6 +835,22 @@ bool VulkanDevice::debugLog() {
     return enabled;
 }
 
+void VulkanDevice::setObjectName(vk::ObjectType type, std::uint64_t handle, const char* name) const {
+    if (!debug_labels_enabled_ || handle == 0 || name == nullptr || name[0] == '\0') return;
+    if (*device_ == VK_NULL_HANDLE) return;
+    // La funcion la carga vulkan-hpp con el dispositivo; nula si la instancia
+    // no trae VK_EXT_debug_utils (no deberia pasar con debug_labels_enabled_).
+    const auto set_name = device_.getDispatcher()->vkSetDebugUtilsObjectNameEXT;
+    if (set_name == nullptr) return;
+    VkDebugUtilsObjectNameInfoEXT info{};
+    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+    info.objectType = static_cast<VkObjectType>(type);
+    info.objectHandle = handle;
+    info.pObjectName = name;
+    // Un nombre que falla no es motivo para parar: se ignora el resultado.
+    (void)set_name(static_cast<VkDevice>(*device_), &info);
+}
+
 void VulkanDevice::selectDepthFormat() {
     // De mas a menos preciso; D32 es el habitual en GPU de escritorio.
     // Primero los que no tienen stencil (el motor no lo usa): sin layouts
@@ -880,19 +937,291 @@ void VulkanDevice::submitOneTime(
         graphics_queue_.submit(submit_info, *fence);
     }
 
-    const vk::Result waited = device_.waitForFences(*fence, VK_TRUE, UINT64_MAX);
+    // Con tope (waitFence): un cuelgue ya no deja el hilo esperando siempre.
+    // El command buffer se suelta tambien si la espera lanza.
+    try {
+        waitFence(*fence, "comando de un solo uso");
+    } catch (...) {
+        pool_lock.lock();
+        buffers.reset();
+        throw;
+    }
     pool_lock.lock();
     buffers.reset();
     pool_lock.unlock();
-    if (waited != vk::Result::eSuccess) {
-        throw std::runtime_error("Tiempo agotado esperando un comando de un solo uso.");
+}
+
+// -----------------------------------------------------------------------------
+// Dispositivo perdido: informe (marcas + VK_EXT_device_fault) y esperas con tope
+// -----------------------------------------------------------------------------
+
+namespace {
+
+struct DeviceLostState {
+    std::mutex mutex;
+    VulkanDevice::DeviceLostReport report;
+    VulkanDevice::DeviceLostHandler handler;
+    std::atomic<bool> lost{false};
+    bool notified = false;
+};
+
+DeviceLostState& deviceLostState() {
+    static DeviceLostState state;
+    return state;
+}
+
+// %LOCALAPPDATA%/Cramion/Crashes (la misma carpeta que los informes de
+// cierre del editor; si no hay LOCALAPPDATA, la temporal). Vacia si no se
+// puede crear.
+std::filesystem::path crashFolder() {
+    std::filesystem::path base;
+    if (const char* local = std::getenv("LOCALAPPDATA"); local != nullptr && *local != '\0') {
+        base = local;
+    } else {
+        std::error_code error;
+        base = std::filesystem::temp_directory_path(error);
+        if (error) return {};
     }
+    const std::filesystem::path folder = base / "Cramion" / "Crashes";
+    std::error_code error;
+    std::filesystem::create_directories(folder, error);
+    return error ? std::filesystem::path{} : folder;
+}
+
+std::string hex64(std::uint64_t value) {
+    char text[24];
+    std::snprintf(text, sizeof(text), "0x%016llx", static_cast<unsigned long long>(value));
+    return text;
+}
+
+const char* faultAddressType(VkDeviceFaultAddressTypeEXT type) {
+    switch (type) {
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT: return "ninguna";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT: return "lectura no valida";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT: return "escritura no valida";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT: return "ejecucion no valida";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT: return "instruccion (desconocida)";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT: return "instruccion no valida";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT: return "instruccion que fallo";
+        default: return "?";
+    }
+}
+
+}  // namespace
+
+std::string VulkanDevice::deviceFaultText() const {
+    if (!device_fault_enabled_ || *device_ == VK_NULL_HANDLE) return {};
+    const auto get = device_.getDispatcher()->vkGetDeviceFaultInfoEXT;
+    if (get == nullptr) return {};
+    const VkDevice device = static_cast<VkDevice>(*device_);
+    // Dos pasadas: cuantos datos hay y despues los datos.
+    VkDeviceFaultCountsEXT counts{};
+    counts.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT;
+    VkResult result = get(device, &counts, nullptr);
+    if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+        return "VK_EXT_device_fault: sin datos (" + vk::to_string(static_cast<vk::Result>(result)) + ")\n";
+    }
+    std::vector<VkDeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
+    std::vector<VkDeviceFaultVendorInfoEXT> vendors(counts.vendorInfoCount);
+    counts.vendorBinarySize = 0;  // deviceFaultVendorBinary no se activa
+    VkDeviceFaultInfoEXT info{};
+    info.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT;
+    info.pAddressInfos = addresses.empty() ? nullptr : addresses.data();
+    info.pVendorInfos = vendors.empty() ? nullptr : vendors.data();
+    result = get(device, &counts, &info);
+    if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+        return "VK_EXT_device_fault: sin datos (" + vk::to_string(static_cast<vk::Result>(result)) + ")\n";
+    }
+    std::string text = "VK_EXT_device_fault: ";
+    text += info.description[0] != '\0' ? info.description : "(sin descripcion)";
+    text += "\n";
+    for (std::uint32_t i = 0; i < counts.addressInfoCount && i < addresses.size(); ++i) {
+        const VkDeviceFaultAddressInfoEXT& a = addresses[i];
+        // La direccion es aproximada: el rango [dir & ~(precision-1), +precision).
+        const std::uint64_t precision = std::max<std::uint64_t>(a.addressPrecision, 1);
+        const std::uint64_t low = a.reportedAddress & ~(precision - 1);
+        text += "  direccion " + std::to_string(i) + ": " + faultAddressType(a.addressType) + " en " +
+                hex64(a.reportedAddress) + " (rango " + hex64(low) + " - " + hex64(low + precision) + ")\n";
+    }
+    for (std::uint32_t i = 0; i < counts.vendorInfoCount && i < vendors.size(); ++i) {
+        const VkDeviceFaultVendorInfoEXT& v = vendors[i];
+        text += "  fabricante " + std::to_string(i) + ": " + std::string(v.description) + " (codigo " +
+                hex64(v.vendorFaultCode) + ", dato " + hex64(v.vendorFaultData) + ")\n";
+    }
+    if (counts.addressInfoCount == 0 && counts.vendorInfoCount == 0 && info.description[0] == '\0') {
+        text += "  (el driver no dio detalles)\n";
+    }
+    return text;
+}
+
+void VulkanDevice::reportDeviceLost(const char* where, const std::string& detail) const {
+    DeviceLostState& state = deviceLostState();
+    if (state.lost.exchange(true)) return;  // una vez (despues falla todo a la vez)
+    std::string text = "Cramion: se perdio el dispositivo de la GPU (ErrorDeviceLost)\n";
+    text += "Donde: " + std::string(where != nullptr ? where : "?") + "\n";
+    if (!detail.empty()) text += "Detalle: " + detail + "\n";
+    text += "GPU: " + device_name_ + " (Vulkan " + std::to_string(VK_API_VERSION_MAJOR(api_version_)) + "." +
+            std::to_string(VK_API_VERSION_MINOR(api_version_)) + "." + std::to_string(VK_API_VERSION_PATCH(api_version_)) +
+            ")\n";
+    try {
+        const vk::PhysicalDeviceProperties properties = physical_device_.getProperties();
+        text += "Driver: " + hex64(properties.driverVersion) + "\n";
+    } catch (const std::exception&) {
+    }
+    // Ultimas marcas (CRAMION_GPU_CHECKPOINTS=1, NVIDIA): en que pase iba.
+    if (checkpoints_enabled_ && *graphics_queue_ != VK_NULL_HANDLE) {
+        try {
+            const std::vector<vk::CheckpointDataNV> marks = graphics_queue_.getCheckpointDataNV();
+            text += "Ultimas marcas de la GPU:";
+            for (const vk::CheckpointDataNV& mark : marks) {
+                const char* name = mark.pCheckpointMarker != nullptr ? static_cast<const char*>(mark.pCheckpointMarker) : "?";
+                text += " [" + vk::to_string(mark.stage) + ": " + name + "]";
+            }
+            text += "\n";
+        } catch (const std::exception& e) {
+            text += std::string("No se pudieron leer las marcas de la GPU: ") + e.what() + "\n";
+        }
+    } else {
+        text += "Marcas de la GPU: apagadas (CRAMION_GPU_CHECKPOINTS=1 para saber en que pase iba)\n";
+    }
+    if (device_fault_enabled_) {
+        try {
+            text += deviceFaultText();
+        } catch (const std::exception& e) {
+            text += std::string("VK_EXT_device_fault: ") + e.what() + "\n";
+        }
+    } else {
+        text += "VK_EXT_device_fault: no disponible en esta GPU\n";
+    }
+    // Memoria de video en ese momento (sin VRAM libre el driver tambien acaba asi).
+    std::uint64_t used = 0, budget = 0;
+    try {
+        if (videoMemory(used, budget)) {
+            text += "VRAM: " + std::to_string(used >> 20) + " de " + std::to_string(budget >> 20) + " MB\n";
+        }
+    } catch (const std::exception&) {
+    }
+
+    std::filesystem::path file;
+    if (const std::filesystem::path folder = crashFolder(); !folder.empty()) {
+        const std::time_t now = std::time(nullptr);
+        std::tm local{};
+#if defined(_WIN32)
+        localtime_s(&local, &now);
+#else
+        localtime_r(&now, &local);
+#endif
+        char name[64];
+        std::strftime(name, sizeof(name), "DeviceLost-%Y%m%d-%H%M%S.txt", &local);
+        file = folder / name;
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out << text;
+        if (!out) file.clear();
+    }
+    std::cerr << "[Vulkan] " << text;
+    if (!file.empty()) std::cerr << "[Vulkan] Informe de la perdida del dispositivo: " << file.string() << "\n";
+    const std::lock_guard lock(state.mutex);
+    state.report.where = where != nullptr ? where : "?";
+    state.report.text = std::move(text);
+    state.report.file = std::move(file);
+}
+
+void VulkanDevice::setDeviceLostHandler(DeviceLostHandler handler) {
+    DeviceLostState& state = deviceLostState();
+    const std::lock_guard lock(state.mutex);
+    state.handler = std::move(handler);
+}
+
+void VulkanDevice::notifyDeviceLost() {
+    DeviceLostState& state = deviceLostState();
+    if (!state.lost.load()) return;
+    DeviceLostHandler handler;
+    DeviceLostReport report;
+    {
+        const std::lock_guard lock(state.mutex);
+        if (state.notified || !state.handler) return;
+        state.notified = true;
+        handler = state.handler;
+        report = state.report;
+    }
+    // Fuera del cerrojo: el editor guarda la escena (puede tardar y loguear).
+    try {
+        handler(report);
+    } catch (const std::exception& e) {
+        std::cerr << "[Vulkan] El aviso de dispositivo perdido fallo: " << e.what() << "\n";
+    } catch (...) {
+        std::cerr << "[Vulkan] El aviso de dispositivo perdido fallo.\n";
+    }
+}
+
+bool VulkanDevice::deviceLostOccurred() { return deviceLostState().lost.load(); }
+
+VulkanDevice::DeviceLostReport VulkanDevice::deviceLostReport() {
+    DeviceLostState& state = deviceLostState();
+    const std::lock_guard lock(state.mutex);
+    return state.report;
+}
+
+std::uint64_t VulkanDevice::gpuTimeoutNanoseconds() {
+    static const std::uint64_t timeout = []() -> std::uint64_t {
+        // 10 s: muy por encima del TDR de Windows (2 s por envio) y de
+        // cualquier espera legitima (una cola con varios envios grandes).
+        std::uint64_t ms = 10000;
+        if (const char* value = std::getenv("CRAMION_GPU_TIMEOUT_MS"); value != nullptr && *value != '\0') {
+            ms = std::strtoull(value, nullptr, 10);
+        }
+        return ms == 0 ? UINT64_MAX : ms * 1'000'000ull;
+    }();
+    return timeout;
+}
+
+void VulkanDevice::waitFence(vk::Fence fence, const char* where) const {
+    const std::uint64_t limit = gpuTimeoutNanoseconds();
+    constexpr std::uint64_t kWarn = 2'000'000'000ull;  // 2 s: aviso en el log
+    const auto start = std::chrono::steady_clock::now();
+    const VkDevice device = static_cast<VkDevice>(*device_);
+    const VkFence raw = static_cast<VkFence>(fence);
+    const auto wait = device_.getDispatcher()->vkWaitForFences;
+    // La primera espera, hasta el aviso (o el tope si es menor).
+    VkResult result = wait(device, 1, &raw, VK_TRUE, std::min(limit, kWarn));
+    if (result == VK_TIMEOUT && limit > kWarn) {
+        std::cerr << "[Vulkan] La GPU lleva 2 s sin terminar (" << where << ")...\n";
+        const std::uint64_t rest = limit == UINT64_MAX ? UINT64_MAX : limit - kWarn;
+        result = wait(device, 1, &raw, VK_TRUE, rest);
+    }
+    if (result == VK_SUCCESS) return;
+    const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+    std::string detail;
+    if (result == VK_TIMEOUT) {
+        detail = "la GPU no termino en " + std::to_string(static_cast<int>(seconds + 0.5f)) +
+                 " s (tope CRAMION_GPU_TIMEOUT_MS): se trata como dispositivo perdido";
+    } else {
+        detail = "vkWaitForFences: " + vk::to_string(static_cast<vk::Result>(result));
+    }
+    reportDeviceLost(where, detail);
+    throw vk::DeviceLostError(std::string(where) + ": " + detail);
 }
 
 void VulkanDevice::waitIdle() const {
     if (*device_ != VK_NULL_HANDLE) {
-        const std::lock_guard lock(queue_mutex_);
-        device_.waitIdle();
+        // vkDeviceWaitIdle exige acceso exclusivo a TODAS las colas del
+        // dispositivo: antes solo se tomaba la de graficos y un hilo de
+        // streaming podia enviar a la vez a la cola de transferencia (uso no
+        // valido; candidato al ErrorDeviceLost con streaming). Ningun envio
+        // anida los dos mutex, asi que tomarlos juntos no puede bloquearse.
+        const std::scoped_lock lock(queue_mutex_, transfer_queue_mutex_);
+        try {
+            device_.waitIdle();
+        } catch (const vk::DeviceLostError& e) {
+            // Dispositivo perdido: si ya se esta saliendo por otra excepcion
+            // (limpieza, destructores), lanzar otra aqui era std::terminate
+            // sin informe (los cierres del editor con Overthrow). Se avisa y
+            // se deja seguir a la primera.
+            std::cerr << "[Vulkan] Dispositivo perdido (ErrorDeviceLost) en waitIdle: " << e.what() << "\n";
+            reportDeviceLost("waitIdle", e.what());
+            if (std::uncaught_exceptions() > 0) return;
+            throw;
+        }
     }
 }
 
@@ -904,6 +1233,7 @@ std::shared_ptr<GpuTicket> VulkanDevice::submitUpload(vk::CommandBuffer transfer
     }
     auto ticket = std::make_shared<GpuTicket>();
     ticket->device_ = &device_;
+    ticket->owner_ = this;
     ticket->fence_ = vk::raii::Fence(device_, vk::FenceCreateInfo{});
 
     AsyncSubmit entry;
@@ -974,7 +1304,12 @@ bool GpuTicket::done() const {
 
 void GpuTicket::wait() const {
     if (done() || device_ == nullptr) return;
-    (void)device_->waitForFences(*fence_, VK_TRUE, UINT64_MAX);
+    if (owner_ != nullptr) {
+        // Con tope: un cuelgue lanza vk::DeviceLostError con su informe.
+        owner_->waitFence(*fence_, "espera de un envio (GpuTicket)");
+    } else {
+        (void)device_->waitForFences(*fence_, VK_TRUE, UINT64_MAX);
+    }
     signaled_.store(true, std::memory_order_release);
 }
 
@@ -983,6 +1318,7 @@ std::shared_ptr<GpuTicket> VulkanDevice::submitAsync(
     std::vector<std::shared_ptr<const void>> keep_alive) const {
     auto ticket = std::make_shared<GpuTicket>();
     ticket->device_ = &device_;
+    ticket->owner_ = this;
     ticket->fence_ = vk::raii::Fence(device_, vk::FenceCreateInfo{});
 
     AsyncSubmit entry;
@@ -1059,6 +1395,28 @@ std::size_t VulkanDevice::collectAsync() const {
 std::size_t VulkanDevice::asyncInFlight() const {
     const std::lock_guard lock(async_mutex_);
     return async_.size();
+}
+
+void VulkanDevice::retireAfterGpu(std::vector<std::shared_ptr<const void>> resources) const {
+    resources.erase(std::remove(resources.begin(), resources.end(), nullptr), resources.end());
+    if (resources.empty()) return;
+    if (*device_ == VK_NULL_HANDLE || deviceLostOccurred()) return;  // (sin GPU: se sueltan ya)
+    auto ticket = std::make_shared<GpuTicket>();
+    ticket->device_ = &device_;
+    ticket->owner_ = this;
+    ticket->fence_ = vk::raii::Fence(device_, vk::FenceCreateInfo{});
+    // Un envio sin command buffers: solo su fence, que se senala cuando acaba
+    // todo lo enviado antes a esta cola (los frames en vuelo que los usan).
+    const vk::SubmitInfo empty{};
+    {
+        const std::lock_guard queue_lock(queue_mutex_);
+        graphics_queue_.submit(empty, *ticket->fence_);
+    }
+    AsyncSubmit entry;
+    entry.ticket = std::move(ticket);
+    entry.keep_alive = std::move(resources);
+    const std::lock_guard lock(async_mutex_);
+    async_.push_back(std::move(entry));
 }
 
 // -----------------------------------------------------------------------------

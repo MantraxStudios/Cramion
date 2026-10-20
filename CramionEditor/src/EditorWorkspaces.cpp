@@ -454,14 +454,13 @@ void EditorApp::loadWorkspaceWorld(int id) {
     }
 
     if (Workspace* owner = findWorkspace(world_workspace_)) {
-        owner->world = ecs::serializeWorld(world_);
+        // Del historial (sin volver a serializar: los registros ya estan).
+        owner->world = history_.sceneText(world_);
         owner->stashed = true;
         if (owner->kind == WorkspaceKind::Scene) owner->name = world_.sceneName();
         owner->scene_path = scene_path_;
         owner->dirty = dirty_;
-        owner->undo = std::move(undo_);
-        owner->redo = std::move(redo_);
-        owner->current_state = std::move(current_state_);
+        owner->history = std::move(history_);
         owner->undo_kinds = std::move(undo_kinds_);
         owner->redo_kinds = std::move(redo_kinds_);
         owner->terrain_undo = std::move(terrain_undo_);
@@ -470,8 +469,7 @@ void EditorApp::loadWorkspaceWorld(int id) {
         owner->active = active_;
         owner->camera = scene_.camera();
     }
-    undo_.clear();
-    redo_.clear();
+    history_ = UndoHistory{};
     undo_kinds_.clear();
     redo_kinds_.clear();
     terrain_undo_.clear();
@@ -499,9 +497,7 @@ void EditorApp::loadWorkspaceWorld(int id) {
         target->stashed = false;
         scene_path_ = target->scene_path;
         dirty_ = target->dirty;
-        undo_ = std::move(target->undo);
-        redo_ = std::move(target->redo);
-        current_state_ = std::move(target->current_state);
+        history_ = std::move(target->history);
         undo_kinds_ = std::move(target->undo_kinds);
         redo_kinds_ = std::move(target->redo_kinds);
         terrain_undo_ = std::move(target->terrain_undo);
@@ -590,7 +586,7 @@ bool EditorApp::savePrefabWorkspace() {
     }
     prefab_texts_[ws->prefab.toString()] = text;
     // Los enlaces nuevos no son un cambio del usuario.
-    current_state_ = ecs::serializeWorld(world_);
+    history_.sync(world_);
     dirty_ = false;
     std::cout << "[Prefab] " << dialogs::utf8(path.filename()) << " guardado (revision " << ecs::prefabRevision(text)
               << "): sus instancias de la escena se actualizan\n";

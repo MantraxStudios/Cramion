@@ -10,10 +10,12 @@
 
 #include "Dialogs.h"
 #include "EditorLog.h"
+#include "EditorBackground.h"
 
 #include "CramionCore/project/DataPack.h"
 #include "CramionCore/cvar/CVar.h"
 #include "CramionCore/jobs/JobSystem.h"
+#include "CramionCore/profiling/Profiler.h"
 #include "CramionCore/net/WebSocket.h"
 #include <CramionFX/asset/TextureCompression.h>
 
@@ -32,7 +34,9 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <exception>
 #include <iostream>
+#include <iterator>
 
 namespace cramion::editor {
 
@@ -40,9 +44,10 @@ using core::Vec3;
 
 namespace {
 
-// Tope de memoria de las instantaneas de deshacer.
+// Tope del historial de deshacer (instantanea por entidad + pasos). Un paso
+// solo lleva lo que cambio: caben muchos mas que con el mundo entero por paso.
 constexpr std::size_t kUndoMemoryLimit = 256ull * 1024 * 1024;
-constexpr std::size_t kUndoMaxSteps = 200;
+constexpr std::size_t kUndoMaxSteps = 500;
 
 using CpuClock = std::chrono::steady_clock;
 
@@ -100,9 +105,25 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     new_project_folder_ = dialogs::utf8(documents.empty() ? std::filesystem::current_path()
                                                           : documents / "Cramion Projects");
     updateTitle();
+    // GPU perdida: drawFrame llama a esto (una vez, en este hilo) antes de
+    // relanzar. La escena se guarda ya, antes de que el desenrollado toque
+    // nada mas (el destructor lo repite: autosaveEmergency va una sola vez).
+    gfx::VulkanDevice::setDeviceLostHandler(
+        [this](const gfx::VulkanDevice::DeviceLostReport&) { autosave_.writeNow(); });
 }
 
 EditorApp::~EditorApp() {
+    gfx::VulkanDevice::setDeviceLostHandler({});  // (capturaba this)
+    waitCppSourceCheck();  // la tarea de disco lee cpp_scripts_
+    // Salida por una excepcion (ErrorDeviceLost en el render, por ejemplo):
+    // la escena se autoguarda antes de soltar nada. En un cierre normal ya se
+    // decidio (guardar o no guardar): sin emergencia y sin autoguardado.
+    if (std::uncaught_exceptions() > 0) {
+        autosave_.writeNow();
+    } else {
+        autosave_.disarm();
+        if (!dirty_) discardSceneAutosave();
+    }
     // Cerrar en Play: los scripts terminan (OnDestroy) mientras todo lo que usan
     // sigue vivo (el mundo de bloques se destruye antes que ellos).
     scripts_.stop();
@@ -314,6 +335,9 @@ void EditorApp::openStartupScene() {
     if (!opened) {
         newScene();
     }
+    // Una escena sin guardar que se perdio en un cierre (si la inicial no
+    // tenia autoguardado propio).
+    checkAutosaveRecovery({});
 }
 
 void EditorApp::closeProject() {
@@ -322,6 +346,7 @@ void EditorApp::closeProject() {
     }
     if (sceneLoading()) project_load_.reset();  // la barra de otra escena, fuera
     if (playing()) exitPlay();
+    waitCppSourceCheck();
     // Video: vista previa fuera y lecturas paradas (antes de soltar la GPU).
     video_.stopPreview();
     video_.stop();
@@ -373,11 +398,7 @@ void EditorApp::closeProject() {
     asset_manager_.reset();
     database_.reset();
     asset::setTextureCacheFolder({});
-    if (assets_watch_ != nullptr) {
-        FindCloseChangeNotification(assets_watch_);
-        assets_watch_ = nullptr;
-    }
-    refresh_at_ = -1.0;
+    hot_reload_.reset();  // para el hilo del vigilante (un rescan en marcha solo usa sus copias)
     terrain_streamer_.clear(world_, terrain_store_, false);
     terrain_store_.clear();
     folder_nodes_.clear();
@@ -455,11 +476,14 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
         updateTitle();
         return false;
     }
-    // World Partition con celdas en disco: el editor las carga todas (la
-    // escena se ve y se edita entera; el juego solo lee las cercanas).
-    if (const int streamed = worldpart::WorldPartitionSystem::loadExternalCells(world_, path); streamed > 0) {
-        std::cout << "[Editor] " << streamed << " objetos de las celdas en disco ("
-                  << dialogs::utf8(worldpart::WorldPartitionSystem::cellsFolder(path).filename()) << ")\n";
+    // World Partition con celdas en disco: regiones cargadas (solo las celdas
+    // cerca de la camara y las fijadas, en otros hilos). Si se apagaron para
+    // esta escena, el editor las carga todas como antes.
+    if (!beginEditorRegions(path)) {
+        if (const int streamed = worldpart::WorldPartitionSystem::loadExternalCells(world_, path); streamed > 0) {
+            std::cout << "[Editor] " << streamed << " objetos de las celdas en disco ("
+                      << dialogs::utf8(worldpart::WorldPartitionSystem::cellsFolder(path).filename()) << ")\n";
+        }
     }
     alignOriginAfterLoad(origin_before);
     // Los modelos y texturas de la escena anterior, fuera de la GPU y de la
@@ -475,6 +499,7 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
     resetUndo();
     dirty_ = false;
     if (has_project_) physics_.start(world_);  // la del modo edicion, con la escena nueva
+    checkAutosaveRecovery(path);  // si se cerro por un error con cambios sin guardar
     std::cout << "[Editor] Escena abierta: " << dialogs::utf8(path.filename()) << "\n";
     updateTitle();
     return true;
@@ -509,9 +534,11 @@ bool EditorApp::saveScene() {
         const worldpart::WorldPartition& wp = world_.registry().get<worldpart::WorldPartition>(h);
         if (wp.enabled && wp.external_cells) external = &wp;
     }
+    prepareRegionsForSave(external);  // regiones cargadas sin celdas en disco: todo al mundo antes
     if (external != nullptr) {
-        // Con sus rejillas y sus capas (un archivo por celda de cada una).
-        const int cells = worldpart::WorldPartitionSystem::writeExternalCells(world_, *external, scene_path_, &error);
+        // Con sus rejillas y sus capas (un archivo por celda de cada una),
+        // tambien las que el editor tiene descargadas (regiones cargadas).
+        const int cells = editor_regions_.saveCells(world_, *external, scene_path_, &error);
         if (cells < 0) {
             std::cerr << "[Editor] No se pudieron guardar las celdas: " << error << "\n";
             return false;
@@ -527,6 +554,9 @@ bool EditorApp::saveScene() {
         return false;
     }
     dirty_ = false;
+    discardSceneAutosave();  // lo guardado ya esta en el archivo
+    // Recien activadas las celdas en disco: desde aqui, regiones cargadas.
+    if (external != nullptr && !editor_regions_.active()) beginEditorRegions(scene_path_);
     refreshDatabase();
     saveProjectThumbnail();  // el Hub ensena el proyecto como se guardo
     std::cout << "[Editor] Escena guardada: " << dialogs::utf8(scene_path_.filename()) << "\n";
@@ -551,6 +581,146 @@ bool EditorApp::saveSceneAs() {
     if (scene_path_.empty() || !std::filesystem::equivalent(path, scene_path_, ec)) world_.setSceneUuid(Uuid::generate());
     scene_path_ = path;
     return saveScene();
+}
+
+// -----------------------------------------------------------------------------
+// Autoguardado (Autosave.h): la instantanea de deshacer, cada N minutos y al
+// cerrarse por un error; al abrir la escena se ofrece si es mas nueva.
+// -----------------------------------------------------------------------------
+
+void EditorApp::updateAutosave() {
+    SceneAutosave::Frame frame;
+    frame.minutes = safety_prefs_.autosave_minutes;
+    // Solo con la escena en world_: en un prefab o Blueprint history_
+    // es el de su escenario. Mientras carga, la instantanea aun no es la nueva.
+    const Workspace* ws = findWorkspace(world_workspace_);
+    const bool scene_world = ws == nullptr || !isPrefabLikeWorkspace(ws->kind);
+    if (has_project_ && scene_world && !projectLoading() && !sceneLoading()) {
+        if (!autosave_file_valid_ || scene_path_ != autosave_scene_) {
+            autosave_scene_ = scene_path_;
+            autosave_file_ = SceneAutosave::fileFor(project_.libraryFolder(), project_.assetsFolder(), scene_path_);
+            autosave_file_valid_ = true;
+        }
+        frame.file = &autosave_file_;
+        // El texto de la instantanea, armado en otro hilo (unos segundos por
+        // detras del ultimo paso: sin serializar nada en este).
+        frame.state = history_.backgroundText(frame.minutes > 0 && dirty_);
+        frame.dirty = dirty_;
+    }
+    autosave_.tick(frame);
+}
+
+void EditorApp::checkAutosaveRecovery(const std::filesystem::path& scene) {
+    if (!has_project_ || autosave_recovery_.pending) return;
+    const std::filesystem::path file = SceneAutosave::fileFor(project_.libraryFolder(), project_.assetsFolder(), scene);
+    std::error_code ec;
+    if (!std::filesystem::exists(file, ec)) return;
+    if (!SceneAutosave::newerThanScene(file, scene)) {
+        autosave_.discard(file);  // la escena se guardo despues: ya no sirve
+        return;
+    }
+    char when[32] = "?";
+    if (const auto stamp = std::filesystem::last_write_time(file, ec); !ec) {
+        const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::clock_cast<std::chrono::system_clock>(stamp));
+        std::tm local{};
+        if (localtime_s(&local, &t) == 0) std::strftime(when, sizeof(when), "%d/%m/%Y %H:%M", &local);
+    }
+    autosave_recovery_ = AutosaveRecovery{file, scene, when, true};
+    autosave_.protect(file);  // no se pisa hasta que se decida
+    std::cout << "[Autoguardado] Hay un autoguardado de " << (scene.empty() ? std::string("una escena sin guardar")
+                                                                             : dialogs::utf8(scene.filename()))
+              << " de " << when << "\n";
+}
+
+void EditorApp::applyAutosaveRecovery() {
+    const AutosaveRecovery recovery = std::move(autosave_recovery_);
+    autosave_recovery_ = {};
+    autosave_.protect({});
+    if (!recovery.scene.empty() && recovery.scene != scene_path_) {
+        std::cerr << "[Autoguardado] La escena abierta ya es otra: el autoguardado sigue en "
+                  << dialogs::utf8(recovery.file) << "\n";
+        return;
+    }
+    std::string text;
+    {
+        std::ifstream in(recovery.file, std::ios::binary);
+        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    if (text.empty()) {
+        std::cerr << "[Autoguardado] No se pudo leer " << dialogs::utf8(recovery.file) << "\n";
+        return;
+    }
+    if (playing()) exitPlay();
+    if (recovery.scene.empty() && !scene_path_.empty()) newScene();  // era una escena sin guardar
+    // Como deshacer: el mundo se rehace en su sitio. Si el texto no es una
+    // escena (autoguardado de emergencia a medias), el mundo no se toca.
+    const ecs::DVec3 origin_before = world_.origin();
+    std::string error;
+    if (!ecs::deserializeWorld(world_, text, &error)) {
+        std::cerr << "[Autoguardado] El autoguardado no se puede leer (" << error << "): se queda la escena del disco\n";
+        return;
+    }
+    alignOriginAfterLoad(origin_before);
+    primeConstructionScripts();
+    clearSelection();
+    // Un paso de deshacer: Ctrl+Z vuelve a la escena del disco.
+    commit();
+    dirty_ = true;
+    autosave_.discard(recovery.file);  // desde aqui, el autoguardado normal (y el de emergencia)
+    std::cout << "[Autoguardado] Escena recuperada del " << recovery.when << " (sin guardar: Ctrl+S para guardarla)\n";
+    updateTitle();
+}
+
+void EditorApp::discardSceneAutosave() {
+    if (!has_project_) return;
+    autosave_.discard(autosave_.lastWritten());
+    autosave_.discard(SceneAutosave::fileFor(project_.libraryFolder(), project_.assetsFolder(), scene_path_));
+}
+
+void EditorApp::drawAutosaveRecovery() {
+    if (!autosave_recovery_.pending) return;
+    constexpr const char* kTitle = "Recuperar autoguardado";
+    if (!ImGui::IsPopupOpen(kTitle)) ImGui::OpenPopup(kTitle);
+    if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    const std::string name = autosave_recovery_.scene.empty() ? std::string("una escena sin guardar")
+                                                              : "\"" + dialogs::utf8(autosave_recovery_.scene.stem()) + "\"";
+    ImGui::Text("El editor se cerró con cambios sin guardar en %s.", name.c_str());
+    ImGui::Text("Hay un autoguardado del %s, más nuevo que el archivo.", autosave_recovery_.when.c_str());
+    ImGui::TextDisabled("Recuperar lo carga sin guardarlo (Ctrl+Z vuelve a la escena del disco).");
+    ImGui::Spacing();
+    if (ImGui::Button("Recuperar", ImVec2(120.0f, 0.0f))) {
+        ImGui::CloseCurrentPopup();
+        applyAutosaveRecovery();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Descartar", ImVec2(120.0f, 0.0f))) {
+        ImGui::CloseCurrentPopup();
+        autosave_.protect({});
+        autosave_.discard(autosave_recovery_.file);
+        autosave_recovery_ = {};
+    }
+    ImGui::EndPopup();
+}
+
+void EditorApp::drawAutosaveMenu() {
+    if (!ImGui::BeginMenu("Autoguardado")) return;
+    static constexpr int kMinutes[] = {0, 1, 2, 5, 10};
+    for (const int minutes : kMinutes) {
+        char label[32];
+        if (minutes == 0) {
+            std::snprintf(label, sizeof(label), "Desactivado");
+        } else {
+            std::snprintf(label, sizeof(label), "Cada %d %s", minutes, minutes == 1 ? "minuto" : "minutos");
+        }
+        if (ImGui::MenuItem(label, nullptr, safety_prefs_.autosave_minutes == minutes)) {
+            safety_prefs_.autosave_minutes = minutes;
+            saveSafetyPreferences(safety_prefs_);
+        }
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("En Library/Autosave, en segundo plano.");
+    ImGui::TextDisabled("También al cerrarse el editor por un error.");
+    ImGui::EndMenu();
 }
 
 void EditorApp::runOrAskToSave(PendingAction action, const std::filesystem::path& scene) {
@@ -625,20 +795,20 @@ void EditorApp::updateTitle() {
 }
 
 // -----------------------------------------------------------------------------
-// Deshacer / rehacer: instantaneas completas del mundo (JSON). Sencillo y
-// robusto: cualquier accion (componentes, jerarquia, borrar) se deshace igual.
+// Deshacer / rehacer por diferencias (EditorHistory.h): la instantanea por
+// entidad y, en cada paso, solo lo que cambio. Cualquier accion (componentes,
+// jerarquia, borrar, MCP) se deshace igual: el historial compara el mundo
+// entero por huellas, sin que cada sitio tenga que decir que toco.
 // -----------------------------------------------------------------------------
 
 void EditorApp::resetUndo() {
     commit_pending_ = false;
-    undo_.clear();
-    redo_.clear();
     undo_kinds_.clear();
     redo_kinds_.clear();
     terrain_undo_.clear();
     terrain_redo_.clear();
     flatten_prime_ = true;  // escena nueva: su terreno ya esta aplanado bajo los edificios
-    current_state_ = ecs::serializeWorld(world_);
+    history_.reset(world_);
     primeConstructionScripts();  // abrir una escena no pasa los Construction Script (ya estan hechos)
 }
 
@@ -647,41 +817,42 @@ void EditorApp::commit() {
     if (playing()) {
         return;
     }
-    // La instantanea (serializar el mundo entero) se hace una vez al final
-    // del frame: varias acciones seguidas (pegar, duplicar, crear en serie)
-    // cuestan una sola y quedan en un solo paso de deshacer.
+    // El paso se apunta una vez al final del frame: varias acciones seguidas
+    // (pegar, duplicar, crear en serie) quedan en un solo paso de deshacer.
     commit_pending_ = true;
+    // Una accion puede cambiar un collider sin mover la entidad: la fisica
+    // de edicion (incremental) hace una pasada completa en su siguiente sync.
+    physics_.touchAllEdit();
 }
 
 void EditorApp::flushCommit() {
     if (!commit_pending_) {
         return;
     }
+    CR_PROFILE_SCOPE("Deshacer (flushCommit)");
     commit_pending_ = false;
     if (playing()) {
         return;
     }
     // Lo que se coloco o cambio pasa su Construction Script (en el mismo paso de deshacer).
     runConstructionScripts();
-    recordPrefabOverrides();
-    std::string state = ecs::serializeWorld(world_);
-    if (state == current_state_) {
+    // Los cambios propios de las instancias de prefab tocadas entran en el mismo paso.
+    const bool changed = history_.commit(world_, [this](std::span<const ecs::Entity> touched, std::vector<ecs::Entity>& out) {
+        recordPrefabOverrides(touched, out);
+    });
+    // Un paso caro (miles de entidades tocadas a la vez) se explica en la consola.
+    if (const UndoHistory::Stats& stats = history_.lastStats(); stats.ms > 16.0) {
+        std::cout << "[Deshacer] Paso de " << static_cast<int>(stats.ms) << " ms (" << stats.entities
+                  << " entidades comparadas, " << stats.changed << " con otra huella, " << stats.recorded
+                  << " en el paso)\n";
+    }
+    if (!changed) {
         return;
     }
-    undo_.push_back(std::move(current_state_));
-    current_state_ = std::move(state);
-    redo_.clear();
     undo_kinds_.push_back('W');
     redo_kinds_.clear();
     terrain_redo_.clear();
-
-    std::size_t memory = current_state_.size();
-    for (const std::string& s : undo_) {
-        memory += s.size();
-    }
-    while (!undo_.empty() && (undo_.size() > kUndoMaxSteps || memory > kUndoMemoryLimit)) {
-        memory -= undo_.front().size();
-        undo_.pop_front();
+    for (std::size_t dropped = history_.trim(kUndoMaxSteps, kUndoMemoryLimit); dropped > 0; --dropped) {
         const auto it = std::find(undo_kinds_.begin(), undo_kinds_.end(), 'W');
         if (it != undo_kinds_.end()) undo_kinds_.erase(it);
     }
@@ -706,17 +877,18 @@ void EditorApp::undo() {
         updateTitle();
         return;
     }
-    if (undo_.empty()) {
+    if (!history_.canUndo()) {
         return;
     }
     if (!undo_kinds_.empty()) undo_kinds_.pop_back();
     redo_kinds_.push_back('W');
-    redo_.push_back(std::move(current_state_));
-    current_state_ = std::move(undo_.back());
-    undo_.pop_back();
-    const ecs::DVec3 origin_before = world_.origin();
-    ecs::deserializeWorld(world_, current_state_);
-    alignOriginAfterLoad(origin_before);
+    {
+        CR_PROFILE_SCOPE("Deshacer (Ctrl+Z)");
+        // Solo las entidades del paso; el origen flotante no se toca (el
+        // historial recoloca las raices si se movio desde entonces).
+        history_.undo(world_);
+        physics_.touchAllEdit();  // componentes rehechos sin mover la entidad
+    }
     primeConstructionScripts();  // el estado deshecho no vuelve a pasar su Construction Script
     dirty_ = true;
     updateTitle();
@@ -738,17 +910,16 @@ void EditorApp::redo() {
         updateTitle();
         return;
     }
-    if (redo_.empty()) {
+    if (!history_.canRedo()) {
         return;
     }
     if (!redo_kinds_.empty()) redo_kinds_.pop_back();
     undo_kinds_.push_back('W');
-    undo_.push_back(std::move(current_state_));
-    current_state_ = std::move(redo_.back());
-    redo_.pop_back();
-    const ecs::DVec3 origin_before = world_.origin();
-    ecs::deserializeWorld(world_, current_state_);
-    alignOriginAfterLoad(origin_before);
+    {
+        CR_PROFILE_SCOPE("Rehacer (Ctrl+Y)");
+        history_.redo(world_);
+        physics_.touchAllEdit();  // componentes rehechos sin mover la entidad
+    }
     primeConstructionScripts();  // el estado deshecho no vuelve a pasar su Construction Script
     dirty_ = true;
     updateTitle();
@@ -759,7 +930,7 @@ void EditorApp::redo() {
 // -----------------------------------------------------------------------------
 
 bool EditorApp::isSelected(const Uuid& uuid) const {
-    return findUuid(selection_, uuid) != selection_.end();
+    return selection_.contains(uuid);
 }
 
 void EditorApp::selectOnly(const Uuid& uuid) {
@@ -777,9 +948,7 @@ void EditorApp::toggleSelection(const Uuid& uuid) {
     if (isStageHelper(uuid)) return;
     inspected_material_ = {};
     inspected_render_texture_ = {};
-    const auto it = findUuid(selection_, uuid);
-    if (it != selection_.end()) {
-        selection_.erase(it);
+    if (selection_.erase(uuid)) {
         if (active_ == uuid) {
             active_ = selection_.empty() ? Uuid{} : selection_.back();
         }
@@ -810,14 +979,23 @@ std::vector<ecs::Entity> EditorApp::selectedEntities() const {
 
 std::vector<ecs::Entity> EditorApp::topLevelSelection() const {
     const std::vector<ecs::Entity> all = selectedEntities();
+    if (all.size() <= 1) return all;
+    // Cada una sube por sus padres mirando el conjunto de seleccionadas:
+    // O(n · profundidad). Antes cada par (any_of + isAncestorOf): cuadratico.
+    std::unordered_set<entt::entity> chosen;
+    chosen.reserve(all.size());
+    for (const ecs::Entity& e : all) chosen.insert(e.handle());
     std::vector<ecs::Entity> result;
-    for (ecs::Entity e : all) {
-        const bool inside = std::any_of(all.begin(), all.end(), [&](const ecs::Entity& other) {
-            return !(other == e) && other.isAncestorOf(e);
-        });
-        if (!inside) {
-            result.push_back(e);
+    result.reserve(all.size());
+    for (const ecs::Entity& e : all) {
+        bool inside = false;
+        for (ecs::Entity p = e.parent(); p.valid(); p = p.parent()) {
+            if (chosen.contains(p.handle())) {
+                inside = true;
+                break;
+            }
         }
+        if (!inside) result.push_back(e);
     }
     return result;
 }
@@ -1148,7 +1326,17 @@ void EditorApp::drawUi(float delta_seconds) {
     imgui_.updateThumbnails();
     pollImports();
     if (has_project_ && thumbnail_countdown_ > 0 && --thumbnail_countdown_ == 0) saveProjectThumbnail();
-    updateFloatingOrigin();
+    {
+        // El origen flotante mueve todas las raices: no es un cambio del
+        // usuario. La instantanea de deshacer pasa al origen nuevo (sin paso);
+        // los pasos guardan su origen y se recolocan al aplicarse.
+        const ecs::DVec3 origin_before = world_.origin();
+        updateFloatingOrigin();
+        if (world_.origin() != origin_before && !playing() && has_project_) {
+            flushCommit();
+            history_.sync(world_);
+        }
+    }
     updateTerrainFlatteners();  // TerrainFlatten: rehace al soltar lo que se movio
     // Material pulsado en el navegador: al Inspector solo si se solto sin
     // arrastrar (arrastrarlo a la Jerarquia o al Inspector no cambia nada).
@@ -1192,7 +1380,14 @@ void EditorApp::drawUi(float delta_seconds) {
     }
     profiler_overlay_.update(delta_seconds, renderer_);
     watchAssets();
-    pollMcp();
+    {
+        CR_PROFILE_SCOPE("MCP (pollMcp)");
+        pollMcp();
+    }
+    // Lo que hizo el MCP, en su propio paso de deshacer (no mezclado con lo
+    // que se haga en la interfaz en este frame).
+    flushCommit();
+    updateAutosave();
     pollUpdates();
     runSelfTestStep();
     drawCrashReportWindow();  // si la sesion anterior se cerro por un error
@@ -1336,6 +1531,7 @@ void EditorApp::drawUi(float delta_seconds) {
         drawImportProgress();
         if (show_physics_) drawPhysicsWindow();
         if (show_navigation_window_) drawNavigationWindow();
+        if (show_loaded_regions_) drawLoadedRegionsWindow();
         drawPaintWindow();
         drawModelingWindow();
         drawTerrainGeneratorWindow();
@@ -1601,8 +1797,8 @@ void EditorApp::drawMenuBar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Editar")) {
-        if (ImGui::MenuItem("Deshacer", "Ctrl+Z", false, !undo_.empty())) undo();
-        if (ImGui::MenuItem("Rehacer", "Ctrl+Y", false, !redo_.empty())) redo();
+        if (ImGui::MenuItem("Deshacer", "Ctrl+Z", false, history_.canUndo() || !terrain_undo_.empty())) undo();
+        if (ImGui::MenuItem("Rehacer", "Ctrl+Y", false, history_.canRedo() || !terrain_redo_.empty())) redo();
         ImGui::Separator();
         const bool any = !selection_.empty();
         if (ImGui::MenuItem("Copiar", "Ctrl+C", false, any)) copySelection();
@@ -1613,6 +1809,8 @@ void EditorApp::drawMenuBar() {
         if (ImGui::MenuItem("Enfocar selección", "F", false, any)) focusSelection();
         ImGui::Separator();
         ImGui::MenuItem("Configuración del motor...", nullptr, &show_engine_settings_);
+        drawAutosaveMenu();
+        drawBackgroundMenu();  // ritmo en segundo plano (EditorBackground.cpp)
         ImGui::Separator();
         drawXrMenu();
         ImGui::EndMenu();
@@ -1641,6 +1839,7 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("MCP (IA)", nullptr, &show_mcp_);
         ImGui::MenuItem("Física", nullptr, &show_physics_);
         ImGui::MenuItem("Navegación", nullptr, &show_navigation_window_);
+        ImGui::MenuItem("Regiones cargadas (World Partition)", nullptr, &show_loaded_regions_);
         ImGui::MenuItem("Pintar prefabs", nullptr, &show_paint_window_);
         ImGui::MenuItem("Modelado (ProBuilder)", nullptr, &show_modeling_window_);
         ImGui::MenuItem("Variables (CVars) y memoria", nullptr, &show_cvars_window_);
@@ -2042,6 +2241,7 @@ void EditorApp::drawModals() {
         if (ImGui::Button("No guardar", ImVec2(120.0f, 0.0f))) {
             ImGui::CloseCurrentPopup();
             dirty_ = false;
+            discardSceneAutosave();  // descartados: no se ofrecen al volver a abrirla
             performPending();
         }
         ImGui::SameLine();
@@ -2051,6 +2251,8 @@ void EditorApp::drawModals() {
         }
         ImGui::EndPopup();
     }
+
+    drawAutosaveRecovery();
 
     // Un asset pedido por su UUID (atajos viejos): por su archivo.
     if (pending_delete_asset_.valid()) {

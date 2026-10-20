@@ -62,6 +62,13 @@ layout(std430, set = 1, binding = 10) readonly buffer LightmapUvs {
 };
 layout(location = 7) out vec2 v_lightmap_uv[];
 layout(location = 8) flat out uint v_lightmap_slot[];
+// Hueco de la instancia (parametros por instancia) y color de vertice (set 1,
+// binding 11; solo con kFlagVertexColor).
+layout(location = 9) flat out uint v_instance_slot[];
+layout(std430, set = 1, binding = 11) readonly buffer VertexColors {
+    uint vertex_colors[];
+};
+layout(location = 10) out vec4 v_color[];
 const uint kFlagLightmap = 1u << 6;
 
 void main() {
@@ -113,6 +120,8 @@ void main() {
         }
         v_lightmap_uv[v] = lightmap_uv;
         v_lightmap_slot[v] = lightmap_slot;
+        v_instance_slot[v] = base;
+        v_color[v] = (push.flags & (1u << 7u)) != 0u ? unpackUnorm4x8(vertex_colors[vertex]) : vec4(1.0);
     }
     for (uint t = gl_LocalInvocationIndex; t < m.triangle_count; t += 64u) {
         gl_PrimitiveTriangleIndicesEXT[t] = meshletTriangle(m, t);

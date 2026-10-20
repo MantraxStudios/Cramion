@@ -181,6 +181,17 @@ enum class GamepadAxis : uint8_t {
     Count
 };
 
+// Familia del mando, para los iconos de los botones. GamepadButton::A/B/X/Y
+// son siempre posiciones (las de Xbox: A abajo, B derecha, X izquierda, Y
+// arriba): en PlayStation, A = cruz, B = circulo, X = cuadrado, Y = triangulo.
+enum class GamepadKind : uint8_t {
+    Unknown = 0,
+    Xbox,         // XInput (Xbox 360/One/Series y los que lo imitan)
+    PlayStation,  // DualShock 4 / DualSense
+    Nintendo,     // Switch Pro y Joy-Con (Linux)
+    Generic,      // otro mando con el esquema estandar (Linux evdev)
+};
+
 // Botones de los mandos de realidad virtual (OpenXR). A/X = Primary, B/Y =
 // Secondary; Trigger y Grip cuentan como pulsados a partir de la mitad.
 enum class XrButton : uint8_t {
@@ -252,5 +263,7 @@ const char* keyName(Key key);
 const char* gamepadButtonName(GamepadButton button);
 // "leftx", "lefty", "rightx", "righty", "lt", "rt".
 const char* gamepadAxisName(GamepadAxis axis);
+// "unknown", "xbox", "playstation", "nintendo", "generic".
+const char* gamepadKindName(GamepadKind kind);
 
 }  // namespace cramion::dm

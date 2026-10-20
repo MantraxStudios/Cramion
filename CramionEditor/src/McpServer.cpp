@@ -3,13 +3,18 @@
 
 #include "McpServer.h"
 
+#include "Dialogs.h"
+#include "LoadingScreen.h"  // localDataFolder
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <fstream>
 #include <iostream>
+#include <random>
 
 namespace cramion::editor {
 
@@ -30,13 +35,15 @@ bool sendAll(SOCKET s, const std::string& data) {
     return true;
 }
 
+// `cors`: la cabecera para las paginas locales (solo sin token exigido; con
+// el token, ninguna pagina web entra).
 void respond(SOCKET s, int status, const char* reason, const std::string& body,
-             const char* type = "application/json") {
+             const char* type = "application/json", bool cors = false) {
     std::string head = "HTTP/1.1 " + std::to_string(status) + " " + reason + "\r\n";
     head += "Content-Type: ";
     head += type;
     head += "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
-    head += "Access-Control-Allow-Origin: http://localhost\r\n";
+    if (cors) head += "Access-Control-Allow-Origin: http://localhost\r\n";
     head += "Connection: close\r\n\r\n";
     sendAll(s, head + body);
 }
@@ -55,7 +62,58 @@ bool localOrigin(const std::string& origin) {
     return false;
 }
 
+// Host de la peticion: este PC (127.0.0.1 o localhost, con o sin puerto) o
+// ninguno (HTTP/1.0). Otro nombre = una pagina con DNS rebinding.
+bool localHost(const std::string& host) {
+    if (host.empty()) return true;
+    std::string h = lower(host);
+    if (const std::size_t colon = h.rfind(':'); colon != std::string::npos) h.resize(colon);
+    return h == "127.0.0.1" || h == "localhost";
+}
+
+// 256 bits en hexadecimal. std::random_device es rand_s en el STL de
+// Microsoft (RtlGenRandom: criptografico).
+std::string randomToken() {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::random_device device;
+    std::string token;
+    token.reserve(64);
+    for (int i = 0; i < 8; ++i) {
+        const std::uint32_t value = device();
+        for (int b = 0; b < 8; ++b) token += kHex[(value >> (b * 4)) & 0xF];
+    }
+    return token;
+}
+
+// Comparacion en tiempo constante (no dice cuantos caracteres acierta).
+bool sameToken(const std::string& presented, const std::string& expected) {
+    if (expected.empty() || presented.size() != expected.size()) return false;
+    unsigned char difference = 0;
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        difference |= static_cast<unsigned char>(presented[i] ^ expected[i]);
+    }
+    return difference == 0;
+}
+
+// Temporal + rename: CramionMcp.exe nunca lee un token a medias.
+bool writeTokenFile(const std::filesystem::path& file, const std::string& token) {
+    std::filesystem::path temporary = file;
+    temporary += ".tmp";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        out << token;
+        if (!out) return false;
+    }
+    std::error_code ec;
+    std::filesystem::rename(temporary, file, ec);
+    return !ec;
+}
+
 }  // namespace
+
+std::filesystem::path McpServer::tokenFile(std::uint16_t port) {
+    return localDataFolder({}) / ("mcp-token-" + std::to_string(port));
+}
 
 McpServer::~McpServer() { stop(); }
 
@@ -82,6 +140,13 @@ bool McpServer::start(std::uint16_t port, std::string* error) {
     }
     listener_ = static_cast<std::uintptr_t>(listener);
     port_ = port;
+    // El token es de la sesion del editor: el mismo al volver a encender.
+    if (token_.empty()) token_ = randomToken();
+    token_file_ = tokenFile(port);
+    if (!writeTokenFile(token_file_, token_)) {
+        std::cerr << "[MCP] No se pudo escribir el token en " << dialogs::utf8(token_file_)
+                  << ": con \"Exigir token MCP\" CramionMcp.exe no podra conectarse\n";
+    }
     running_ = true;
     thread_ = std::thread([this] { acceptLoop(); });
     return true;
@@ -93,6 +158,12 @@ void McpServer::stop() {
     closesocket(static_cast<SOCKET>(listener_));  // despierta a accept()
     if (thread_.joinable()) thread_.join();
     listener_ = ~std::uintptr_t{0};
+    // El token solo vale con el servidor encendido.
+    if (!token_file_.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(token_file_, ec);
+        token_file_.clear();
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     for (Pending& p : pending_) p.reply.set_value("");
     pending_.clear();
@@ -125,7 +196,7 @@ void McpServer::serve(std::uintptr_t handle) {
     }
     const std::string head = data.substr(0, header_end);
     std::string body = data.substr(header_end + 4);
-    std::string method, path, origin;
+    std::string method, path, origin, host, presented;
     std::size_t length = 0;
     {
         const std::size_t line_end = head.find("\r\n");
@@ -146,6 +217,11 @@ void McpServer::serve(std::uintptr_t handle) {
                 value.erase(0, value.find_first_not_of(' '));
                 if (key == "content-length") length = static_cast<std::size_t>(std::strtoull(value.c_str(), nullptr, 10));
                 if (key == "origin") origin = value;
+                if (key == "host") host = value;
+                if (key == "x-cramion-token") presented = value;
+                if (key == "authorization" && value.size() > 7 && lower(value.substr(0, 7)) == "bearer ") {
+                    presented = value.substr(7);
+                }
             }
             pos = end + 2;
         }
@@ -161,28 +237,53 @@ void McpServer::serve(std::uintptr_t handle) {
     }
     body.resize(std::min(body.size(), length));
 
-    if (!localOrigin(origin)) {
-        respond(client, 403, "Forbidden", R"({"error":"origen no permitido"})");
+    while (!presented.empty() && (presented.back() == ' ' || presented.back() == '\t')) presented.pop_back();
+    presented.erase(0, presented.find_first_not_of(" \t"));
+
+    const bool require_token = require_token_;
+    const bool cors = !require_token;
+    const auto reject = [&](const char* why) {
+        ++rejected_;
+        respond(client, 403, "Forbidden", std::string(R"({"error":")") + why + "\"}", "application/json", cors);
+    };
+    if (!localHost(host)) {
+        reject("Host no permitido: solo 127.0.0.1 o localhost");
+        return;
+    }
+    // Con el token exigido, ninguna Origin: los clientes MCP no la mandan y
+    // un navegador siempre (aunque la pagina sea de localhost).
+    if (require_token ? !origin.empty() : !localOrigin(origin)) {
+        reject("origen no permitido: las paginas web no pueden usar el MCP del editor");
         return;
     }
     if (method == "GET" && (path == "/" || path == "/health")) {
-        respond(client, 200, "OK", R"({"server":"cramion-editor","mcp":"/mcp"})");
+        respond(client, 200, "OK", R"({"server":"cramion-editor","mcp":"/mcp"})", "application/json", cors);
+        return;
+    }
+    // 403 y no 401: con 401 los clientes HTTP de MCP intentan OAuth y el
+    // error que ensenan no dice que falta el token.
+    if (require_token && !sameToken(presented, token_)) {
+        reject(presented.empty()
+                   ? "falta el token del MCP de Cramion: mandalo en Authorization: Bearer <token> (archivo "
+                     "%LOCALAPPDATA%/Cramion/mcp-token-<puerto>) o conecta con CramionMcp.exe, que lo manda solo"
+                   : "token del MCP de Cramion no valido: cambia en cada sesion del editor, vuelve a leer "
+                     "%LOCALAPPDATA%/Cramion/mcp-token-<puerto>");
         return;
     }
     if (path != "/mcp" && path != "/") {
-        respond(client, 404, "Not Found", "{}");
+        respond(client, 404, "Not Found", "{}", "application/json", cors);
         return;
     }
     if (method == "GET") {  // sin canal SSE: solo peticion/respuesta
-        respond(client, 405, "Method Not Allowed", "{}");
+        respond(client, 405, "Method Not Allowed", "{}", "application/json", cors);
         return;
     }
     if (method == "DELETE") {
-        respond(client, 200, "OK", "{}");
+        respond(client, 200, "OK", "{}", "application/json", cors);
         return;
     }
     if (method != "POST") {
-        respond(client, 405, "Method Not Allowed", "{}");
+        respond(client, 405, "Method Not Allowed", "{}", "application/json", cors);
         return;
     }
 
@@ -195,14 +296,15 @@ void McpServer::serve(std::uintptr_t handle) {
     }
     // El editor puede estar ocupado (importando): hasta 2 minutos.
     if (reply.wait_for(std::chrono::seconds(120)) != std::future_status::ready) {
-        respond(client, 504, "Gateway Timeout", R"({"error":"el editor no respondio a tiempo"})");
+        respond(client, 504, "Gateway Timeout", R"({"error":"el editor no respondio a tiempo"})", "application/json",
+                cors);
         return;
     }
     const std::string answer = reply.get();
     if (answer.empty()) {
-        respond(client, 202, "Accepted", "");
+        respond(client, 202, "Accepted", "", "application/json", cors);
     } else {
-        respond(client, 200, "OK", answer);
+        respond(client, 200, "OK", answer, "application/json", cors);
     }
 }
 

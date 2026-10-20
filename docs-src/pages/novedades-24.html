@@ -4,6 +4,51 @@
   lightmap de superficie, accesibilidad, mods, informe de cierres, job system y Linux.
 </p>
 
+<h3 id="v262">2.6.2: streaming sin tirones, luces sin tope y editor rápido con escenas grandes</h3>
+<p>
+  Novedad sobre la 2.5.1 (de la 2.5.2 a la 2.6.1 no se publicaron). Ver el detalle en el <code>CHANGELOG.md</code>.
+</p>
+<ul>
+  <li><strong>Streaming sin tirones</strong>: <code>Scene.instantiateAsync</code> y <code>Scene.destroyDeferred</code> leen el
+    prefab en otros hilos y crean o borran sus entidades por tandas con un presupuesto por frame; las plantillas de prefab
+    compiladas hacen <code>Scene.instantiate</code> de 9 a 15 veces más rápido, y hay pool de objetos
+    (<code>Scene.pool</code>, <code>Scene.acquire</code>, <code>Scene.release</code>). Las texturas de los árboles se generan en
+    otro hilo (adiós al parón de 1 a 2,3 s con el primer árbol) y los <code>.crshader</code> se compilan en segundo plano.</li>
+  <li><strong>Trazado de rayos</strong>: la escena de rayos es incremental, así que cada modelo que entra por streaming se añade
+    solo, en vez de las 7 reconstrucciones seguidas por ciclo de antes.</li>
+  <li><strong>Memoria</strong>: presupuesto de VRAM con LRU, la RAM de las texturas de los modelos sin uso se suelta, y la caché
+    de prefabs y las formas de física tienen tope.</li>
+  <li><strong>Sonda de reflexión sin parar la CPU</strong>: captura en su propio hueco de frame. Con <code>--rt 0</code>, p99 de
+    17,5 a 12,4 ms y los frames de más de 16,7 ms de ~170 a 8. Arreglado el <code>ErrorDeviceLost</code> con el trazado de rayos
+    apagado, con informe de dispositivo perdido y esperas a la GPU con tope.</li>
+  <li><strong>Luces y materiales</strong>: luces locales sin tope por clústeres, <code>.crmat</code> transparentes iluminados
+    (<code>alpha</code>, <code>additive</code>) y <code>unlit</code>, color de vértice, parámetros por instancia en el
+    <code>MeshRenderer</code> y decals por teselas (hasta 256, con normal, ORM y emisión). LOD por modelo, LODs del archivo y
+    fundido al cambiar de nivel.</li>
+  <li><strong><code>.crshader</code> y Shader Graph</strong>: ruidos nuevos sin facetas, <code>vertex()</code> con sombra y
+    vectores de movimiento, <code>domain transparent</code> iluminado que lee la escena (distorsión, refracción) e
+    <code>INSTANCE_DATA</code>; el Shader Graph gana los dominios y la categoría «Escena».</li>
+  <li><strong>VFX Graph completo</strong>: cintas con varias tiras, suavizado y UV que no resbala; luz por partícula; eventos de
+    la GPU con canales (también desde scripts con <code>Effects::pushEvent</code>); mallas con variantes y LOD; distorsión;
+    flipbook con fundido y escalabilidad por tipo de efecto (Héroe, Combate, Impacto, Ambiente).</li>
+  <li><strong>Editor</strong>: deshacer por diferencias por entidad (10 000 entidades: 0,2 ms por paso), regiones cargadas de
+    World Partition, recarga en caliente de assets editados en disco, mover o renombrar actualiza las referencias,
+    reimportar al cambiar el original, autoguardado con recuperación y segundo plano configurable. Arreglado el tirón de
+    ~200 ms cada 2 s, y los logos ya no tienen fondo negro.</li>
+  <li><strong>Scripts de C++</strong>: <code>onEnable()</code> / <code>onDisable()</code>, un viaje al proceso por fase, API
+    por índice y en binario, y en el juego exportado de Windows los scripts se cargan en el propio proceso.</li>
+  <li><strong>Mando</strong> en Windows y Linux (XInput, DualShock 4 y DualSense, evdev), hasta 4 a la vez y con vibración.
+    <strong>MCP</strong> con token de sesión.</li>
+</ul>
+<div class="note">
+  <strong>Juegos exportados</strong>: los que usan <code>.crshader</code> hay que volver a exportarlos.
+  <strong><code>domain transparent</code></strong> ahora se ilumina; para lo de antes, <code>domain transparent unlit</code>.
+  <strong>Scripts de C++</strong>: en el juego exportado de Windows van en el propio proceso (sin aislamiento;
+  <code>script.cpp.InProcess=false</code> vuelve al proceso aparte), y desactivar y reactivar ya no repite
+  <code>awake</code>/<code>start</code>. <strong>MCP</strong>: los clientes HTTP directos necesitan el token (o el puente
+  <code>CramionMcp.exe</code>). <strong>Modelos</strong>: para el color de vértice hay que reimportar.
+</div>
+
 <h3 id="v251">2.5.1: lightmaps UV2, memoria con VMA y mundos grandes más rápidos</h3>
 <p>
   Novedad sobre la 2.4.13. Ver el detalle en el <code>CHANGELOG.md</code>.

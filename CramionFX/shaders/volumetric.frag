@@ -262,7 +262,13 @@ float sunVisibility(float t) {
             continue;
         }
         float lit = texture(shadow_map, vec4(uv, float(cascade), projected.z));
-        return mix(1.0, lit, shadows.params.y);
+        // Al final de la ultima cascada la sombra se desvanece como en la
+        // superficie (shadowFactor de lighting.frag). Sin esto, las columnas
+        // oscuras del aire se cortaban de golpe en un plano a esa distancia
+        // mientras la sombra del suelo ya se habia fundido: se veia el corte.
+        float max_distance = shadows.split_distances[kShadowCascadeCount - 1];
+        float fade = clamp((view_depth - max_distance * 0.85) / max(max_distance * 0.15, 1e-3), 0.0, 1.0);
+        return mix(mix(1.0, lit, shadows.params.y), 1.0, fade);
     }
     return 1.0;  // ninguna lo cubre: iluminado
 }

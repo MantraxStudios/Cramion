@@ -114,6 +114,9 @@ struct PostProcessSettings {
     // que las cascadas no resuelven. Largo del rayo en metros.
     bool contact_shadows = true;
     float contact_shadow_length = 0.5f;
+    // Hasta donde llegan (m): se funden en el ultimo tercio, y nunca pasan de
+    // donde se desvanecen las cascadas.
+    float contact_shadow_distance = 60.0f;
     // Polvo del aire (1/m). 0.004 es una bruma ligera (~1 km de visibilidad).
     // El aire limpio real ronda 1e-5..1e-4 /m; en la practica 0.0005..0.001
     // si se quieren seguir viendo los rayos de sol entre los arboles. (Era

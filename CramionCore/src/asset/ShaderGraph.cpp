@@ -48,6 +48,8 @@ enum class K {
     Fresnel, NormalBlend, NormalStrength,
     // Canales y utilidad
     Split, Combine, Swizzle, Custom,
+    // Escena (dominios transparentes)
+    ScreenUV, SceneColor, SceneDepth, ScenePosition, DepthFade,
 };
 
 // Entradas del nodo Salida.
@@ -63,6 +65,7 @@ enum MasterPin {
     kNormalWorld,
     kVertexOffset,
     kVertexNormal,
+    kRefraction,  // (al final: los enlaces guardados van por indice de pin)
 };
 
 struct Entry {
@@ -116,7 +119,7 @@ const std::vector<Entry>& entries() {
              pin("Metal", F, s4(0.0f)), pin("Rugosidad", F, s4(0.5f)), pin("Oclusión", F, s4(1.0f)),
              pin("Emisión", V3, s4(0.0f)), pin("Normal (tangente)", V3, {0.0f, 0.0f, 1.0f, 0.0f}),
              pin("Normal (mundo)", V3, {0.0f, 1.0f, 0.0f, 0.0f}), pin("Desplazamiento (vértice)", V3, s4(0.0f)),
-             pin("Normal (vértice)", V3, {0.0f, 1.0f, 0.0f, 0.0f})},
+             pin("Normal (vértice)", V3, {0.0f, 1.0f, 0.0f, 0.0f}), pin("Refracción", F, s4(0.0f))},
             {})
             .unique = true;
 
@@ -137,7 +140,7 @@ const std::vector<Entry>& entries() {
         add(K::Object, "object", "Objeto", "Entrada", "Posición y escala del objeto que se dibuja.",
             "object position scale transform", {}, {pin("Posición", V3), pin("Escala", V3)});
         add(K::VertexColor, "vertex_color", "Color de vértice", "Entrada",
-            "Color por vértice. Las mallas del motor no lo guardan: devuelve blanco.", "vertex color",
+            "Color por vértice del modelo (COLOR_0 del archivo). Blanco si el modelo no lo trae.", "vertex color",
             {}, {pin("RGBA", V4), pin("RGB", V3)});
         add(K::MaterialBase, "material", "Material (base)", "Entrada",
             "La superficie que calcula el material (texturas y factores del .crmat) antes del grafo.",
@@ -353,6 +356,52 @@ const std::vector<Entry>& entries() {
                              {pin("A", V4), pin("B", V4), pin("C", V4), pin("D", V4)}, {pin("Resultado", DY)});
             d.fields = NodeField::Name | NodeField::Width;
         }
+
+        // --- Escena (solo con dominio Transparente: se dibuja sobre la escena
+        // ya iluminada; las mismas funciones que el .crshader) ---
+        const PinDefault SUV = PinDefault::ScreenUV;
+        {
+            NodeDef& d = add(K::ScreenUV, "screen_uv", "UV de pantalla", "Escena",
+                             "Este píxel en la pantalla (0..1): SCREEN_UV. Para leer la escena desplazada.",
+                             "screen uv screenposition screen position", {}, {pin("UV", V2)});
+            d.fragment_only = true;
+            d.transparent_only = true;
+        }
+        {
+            NodeDef& d = add(K::SceneColor, "scene_color", "Color de escena", "Escena",
+                             "Lo opaco ya iluminado detrás (sin lo transparente) en esas UV de pantalla: distorsión, "
+                             "refracción. «Emisión» es el mismo color en la escala de la Emisión de la Salida.",
+                             "scene color opaque texture grab pass refraction distortion",
+                             {pin("UV", V2, {}, SUV)}, {pin("Color", V3), pin("Emisión", V3)});
+            d.fragment_only = true;
+            d.transparent_only = true;
+        }
+        {
+            NodeDef& d = add(K::SceneDepth, "scene_depth", "Profundidad de escena", "Escena",
+                             "La profundidad de lo opaco en esas UV de pantalla: la del depth buffer (0..1, 1 = cielo) "
+                             "y en metros a lo largo de la vista.",
+                             "scene depth linear eye depth z buffer",
+                             {pin("UV", V2, {}, SUV)}, {pin("Profundidad", F), pin("Lineal (m)", F)});
+            d.fragment_only = true;
+            d.transparent_only = true;
+        }
+        {
+            NodeDef& d = add(K::ScenePosition, "scene_position", "Posición de escena", "Escena",
+                             "El punto del mundo de lo opaco que se ve en esas UV de pantalla.",
+                             "scene world position reconstruct depth",
+                             {pin("UV", V2, {}, SUV)}, {pin("Posición", V3)});
+            d.fragment_only = true;
+            d.transparent_only = true;
+        }
+        {
+            NodeDef& d = add(K::DepthFade, "depth_fade", "Fundido con la escena", "Escena",
+                             "0 donde la superficie toca lo opaco, 1 a «Distancia» metros por delante: orillas, "
+                             "campos de fuerza y partículas sin cortes.",
+                             "depth fade soft particles intersection edge shoreline",
+                             {pin("Distancia", F, s4(1.0f))}, {pin("Fundido", F)});
+            d.fragment_only = true;
+            d.transparent_only = true;
+        }
         return e;
     }();
     return list;
@@ -413,6 +462,9 @@ bool reservedName(const std::string& n) {
         "base_color", "emissive", "reflectance", "bones", "surface_params", "albedo_map", "metallic_roughness_map",
         "normal_map", "occlusion_map", "emissive_map", "hash", "noise", "fbm", "fresnel", "remap", "toLinear",
         "SG_SAMPLE", "A", "B", "C", "D",
+        // lectura de la escena (dominios transparentes)
+        "SCREEN_UV", "sceneColor", "sceneDepth", "sceneLinearDepth", "sceneWorldPosition", "sceneEmission",
+        "depthFade", "kEmissiveIntensity", "lights", "shadows", "environment_map",
         // GLSL
         "float", "int", "uint", "bool", "double", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4", "uvec2", "uvec3",
         "uvec4", "bvec2", "bvec3", "bvec4", "mat2", "mat3", "mat4", "sampler2D", "void", "return", "if", "else", "for",
@@ -638,6 +690,7 @@ Expr Gen::fallback(const Node& n, int pin, const PinDef& p) {
         case PinDefault::VertexNormal: return {vertexNormal(), 3};
         case PinDefault::ViewDirection: return {view(), 3};
         case PinDefault::Time: result_.uses_time = true; return {"TIME", 1};
+        case PinDefault::ScreenUV: return {"SCREEN_UV", 2};
         default: break;
     }
     if (p.type == PinType::Texture) return {"", 0};
@@ -697,6 +750,10 @@ const std::vector<Expr>& Gen::node(int id) {
         error(id, "'" + e->def.title + "' solo funciona en la superficie (no en las entradas de vértice de la Salida)");
         return none;
     }
+    if (e->def.transparent_only && !isTransparentDomain(graph_.domain)) {
+        error(id, "'" + e->def.title + "' lee la escena: pon el dominio del grafo en Transparente (pestaña Grafo)");
+        return none;
+    }
     visiting_.insert(id);
     std::vector<Expr> in;
     in.reserve(e->def.inputs.size());
@@ -748,7 +805,9 @@ std::vector<Expr> Gen::emit(const Node& n, const Entry& e, const std::vector<Exp
         case K::Object:
             return {{"push.model[3].xyz", 3},
                     {"vec3(length(push.model[0].xyz), length(push.model[1].xyz), length(push.model[2].xyz))", 3}};
-        case K::VertexColor: return {{"vec4(1.0)", 4}, {"vec3(1.0)", 3}};
+        // VERTEX_COLOR: lo definen las plantillas (surface.vert/.frag); en las
+        // demas, blanco (surface_common.glsl).
+        case K::VertexColor: return {{"VERTEX_COLOR", 4}, {"VERTEX_COLOR.rgb", 3}};
         case K::MaterialBase:
             return {{"s.albedo", 3},   {"s.alpha", 1},    {"s.metallic", 1}, {"s.roughness", 1},
                     {"s.occlusion", 1}, {"s.emission", 3}, {"s.normal", 3}};
@@ -869,6 +928,14 @@ std::vector<Expr> Gen::emit(const Node& n, const Entry& e, const std::vector<Exp
                            temp + " = " + type + "(" + expression + "); }");
             return {{temp, width}};
         }
+        // Escena: las funciones de surface_common.glsl (CRAMION_SCENE_TEXTURES).
+        case K::ScreenUV: return {{"SCREEN_UV", 2}};
+        case K::SceneColor:
+            line(n.id, "vec3 " + temp + " = sceneColor(" + c(0) + ");");
+            return {{temp, 3}, {"(" + temp + " * (1.0 / kEmissiveIntensity))", 3}};
+        case K::SceneDepth: return {{"sceneDepth(" + c(0) + ")", 1}, {"sceneLinearDepth(" + c(0) + ")", 1}};
+        case K::ScenePosition: return {{"sceneWorldPosition(" + c(0) + ")", 3}};
+        case K::DepthFade: return {{"depthFade(s, " + c(0) + ")", 1}};
     }
     return {};
 }
@@ -892,7 +959,18 @@ void Gen::master(const Node& m, const NodeDef& d) {
         const bool clip_set = linked(kAlphaClip) ||
                               (static_cast<std::size_t>(kAlphaClip) < m.inputs.size() &&
                                std::abs(m.inputs[static_cast<std::size_t>(kAlphaClip)].x - 0.5f) > 1e-4f);
-        if (linked(kAlpha) || clip_set) {
+        if (isTransparentDomain(graph_.domain)) {
+            // Transparente: el alfa es la mezcla (no recorta); con un recorte
+            // puesto, lo de debajo se descarta.
+            if (linked(kAlpha) || clip_set) {
+                const std::string alpha = linked(kAlpha) ? value(kAlpha, "alpha") : std::string("s.alpha");
+                if (clip_set) {
+                    const std::string clip = value(kAlphaClip, "alpha_clip");
+                    assign.push_back("if (" + alpha + " < " + clip + ") discard;");
+                }
+                assign.push_back("s.alpha = " + alpha + ";");
+            }
+        } else if (linked(kAlpha) || clip_set) {
             const std::string alpha = linked(kAlpha) ? value(kAlpha, "alpha") : std::string("s.alpha");
             const std::string clip = value(kAlphaClip, "alpha_clip");
             // El motor recorta por debajo de 0.5: se mueve el umbral.
@@ -908,6 +986,10 @@ void Gen::master(const Node& m, const NodeDef& d) {
                              ", s.vertexNormal, s.worldPosition, s.uv);");
         }
         if (linked(kNormalWorld)) assign.push_back("s.normal = normalize(" + value(kNormalWorld, "normal_ws") + ");");
+        // Refraccion (s.refraction): solo hay escena que desviar en lo transparente.
+        if (linked(kRefraction) && isTransparentDomain(graph_.domain)) {
+            assign.push_back("s.refraction = " + value(kRefraction, "refraction") + ";");
+        }
     }
     for (const std::string& a : assign) line(m.id, a);
 }
@@ -1077,6 +1159,31 @@ const char* kWhite = "*blanca";
 }  // namespace
 
 // ---------------------------------------------------------------------------
+
+bool isTransparentDomain(GraphDomain domain) {
+    return domain == GraphDomain::Transparent || domain == GraphDomain::TransparentUnlit;
+}
+
+namespace {
+
+// Nombre del dominio en el JSON y la linea `domain` del .crshader.
+const char* domainKey(GraphDomain domain) {
+    switch (domain) {
+        case GraphDomain::Unlit: return "unlit";
+        case GraphDomain::Transparent: return "transparent";
+        case GraphDomain::TransparentUnlit: return "transparent_unlit";
+        default: return "opaque";
+    }
+}
+
+GraphDomain domainFromKey(const std::string& key) {
+    if (key == "unlit") return GraphDomain::Unlit;
+    if (key == "transparent") return GraphDomain::Transparent;
+    if (key == "transparent_unlit" || key == "transparent unlit") return GraphDomain::TransparentUnlit;
+    return GraphDomain::Opaque;
+}
+
+}  // namespace
 
 int pinWidth(PinType type) {
     switch (type) {
@@ -1320,6 +1427,7 @@ std::string serialize(const Graph& graph) {
     json root;
     root["version"] = 1;
     root["description"] = graph.description;
+    if (graph.domain != GraphDomain::Opaque) root["domain"] = domainKey(graph.domain);
     json nodes = json::array();
     for (const Node& n : graph.nodes) {
         json j;
@@ -1360,6 +1468,9 @@ bool parse(const std::string& text, Graph& out, std::string* error) {
     }
     Graph g;
     g.description = root.value("description", std::string{});
+    if (const auto d = root.find("domain"); d != root.end() && d->is_string()) {
+        g.domain = domainFromKey(d->get<std::string>());
+    }
     if (const auto it = root.find("nodes"); it != root.end() && it->is_array()) {
         for (const json& j : *it) {
             if (!j.is_object()) continue;
@@ -1461,6 +1572,13 @@ bool generate(const Graph& graph, const std::string& name, GenerateResult& out) 
     if (!graph.description.empty()) {
         std::string first = graph.description.substr(0, graph.description.find('\n'));
         add("// " + first);
+    }
+    // Dominio (opaco: sin linea, como los .crshader de antes).
+    switch (graph.domain) {
+        case GraphDomain::Unlit: add("domain unlit"); break;
+        case GraphDomain::Transparent: add("domain transparent"); break;
+        case GraphDomain::TransparentUnlit: add("domain transparent unlit"); break;
+        default: break;
     }
     add("");
 
@@ -1656,6 +1774,7 @@ Evaluator::Value Evaluator::input(const Node& node, int pin, int depth) {
         case PinDefault::VertexNormal: return vec3v(point_.normal);
         case PinDefault::ViewDirection: return vec3v(point_.view);
         case PinDefault::Time: return scalar(point_.time);
+        case PinDefault::ScreenUV: return vec(point_.uv.x, point_.uv.y, 0.0f, 0.0f, 2);
         default: break;
     }
     if (p.type == PinType::Texture) {
@@ -1885,6 +2004,14 @@ const std::vector<Evaluator::Value>& Evaluator::outputs(int id, int depth) {
             o = {conv(scalar(0.5f), width)};
             break;
         }
+        // Escena: en la vista previa no hay escena detras (gris medio a 10 m).
+        case K::ScreenUV: o = {vec(point_.uv.x, point_.uv.y, 0.0f, 0.0f, 2)}; break;
+        case K::SceneColor:
+            o = {vec(0.5f, 0.5f, 0.5f, 0.0f, 3), vec(0.5f / 6.0f, 0.5f / 6.0f, 0.5f / 6.0f, 0.0f, 3)};
+            break;
+        case K::SceneDepth: o = {scalar(0.99f), scalar(10.0f)}; break;
+        case K::ScenePosition: o = {vec3v(point_.position - point_.view * 10.0f)}; break;
+        case K::DepthFade: o = {scalar(1.0f)}; break;
     }
     for (Value& v : o) {
         for (float& x : v.v) {
@@ -1929,7 +2056,7 @@ PreviewSurface Evaluator::surface(const PreviewPoint& point) {
     }
     const float clip = get(kAlphaClip).v[0];
     if (linked(kAlpha)) s.alpha = get(kAlpha).v[0];
-    s.alpha += 0.5f - clip;
+    if (!isTransparentDomain(graph_.domain)) s.alpha += 0.5f - clip;  // (transparente: el alfa es la mezcla)
     if (linked(kMetallic)) s.metallic = get(kMetallic).v[0];
     if (linked(kRoughness)) s.roughness = get(kRoughness).v[0];
     if (linked(kOcclusion)) s.occlusion = get(kOcclusion).v[0];

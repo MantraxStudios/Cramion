@@ -35,6 +35,8 @@ class VulkanDevice;
 //   set 0, binding 21 -> mapa de entorno HDR
 //   (22-28: luz volumetrica, sombra de las nubes, cascadas sin comparar,
 //   sombras por rayos, modelo de Disney y oclusion del cielo desde arriba)
+//   set 0, binding 29 -> luces locales por clusteres: cabecera + luces (storage)
+//   set 0, binding 30 -> listas de luces de cada cluster (storage)
 //
 // En el modo compatible (VulkanCompat.h, moviles) no existen 19, 21, 22, 24,
 // 25, 26, 27 ni 28: el shader se queda en 16 texturas (el minimo de Vulkan).

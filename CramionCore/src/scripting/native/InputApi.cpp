@@ -42,6 +42,12 @@ std::uint8_t triggerEvent(const std::string& name) {
     return 0;
 }
 
+// Mando de una llamada: 1..4 = ese mando; 0, nada o fuera de rango = cualquiera (-1).
+int padArg(api::Call& c, std::size_t i) {
+    const long long pad = c.integer(i, 0);
+    return pad >= 1 && pad <= dm::Input::kMaxGamepads ? static_cast<int>(pad - 1) : -1;
+}
+
 const input::ActionState* actionState(Runtime& rt, const std::string& name, const char* where) {
     const input::ActionState* s = rt.actions.state(name);
     if (s == nullptr) rt.write(1, std::string(where) + ": no hay una accion \"" + name + "\" (Archivo > Entrada del proyecto)");
@@ -242,52 +248,106 @@ void registerDevices(Runtime& rt) {
         "Input.vibrate",
         [&rt](api::Call& c) {
             const int ms = static_cast<int>(std::clamp<long long>(c.integer(0, 60), 1, 5000));
+            // En PC (sin vibracion del movil), los mandos.
             if (rt.vibrate) rt.vibrate(ms);
+            else dm::setGamepadVibration(-1, 0.6f, 0.6f, static_cast<float>(ms) / 1000.0f);
             return api::Value{};
         },
-        {"60", "vibra el movil (ms)"});
+        {"60", "vibra el movil (ms); en PC, los mandos"});
 
     // Mando: botones por nombre (a, b, x, y, lb, rb, ls, rs, start, back,
     // up, down, left, right) y ejes (leftx, lefty, rightx, righty, lt, rt).
+    // El ultimo argumento opcional es el mando (1..4); sin el, cualquiera
+    // (los ejes, del ultimo mando que se uso).
     n.function(
         "Input.getGamepadButton",
         [&rt](api::Call& c) {
             const std::string name = c.string(0);
+            const int pad = padArg(c, 1);
             dm::GamepadButton b{};
-            return api::Value(rt.input != nullptr && Runtime::gamepadButton(name, b) && rt.input->isGamepadButtonDown(b));
+            if (rt.input == nullptr || !Runtime::gamepadButton(name, b)) return api::Value(false);
+            return api::Value(pad < 0 ? rt.input->isGamepadButtonDown(b) : rt.input->isGamepadButtonDown(pad, b));
         },
-        {"\"a\"", "boton del mando mantenido: a, b, x, y, lb, rb, ls, rs, start, back, up, down, left, right", "bool"});
+        {"\"a\", 1", "boton del mando mantenido: a, b, x, y, lb, rb, ls, rs, start, back, up, down, left, right; mando 1..4 (opcional)",
+         "bool"});
     n.function(
         "Input.getGamepadButtonDown",
         [&rt](api::Call& c) {
             const std::string name = c.string(0);
+            const int pad = padArg(c, 1);
             dm::GamepadButton b{};
-            return api::Value(rt.input != nullptr && Runtime::gamepadButton(name, b) && rt.input->isGamepadButtonPressed(b));
+            if (rt.input == nullptr || !Runtime::gamepadButton(name, b)) return api::Value(false);
+            return api::Value(pad < 0 ? rt.input->isGamepadButtonPressed(b) : rt.input->isGamepadButtonPressed(pad, b));
         },
-        {"\"a\"", "pulsado este frame", "bool"});
+        {"\"a\", 1", "pulsado este frame", "bool"});
     n.function(
         "Input.getGamepadButtonUp",
         [&rt](api::Call& c) {
             const std::string name = c.string(0);
+            const int pad = padArg(c, 1);
             dm::GamepadButton b{};
-            return api::Value(rt.input != nullptr && Runtime::gamepadButton(name, b) && rt.input->isGamepadButtonReleased(b));
+            if (rt.input == nullptr || !Runtime::gamepadButton(name, b)) return api::Value(false);
+            return api::Value(pad < 0 ? rt.input->isGamepadButtonReleased(b) : rt.input->isGamepadButtonReleased(pad, b));
         },
-        {"\"a\"", "soltado este frame", "bool"});
+        {"\"a\", 1", "soltado este frame", "bool"});
     n.function(
         "Input.getGamepadAxis",
         [&rt](api::Call& c) {
             const std::string name = lowerText(c.string(0));
+            const int pad = padArg(c, 1);
             if (rt.input == nullptr) return api::Value(0.0f);
             for (int i = 0; i < static_cast<int>(dm::GamepadAxis::Count); ++i) {
                 const auto a = static_cast<dm::GamepadAxis>(i);
-                if (name == dm::gamepadAxisName(a)) return api::Value(rt.input->gamepadAxis(a));
+                if (name == dm::gamepadAxisName(a)) {
+                    return api::Value(pad < 0 ? rt.input->gamepadAxis(a) : rt.input->gamepadAxis(pad, a));
+                }
             }
             return api::Value(0.0f);
         },
-        {"\"leftx\"", "eje del mando: leftx, lefty, rightx, righty, lt, rt", "numero"});
-    n.function("Input.isGamepadConnected",
-               [&rt](api::Call&) { return api::Value(rt.input != nullptr && rt.input->gamepadConnected()); },
-               {"", "hay un mando?", "bool"});
+        {"\"leftx\", 1", "eje del mando: leftx, lefty, rightx, righty, lt, rt (con zona muerta)", "numero"});
+    n.function(
+        "Input.isGamepadConnected",
+        [&rt](api::Call& c) {
+            const int pad = padArg(c, 0);
+            if (rt.input == nullptr) return api::Value(false);
+            return api::Value(pad < 0 ? rt.input->gamepadConnected() : rt.input->gamepadConnected(pad));
+        },
+        {"1", "hay un mando? (o ese mando, 1..4)", "bool"});
+    n.function(
+        "Input.getGamepadCount",
+        [&rt](api::Call&) { return api::Value(rt.input != nullptr ? rt.input->gamepadCount() : 0); },
+        {"", "mandos conectados (0..4)", "numero"});
+    n.function(
+        "Input.getGamepadType",
+        [&rt](api::Call& c) {
+            const int pad = padArg(c, 0);
+            if (rt.input == nullptr) return api::Value(dm::gamepadKindName(dm::GamepadKind::Unknown));
+            const int which = pad < 0 ? rt.input->activeGamepad() : pad;
+            return api::Value(dm::gamepadKindName(rt.input->gamepadKind(which)));
+        },
+        {"1", "familia del mando (sin numero, el ultimo usado): xbox, playstation, nintendo, generic o unknown", "texto"});
+    n.function(
+        "Input.setGamepadVibration",
+        [](api::Call& c) {
+            // Sin mando: todos. low = motor grave (izquierdo), high = agudo.
+            const int pad = padArg(c, 3);
+            return api::Value(dm::setGamepadVibration(pad, static_cast<float>(c.number(0, 0.0)),
+                                                      static_cast<float>(c.number(1, 0.0)), static_cast<float>(c.number(2, 0.0))));
+        },
+        {"0.5, 0.5, 0.2, 1", "vibra el mando: motor grave y agudo (0..1), segundos (0 = hasta pararla con 0, 0) y mando 1..4 (sin el, todos)",
+         "bool"});
+    // El dispositivo de la ultima entrada clara, para los iconos de los botones.
+    n.function(
+        "Input.getActiveDevice",
+        [&rt](api::Call&) {
+            static constexpr const char* kDevices[] = {"keyboard", "gamepad", "touch"};
+            return api::Value(kDevices[rt.input != nullptr ? static_cast<int>(rt.input->activeDevice()) : 0]);
+        },
+        {"", "ultimo dispositivo usado: keyboard, gamepad o touch", "texto"});
+    n.function(
+        "Input.activeDeviceChanged",
+        [&rt](api::Call&) { return api::Value(rt.input != nullptr && rt.input->activeDeviceChanged()); },
+        {"", "cambio getActiveDevice() este frame", "bool"});
 
     // La tecla/boton pulsado este frame ("W", "Mouse Left", "Gamepad A") o nil.
     n.function(

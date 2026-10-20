@@ -7,6 +7,7 @@
 #include "CramionFX/vk/VulkanDevice.h"
 #include "CramionFX/vk/VulkanShader.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdlib>
@@ -136,10 +137,10 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     frame_bindings[3].descriptorType = vk::DescriptorType::eUniformBuffer;
     frame_bindings[3].descriptorCount = 1;
     frame_bindings[3].stageFlags = both;
-    // Texturas de los decals (estampas): 8 ranuras.
+    // Atlas de las imagenes de los decals (DecalAtlas: un 2D array).
     frame_bindings[4].binding = 4;
     frame_bindings[4].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    frame_bindings[4].descriptorCount = decalTextureSlots(device.compatMode());
+    frame_bindings[4].descriptorCount = 1;
     frame_bindings[4].stageFlags = vk::ShaderStageFlagBits::eFragment;
     // Propiedades de los materiales con shader propio (8 vec4 cada uno).
     frame_bindings[5].binding = 5;
@@ -163,6 +164,11 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     frame_bindings[8].descriptorType = vk::DescriptorType::eStorageBuffer;
     frame_bindings[8].descriptorCount = 1;
     frame_bindings[8].stageFlags = vk::ShaderStageFlagBits::eFragment;
+    // Los decals (GpuDecalBuffer): cabecera, datos y mascaras por tesela.
+    frame_bindings[kDecalBufferBinding].binding = kDecalBufferBinding;
+    frame_bindings[kDecalBufferBinding].descriptorType = vk::DescriptorType::eStorageBuffer;
+    frame_bindings[kDecalBufferBinding].descriptorCount = 1;
+    frame_bindings[kDecalBufferBinding].stageFlags = vk::ShaderStageFlagBits::eFragment;
 
     vk::DescriptorSetLayoutCreateInfo frame_layout_info{};
     frame_layout_info.setBindings(frame_bindings);
@@ -206,6 +212,11 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     if (tessellation_) uv_binding.stageFlags |= vk::ShaderStageFlagBits::eTessellationEvaluation;
     material_bindings.push_back(uv_binding);
     material_bindings.push_back(lightmap_uvs);
+    // 11 = color de vertice del modelo (RGBA8 por vertice). Como el 10: existe
+    // siempre y los modelos sin color apuntan al ficticio.
+    vk::DescriptorSetLayoutBinding vertex_colors = lightmap_uvs;
+    vertex_colors.binding = kVertexColorBinding;
+    material_bindings.push_back(vertex_colors);
 
     vk::DescriptorSetLayoutCreateInfo material_layout_info{};
     material_layout_info.setBindings(material_bindings);
@@ -227,7 +238,9 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     // --- Sombras: set 0 (los huesos) y set 1 (el material, para el alfa) ---
     vk::PushConstantRange shadow_push{};
     shadow_push.stageFlags = shadow_push_stages_;
-    shadow_push.size = sizeof(GpuSkinnedShadowPush);
+    // (128: la de los .crshader con vertex(), GpuSurfaceShadowPush, es mayor
+    // que GpuSkinnedShadowPush; 128 es el minimo garantizado por Vulkan.)
+    shadow_push.size = static_cast<std::uint32_t>(std::max(sizeof(GpuSkinnedShadowPush), sizeof(GpuSurfaceShadowPush)));
 
     const std::array<vk::DescriptorSetLayout, 2> shadow_set_layouts = {*frame_set_layout_,
                                                                        *material_set_layout_};
@@ -237,6 +250,8 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     shadow_layout_ = vk::raii::PipelineLayout(device.handle(), shadow_layout_info);
 
     const bool clamp = device.depthClampSupported();
+    shadow_format_ = shadow_format;
+    shadow_clamp_ = clamp;
     shadow_pipeline_ = createShadowPipeline(device, shadow_format, clamp, 1.1f, true);
     shadow_opaque_pipeline_ = createShadowPipeline(device, shadow_format, clamp, 1.1f, false);
     local_shadow_pipeline_ = createShadowPipeline(device, shadow_format, false, 1.5f, true);
@@ -342,14 +357,86 @@ void SkinnedPass::createGeometryPipeline(const VulkanDevice& device, const GBuff
 
 vk::raii::Pipeline SkinnedPass::createSurfacePipeline(const VulkanDevice& device,
                                                       const std::vector<std::uint32_t>& vertex_spirv,
-                                                      const std::vector<std::uint32_t>& fragment_spirv) const {
+                                                      const std::vector<std::uint32_t>& fragment_spirv,
+                                                      bool transparent) const {
     vk::ShaderModuleCreateInfo vertex_info{};
     vertex_info.setCode(vertex_spirv);
     const vk::raii::ShaderModule vertex_module(device.handle(), vertex_info);
     vk::ShaderModuleCreateInfo fragment_info{};
     fragment_info.setCode(fragment_spirv);
     const vk::raii::ShaderModule fragment_module(device.handle(), fragment_info);
-    return buildGeometryPipeline(device, vertex_module, fragment_module);
+    if (!transparent) return buildGeometryPipeline(device, vertex_module, fragment_module);
+
+    // --- domain transparent: como el vidrio (createGlassPipeline) ---
+    const std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+        stage(vk::ShaderStageFlagBits::eVertex, vertex_module),
+        stage(vk::ShaderStageFlagBits::eFragment, fragment_module)};
+    const VertexLayout layout;
+    vk::PipelineVertexInputStateCreateInfo vertex_input{};
+    vertex_input.setVertexBindingDescriptions(layout.binding);
+    vertex_input.setVertexAttributeDescriptions(layout.attributes);
+    vk::PipelineInputAssemblyStateCreateInfo input_assembly{};
+    input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
+    vk::PipelineViewportStateCreateInfo viewport_state{};
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+    // Doble cara, como el vidrio y la geometria (escudos, ondas: laminas).
+    vk::PipelineRasterizationStateCreateInfo rasterization{};
+    rasterization.polygonMode = vk::PolygonMode::eFill;
+    rasterization.cullMode = vk::CullModeFlagBits::eNone;
+    rasterization.frontFace = vk::FrontFace::eCounterClockwise;
+    rasterization.lineWidth = 1.0f;
+    vk::PipelineMultisampleStateCreateInfo multisample{};
+    multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
+    // Prueba contra lo opaco sin escribir (la profundidad sigue siendo la de
+    // lo que ilumino la diferida; sceneDepth la lee).
+    vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
+    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_FALSE;
+    depth_stencil.depthCompareOp = vk::CompareOp::eLessOrEqual;
+    // Premultiplicada: color + destino * (1 - alfa). El alfa del destino (la
+    // distancia, para la sonda) no se toca.
+    vk::PipelineColorBlendAttachmentState blend_attachment{};
+    blend_attachment.blendEnable = VK_TRUE;
+    blend_attachment.srcColorBlendFactor = vk::BlendFactor::eOne;
+    blend_attachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+    blend_attachment.colorBlendOp = vk::BlendOp::eAdd;
+    blend_attachment.srcAlphaBlendFactor = vk::BlendFactor::eZero;
+    blend_attachment.dstAlphaBlendFactor = vk::BlendFactor::eOne;
+    blend_attachment.alphaBlendOp = vk::BlendOp::eAdd;
+    blend_attachment.colorWriteMask =
+        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB;
+    vk::PipelineColorBlendStateCreateInfo color_blend{};
+    color_blend.setAttachments(blend_attachment);
+    const std::array<vk::DynamicState, 2> dynamic_states = {vk::DynamicState::eViewport,
+                                                            vk::DynamicState::eScissor};
+    vk::PipelineDynamicStateCreateInfo dynamic_state{};
+    dynamic_state.setDynamicStates(dynamic_states);
+    vk::PipelineRenderingCreateInfo rendering_info{};
+    rendering_info.setColorAttachmentFormats(hdr_format_);
+    rendering_info.depthAttachmentFormat = gbuffer_depth_format_;
+
+    vk::GraphicsPipelineCreateInfo pipeline_info{};
+    pipeline_info.pNext = &rendering_info;
+    pipeline_info.setStages(stages);
+    pipeline_info.pVertexInputState = &vertex_input;
+    pipeline_info.pInputAssemblyState = &input_assembly;
+    pipeline_info.pViewportState = &viewport_state;
+    pipeline_info.pRasterizationState = &rasterization;
+    pipeline_info.pMultisampleState = &multisample;
+    pipeline_info.pDepthStencilState = &depth_stencil;
+    pipeline_info.pColorBlendState = &color_blend;
+    pipeline_info.pDynamicState = &dynamic_state;
+    pipeline_info.layout = *glass_layout_;
+    return compat::makeGraphicsPipeline(device, pipeline_info);
+}
+
+vk::raii::Pipeline SkinnedPass::createSurfaceShadowPipeline(const VulkanDevice& device,
+                                                            const std::vector<std::uint32_t>& vertex_spirv,
+                                                            bool local) const {
+    // Mismos sesgos que shadowPipeline / localShadowPipeline.
+    return createShadowPipeline(device, shadow_format_, local ? false : shadow_clamp_, local ? 1.5f : 1.1f,
+                                /*alpha_tested=*/true, /*tessellated=*/false, &vertex_spirv);
 }
 
 vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device,
@@ -475,7 +562,7 @@ void SkinnedPass::createGlassPipeline(const VulkanDevice& device, vk::Format col
         Type::eUniformBuffer,        Type::eUniformBuffer,        Type::eUniformBuffer,
         Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler,
         Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler,
-        Type::eCombinedImageSampler};
+        Type::eCombinedImageSampler, Type::eStorageBuffer,        Type::eStorageBuffer};
     std::array<vk::DescriptorSetLayoutBinding, kGlassBindingCount> glass_bindings{};
     for (std::uint32_t i = 0; i < kGlassBindingCount; ++i) {
         glass_bindings[i].binding = i;
@@ -650,11 +737,22 @@ vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device
 
 vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
                                                      vk::Format depth_format, bool depth_clamp,
-                                                     float slope_bias, bool alpha_tested, bool tessellated) const {
-    const vk::raii::ShaderModule vertex_module =
-        shaders::loadModule(device, tessellated ? "skinned_shadow_tess.vert.spv" : "skinned_shadow.vert.spv");
+                                                     float slope_bias, bool alpha_tested, bool tessellated,
+                                                     const std::vector<std::uint32_t>* surface_vertex) const {
+    // Con `surface_vertex`: la sombra de un .crshader con vertex()
+    // (surface_shadow.vert ya montado y su surface_shadow.frag, que solo
+    // recorta si el material lo pide).
+    const auto load_vertex = [&]() {
+        if (surface_vertex == nullptr) {
+            return shaders::loadModule(device, tessellated ? "skinned_shadow_tess.vert.spv" : "skinned_shadow.vert.spv");
+        }
+        vk::ShaderModuleCreateInfo info{};
+        info.setCode(*surface_vertex);
+        return vk::raii::ShaderModule(device.handle(), info);
+    };
+    const vk::raii::ShaderModule vertex_module = load_vertex();
     const vk::raii::ShaderModule fragment_module =
-        shaders::loadModule(device, "skinned_shadow.frag.spv");
+        shaders::loadModule(device, surface_vertex != nullptr ? "surface_shadow.frag.spv" : "skinned_shadow.frag.spv");
     std::vector<vk::PipelineShaderStageCreateInfo> shadow_stages = {
         stage(vk::ShaderStageFlagBits::eVertex, vertex_module)};
     // Relieve teselado: la teselacion sube los vertices antes de proyectar.

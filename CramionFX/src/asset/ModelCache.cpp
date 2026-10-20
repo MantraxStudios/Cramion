@@ -13,8 +13,12 @@ namespace cramion::asset {
 namespace {
 
 // Cambiar si cambia cualquier estructura de asset/Model.h que se guarda.
-constexpr std::uint32_t kModelCacheVersion = 12;  // 12: un hueso por offset de enlace distinto (FBX de 3ds Max)
+constexpr std::uint32_t kModelCacheVersion = 13;  // 13: color de vertice (bloque al final)
 constexpr char kMagic[4] = {'C', 'R', 'M', 'C'};
+// Bloques opcionales al final del contenido (desde la 13): una etiqueta y
+// sus datos. Los .crdata antiguos no los tienen; quien lee sabe donde acaba
+// la pieza (readModelPayload con `payload_end`) y no lee de mas.
+constexpr std::uint32_t kVertexColorTag = 0x4C4F4356u;  // "VCOL"
 
 // Identidad del archivo original: si cambia, la cache no vale.
 struct SourceStamp {
@@ -87,6 +91,20 @@ public:
         pod(count);
         text.resize(static_cast<std::size_t>(count));
         read(text.data(), text.size());
+    }
+
+    // Bytes que quedan hasta `end` (posicion absoluta; -1 = sin limite: el
+    // final del archivo).
+    std::int64_t remaining(std::streampos end) {
+        const std::streampos here = file_.tellg();
+        if (here < 0) return 0;
+        if (end < 0) {
+            file_.seekg(0, std::ios::end);
+            const std::streampos last = file_.tellg();
+            file_.seekg(here);
+            return last < 0 ? 0 : static_cast<std::int64_t>(last - here);
+        }
+        return static_cast<std::int64_t>(end - here);
     }
 
     // Un podVector saltado sin leerlo (no se trae del disco).
@@ -223,9 +241,15 @@ void writePayload(Writer& out, const ModelData& model) {
             out.podVector(channel.scales);
         }
     }
+
+    // --- Bloques opcionales (al final: los lectores viejos no los ven) ---
+    if (!model.vertex_colors.empty() && model.vertex_colors.size() == model.vertices.size()) {
+        out.pod(kVertexColorTag);
+        out.podVector(model.vertex_colors.get());
+    }
 }
 
-void readPayload(Reader& in, ModelData& model, bool skip_texture_bytes = false) {
+void readPayload(Reader& in, ModelData& model, bool skip_texture_bytes = false, std::streampos end = -1) {
     in.string(model.name);
     in.podVector(model.vertices.mut());
     in.podVector(model.indices.mut());
@@ -290,6 +314,18 @@ void readPayload(Reader& in, ModelData& model, bool skip_texture_bytes = false) 
             in.podVector(channel.scales);
         }
     }
+
+    // --- Bloques opcionales hasta el final de la pieza ---
+    while (in.remaining(end) >= static_cast<std::int64_t>(sizeof(std::uint32_t) + sizeof(std::uint64_t))) {
+        std::uint32_t tag = 0;
+        in.pod(tag);
+        if (tag == kVertexColorTag) {
+            in.podVector(model.vertex_colors.mut());
+            if (model.vertex_colors.size() != model.vertices.size()) model.vertex_colors = std::vector<std::uint32_t>{};
+        } else {
+            break;  // de una version futura: lo demas se ignora
+        }
+    }
 }
 
 }  // namespace
@@ -346,7 +382,7 @@ bool readModelCache(const std::filesystem::path& cache, const std::filesystem::p
         }
 
         ModelData model{};
-        readPayload(in, model);
+        readPayload(in, model);  // (los bloques opcionales, hasta el final del archivo)
         out = std::move(model);
         return true;
     } catch (const std::exception&) {
@@ -362,11 +398,11 @@ void writeModelPayload(std::ostream& stream, const ModelData& model) {
     }
 }
 
-bool readModelPayload(std::istream& stream, ModelData& out, bool skip_texture_bytes) {
+bool readModelPayload(std::istream& stream, ModelData& out, bool skip_texture_bytes, std::streampos payload_end) {
     try {
         Reader in(stream);
         ModelData model{};
-        readPayload(in, model, skip_texture_bytes);
+        readPayload(in, model, skip_texture_bytes, payload_end);
         out = std::move(model);
         return true;
     } catch (const std::exception&) {

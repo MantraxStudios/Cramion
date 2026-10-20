@@ -32,7 +32,7 @@ using ecs::Vec3Kind;
 
 void ParticleSystem::reflect(ecs::PropertyVisitor& v) {
     static constexpr std::array<const char*, 4> kShapes = {"Cono", "Esfera", "Caja", "Punto"};
-    static constexpr std::array<const char*, 2> kBlends = {"Transparente", "Aditiva"};
+    static constexpr std::array<const char*, 3> kBlends = {"Transparente", "Aditiva", "Distorsion"};
     const bool all = v.wantsAllFields();
     if (v.beginGroup("Principal", true)) {
         v.field({"play_on_start", "Empezar al dar Play"}, play_on_start);
@@ -86,6 +86,10 @@ void ParticleSystem::reflect(ecs::PropertyVisitor& v) {
         v.field({"intensity", "Intensidad", "Mas de 1: brillan (bloom)"}, intensity,
                 FloatRange{0.0f, 100.0f, 0.05f, "%.2f"});
         ecs::enumField(v, {"blend", "Mezcla"}, blend, kBlends);
+        v.field({"tint", "Tinte", "Multiplica al color de todas sus particulas (tambien las vivas)"}, tint,
+                Vec3Kind::Color);
+        v.field({"alpha", "Opacidad", "Multiplica a la opacidad de todas sus particulas (tambien las vivas)"}, alpha,
+                FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
         v.endGroup();
     }
     if (v.beginGroup("Colision", true)) {
@@ -233,8 +237,13 @@ void ParticleWorld::update(ecs::World& world, float delta_seconds, PhysicsSystem
         }
         em.size_start = s.size_start;
         em.size_end = s.size_end;
-        em.color_start = colorOf(s.color_start, s.alpha_start, s.intensity);
-        em.color_end = colorOf(s.color_end, s.alpha_end, s.intensity);
+        // Con el tinte y la opacidad de la entidad (se aplican al dibujar:
+        // tambien a las particulas que ya estaban vivas).
+        const Vec3 tint{std::max(s.tint.x, 0.0f), std::max(s.tint.y, 0.0f), std::max(s.tint.z, 0.0f)};
+        const float alpha = std::clamp(s.alpha, 0.0f, 1.0f);
+        em.color_start = colorOf(s.color_start * tint, s.alpha_start * alpha, s.intensity);
+        em.color_end = colorOf(s.color_end * tint, s.alpha_end * alpha, s.intensity);
+        em.intensity = s.intensity;
         if (em.world_space != s.world_space) {
             em.particles.clear();  // cambiar de espacio a mitad no tiene sentido
             em.world_space = s.world_space;
@@ -378,6 +387,10 @@ gfx::ParticleDrawList ParticleWorld::drawList(const Vec3& camera_position) const
             instance.color = lerp4(em.color_start, em.color_end, t);
             if (em.blend == ParticleBlend::Additive) {
                 list.additive.push_back(instance);
+            } else if (em.blend == ParticleBlend::Distortion) {
+                // Fuerza = intensidad x opacidad (se apaga al morir).
+                instance.color = Vec4{0.0f, 0.0f, 0.0f, instance.color.w * em.intensity};
+                list.distortion.push_back(instance);
             } else {
                 const Vec3 d = instance.position - camera_position;
                 sorted.emplace_back(core::dot(d, d), instance);

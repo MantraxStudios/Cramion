@@ -5,7 +5,6 @@
 
 #include "CramionCore/audio/Audio.h"
 #include "CramionCore/cvar/CVar.h"
-#include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/profiling/Profiler.h"
 
 #include <algorithm>
@@ -65,34 +64,34 @@ void registerScene(Runtime& rt) {
         if (c.has(1)) e.setWorldPosition(c.vec3(1));
         return rt.entityValue(e);
     }, {"\"nombre\", posicion", "Objeto vacio nuevo", "Entity"});
-    // Copia de una entidad, o una instancia de un prefab por su ruta en
-    // Assets ("Prefabs/Enemigo" o "Prefabs/Enemigo.crprefab").
-    rt.native.function("Scene.instantiate", [&rt](api::Call& c) {
-        if (rt.world == nullptr) return api::Value{};
-        ecs::Entity copy;
-        if (c.arg(0).isString()) {
-            const std::string name = c.string(0);
-            std::filesystem::path file = rt.root / pathFromUtf8(name);
-            if (file.extension() != ecs::kPrefabExtension) file += ecs::kPrefabExtension;
-            const std::string text = rt.prefabText(file);
-            if (text.empty()) {
-                rt.write(2, "Scene.instantiate: no existe el prefab \"" + name + "\"");
-                return api::Value{};
-            }
-            copy = ecs::instantiatePrefab(*rt.world, text);
-        } else {
-            // Un objeto que ya no existe (o nil) no se copia: nil, como antes.
-            const ecs::Entity source = rt.entity(c.entity(0));
-            if (!source.valid()) return api::Value{};
-            copy = rt.world->duplicate(source);
-            ecs::detachCopiedLinks(*rt.world, copy);
+    // Scene.instantiate (con la cache de plantillas de prefab) y el pool:
+    // SceneStreamingApi.cpp.
+    // Muchas transformaciones en una llamada (los scripts de C++ lo hacen con
+    // Scene::setTransforms, sin pasar por aqui). Una lista que falte (nil) no
+    // se toca; giros en Quat o en grados.
+    rt.native.function("Scene.setTransforms", [&rt](api::Call& c) {
+        const api::Value& entities = c.list(0);
+        const api::Value& positions = c.list(1);
+        const api::Value& rotations = c.list(2);
+        const api::Value& scales = c.list(3);
+        const bool local = c.boolean(4, false);
+        if (rt.world == nullptr) return api::Value(0.0);
+        int moved = 0;
+        for (std::size_t i = 0; i < entities.size(); ++i) {
+            ecs::Entity e = rt.entity(entities[i].asEntity());
+            if (!e.valid()) continue;
+            const api::Value& r = rotations[i];
+            if (r.isQuat()) e.setLocalRotation(core::normalize(r.asQuat()));
+            else if (r.isVec3()) e.setLocalEulerDegrees(r.asVec3());
+            if (scales[i].isVec3()) e.setLocalScale(scales[i].asVec3());
+            if (positions[i].isVec3()) local ? e.setLocalPosition(positions[i].asVec3()) : e.setWorldPosition(positions[i].asVec3());
+            ++moved;
         }
-        if (!copy.valid()) return api::Value{};
-        if (c.has(1)) copy.setWorldPosition(c.vec3(1));
-        if (c.has(2)) copy.setLocalEulerDegrees(c.vec3(2));
-        return rt.entityValue(copy);
-    }, {"entity o \"Prefabs/Enemigo\", posicion, rotacion",
-        "Copia de un objeto (con hijos y componentes) o instancia de un prefab", "Entity"});
+        return api::Value(static_cast<double>(moved));
+    }, {"entidades, posiciones, rotaciones, escalas, local",
+        "Posicion (del mundo; local = true: respecto al padre), giro local (Quat o grados) y escala local de muchos "
+        "objetos en una llamada; una lista nil no se toca",
+        "numero"});
     rt.native.function("Scene.destroy", [&rt](api::Call& c) {
         const ecs::Entity e = rt.entity(c.entity(0));
         if (e.valid()) rt.destroyLater(e.handle());

@@ -30,7 +30,7 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
 
     // --- Descriptores ---
     compat_ = device.compatMode();
-    std::array<vk::DescriptorSetLayoutBinding, 29> bindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 31> bindings{};
 
     bindings[0].binding = 0;
     bindings[0].descriptorType = vk::DescriptorType::eUniformBuffer;
@@ -129,6 +129,15 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
     for (std::uint32_t binding = 18; binding <= 28; ++binding) {
         bindings[binding].binding = binding;
         bindings[binding].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        bindings[binding].descriptorCount = 1;
+        bindings[binding].stageFlags = vk::ShaderStageFlagBits::eFragment;
+    }
+    // Bindings 29 y 30: las luces locales por clusteres (light_clusters.glsl):
+    // cabecera + luces y las listas de cada cluster. Tambien en el modo
+    // compatible (son buffers, no texturas).
+    for (std::uint32_t binding = 29; binding <= 30; ++binding) {
+        bindings[binding].binding = binding;
+        bindings[binding].descriptorType = vk::DescriptorType::eStorageBuffer;
         bindings[binding].descriptorCount = 1;
         bindings[binding].stageFlags = vk::ShaderStageFlagBits::eFragment;
     }
@@ -235,10 +244,10 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
 }
 
 bool LightingPass::hasBinding(std::uint32_t binding) const {
-    if (!compat_) return binding <= 28;
+    if (!compat_) return binding <= 30;
     switch (binding) {
         case 19: case 21: case 22: case 24: case 25: case 26: case 27: case 28: return false;
-        default: return binding <= 28;
+        default: return binding <= 30;
     }
 }
 

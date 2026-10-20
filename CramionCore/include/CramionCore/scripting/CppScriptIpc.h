@@ -6,9 +6,15 @@
 // de Windows. Va por turnos: quien escribe pone `turn` al otro lado y lo
 // despierta. Los mensajes son los de cramion/CppProtocol.h.
 //
-// Motor -> proceso: Load, Create, Destroy, Call, Quit. El proceso contesta
-// Done; mientras ejecuta un script, sus llamadas al motor van como Rpc y el
-// motor contesta RpcReply.
+// Motor -> proceso: Load, Create, Destroy, Call, CallMany, Quit. El proceso
+// contesta Done; mientras ejecuta un script, sus llamadas al motor van como
+// Rpc y el motor contesta RpcReply.
+//
+// CallMany junta los eventos de una fase (fixedUpdate de todos los pasos,
+// colisiones, start + update + lateUpdate) en un solo viaje: con 500 scripts,
+// un cambio de contexto por fase en vez de 1500 por frame. El proceso apunta
+// en `progress` la llamada en curso: el tiempo maximo cuenta por llamada (no
+// por lote) y, si el proceso cae o se corta, el motor sabe de que script era.
 //
 // Si el proceso muere (fallo de un script que no se pudo atrapar), antes deja
 // en `crash` lo que paso; el motor lo lee, desactiva el script y lo reinicia.
@@ -22,7 +28,10 @@ namespace cramion::cppipc {
 constexpr std::uint32_t kDataSize = 4u << 20;  // 4 MB por mensaje
 
 enum class Op : std::uint32_t {
-    Load = 1,     // str ruta de la DLL, u32 sesion -> Done: u32 estado, str error, u32 n, str clase x n
+    // str ruta de la DLL, u32 sesion -> Done: u32 estado, str error, u32 n, str clase x n, u32 n, u32 eventos x n.
+    // Eventos: los que sobrescribe cada clase (bit 1 << cppproto::Event); el motor no envia los demas.
+    // Un proceso anterior no los manda (el motor da todos) y un motor anterior no los lee.
+    Load = 1,
     Create = 2,   // u32 id, str clase, u64 entidad, u32 n, (str clave, str valor) x n -> Done
     Destroy = 3,  // u32 id -> Done
     Call = 4,     // u32 id, u32 evento, EventArgs -> Done
@@ -32,6 +41,9 @@ enum class Op : std::uint32_t {
     Message = 8,   // u32 id, str metodo, str JSON del valor -> Done (botones de UI: on_click "OnJugar"...)
     Snapshot = 9,  // u32 id -> Done: str JSON {"props":{...},"state":...} (recarga en caliente)
     Restore = 10,  // u32 id, str JSON de Snapshot -> Done (propiedades + onAfterReload(state))
+    // u32 n, (u32 id, u32 evento, EventArgs) x n -> Done: u32 fallos, (u32 indice, u32 Status, str error) x fallos.
+    // Tras fallar, las demas llamadas de esa instancia en el lote se saltan; un id que ya no existe, tambien.
+    CallMany = 11,
     Rpc = 100,       // proceso -> motor: u32 rpc, datos
     RpcReply = 101,  // motor -> proceso: la respuesta
     Done = 200,      // proceso -> motor: u32 estado, str error
@@ -49,6 +61,9 @@ struct Block {
     std::uint32_t op;
     std::uint32_t size;
     std::uint32_t host_ready;  // el proceso arranco y escucha
+    // CallMany: 1 + el indice de la llamada en curso (0 = ninguna). Lo pone a 0
+    // el motor al enviar; lo escribe el proceso antes de cada llamada.
+    std::atomic<std::uint32_t> progress;
     char crash[4096];          // lo ultimo que paso antes de morir (texto)
     std::uint8_t data[kDataSize];
 };

@@ -130,7 +130,7 @@ void EditorApp::pushTerrainUndo(const std::string& path, std::shared_ptr<terrain
     terrain_undo_.push_back(std::move(step));
     undo_kinds_.push_back('T');
     // Una accion nueva: no se puede rehacer nada.
-    redo_.clear();
+    history_.clearRedo();
     terrain_redo_.clear();
     redo_kinds_.clear();
     // Tope de memoria: 30 trazos y 30 copias de teselas (un trazo que cruza

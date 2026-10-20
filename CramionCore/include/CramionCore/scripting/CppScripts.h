@@ -23,6 +23,12 @@
 // (ScriptSystem::bridgeCall) y llamadas propias rapidas (transformaciones,
 // fisica, entrada...) que se envian en lote.
 //
+// Solo se envian los eventos que la clase sobrescribe (el SDK los dice al
+// cargar): un update() vacio no cuesta nada (script.cpp.SkipEmptyEvents).
+//
+// El juego exportado puede cargar la DLL en su propio proceso (setInProcess,
+// script.cpp.InProcess): los mismos mensajes, llamados directamente.
+//
 // Solo Windows (en Android los scripts de C++ no se ejecutan).
 
 #include "CramionCore/ecs/Reflection.h"
@@ -155,6 +161,13 @@ public:
     std::optional<CppCompileResult> takeCompileResult();
     // El juego exportado: la DLL ya compilada (sin compilador).
     void usePrebuilt(const std::filesystem::path& dll);
+    // El juego exportado: cargar la DLL en este mismo proceso (sin
+    // CramionScriptHost ni cambios de contexto) si script.cpp.InProcess (por
+    // defecto si). Sin aislamiento: un fallo de hardware de un script cierra el
+    // juego y un bucle infinito lo cuelga. Si la DLL no carga asi, se usa el
+    // proceso aparte. El editor no lo llama (aislamiento y recarga en caliente).
+    void setInProcess(bool in_process);
+    bool inProcess() const;  // la DLL esta cargada en este proceso ahora
     const std::filesystem::path& dll() const;
     std::vector<std::string> classes() const;
 
@@ -188,6 +201,9 @@ public:
         int restarts = 0;
         int reloads = 0;  // recargas en caliente en esta sesion de Play
         std::uint64_t rpcs = 0;  // mensajes con el proceso en el ultimo frame
+        // Viajes motor -> proceso en el ultimo update (Create, Call, CallMany...): con
+        // script.cpp.BatchCalls, uno por fase en vez de uno por script y evento.
+        std::uint64_t requests = 0;
         std::uint64_t calls = 0;  // llamadas al motor en el ultimo frame (con las del lote)
         double frame_ms = 0.0;    // tiempo de los scripts en el ultimo frame
     };

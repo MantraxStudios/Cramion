@@ -512,7 +512,7 @@ hub_main = f"""
     <main class="doc">
       <div class="doc-inner" style="max-width: 1040px">
         <section class="hero">
-          <a class="badge" href="novedades-24.html#v251"><b>Nuevo en la {VERSION}</b> Lightmaps UV2, memoria con VMA y mundos grandes más rápidos {icon("arrow")}</a>
+          <a class="badge" href="novedades-24.html#v262"><b>Nuevo en la {VERSION}</b> Streaming sin tirones, luces sin tope y editor rápido con escenas grandes {icon("arrow")}</a>
           <h1>Documentación de Cramion</h1>
           <div class="intro">{intro_html}</div>
           <div class="actions">

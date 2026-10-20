@@ -57,8 +57,16 @@ using NativeWindow = const XlibWindow*;
 using NativeWindow = HWND;
 #endif
 
-// Numero de frames que la CPU puede preparar por delante de la GPU.
-inline constexpr std::uint32_t kMaxFramesInFlight = 2;
+// Huecos de frame (command buffer, fence y buffers por frame de cada pase).
+// Los frames de pantalla rotan entre los kScreenFramesInFlight primeros (los
+// que la CPU puede preparar por delante de la GPU); el ultimo es de la sonda
+// de reflexion: cada cara se graba y se envia en el suyo y la CPU no la
+// espera. Antes iba en el hueco del frame de pantalla y habia que esperarla
+// (y al frame anterior, que iba delante en la cola) antes de reescribir sus
+// buffers: 4-10 ms de mas en cada frame con cara (cramion_stream_bench).
+inline constexpr std::uint32_t kScreenFramesInFlight = 2;
+inline constexpr std::uint32_t kProbeFrameSlot = kScreenFramesInFlight;
+inline constexpr std::uint32_t kMaxFramesInFlight = kScreenFramesInFlight + 1;
 
 // Version minima de Vulkan del dispositivo fisico. El camino completo (el de
 // escritorio) usa Vulkan 1.3 (dynamic rendering, synchronization2); con menos

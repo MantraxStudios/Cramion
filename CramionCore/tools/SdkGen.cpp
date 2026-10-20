@@ -12,6 +12,11 @@
 //                       clases con su handle (un Value)
 //   EntityApi.gen.inc   los metodos y propiedades de Entity, dentro de
 //                       cramion::Entity
+// Las funciones generadas llaman a detail::api / apiGet / apiSet... (Script.h),
+// que van por id y en binario (ScriptMain.cpp, apiFast): el nombre de la clave
+// solo viaja una vez por sesion, y las que no devuelven nada (sin "Devuelve"
+// en su api::Doc) y los set van en el lote. Por eso el Doc de una funcion que
+// devuelve algo debe decirlo.
 // Solo reescribe si cambia (no fuerza a recompilar). Los nombres que ya da el
 // SDK a mano (Script.h, Test.h) se saltan, y las palabras reservadas de C++
 // llevan _. Al regenerar escribe en stderr los simbolos que estaban en el
@@ -62,15 +67,15 @@ const std::set<std::string> kSkipMembers = {"Time.deltaTime", "Time.time", "Time
                                             "Debug.warning",  "Debug.error",
                                             // Las del SDK escritas a mano (con tipos): la de la API, con Api::call.
                                             "Scene.find", "Scene.findWithTag", "Scene.create", "Scene.getPositions",
-                                            "Scene.setPositions", "Physics.raycast", "Physics.sphereCast",
+                                            "Scene.setPositions", "Scene.setTransforms", "Physics.raycast", "Physics.sphereCast",
                                             // Las esperas de las pruebas son corrutinas (Test.h).
                                             "Test.wait", "Test.waitFrames", "Test.waitSeconds", "Test.waitUntil",
                                             "Test.Task", "Test.detail"};
 
 const std::set<std::string> kEntitySkip = {
     "id", "valid", "name", "setName", "tag", "position", "localPosition", "rotation", "scale", "forward", "right", "up",
-    "setPosition", "setLocalPosition", "setRotation", "setScale", "translate", "rotate", "lookAt", "active", "setActive",
-    "parent", "destroy", "has", "add", "component", "setComponent", "field", "setField", "getFloat", "getBool",
+    "setPosition", "setLocalPosition", "setRotation", "setScale", "translate", "rotate", "lookAt", "setQuaternion", "active",
+    "setActive", "parent", "destroy", "has", "add", "component", "setComponent", "field", "setField", "getFloat", "getBool",
     "setFloat", "setBool", "velocity", "setVelocity", "angularVelocity", "setAngularVelocity", "addForce", "move",
     "isGrounded", "setMoveInput", "jump", "setCrouch", "call", "get", "set", "u32", "strU32", "str", "vec", "script"};
 

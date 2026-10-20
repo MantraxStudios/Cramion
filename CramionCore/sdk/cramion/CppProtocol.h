@@ -12,6 +12,7 @@
 namespace cramion::cppproto {
 
 // Sube si cambia algo de este archivo (la DLL y el motor deben coincidir).
+// Los eventos nuevos van al final: una DLL anterior ignora los que no conoce.
 constexpr std::uint32_t kAbiVersion = 2;
 
 // Eventos de un script (los metodos de cramion::Script).
@@ -28,6 +29,13 @@ enum class Event : std::uint32_t {
     TriggerEnter,
     TriggerStay,
     TriggerExit,
+    Enable,   // onEnable(): tras awake() y cada vez que se reactiva el script o su objeto
+    Disable,  // onDisable(): al desactivarse (la instancia sigue viva) y antes de onDestroy si estaba activo
+    // Solo pone el tiempo (Time::deltaTime, time, frameCount) sin llamar a nada:
+    // el motor lo envia cuando ningun script sobrescribe update/lateUpdate y no
+    // hubo viaje (los callbacks y corrutinas leen Time::). Una DLL anterior lo
+    // trata igual (evento desconocido = no llama a nada).
+    Time,
     Count
 };
 
@@ -72,8 +80,26 @@ enum class Rpc : std::uint32_t {
     Batch,            // u32 n, (u32 rpc, u32 tamano, datos) x n: llamadas sin respuesta juntas
     GetPositions,     // u32 n, u64 x n -> vec3 x n (posicion en el mundo)
     SetPositions,     // u32 n, (u64, vec3) x n
+    // La API por indice y en binario (en vez de Api/ApiSend con JSON y nombres):
+    ApiResolve,       // str clave ("Audio.playOneShot", "Entity:translate", ":apply" = del tipo de self) -> u32 epoca, u32 id, u32 banderas (ApiFlags); epoca 0 = usar el JSON
+    ApiCall,          // u32 epoca, u32 id, u32 ApiOp, valor self, u32 n, valor x n -> u32 ApiStatus, valor | str error
+    ApiCallSend,      // igual sin respuesta (va en lote): set de propiedades y funciones sin resultado
+    SetTransforms,    // u32 n, u32 TransformMask, (u64, [vec3 pos], [f32 x4 rot local], [vec3 escala local]) x n
     Count
 };
+
+// La API binaria (ApiResolve / ApiCall).
+enum class ApiOp : std::uint32_t { Call = 0, Get = 1, Set = 2 };
+enum class ApiStatus : std::uint32_t { Ok = 0, Error = 1, Stale = 2 };  // Stale: epoca de otro ScriptSystem (resolver otra vez)
+enum ApiFlags : std::uint32_t { ApiBatchable = 1 };                     // la funcion no devuelve nada: puede ir en lote
+// Valores: u8 etiqueta y su contenido. Json: un str con el JSON del SDK (lo
+// que no tiene forma binaria, como los callbacks del script).
+enum class ValueTag : std::uint8_t {
+    Nil = 0, False, True, Number /* f64 */, String /* str */, Vec3 /* f32 x3 */, Quat /* f32 x4 */, Entity /* u64 */,
+    Function /* u64 */, Handle /* u64 */, Array /* u32 n, valor x n */, Object /* u32 n, (str, valor) x n */, Json /* str */
+};
+// SetTransforms: que lleva cada entidad. LocalPosition: la posicion es local (si no, del mundo).
+enum TransformMask : std::uint32_t { TransformPosition = 1, TransformRotation = 2, TransformScale = 4, TransformLocalPosition = 8 };
 
 enum class VecGet : std::uint32_t { WorldPosition = 0, LocalPosition, Euler, Scale, Forward, Right, Up, Velocity, AngularVelocity };
 enum class VecSet : std::uint32_t { WorldPosition = 0, LocalPosition, Euler, Scale, Velocity, AngularVelocity, Translate, Rotate, LookAt };
@@ -102,6 +128,11 @@ struct Api {
 class Writer {
 public:
     std::vector<std::uint8_t> bytes;
+    Writer& u8(std::uint8_t v) {
+        bytes.push_back(v);
+        return *this;
+    }
+    Writer& f64(double v) { return raw(&v, sizeof(v)); }
     Writer& u32(std::uint32_t v) { return raw(&v, sizeof(v)); }
     Writer& u64(std::uint64_t v) { return raw(&v, sizeof(v)); }
     Writer& f32(float v) { return raw(&v, sizeof(v)); }
@@ -122,6 +153,8 @@ public:
     Reader(const void* data, std::size_t size) : p_(static_cast<const std::uint8_t*>(data)), end_(p_ + size) {}
     bool ok() const { return ok_; }
     std::size_t remaining() const { return static_cast<std::size_t>(end_ - p_); }
+    std::uint8_t u8() { return get<std::uint8_t>(); }
+    double f64() { return get<double>(); }
     std::uint32_t u32() { return get<std::uint32_t>(); }
     std::uint64_t u64() { return get<std::uint64_t>(); }
     float f32() { return get<float>(); }

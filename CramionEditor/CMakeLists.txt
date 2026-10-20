@@ -157,6 +157,13 @@ add_executable(CramionMultiEditTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MultiEdi
 target_include_directories(CramionMultiEditTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(CramionMultiEditTests PRIVATE Cramion::Core cramion_imgui)
 
+# Prueba del historial de deshacer por diferencias (consola).
+add_executable(CramionHistoryTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/HistoryTests.cpp"
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/EditorHistory.cpp")
+target_include_directories(CramionHistoryTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(CramionHistoryTests PRIVATE Cramion::Core)
+target_compile_options(CramionHistoryTests PRIVATE -Wall -Wextra)
+
 # Prueba de las plantillas de proyecto (consola): crea, abre y juega cada una.
 add_executable(CramionTemplateTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TemplateTests.cpp"
                                     "${CMAKE_CURRENT_SOURCE_DIR}/src/ProjectTemplates.cpp"

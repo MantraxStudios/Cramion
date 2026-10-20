@@ -10,7 +10,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <iostream>
 #include <functional>
@@ -114,9 +117,41 @@ void createRgbaLod(VulkanTexture& out, const VulkanDevice& device, std::uint32_t
 std::mutex g_lazy_alpha_mutex;
 std::unordered_map<std::uint64_t, bool> g_lazy_alpha;
 
+// La ruta se normaliza para la clave (separadores y mayusculas, como el
+// sistema de archivos de Windows): "Textures/Rock.png" y "textures/ROCK.png"
+// son la misma imagen y se suben una vez. Y entra el uso (sRGB o lineal,
+// BC1/BC7): resolveLazyTexture decodifica distinto segun el uso, y antes la
+// misma imagen como albedo y como mascara compartia la del primero que llegaba.
+std::string normalizedTexturePath(std::string path) {
+    for (char& c : path) {
+        if (c == '\\') c = '/';
+#if defined(_WIN32)
+        else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+#endif
+    }
+    return path;
+}
+
+// Recarga en caliente (invalidateSharedTextureFile): archivos cambiados en
+// disco y cuantas veces. Entran en la clave de las texturas perezosas cuya
+// ruta (o receta empaquetada) los contiene: la siguiente subida hace otra
+// textura aunque los modelos de antes sigan vivos con la vieja. Casi siempre
+// vacio (solo se mira con el atomico).
+std::mutex g_file_generation_mutex;
+std::vector<std::pair<std::string, std::uint64_t>> g_file_generations;
+std::atomic<bool> g_any_file_generation{false};
+
 std::uint64_t lazyTextureKey(const asset::TextureData& texture, const void* device) {
-    std::uint64_t key = murmur64(reinterpret_cast<const std::uint8_t*>(texture.source_path.data()), texture.source_path.size(), 0x1a2e5eedULL);
+    const std::string path = normalizedTexturePath(texture.source_path);
+    std::uint64_t key = murmur64(reinterpret_cast<const std::uint8_t*>(path.data()), path.size(), 0x1a2e5eedULL);
+    if (g_any_file_generation.load(std::memory_order_acquire)) {
+        const std::lock_guard<std::mutex> lock(g_file_generation_mutex);
+        for (const auto& [file, generation] : g_file_generations) {
+            if (path.find(file) != std::string::npos) key = mix64(key, 0x4E1A0000ULL + generation);
+        }
+    }
     key = mix64(key, (texture.height_map ? 1ULL : 0ULL) | (static_cast<std::uint64_t>(asset::maxTextureSize()) << 1));
+    key = mix64(key, 0x05A6E000ULL + static_cast<std::uint64_t>(texture.usage));
     return mix64(key, reinterpret_cast<std::uintptr_t>(device));
 }
 
@@ -129,25 +164,93 @@ struct SharedEntry {
     std::weak_ptr<UploadFence> fence;
 };
 
+// Una textura que otro hilo esta decodificando y grabando ahora mismo.
+struct TextureInFlight {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    std::shared_ptr<VulkanTexture> result;  // nulo si fallo
+    std::shared_ptr<UploadFence> fence;
+};
+
 std::shared_ptr<VulkanTexture> sharedTexture(std::uint64_t key, UploadBatch& batch,
                                              const std::function<void(VulkanTexture&)>& make) {
     static std::mutex mutex;
     static std::unordered_map<std::uint64_t, SharedEntry<VulkanTexture>> cache;
-    {
-        const std::lock_guard<std::mutex> lock(mutex);
-        const auto it = cache.find(key);
-        if (it != cache.end()) {
-            if (std::shared_ptr<VulkanTexture> alive = it->second.resource.lock()) {
-                batch.dependOn(it->second.fence.lock());
-                return alive;
+    // Las que se estan haciendo: con varios hilos de streaming y celdas que
+    // traen a la vez los mismos materiales, cada hilo decodificaba (o
+    // comprimia a BC7) y subia la misma imagen; solo se quedaba una. Ahora el
+    // segundo espera al primero (fuera de make, sin ciclos posibles) y depende
+    // de su lote.
+    static std::unordered_map<std::uint64_t, std::shared_ptr<TextureInFlight>> in_flight;
+    std::shared_ptr<TextureInFlight> mine;
+    for (int attempt = 0; attempt < 2 && !mine; ++attempt) {
+        std::shared_ptr<TextureInFlight> other;
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            const auto it = cache.find(key);
+            if (it != cache.end()) {
+                if (std::shared_ptr<VulkanTexture> alive = it->second.resource.lock()) {
+                    batch.dependOn(it->second.fence.lock());
+                    return alive;
+                }
+            }
+            const auto flight = in_flight.find(key);
+            if (flight == in_flight.end()) {
+                mine = std::make_shared<TextureInFlight>();
+                in_flight[key] = mine;
+            } else {
+                other = flight->second;
             }
         }
+        if (!other) break;
+        // Con tope: si algo raro la retiene, se hace aqui como antes.
+        std::unique_lock<std::mutex> wait_lock(other->mutex);
+        if (!other->cv.wait_for(wait_lock, std::chrono::seconds(2), [&] { return other->done; })) break;
+        if (other->result) {
+            batch.dependOn(other->fence);
+            return other->result;
+        }
+        // Fallo en el otro hilo: se intenta aqui (una vez).
     }
+    const auto finish_flight = [&](const std::shared_ptr<VulkanTexture>& result, std::shared_ptr<UploadFence> fence) {
+        if (!mine) return;
+        {
+            const std::lock_guard<std::mutex> lock(mine->mutex);
+            mine->done = true;
+            mine->result = result;
+            mine->fence = std::move(fence);
+        }
+        mine->cv.notify_all();
+    };
+    const auto drop_flight = [&] {
+        if (!mine) return;
+        const auto it = in_flight.find(key);
+        if (it != in_flight.end() && it->second == mine) in_flight.erase(it);
+    };
     auto texture = std::make_shared<VulkanTexture>();
-    make(*texture);
+    try {
+        make(*texture);
+    } catch (...) {
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            drop_flight();
+        }
+        finish_flight(nullptr, nullptr);
+        throw;
+    }
     // La GPU copia en ella hasta que el lote termina, aunque el modelo se tire antes.
     batch.keepAlive(texture);
+    std::shared_ptr<VulkanTexture> shared_result;
+    std::shared_ptr<UploadFence> shared_fence;
+    struct FinishOnExit {
+        const decltype(finish_flight)& finish;
+        std::shared_ptr<VulkanTexture>& result;
+        std::shared_ptr<UploadFence>& fence;
+        ~FinishOnExit() { finish(result, fence); }
+    } finish_on_exit{finish_flight, shared_result, shared_fence};
     const std::lock_guard<std::mutex> lock(mutex);
+    drop_flight();
     // De vez en cuando, fuera las de modelos que ya no existen.
     if (cache.size() > 4096) {
         for (auto it = cache.begin(); it != cache.end();) {
@@ -157,10 +260,14 @@ std::shared_ptr<VulkanTexture> sharedTexture(std::uint64_t key, UploadBatch& bat
     SharedEntry<VulkanTexture>& slot = cache[key];
     if (std::shared_ptr<VulkanTexture> alive = slot.resource.lock()) {  // otro hilo la subio a la vez
         batch.dependOn(slot.fence.lock());
+        shared_result = alive;
+        shared_fence = slot.fence.lock();
         return alive;
     }
     slot.resource = texture;
     slot.fence = batch.fence();
+    shared_result = texture;
+    shared_fence = batch.fence();
     return texture;
 }
 
@@ -319,6 +426,20 @@ bool hasAlpha(const asset::TextureData& texture) {
 
 }  // namespace
 
+void invalidateSharedTextureFile(const std::string& path) {
+    const std::string file = normalizedTexturePath(path);
+    if (file.empty()) return;
+    const std::lock_guard<std::mutex> lock(g_file_generation_mutex);
+    const auto it = std::find_if(g_file_generations.begin(), g_file_generations.end(),
+                                 [&](const auto& entry) { return entry.first == file; });
+    if (it != g_file_generations.end()) {
+        ++it->second;
+    } else {
+        g_file_generations.emplace_back(file, 1);
+    }
+    g_any_file_generation.store(true, std::memory_order_release);
+}
+
 std::uint32_t SkinnedModel::shadingBits(const asset::MaterialData& material) {
     const auto byte = [](float value) {
         return static_cast<std::uint32_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
@@ -342,7 +463,16 @@ std::uint32_t SkinnedModel::shadingBits(const asset::MaterialData& material) {
         case 6: p0 = material.hair_shift; p1 = material.anisotropy_rotation / 180.0f; p2 = material.hair_secondary; break;
         default: break;
     }
-    return static_cast<std::uint32_t>(model) | (byte(p0) << 8) | (byte(p1) << 16) | (byte(p2) << 24);
+    // Sin luz y opaco: el modelo 8 del G-buffer (lighting.frag deja albedo +
+    // emision). Transparente: el bit de unlit de glass.frag.
+    if (material.unlit && !material.transparent) model = kShadingUnlit;
+    std::uint32_t bits = static_cast<std::uint32_t>(model) | (byte(p0) << 8) | (byte(p1) << 16) | (byte(p2) << 24);
+    if (material.transparent) {
+        bits |= (static_cast<std::uint32_t>(std::min<std::uint8_t>(material.transparent_blend, 2)) << kBlendShift);
+        if (material.unlit) bits |= kShadingUnlitBit;
+    }
+    if (material.vertex_color_albedo) bits |= kShadingVertexColorBit;
+    return bits;
 }
 
 std::uint32_t SkinnedModel::reliefFlags(std::uint32_t flags, const asset::MaterialData& material, bool has_height,
@@ -400,6 +530,15 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         lightmap_uvs_ = sharedBuffer(mix64(vectorKey(model.lightmap_uvs, 0x11e3a9ULL), device_key), *batch, [&] {
             const std::vector<std::uint32_t> packed = packLightmapUvs(model.lightmap_uvs);
             return VulkanBuffer::createDeviceLocal(device, packed.data(), sizeof(std::uint32_t) * packed.size(),
+                                                   vk::BufferUsageFlagBits::eStorageBuffer, *batch);
+        });
+    }
+    // Color de vertice (COLOR_0): uno por vertice, compartido igual.
+    vertex_colors_.reset();
+    if (!model.vertex_colors.empty() && model.vertex_colors.size() == model.vertices.size()) {
+        vertex_colors_ = sharedBuffer(mix64(vectorKey(model.vertex_colors.get(), 0xc0102ULL), device_key), *batch, [&] {
+            return VulkanBuffer::createDeviceLocal(device, model.vertex_colors.data(),
+                                                   sizeof(std::uint32_t) * model.vertex_colors.size(),
                                                    vk::BufferUsageFlagBits::eStorageBuffer, *batch);
         });
     }
@@ -500,12 +639,12 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
     const auto material_count = static_cast<std::uint32_t>(model.materials.size());
 
     // (+ por material: un uniform buffer, el tiling de las UV, binding 9, y
-    // un storage buffer, las UV de lightmap, binding 10.)
+    // dos storage buffers, las UV de lightmap y el color de vertice, 10 y 11.)
     const std::array<vk::DescriptorPoolSize, 3> pool_sizes = {
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
                                material_count * SkinnedPass::kMaterialBindingCount},
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, std::max(material_count, 1u)},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, std::max(material_count, 1u)}};
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, std::max(material_count, 1u) * 2}};
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     pool_info.maxSets = material_count;
@@ -563,6 +702,7 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
                                : 0u;
         gpu.shader_flags = reliefFlags(gpu.shader_flags, material, parallax, pass.tessellationEnabled());
         if (lightmap_uvs_) gpu.shader_flags |= GpuSkinnedPush::kFlagLightmap;
+        if (vertex_colors_) gpu.shader_flags |= GpuSkinnedPush::kFlagVertexColor;
         gpu.shading = shadingBits(material);
         // El signo de la escala del normal map dice su convenio (ver
         // skinned.frag): positivo = OpenGL, negativo = DirectX.
@@ -657,7 +797,15 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         lightmap_write.dstBinding = SkinnedPass::kLightmapUvBinding;
         lightmap_write.descriptorType = vk::DescriptorType::eStorageBuffer;
         lightmap_write.setBufferInfo(lightmap_info);
-        device.handle().updateDescriptorSets(lightmap_write, nullptr);
+        // Binding 11: su color de vertice (o el mismo ficticio).
+        vk::DescriptorBufferInfo color_info{};
+        color_info.buffer = vertex_colors_ ? *vertex_colors_->handle() : *pass.dummyLightmapUvs().handle();
+        color_info.range = VK_WHOLE_SIZE;
+        vk::WriteDescriptorSet color_write = lightmap_write;
+        color_write.dstBinding = SkinnedPass::kVertexColorBinding;
+        color_write.setBufferInfo(color_info);
+        const std::array<vk::WriteDescriptorSet, 2> buffer_writes = {lightmap_write, color_write};
+        device.handle().updateDescriptorSets(buffer_writes, nullptr);
     }
 
     // --- Grupos de dibujo (un grupo por material con submallas opacas) ---
@@ -891,6 +1039,7 @@ void SkinnedModel::destroy() {
     indices_.reset();
     vertices_.reset();
     lightmap_uvs_.reset();
+    vertex_colors_.reset();
     index_count_ = 0;
 }
 

@@ -1,5 +1,7 @@
 #include "CramionCore/asset/AssetManager.h"
 
+#include "CramionCore/asset/Importer.h"
+
 #include "CramionCore/asset/LightmapUv.h"
 
 #include "CrData.h"
@@ -333,7 +335,40 @@ std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std:
                       << before << " -> " << after
                       << " submallas). Reimporta el modelo para guardarlo asi.\n";
         }
+        // LODs del modelo (ajuste de importacion): los hechos a mano
+        // (_LOD1.._LODn) pasan a su LOD0 y sus piezas se vacian (no tienen
+        // nodo: nadie las dibuja); el resto, automaticos salvo Off/Manual.
+        const ModelLodInfo lod_info = modelLodInfo(header.settings_json);
+        std::vector<bool> manual_lods(content.parts.size(), false);
+        if (lod_info.mode != ModelLodMode::Off) {
+            const auto valid = [&](std::int32_t p) {
+                return p >= 0 && static_cast<std::size_t>(p) < content.parts.size();
+            };
+            for (const std::vector<std::int32_t>& group : lod_info.groups) {
+                if (!valid(group.front()) || manual_lods[static_cast<std::size_t>(group.front())]) continue;
+                std::vector<const asset::ModelData*> levels;
+                for (std::size_t k = 1; k < group.size(); ++k) {
+                    if (valid(group[k]) && group[k] != group.front()) {
+                        levels.push_back(&content.parts[static_cast<std::size_t>(group[k])]);
+                    }
+                }
+                asset::ModelData& lod0 = content.parts[static_cast<std::size_t>(group.front())];
+                // Lo que el renderizador pide antes de los LODs (el orden de
+                // los triangulos de LOD0) se hace igual en el bucle de abajo.
+                manual_lods[static_cast<std::size_t>(group.front())] = asset::setManualLods(lod0, levels) > 0;
+            }
+            for (const std::vector<std::int32_t>& group : lod_info.groups) {
+                for (std::size_t k = 1; k < group.size(); ++k) {
+                    if (!valid(group[k]) || group[k] == group.front()) continue;
+                    asset::ModelData& level = content.parts[static_cast<std::size_t>(group[k])];
+                    asset::ModelData empty{};
+                    empty.name = level.name;
+                    level = std::move(empty);
+                }
+            }
+        }
         for (asset::ModelData& part : content.parts) {
+            const auto part_index = static_cast<std::size_t>(&part - content.parts.data());
             // Los triangulos de cada submalla en el orden que reutiliza los
             // vertices ya transformados (solo en memoria, como los LODs): los
             // clusteres del importador y del static batching los desordenan.
@@ -342,8 +377,9 @@ std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std:
             acmr_after += static_cast<double>(cache.acmr_after) * static_cast<double>(part.indices.size() / 3);
             acmr_triangles += part.indices.size() / 3;
             // LODs automaticos (solo en memoria): los estaticos pesados se
-            // dibujan simplificados cuando la diferencia no se ve.
-            asset::generateLods(part);
+            // dibujan simplificados cuando la diferencia no se ve. No con
+            // LODs a mano ni con el ajuste Off/Manual del modelo.
+            if (!manual_lods[part_index] && lod_info.mode == ModelLodMode::Auto) asset::generateLods(part);
             // Texturas incrustadas: se decodifican aqui (en paralelo).
             // Solo esqueleto y animaciones (paquetes de clips): se leen para extraerlos.
             const bool clips_only = part.indices.empty() && !part.animations.empty();

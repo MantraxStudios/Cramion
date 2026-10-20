@@ -246,6 +246,26 @@ private:
             out_.vertices.push_back(vertex);
         }
 
+        // --- Color de vertice (COLOR_0) ---
+        // Vacio mientras ninguna malla lo traiga; desde la primera que lo
+        // trae, uno por vertice (blanco en las que no).
+        if (mesh.HasVertexColors(0) || !out_.vertex_colors.empty()) {
+            std::vector<std::uint32_t>& colors = out_.vertex_colors.mut();
+            colors.resize(base_vertex, 0xFFFFFFFFu);
+            colors.reserve(base_vertex + mesh.mNumVertices);
+            const auto byte = [](float c) {
+                return static_cast<std::uint32_t>(std::clamp(c, 0.0f, 1.0f) * 255.0f + 0.5f);
+            };
+            for (unsigned int v = 0; v < mesh.mNumVertices; ++v) {
+                if (!mesh.HasVertexColors(0)) {
+                    colors.push_back(0xFFFFFFFFu);
+                    continue;
+                }
+                const aiColor4D& c = mesh.mColors[0][v];
+                colors.push_back(byte(c.r) | (byte(c.g) << 8) | (byte(c.b) << 16) | (byte(c.a) << 24));
+            }
+        }
+
         // --- Influencias ---
         // Se quedan las cuatro de mas peso (LimitBoneWeights ya lo garantiza,
         // pero no cuesta nada ser robusto) y se normalizan a suma 1.
@@ -1007,6 +1027,127 @@ bool subtreeHasMeshes(const aiNode* node) {
     return false;
 }
 
+// Repara las tomas de una escena leida SIN ValidateDataStructure (un FBX con
+// una toma rota se rechazaba entero): fuera las pistas nulas, vacias o con
+// valores no finitos, las subpistas con contador pero sin claves y las tomas
+// que se quedan sin pistas; si las claves pasan de la duracion, la duracion
+// se alarga. Devuelve una linea por arreglo (para el aviso). Lo demas (mallas,
+// nodos) lo vuelve a mirar ValidateDataStructure despues.
+std::vector<std::string> repairAnimations(aiScene& scene) {
+    std::vector<std::string> notes;
+    const auto finite3 = [](const aiVector3D& v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); };
+    const auto finiteQ = [](const aiQuaternion& q) {
+        return std::isfinite(q.w) && std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z);
+    };
+    unsigned int kept_animations = 0;
+    for (unsigned int a = 0; a < scene.mNumAnimations; ++a) {
+        aiAnimation* animation = scene.mAnimations != nullptr ? scene.mAnimations[a] : nullptr;
+        if (animation == nullptr) {
+            notes.push_back("toma " + std::to_string(a) + " nula");
+            continue;
+        }
+        const std::string take = std::string("\"") + animation->mName.C_Str() + "\"";
+        double last_key = 0.0;
+        unsigned int kept = 0;
+        unsigned int dropped = 0;
+        for (unsigned int c = 0; c < animation->mNumChannels && animation->mChannels != nullptr; ++c) {
+            aiNodeAnim* channel = animation->mChannels[c];
+            bool valid = channel != nullptr;
+            if (valid) {
+                // Subpistas con contador y sin claves: se vacian (assimp libera
+                // el puntero igual al destruir la pista).
+                if (channel->mPositionKeys == nullptr) channel->mNumPositionKeys = 0;
+                if (channel->mRotationKeys == nullptr) channel->mNumRotationKeys = 0;
+                if (channel->mScalingKeys == nullptr) channel->mNumScalingKeys = 0;
+                valid = channel->mNumPositionKeys + channel->mNumRotationKeys + channel->mNumScalingKeys > 0;
+                for (unsigned int k = 0; valid && k < channel->mNumPositionKeys; ++k) {
+                    const aiVectorKey& key = channel->mPositionKeys[k];
+                    valid = std::isfinite(key.mTime) && finite3(key.mValue);
+                    last_key = valid ? std::max(last_key, key.mTime) : last_key;
+                }
+                for (unsigned int k = 0; valid && k < channel->mNumRotationKeys; ++k) {
+                    const aiQuatKey& key = channel->mRotationKeys[k];
+                    valid = std::isfinite(key.mTime) && finiteQ(key.mValue);
+                    last_key = valid ? std::max(last_key, key.mTime) : last_key;
+                }
+                for (unsigned int k = 0; valid && k < channel->mNumScalingKeys; ++k) {
+                    const aiVectorKey& key = channel->mScalingKeys[k];
+                    valid = std::isfinite(key.mTime) && finite3(key.mValue);
+                    last_key = valid ? std::max(last_key, key.mTime) : last_key;
+                }
+            }
+            if (!valid) {
+                delete channel;
+                ++dropped;
+                continue;
+            }
+            animation->mChannels[kept++] = channel;
+        }
+        if (animation->mChannels == nullptr) animation->mNumChannels = 0;
+        else animation->mNumChannels = kept;
+        // Pistas de morph sin claves: fuera.
+        unsigned int kept_morph = 0;
+        for (unsigned int c = 0; c < animation->mNumMorphMeshChannels && animation->mMorphMeshChannels != nullptr; ++c) {
+            aiMeshMorphAnim* morph = animation->mMorphMeshChannels[c];
+            if (morph == nullptr || (morph->mNumKeys > 0 && morph->mKeys == nullptr)) {
+                delete morph;
+                ++dropped;
+                continue;
+            }
+            animation->mMorphMeshChannels[kept_morph++] = morph;
+        }
+        if (animation->mMorphMeshChannels == nullptr) animation->mNumMorphMeshChannels = 0;
+        else animation->mNumMorphMeshChannels = kept_morph;
+        if (dropped > 0) notes.push_back("toma " + take + ": " + std::to_string(dropped) + " pistas invalidas quitadas");
+        if (animation->mNumChannels == 0 && animation->mNumMorphMeshChannels == 0) {
+            notes.push_back("toma " + take + " sin pistas validas: descartada");
+            delete animation;
+            continue;
+        }
+        if (animation->mDuration > 0.0 && last_key > animation->mDuration + 0.001) {
+            notes.push_back("toma " + take + ": claves hasta " + std::to_string(last_key) + " con duracion " +
+                            std::to_string(animation->mDuration) + " (se alarga)");
+            animation->mDuration = last_key;
+        }
+        scene.mAnimations[kept_animations++] = animation;
+    }
+    scene.mNumAnimations = kept_animations;
+    if (kept_animations == 0 && scene.mAnimations != nullptr) {
+        // Sin tomas el array debe ser nulo (ValidateDataStructure lo exige).
+        delete[] scene.mAnimations;
+        scene.mAnimations = nullptr;
+    }
+    return notes;
+}
+
+// Lee `path` con `flags`. Si ValidateDataStructure rechaza la escena (casi
+// siempre por una toma rota), la vuelve a leer sin post-proceso, repara las
+// tomas, avisa y aplica los mismos pasos (validacion incluida: si lo roto es
+// la malla, sigue fallando como antes).
+const aiScene* readSceneRepairingTakes(Assimp::Importer& importer, const std::filesystem::path& path,
+                                       unsigned int flags) {
+    const aiScene* scene = importer.ReadFile(utf8(path), flags);
+    if (scene != nullptr || (flags & aiProcess_ValidateDataStructure) == 0) return scene;
+    const std::string first_error = importer.GetErrorString();
+    const aiScene* raw = importer.ReadFile(utf8(path), 0);
+    if (raw == nullptr) {
+        // No es la validacion: se devuelve el error de la primera lectura.
+        throw std::runtime_error("No se pudo cargar el modelo " + utf8(path) + ": " + first_error);
+    }
+    // La escena es del Importer y nadie mas la ve todavia: se puede retocar.
+    const std::vector<std::string> notes = repairAnimations(*const_cast<aiScene*>(raw));
+    std::cerr << "[Modelo] Aviso: " << path.filename().string() << " no paso la validacion de assimp (" << first_error
+              << "); se reintenta quitando lo invalido de las tomas.\n";
+    for (const std::string& note : notes) std::cerr << "[Modelo]   " << note << "\n";
+    scene = importer.ApplyPostProcessing(flags);
+    if (scene == nullptr) {
+        throw std::runtime_error("No se pudo cargar el modelo " + utf8(path) + ": " + first_error +
+                                 (notes.empty() ? std::string() : " (y tras reparar las tomas: " +
+                                                                      std::string(importer.GetErrorString()) + ")"));
+    }
+    return scene;
+}
+
 // `keep_hierarchy`: para el importador de assets. Sin hornear los nodos ni
 // agrupar en clusteres (se hace despues, por pieza) y sin animaciones.
 // Pasa el avance de assimp (lectura 0..0.5, post-proceso 0.5..1) al editor.
@@ -1063,7 +1204,7 @@ ModelData importWithAssimp(const std::filesystem::path& path, bool force_static,
                                aiProcess_ImproveCacheLocality | aiProcess_ValidateDataStructure;
 
     StageTimer timer;
-    const aiScene* scene = importer.ReadFile(utf8(path), flags);
+    const aiScene* scene = readSceneRepairingTakes(importer, path, flags);
     timer.lap("lectura y procesado de assimp");
     // Paquetes de animaciones sin malla (solo esqueleto: Motifect, Mixamo
     // "without skin"): assimp los marca incompletos, pero sirven como clips.
@@ -1394,6 +1535,13 @@ std::vector<AnimationClip> loadAnimationClips(const std::filesystem::path& path,
     // Sin postproceso de mallas: solo hacen falta los nodos y las pistas. Un
     // archivo sin malla sale "incompleto" para assimp: vale si trae animaciones.
     const aiScene* scene = importer.ReadFile(utf8(path), 0);
+    // Sin validacion: las pistas nulas o sin claves de una toma rota se quitan
+    // aqui (con aviso) en vez de romper la conversion.
+    if (scene != nullptr) {
+        for (const std::string& note : repairAnimations(*const_cast<aiScene*>(scene))) {
+            std::cerr << "[Modelo] " << path.filename().string() << ": " << note << "\n";
+        }
+    }
     if (scene == nullptr || scene->mNumAnimations == 0) {
         if (error != nullptr) {
             *error = scene == nullptr ? std::string(importer.GetErrorString()) : std::string("el archivo no tiene animaciones");

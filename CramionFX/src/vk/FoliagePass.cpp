@@ -165,14 +165,16 @@ void FoliagePass::create(const VulkanDevice& device, const vk::raii::DescriptorS
 
     createPipelines(device, gbuffer_formats, depth_format, shadow_format);
     // Las texturas de los arboles (11 capas de 1024 x 2, ~117 MB de VRAM y su
-    // tiempo de generarlas) se hacen con los primeros arboles (setInstances):
-    // antes ocupaban memoria en cualquier escena, sin un arbol.
+    // tiempo de generarlas) se hacen con los primeros arboles (setInstances),
+    // en otro hilo (requestTextures): antes ocupaban memoria en cualquier
+    // escena, sin un arbol.
     species_ = {asset::treePreset(asset::TreeKind::Pine), asset::treePreset(asset::TreeKind::Oak),
                 asset::treePreset(asset::TreeKind::Birch)};
     bounds_.create(device, sizeof(core::Vec4) * kSpecies, vk::BufferUsageFlagBits::eStorageBuffer,
                    vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
     buildMeshes();
     readback_ready_.assign(frames_in_flight, false);
+    culled_generation_.assign(frames_in_flight, 0);
 }
 
 void FoliagePass::destroy() {
@@ -180,7 +182,12 @@ void FoliagePass::destroy() {
     // Una subida en segundo plano puede estar creando buffers: que termine.
     if (device_ != nullptr) device_->drainTasks();
     pending_.reset();
+    pending_species_.reset();
+    pending_textures_.reset();
+    waiting_instances_.reset();
+    textures_failed_ = false;
     retired_instances_.clear();
+    retired_meshes_.clear();
     cpu_instances_.reset();
     cull_sets_.clear();
     draw_sets_.clear();
@@ -209,6 +216,8 @@ void FoliagePass::destroy() {
     draw_set_layout_ = nullptr;
     cull_set_layout_ = nullptr;
     instance_count_ = 0;
+    culled_generation_.clear();
+    ++draw_generation_;
     stats_ = FoliageStats{};
     device_ = nullptr;
 }
@@ -326,43 +335,97 @@ void FoliagePass::createPipelines(const VulkanDevice& device, std::array<vk::For
     }
 }
 
-void FoliagePass::buildMeshes() {
+std::unique_ptr<FoliagePass::SpeciesMeshes> FoliagePass::buildSpeciesMeshes(
+    const VulkanDevice& device, const std::array<asset::TreeSpecies, kSpecies>& species) {
+    auto out = std::make_unique<SpeciesMeshes>();
+    out->species = species;
     std::vector<FoliageVertex> vertices;
     std::vector<std::uint32_t> indices;
-    std::array<core::Vec4, kSpecies> bounds{};
     for (std::uint32_t s = 0; s < kSpecies; ++s) {
         for (std::uint32_t l = 0; l < 3; ++l) {
-            const asset::TreeMeshData m = asset::buildTree(species_[s], static_cast<int>(l));
-            Mesh& mesh = meshes_[s * 3 + l];
+            const asset::TreeMeshData m = asset::buildTree(species[s], static_cast<int>(l));
+            Mesh& mesh = out->meshes[s * 3 + l];
             mesh.first_index = static_cast<std::uint32_t>(indices.size());
             mesh.index_count = static_cast<std::uint32_t>(m.indices.size());
             mesh.vertex_offset = static_cast<std::int32_t>(vertices.size());
-            triangles_[s * 3 + l] = mesh.index_count / 3;
+            out->triangles[s * 3 + l] = mesh.index_count / 3;
             vertices.insert(vertices.end(), m.vertices.begin(), m.vertices.end());
             indices.insert(indices.end(), m.indices.begin(), m.indices.end());
             // La esfera del nivel 0 (el mas grande) para el recorte.
-            if (l == 0) bounds[s] = core::Vec4{m.center_y, m.radius * 1.05f, m.height, 0.0f};
-            if (l == 1) rt_meshes_[s] = m;
+            if (l == 0) out->bounds[s] = core::Vec4{m.center_y, m.radius * 1.05f, m.height, 0.0f};
+            if (l == 1) out->rt_meshes[s] = m;
         }
     }
+    // createDeviceLocal espera solo a su propia copia (fence propia), no a la GPU.
+    out->vertices = VulkanBuffer::createDeviceLocal(device, vertices.data(), vertices.size() * sizeof(FoliageVertex),
+                                                    vk::BufferUsageFlagBits::eVertexBuffer);
+    out->indices = VulkanBuffer::createDeviceLocal(device, indices.data(), indices.size() * sizeof(std::uint32_t),
+                                                   vk::BufferUsageFlagBits::eIndexBuffer);
+    return out;
+}
+
+void FoliagePass::adoptSpeciesMeshes(SpeciesMeshes& m) {
+    // Los frames en vuelo aun dibujan con las mallas de antes: se retiran.
+    if (vertices_.isValid() || indices_.isValid()) {
+        RetiredMeshes old;
+        old.vertices = std::move(vertices_);
+        old.indices = std::move(indices_);
+        old.frames = frames_ + 1;
+        retired_meshes_.push_back(std::move(old));
+    }
+    species_ = m.species;
+    vertices_ = std::move(m.vertices);
+    indices_ = std::move(m.indices);
+    meshes_ = m.meshes;
+    triangles_ = m.triangles;
+    rt_meshes_ = std::move(m.rt_meshes);
+    // bounds_ es memoria visible y coherente que lee el recorte de los frames
+    // en vuelo: 48 bytes; como mucho un frame recorta con la esfera nueva
+    // sobre la malla vieja (sin efecto visible ni riesgo para la GPU).
+    bounds_.write(m.bounds.data(), sizeof(m.bounds));
     ++species_revision_;
-    vertices_.destroy();
-    indices_.destroy();
-    vertices_ = VulkanBuffer::createDeviceLocal(*device_, vertices.data(), vertices.size() * sizeof(FoliageVertex),
-                                                vk::BufferUsageFlagBits::eVertexBuffer);
-    indices_ = VulkanBuffer::createDeviceLocal(*device_, indices.data(), indices.size() * sizeof(std::uint32_t),
-                                               vk::BufferUsageFlagBits::eIndexBuffer);
-    bounds_.write(bounds.data(), sizeof(bounds));
+    // Los comandos ya recortados llevan los indices de las mallas de antes:
+    // ningun frame los usa hasta recortar otra vez (recordCull).
+    ++draw_generation_;
+}
+
+void FoliagePass::buildMeshes() {
+    // Solo al crear el pase (aun no hay frames en vuelo).
+    std::unique_ptr<SpeciesMeshes> m = buildSpeciesMeshes(*device_, species_);
+    adoptSpeciesMeshes(*m);
 }
 
 void FoliagePass::setSpecies(const std::array<asset::TreeSpecies, kSpecies>& species) {
     if (device_ == nullptr) return;
-    bool same = true;
-    for (std::uint32_t s = 0; s < kSpecies; ++s) same = same && species[s] == species_[s];
-    if (same) return;
-    device_->waitIdle();
-    species_ = species;
-    buildMeshes();
+    const auto same_as = [&](const std::array<asset::TreeSpecies, kSpecies>& other) {
+        for (std::uint32_t s = 0; s < kSpecies; ++s) {
+            if (!(species[s] == other[s])) return false;
+        }
+        return true;
+    };
+    // Ya en construccion: nada (no se lanza otra igual cada frame).
+    if (pending_species_ && same_as(pending_species_->species)) return;
+    if (!pending_species_ && same_as(species_)) return;
+    // Otra distinta mientras se construye una: la nueva la sustituye (el
+    // resultado de la anterior se descarta al terminar). Volver a las de
+    // ahora tambien cancela la pendiente.
+    if (pending_species_ && same_as(species_)) {
+        pending_species_.reset();
+        return;
+    }
+    auto pending = std::make_shared<PendingSpecies>();
+    pending->species = species;
+    pending_species_ = pending;
+    const VulkanDevice* device = device_;
+    device_->runTask([device, pending]() {
+        try {
+            pending->result = buildSpeciesMeshes(*device, pending->species);
+            pending->state.store(1, std::memory_order_release);
+        } catch (const std::exception& e) {
+            std::cerr << "[Vegetacion] No se pudieron rehacer las especies: " << e.what() << "\n";
+            pending->state.store(2, std::memory_order_release);
+        }
+    });
 }
 
 // Texturas de los arboles en BC7: generateTreeTextures da 11 capas de 1024
@@ -379,12 +442,14 @@ void FoliagePass::stopTextureCompression() {
     bc7_stop_.reset();
 }
 
-void FoliagePass::createTextures() {
-    stopTextureCompression();
+// En cualquier hilo (runStreamingTask): genera, mira la cache de BC7, crea
+// las imagenes y espera a su propia copia (submitOneTime), no a la GPU entera.
+std::unique_ptr<FoliagePass::BuiltTextures> FoliagePass::buildTextures(const VulkanDevice& device) {
+    auto out = std::make_unique<BuiltTextures>();
     auto generated = std::make_shared<asset::TreeTextures>(asset::generateTreeTextures(1024));
     const asset::TreeTextures& t = *generated;
     const std::uint64_t hash = asset::hashMipLayers(t.normal, asset::hashMipLayers(t.albedo, t.size));
-    const std::filesystem::path cache_file = device_->textureCompressionBcSupported()
+    const std::filesystem::path cache_file = device.textureCompressionBcSupported()
                                                  ? asset::userTextureCachePath("arboles", hash)
                                                  : std::filesystem::path{};
     asset::Bc7ArrayCache cache;
@@ -392,7 +457,6 @@ void FoliagePass::createTextures() {
         !cache_file.empty() && asset::readBc7ArrayCache(cache_file, hash, t.size, {&t.albedo, &t.normal}, cache);
     const auto upload = [&](TextureArray& texture, const std::vector<std::vector<std::vector<std::uint8_t>>>& layers,
                             vk::Format format) {
-        const VulkanDevice& device = *device_;
         const auto count = static_cast<std::uint32_t>(layers.size());
         const std::uint32_t mips = t.mips;
         vk::ImageCreateInfo info{};
@@ -469,21 +533,56 @@ void FoliagePass::createTextures() {
     };
     const bool albedo_bc7 = cached && cache.bc7[0];
     const bool normal_bc7 = cached && cache.bc7[1];
-    albedo_format_ = albedo_bc7 ? vk::Format::eBc7SrgbBlock : vk::Format::eR8G8B8A8Srgb;
-    upload(albedo_array_, albedo_bc7 ? cache.blocks[0] : t.albedo, albedo_format_);
-    albedo_mips_ = t.mips;
-    albedo_layers_ = static_cast<std::uint32_t>(t.albedo.size());
-    upload(normal_array_, normal_bc7 ? cache.blocks[1] : t.normal,
+    out->albedo_format = albedo_bc7 ? vk::Format::eBc7SrgbBlock : vk::Format::eR8G8B8A8Srgb;
+    upload(out->albedo, albedo_bc7 ? cache.blocks[0] : t.albedo, out->albedo_format);
+    out->mips = t.mips;
+    out->layers = static_cast<std::uint32_t>(t.albedo.size());
+    upload(out->normal, normal_bc7 ? cache.blocks[1] : t.normal,
            normal_bc7 ? vk::Format::eBc7UnormBlock : vk::Format::eR8G8B8A8Unorm);
     if (cached) {
         std::cout << "[Vegetacion] Texturas de los arboles (cache " << cache_file.filename().string() << "): color "
                   << (albedo_bc7 ? "BC7" : "RGBA8") << ", normales " << (normal_bc7 ? "BC7" : "RGBA8") << "\n";
     } else if (!cache_file.empty()) {
+        out->generated = std::move(generated);
+        out->cache_file = cache_file;
+        out->hash = hash;
+    }
+    return out;
+}
+
+void FoliagePass::requestTextures() {
+    if (albedo_layers_ > 0 || pending_textures_ || textures_failed_ || device_ == nullptr) return;
+    auto pending = std::make_shared<PendingTextures>();
+    pending_textures_ = pending;
+    const VulkanDevice* device = device_;
+    // Hilos de streaming (tarea larga): no deja sin hilo a las tareas cortas
+    // del terreno ni a las propias instancias.
+    device_->runStreamingTask([device, pending]() {
+        try {
+            pending->result = buildTextures(*device);
+            pending->state.store(1, std::memory_order_release);
+        } catch (const std::exception& e) {
+            std::cerr << "[Vegetacion] No se pudieron crear las texturas de los arboles: " << e.what() << "\n";
+            pending->state.store(2, std::memory_order_release);
+        }
+    });
+}
+
+void FoliagePass::adoptTextures(BuiltTextures& built) {
+    stopTextureCompression();
+    albedo_array_ = std::move(built.albedo);
+    normal_array_ = std::move(built.normal);
+    albedo_format_ = built.albedo_format;
+    albedo_mips_ = built.mips;
+    albedo_layers_ = built.layers;
+    ++species_revision_;  // la escena de rayos las incluye al rehacerse
+    if (built.generated) {
         // Una vez: a BC7 en segundo plano (3 hilos, para no frenar el juego)
         // y a la cache; el siguiente arranque ya las sube comprimidas.
         auto stop = std::make_shared<std::atomic<bool>>(false);
         bc7_stop_ = stop;
-        bc7_thread_ = std::thread([generated, hash, cache_file, stop] {
+        bc7_thread_ = std::thread([generated = std::move(built.generated), hash = built.hash,
+                                   cache_file = built.cache_file, stop] {
             const auto start = std::chrono::steady_clock::now();
             const unsigned threads = std::max(std::thread::hardware_concurrency() / 4, 1u);
             asset::Bc7ArrayCache result;
@@ -509,7 +608,6 @@ void FoliagePass::createTextures() {
                       << (result.bc7[1] ? "BC7" : "RGBA8") << " (PSNR " << psnr[1] << " dB)\n";
         });
     }
-
     createTextureSampler();
 }
 
@@ -632,11 +730,16 @@ bool FoliagePass::adoptInstances(const std::shared_ptr<InstanceBuffers>& buffers
     InstanceBuffers& b = *buffers;
     std::vector<vk::raii::DescriptorSet> cull_sets;
     std::vector<vk::raii::DescriptorSet> draw_sets;
+    // Un juego nuevo sustituye al que esperaba a las texturas.
+    waiting_instances_.reset();
     if (b.count > 0) {
         if (albedo_layers_ == 0) {
-            // Las texturas de los arboles, con los primeros (una vez).
-            createTextures();
-            ++species_revision_;  // la escena de rayos las incluye al rehacerse
+            // Las texturas de los arboles se hacen en otro hilo con los
+            // primeros (una vez): hasta que esten, este juego espera y lo
+            // adopta pollAsync. Antes, ~1,1 s en este frame.
+            requestTextures();
+            waiting_instances_ = buffers;
+            return true;
         }
         if (!allocateSets(cull_sets, draw_sets)) return false;
     }
@@ -662,6 +765,9 @@ bool FoliagePass::adoptInstances(const std::shared_ptr<InstanceBuffers>& buffers
     species_count_ = b.species_count;
     template_first_instance_ = b.template_first_instance;
     readback_ready_.assign(frames_, false);
+    // Los buffers de comandos son nuevos (sin escribir: basura): no se dibuja
+    // con ellos hasta que recordCull los rellene en ese frame.
+    ++draw_generation_;
     stats_ = FoliageStats{};
     stats_.instances = b.count;
     stats_.memory_bytes = static_cast<std::uint64_t>(b.count) * sizeof(FoliageInstance) + b.visible_bytes * frames_;
@@ -698,6 +804,8 @@ void FoliagePass::setInstancesAsync(std::shared_ptr<const std::vector<FoliageIns
     if (device_ == nullptr) return;
     if (!instances) instances = std::make_shared<const std::vector<FoliageInstance>>();
     if (!device_->drawIndirectFirstInstanceSupported()) instances = std::make_shared<const std::vector<FoliageInstance>>();
+    // Las texturas de los arboles a la vez que se suben las primeras instancias.
+    if (!instances->empty()) requestTextures();
     // La nueva sustituye a la que se estuviera subiendo (su resultado se
     // descarta; sus buffers viven en su ticket hasta que la GPU termina).
     auto pending = std::make_shared<PendingInstances>();
@@ -725,15 +833,53 @@ bool FoliagePass::pollAsync() {
         if (r.frames > 0) --r.frames;
     }
     std::erase_if(retired_instances_, [](const RetiredInstances& r) { return r.frames == 0; });
-    if (!pending_) return false;
+    for (RetiredMeshes& r : retired_meshes_) {
+        if (r.frames > 0) --r.frames;
+    }
+    std::erase_if(retired_meshes_, [](const RetiredMeshes& r) { return r.frames == 0; });
+    // Especies construidas en segundo plano: se cambian ahora (sin esperar a la GPU).
+    bool species_changed = false;
+    if (pending_species_) {
+        const int state = pending_species_->state.load(std::memory_order_acquire);
+        if (state == 1 && pending_species_->result) {
+            adoptSpeciesMeshes(*pending_species_->result);
+            pending_species_.reset();
+            species_changed = true;
+        } else if (state != 0) {
+            pending_species_.reset();
+        }
+    }
+    // Texturas de los arboles hechas en otro hilo: se ponen y entra el juego
+    // de instancias que las esperaba.
+    if (pending_textures_) {
+        const int state = pending_textures_->state.load(std::memory_order_acquire);
+        if (state == 1 && pending_textures_->result) {
+            adoptTextures(*pending_textures_->result);
+            pending_textures_.reset();
+        } else if (state != 0) {
+            // Sin texturas no se dibujan arboles (y no se reintenta cada frame).
+            pending_textures_.reset();
+            textures_failed_ = true;
+            waiting_instances_.reset();
+        }
+    }
+    if (waiting_instances_ && albedo_layers_ > 0) {
+        const std::shared_ptr<InstanceBuffers> waiting = waiting_instances_;
+        if (adoptInstances(waiting)) {
+            species_changed = true;
+        } else {
+            waiting_instances_ = waiting;  // sin sets ahora: el frame siguiente
+        }
+    }
+    if (!pending_) return species_changed;
     const int state = pending_->state.load(std::memory_order_acquire);
-    if (state == 0) return false;
+    if (state == 0) return species_changed;
     if (state == 2 || !pending_->buffers) {
         pending_.reset();
-        return false;
+        return species_changed;
     }
-    if (pending_->ticket && !pending_->ticket->done()) return false;
-    if (!adoptInstances(pending_->buffers)) return false;  // sin sets ahora: el frame siguiente
+    if (pending_->ticket && !pending_->ticket->done()) return species_changed;
+    if (!adoptInstances(pending_->buffers)) return species_changed;  // sin sets ahora: el frame siguiente
     pending_.reset();
     return true;
 }
@@ -805,7 +951,7 @@ void FoliagePass::setSun(const core::Vec3& to_sun) {
 }
 
 void FoliagePass::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, const core::Vec3& camera_position,
-                             const core::Mat4& view_projection, float delta_seconds) {
+                             const core::Mat4& view_projection, float delta_seconds, bool update_stats) {
     using Stage = vk::PipelineStageFlagBits2;
     using Access = vk::AccessFlagBits2;
     last_delta_ = std::clamp(delta_seconds, 0.0f, 0.25f);
@@ -813,7 +959,7 @@ void FoliagePass::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t f
     if (instance_count_ == 0 || frame >= commands_.size()) return;
 
     // Lo que conto la GPU la ultima vez que uso este frame (ya termino).
-    if (readback_ready_[frame]) {
+    if (update_stats && readback_ready_[frame]) {
         const auto* done = static_cast<const DrawCommand*>(readback_[frame].mapped());
         stats_.visible[0] = stats_.visible[1] = stats_.visible[2] = 0;
         stats_.shadow_casters = 0;
@@ -869,10 +1015,15 @@ void FoliagePass::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t f
     memoryBarrier(cmd, Stage::eComputeShader, Access::eShaderWrite, Stage::eDrawIndirect | Stage::eVertexShader | Stage::eTransfer,
                   Access::eIndirectCommandRead | Access::eShaderRead | Access::eTransferRead);
     // Copia para las estadisticas (se lee la proxima vez que toque este frame).
-    const vk::BufferCopy region{0, 0, sizeof(DrawCommand) * kSpecies * kLists};
-    cmd.copyBuffer(*commands_[frame].handle(), *readback_[frame].handle(), region);
-    memoryBarrier(cmd, Stage::eTransfer, Access::eTransferWrite, Stage::eHost, Access::eHostRead);
-    readback_ready_[frame] = true;
+    // No en las vistas aisladas: la sonda recorta antes que la pantalla en el
+    // mismo hueco y esta leeria lo que vio la cara del cubo.
+    if (update_stats) {
+        const vk::BufferCopy region{0, 0, sizeof(DrawCommand) * kSpecies * kLists};
+        cmd.copyBuffer(*commands_[frame].handle(), *readback_[frame].handle(), region);
+        memoryBarrier(cmd, Stage::eTransfer, Access::eTransferWrite, Stage::eHost, Access::eHostRead);
+        readback_ready_[frame] = true;
+    }
+    if (frame < culled_generation_.size()) culled_generation_[frame] = draw_generation_;
 }
 
 void FoliagePass::draw(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, bool shadow) const {
@@ -897,7 +1048,7 @@ void FoliagePass::draw(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, 
 
 void FoliagePass::recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
                                 const vk::raii::DescriptorSet& frame_set) const {
-    if (instance_count_ == 0 || frame >= draw_sets_.size()) return;
+    if (instance_count_ == 0 || frame >= draw_sets_.size() || !commandsCurrent(frame)) return;
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,
                      wireframe_ && *gbuffer_wire_pipeline_ ? *gbuffer_wire_pipeline_ : *gbuffer_pipeline_);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *draw_layout_, 0, *frame_set, nullptr);
@@ -913,7 +1064,9 @@ void FoliagePass::recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_
 
 void FoliagePass::recordShadow(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
                                const vk::raii::DescriptorSet& frame_set, const core::Mat4& light_view_projection) const {
-    if (instance_count_ == 0 || !settings_.cast_shadows || frame >= draw_sets_.size()) return;
+    if (instance_count_ == 0 || !settings_.cast_shadows || frame >= draw_sets_.size() || !commandsCurrent(frame)) {
+        return;
+    }
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline_);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *draw_layout_, 0, *frame_set, nullptr);
     DrawPush push{};

@@ -6,16 +6,46 @@
 //   CramionMcp.exe [--port 7777]
 //
 // Si el editor no esta abierto, contesta con un error que lo explica.
+//
+// Token del MCP: el editor escribe el de su sesion en
+// %LOCALAPPDATA%/Cramion/mcp-token-<puerto> y lo exige en cada peticion
+// ("Exigir token MCP"). El puente lo lee antes de cada mensaje (el editor
+// puede haberse reiniciado con otro) y lo manda en Authorization: Bearer.
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
 namespace {
+
+// El token del editor en ese puerto (vacio si no hay: editor cerrado o de
+// una version sin token). Misma carpeta que localDataFolder del editor.
+std::string readToken(int port) {
+    std::filesystem::path base;
+    char* local = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&local, &size, "LOCALAPPDATA") == 0 && local != nullptr && *local != '\0') base = local;
+    std::free(local);
+    if (base.empty()) {
+        std::error_code ec;
+        base = std::filesystem::temp_directory_path(ec);
+    }
+    std::ifstream in(base / "Cramion" / ("mcp-token-" + std::to_string(port)), std::ios::binary);
+    std::string token;
+    std::getline(in, token);
+    while (!token.empty() && (token.back() == '\r' || token.back() == ' ')) token.pop_back();
+    // Solo hexadecimal: nada que pueda romper la cabecera.
+    for (const char c : token) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return {};
+    }
+    return token;
+}
 
 // POST del cuerpo; devuelve el estado HTTP (0 = sin conexion) y el cuerpo.
 int post(int port, const std::string& body, std::string& response) {
@@ -30,8 +60,9 @@ int post(int port, const std::string& body, std::string& response) {
         return 0;
     }
     std::string request = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
-                          "Accept: application/json, text/event-stream\r\nContent-Length: " +
-                          std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+                          "Accept: application/json, text/event-stream\r\n";
+    if (const std::string token = readToken(port); !token.empty()) request += "Authorization: Bearer " + token + "\r\n";
+    request += "Content-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
     std::size_t sent = 0;
     while (sent < request.size()) {
         const int n = send(s, request.data() + sent, static_cast<int>(request.size() - sent), 0);
@@ -95,9 +126,17 @@ int main(int argc, char** argv) {
         if (status == 202) continue;  // notificacion
         const std::string id = idOf(line);
         if (id.empty()) continue;
-        const std::string why = status == 0 ? "Cramion Editor no esta abierto (o su servidor MCP esta apagado). Abre el editor "
-                                              "con un proyecto y vuelve a intentarlo."
-                                            : "el editor respondio con el estado HTTP " + std::to_string(status);
+        std::string why;
+        if (status == 0) {
+            why = "Cramion Editor no esta abierto (o su servidor MCP esta apagado). Abre el editor con un proyecto y "
+                  "vuelve a intentarlo.";
+        } else if (status == 403) {
+            why = "el editor rechazo la peticion: no se pudo leer su token del MCP (%LOCALAPPDATA%/Cramion/mcp-token-" +
+                  std::to_string(port) + "). Comprueba que el editor esta abierto en el puerto " + std::to_string(port) +
+                  " o desactiva Exigir token MCP en su ventana MCP (IA).";
+        } else {
+            why = "el editor respondio con el estado HTTP " + std::to_string(status);
+        }
         std::cout << "{\"jsonrpc\":\"2.0\",\"id\":" << id << ",\"error\":{\"code\":-32000,\"message\":\"" << why << "\"}}\n"
                   << std::flush;
     }

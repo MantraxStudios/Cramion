@@ -6,6 +6,7 @@
 #include "CramionCore/ecs/Components.h"
 #include "SerializerInternal.h"
 
+#include <algorithm>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -33,7 +34,10 @@ bool followsBone(Entity e) {
 
 json parse(const std::string& text) {
     json j = json::parse(text, nullptr, false);
-    return j.is_object() ? j : json::object();
+    // (Con el operador ?: el resultado era una copia profunda de todo el
+    // documento; asi se mueve.)
+    if (!j.is_object()) return json::object();
+    return j;
 }
 
 const json& entitiesOf(const json& prefab) {
@@ -237,15 +241,21 @@ bool createPrefab(World& world, Entity root, const std::filesystem::path& file, 
 
 Entity instantiatePrefab(World& world, const std::string& text, Entity parent) {
     const json prefab = parse(text);
-    json records = json::array();
-    for (const json& record : entitiesOf(prefab)) {
-        if (record.is_object()) records.push_back(record);
+    // Sin copiar los registros (antes, una copia profunda de todo el JSON en
+    // cada instancia: ~45 ms con Valley.crprefab). buildEntities se salta lo
+    // que no es un objeto, igual que esta lista: created[i] es records[i].
+    const json& entities = entitiesOf(prefab);
+    std::vector<const json*> records;
+    if (entities.is_array()) records.reserve(entities.size());
+    for (const json& record : entities) {
+        if (record.is_object()) records.push_back(&record);
     }
     if (records.empty()) return {};
     std::vector<Entity> created;
-    Entity root = buildEntities(world, records, /*remap=*/true, parent, &created);
+    created.reserve(records.size());
+    Entity root = buildEntities(world, entities, /*remap=*/true, parent, &created);
     for (std::size_t i = 0; i < created.size() && i < records.size(); ++i) {
-        created[i].add<PrefabLink>().source = records[i].value("uuid", std::string{});
+        created[i].add<PrefabLink>().source = records[i]->value("uuid", std::string{});
     }
     if (root.valid()) {
         PrefabInstance& instance = root.add<PrefabInstance>();
@@ -279,10 +289,31 @@ std::vector<Entity> prefabInstances(World& world, const Uuid& prefab) {
     return out;
 }
 
+struct ParsedPrefab {
+    json root;
+    int revision = 0;
+};
+
+std::shared_ptr<const ParsedPrefab> parsePrefabText(const std::string& text) {
+    json j = json::parse(text, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) return nullptr;
+    auto doc = std::make_shared<ParsedPrefab>();
+    doc->revision = j.value("revision", 0);
+    doc->root = std::move(j);
+    return doc;
+}
+
+int prefabRevision(const ParsedPrefab& prefab) { return prefab.revision; }
+
 void recordOverrides(World& world, Entity root, const std::string& text) {
+    const std::shared_ptr<const ParsedPrefab> doc = parsePrefabText(text);
+    recordOverrides(world, root, doc != nullptr ? *doc : ParsedPrefab{json::object(), 0});
+}
+
+void recordOverrides(World& world, Entity root, const ParsedPrefab& document) {
     PrefabInstance* instance = root.valid() ? root.tryGet<PrefabInstance>() : nullptr;
     if (instance == nullptr) return;
-    const json prefab = parse(text);
+    const json& prefab = document.root;
     // Se recalculan desde cero (solo se llama con la misma revision): lo que
     // vuelve a tener el valor del prefab deja de ser un cambio propio.
     std::set<std::string> overrides;
@@ -323,7 +354,10 @@ void recordOverrides(World& world, Entity root, const std::string& text) {
             if (!technical(name) && !ours.contains(name)) overrides.insert(source + "|-" + name);
         }
     }
-    instance->overrides.assign(overrides.begin(), overrides.end());
+    // Solo si cambia (el historial de deshacer no ve un cambio que no hay).
+    if (!std::equal(overrides.begin(), overrides.end(), instance->overrides.begin(), instance->overrides.end())) {
+        instance->overrides.assign(overrides.begin(), overrides.end());
+    }
 }
 
 void syncInstance(World& world, Entity root, const std::string& text) {

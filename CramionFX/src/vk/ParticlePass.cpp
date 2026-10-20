@@ -19,10 +19,12 @@ void ParticlePass::create(const VulkanDevice& device, vk::Format color_format,
 
     alpha_pipeline_ = createPipeline(device, color_format, depth_format, false);
     additive_pipeline_ = createPipeline(device, color_format, depth_format, true);
+    distortion_pipeline_ = createPipeline(device, kDistortionFormat, depth_format, true, true);
 
     buffers_.resize(frames_in_flight);
     alpha_counts_.assign(frames_in_flight, 0);
     additive_counts_.assign(frames_in_flight, 0);
+    distortion_counts_.assign(frames_in_flight, 0);
 }
 
 void ParticlePass::destroy() {
@@ -32,15 +34,18 @@ void ParticlePass::destroy() {
     buffers_.clear();
     alpha_counts_.clear();
     additive_counts_.clear();
+    distortion_counts_.clear();
+    distortion_pipeline_ = nullptr;
     additive_pipeline_ = nullptr;
     alpha_pipeline_ = nullptr;
     layout_ = nullptr;
 }
 
 vk::raii::Pipeline ParticlePass::createPipeline(const VulkanDevice& device, vk::Format color_format,
-                                                vk::Format depth_format, bool additive) const {
+                                                vk::Format depth_format, bool additive, bool distortion) const {
     const vk::raii::ShaderModule vertex_module = shaders::loadModule(device, "particle.vert.spv");
-    const vk::raii::ShaderModule fragment_module = shaders::loadModule(device, "particle.frag.spv");
+    const vk::raii::ShaderModule fragment_module =
+        shaders::loadModule(device, distortion ? "particle_distortion.frag.spv" : "particle.frag.spv");
     std::array<vk::PipelineShaderStageCreateInfo, 2> stages{};
     stages[0].stage = vk::ShaderStageFlagBits::eVertex;
     stages[0].module = *vertex_module;
@@ -90,6 +95,12 @@ vk::raii::Pipeline ParticlePass::createPipeline(const VulkanDevice& device, vk::
     blend.alphaBlendOp = vk::BlendOp::eAdd;
     blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+    if (distortion) {
+        // Los desplazamientos se suman tal cual (RG, con signo).
+        blend.srcColorBlendFactor = vk::BlendFactor::eOne;
+        blend.dstColorBlendFactor = vk::BlendFactor::eOne;
+        blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG;
+    }
     vk::PipelineColorBlendStateCreateInfo color_blend{};
     color_blend.setAttachments(blend);
 
@@ -125,6 +136,7 @@ bool ParticlePass::prepare(const VulkanDevice& device, std::uint32_t frame,
     }
     alpha_counts_[frame] = 0;
     additive_counts_[frame] = 0;
+    distortion_counts_[frame] = 0;
     if (particles.empty()) {
         return false;
     }
@@ -155,6 +167,30 @@ bool ParticlePass::prepare(const VulkanDevice& device, std::uint32_t frame,
     const auto alpha_vertices = static_cast<std::uint32_t>(scratch_.size());
     expand(particles.additive);
     const auto additive_vertices = static_cast<std::uint32_t>(scratch_.size()) - alpha_vertices;
+    // Distorsion: en el color, xy = de su centro a la esquina en UV de
+    // pantalla (interpolado da la posicion en el disco) y w = fuerza.
+    for (const ParticleInstance& p : particles.distortion) {
+        static constexpr float kCorners[6][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, -1}, {1, 1}, {-1, 1}};
+        if (p.color.w == 0.0f || p.size <= 0.0f) {
+            continue;
+        }
+        const core::Vec4 center = view_projection * core::Vec4{p.position.x, p.position.y, p.position.z, 1.0f};
+        if (center.w <= 1e-3f) {
+            continue;  // detras de la camara
+        }
+        const float half = p.size * 0.5f;
+        for (const auto& corner : kCorners) {
+            const core::Vec3 world = p.position + right * (corner[0] * half) + up * (corner[1] * half);
+            const core::Vec4 clip = view_projection * core::Vec4{world.x, world.y, world.z, 1.0f};
+            const float w = std::max(clip.w, 1e-3f);
+            const float du = (clip.x / w - center.x / center.w) * 0.5f;
+            const float dv = (clip.y / w - center.y / center.w) * 0.5f;
+            scratch_.push_back(Vertex{{clip.x, clip.y, clip.z, clip.w}, {du, dv, 0.0f, p.color.w},
+                                      {corner[0], corner[1]}});
+        }
+    }
+    const auto distortion_vertices =
+        static_cast<std::uint32_t>(scratch_.size()) - alpha_vertices - additive_vertices;
     if (scratch_.empty()) {
         return false;
     }
@@ -171,6 +207,7 @@ bool ParticlePass::prepare(const VulkanDevice& device, std::uint32_t frame,
     buffer.write(scratch_.data(), bytes);
     alpha_counts_[frame] = alpha_vertices;
     additive_counts_[frame] = additive_vertices;
+    distortion_counts_[frame] = distortion_vertices;
     return true;
 }
 
@@ -191,6 +228,19 @@ void ParticlePass::record(const vk::raii::CommandBuffer& cmd, std::uint32_t fram
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *additive_pipeline_);
         cmd.draw(additive_counts_[frame], 1, alpha_counts_[frame], 0);
     }
+}
+
+void ParticlePass::recordDistortion(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
+                                    vk::Extent2D viewport) const {
+    if (frame >= buffers_.size() || distortion_counts_[frame] == 0 || !buffers_[frame].isValid()) {
+        return;
+    }
+    cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(viewport.width),
+                                    static_cast<float>(viewport.height), 0.0f, 1.0f});
+    cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, viewport});
+    cmd.bindVertexBuffers(0, *buffers_[frame].handle(), {0});
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *distortion_pipeline_);
+    cmd.draw(distortion_counts_[frame], 1, alpha_counts_[frame] + additive_counts_[frame], 0);
 }
 
 }  // namespace cramion::gfx

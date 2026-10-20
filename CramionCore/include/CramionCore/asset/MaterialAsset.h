@@ -24,6 +24,15 @@ enum class MaterialMode : int {
     Transparent = 1,  // vidrio, agua: semitransparente
 };
 
+// Como se mezcla un material transparente (pasada forward, glass.frag).
+enum class TransparentBlend : int {
+    Glass = 0,     // vidrio: reflejo y transmision de una lamina (como siempre)
+    Alpha = 1,     // iluminado y mezclado por su alfa (escudos, hologramas, cristales)
+    Additive = 2,  // solo suma luz (fuego, magia, rayos)
+};
+const char* transparentBlendKey(TransparentBlend blend);  // "glass", "alpha", "additive"
+TransparentBlend transparentBlendFromKey(const std::string& key);
+
 enum class ReliefMode { Parallax, Tessellation };
 
 // Modelo de material de Disney (Burley 2012/2015). Todos llevan el difuso de
@@ -36,6 +45,12 @@ ShadingModel shadingModelFromKey(const std::string& key);
 struct MaterialAsset {
     Uuid uuid;
     MaterialMode mode = MaterialMode::Opaque;
+    // Solo con mode = Transparent.
+    TransparentBlend blend = TransparentBlend::Glass;
+    // Sin luz (dominio Unlit): se ve el color tal cual mas su emision.
+    bool unlit = false;
+    // El color de vertice del modelo multiplica al color base.
+    bool vertex_color = false;
 
     core::Vec4 base_color{1.0f, 1.0f, 1.0f, 1.0f};  // lineal; a = opacidad
     float metallic = 0.0f;

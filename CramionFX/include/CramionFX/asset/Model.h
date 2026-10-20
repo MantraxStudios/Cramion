@@ -135,8 +135,20 @@ struct MaterialData {
     // alfa de esa textura es siempre la cavidad (1 = sin grietas).
     bool specular_map = false;
     // Vidrio, agua: materiales semitransparentes sin textura con alfa. Un
-    // renderizador diferido no puede mezclarlos, asi que no se dibujan.
+    // renderizador diferido no puede mezclarlos: van en la pasada forward del
+    // vidrio (glass.frag), despues de la iluminacion.
     bool transparent = false;
+    // Como se mezcla lo transparente (glass.frag): 0 vidrio (reflejo y
+    // transmision de una lamina), 1 alfa (iluminado, premultiplicado: escudos,
+    // hologramas, cristales de mana), 2 aditivo (solo suma luz). La emision
+    // se suma en los tres y entra en el bloom.
+    std::uint8_t transparent_blend = 0;
+    // Sin luz (dominio Unlit): se ve el color del material tal cual, mas su
+    // emision (opaco: modelo 8 del G-buffer; transparente: glass.frag).
+    bool unlit = false;
+    // El color de vertice del modelo (ModelData::vertex_colors) multiplica al
+    // color base. Sin el, los shaders lo pueden leer igual (VERTEX_COLOR).
+    bool vertex_color_albedo = false;
 
     // Indices en ModelData::textures; -1 = sin textura (solo los factores).
     std::int32_t albedo_texture = -1;
@@ -253,6 +265,12 @@ struct ModelData {
     core::SharedVector<SkinnedVertex> vertices;
     core::SharedVector<std::uint32_t> indices;
     std::vector<SubMesh> submeshes;
+    // Color de vertice (COLOR_0 del archivo), RGBA8 tal cual viene (r en los
+    // 8 bits bajos). Vacio = el modelo no lo trae; si no, uno por vertice.
+    // Aparte de SkinnedVertex para no engordar los 80 bytes de todos: la GPU
+    // lo lee por gl_VertexIndex (set 1, binding 11) solo en los que lo tienen.
+    // Se guarda en la cache y en el .crdata (al final de la pieza).
+    core::SharedVector<std::uint32_t> vertex_colors;
 
     std::vector<MaterialData> materials;
     std::vector<TextureData> textures;
@@ -282,6 +300,15 @@ struct ModelData {
 // quitando las piezas sueltas que ya no se ven (hojas, briznas). No hace nada
 // con modelos animados o de pocos triangulos. Devuelve los niveles creados.
 std::size_t generateLods(ModelData& model);
+
+// LODs hechos a mano (las mallas _LOD1.._LODn del archivo, ya en el espacio
+// de `model`): sustituye los automaticos. Sus vertices se anaden detras de
+// los de LOD0 (con color de vertice y UV de lightmap de relleno si `model`
+// los tiene) y sus materiales se emparejan con los de LOD0 por nombre. Los
+// niveles van en orden; uno con mas triangulos que el anterior se salta. El
+// error de cada nivel se estima por cuanto reduce los triangulos. Devuelve
+// los niveles creados (0 con piezas con esqueleto).
+std::size_t setManualLods(ModelData& model, const std::vector<const ModelData*>& levels);
 
 // Ordena los triangulos de cada submalla para que la GPU reutilice los
 // vertices ya transformados (meshopt_optimizeVertexCache): mismos triangulos

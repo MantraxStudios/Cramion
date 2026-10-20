@@ -455,6 +455,25 @@ void testRendering() {
     check(!t.call("setMaterial", {Value(0), Value("Materials/Rojo")}, t.entity(t.world.create("C"))).truthy(),
           "setMaterial sin MeshRenderer: false");
 
+    // Parametros por instancia: tinte, opacidad, emision e INSTANCE_DATA.
+    check(t.call("setMaterialParam", {Value("tint"), Value(Vec3{1.0f, 0.2f, 0.1f})}, va).truthy() &&
+              renderer.tint.y == 0.2f,
+          "setMaterialParam(\"tint\", Vec3)");
+    check(t.call("setMaterialParam", {Value("alpha"), Value(0.25)}, va).truthy() && renderer.alpha == 0.25f,
+          "setMaterialParam(\"alpha\")");
+    check(t.call("setMaterialParam", {Value("emission"), Value(3)}, va).truthy() && renderer.emission_scale == 3.0f,
+          "setMaterialParam(\"emission\")");
+    check(t.call("setMaterialParam", {Value(1), Value(1), Value(2), Value(3), Value(4)}, va).truthy() &&
+              renderer.instance_data[1].x == 1.0f && renderer.instance_data[1].w == 4.0f &&
+              renderer.instance_data[0].x == 0.0f,
+          "setMaterialParam(1, x, y, z, w): INSTANCE_DATA(1)");
+    check(t.call("setMaterialParam", {Value(0), Value(Vec3{5, 6, 7}), Value(8)}, va).truthy() &&
+              renderer.instance_data[0].z == 7.0f && renderer.instance_data[0].w == 8.0f,
+          "setMaterialParam(0, Vec3, w)");
+    check(!t.call("setMaterialParam", {Value(2), Value(1)}, va).truthy(), "setMaterialParam fuera de rango: false");
+    check(!t.call("setMaterialParam", {Value("tint"), Value(Vec3{1, 1, 1})}, t.entity(t.world.create("D"))).truthy(),
+          "setMaterialParam sin MeshRenderer ni ParticleSystem: false");
+
     check(t.get("castShadows", va).truthy(), "castShadows (por defecto)");
     t.set("castShadows", Value(false), va);
     check(renderer.cast_shadows == ecs::ShadowCasting::Off && !t.get("castShadows", va).truthy(), "castShadows = false");
@@ -473,7 +492,7 @@ void testRegistry() {
         "speed", "rpm", "gear", "playSound", "stopSound", "isPlayingSound", "setSoundEffect", "soundOcclusion",
         "audioOcclusion", "playAnimation", "setAnimatorFloat", "setAnimatorBool", "setAnimatorTrigger", "crossFade",
         "animatorState", "animatorStateTime", "text", "value", "interactable", "color", "texture", "alpha",
-        "uiPosition", "uiSize", "mesh", "setMaterial", "castShadows", "hasComponent", "addComponent",
+        "uiPosition", "uiSize", "mesh", "setMaterial", "setMaterialParam", "castShadows", "hasComponent", "addComponent",
         "fitColliderToMesh", "removeComponent", "resetCloth", "addClothImpulse", "resetSoftBody", "addSoftBodyImpulse",
         "getField", "setField", "getFields"};
     int found = 0;

@@ -52,6 +52,10 @@ public:
                           const std::uint8_t* data, std::size_t size, UploadBatch& batch);
     void destroy();
 
+    // Nombre de depuracion de la imagen y su vista, tras create*
+    // (VulkanDevice::setObjectName; no hace nada sin la validacion).
+    void setName(const char* name) const;
+
     const vk::raii::ImageView& view() const { return view_; }
     std::uint32_t mipLevels() const { return mip_levels_; }
 

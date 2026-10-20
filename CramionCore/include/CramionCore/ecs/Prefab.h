@@ -30,6 +30,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -77,6 +78,15 @@ Entity prefabRoot(Entity e);
 std::vector<Entity> prefabInstances(World& world, const Uuid& prefab);
 // Apunta como cambios propios lo que difiere de `prefab_text`.
 void recordOverrides(World& world, Entity root, const std::string& prefab_text);
+// Un .crprefab ya parseado: el editor lo guarda (por ruta y fecha del archivo)
+// para no volver a parsear el JSON en cada paso de deshacer. nullptr si el
+// texto no es un objeto JSON. (El PrefabDocument de PrefabSpawn.h es el de
+// instanciar en tandas: solo los registros, y nullptr si no hay entidades.)
+struct ParsedPrefab;
+std::shared_ptr<const ParsedPrefab> parsePrefabText(const std::string& prefab_text);
+int prefabRevision(const ParsedPrefab& prefab);
+// recordOverrides con el documento ya parseado. Solo escribe la lista si cambia.
+void recordOverrides(World& world, Entity root, const ParsedPrefab& prefab);
 // Lleva la instancia a `prefab_text` respetando sus cambios propios.
 void syncInstance(World& world, Entity root, const std::string& prefab_text);
 // La instancia pasa a ser la nueva version del prefab (se escribe `file`).

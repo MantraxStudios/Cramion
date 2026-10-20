@@ -19,6 +19,7 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -228,6 +229,20 @@ public:
     nlohmann::json toJson(const Value& v, int depth = 0);
     Value fromJson(const nlohmann::json& j, int depth = 0);
 
+    // --- Puente binario con los scripts de C++ (sin JSON ni nombres) ---
+    // Las peticiones cppproto::Rpc::ApiResolve / ApiCall / ApiCallSend (ver
+    // sdk/cramion/CppProtocol.h): el SDK pide una vez el id de cada clave
+    // ("Audio.playOneShot", "Entity:translate", ":apply" para el tipo de self)
+    // y despues llama por id con los valores en binario. Los ids valen para
+    // este NativeApi (su epoca): con otra, la respuesta es Stale y el SDK los
+    // vuelve a pedir. `reply` recibe la respuesta (nada en Send). Devuelve un
+    // aviso para la consola (vacio si no hay): el error de una llamada sin
+    // respuesta o una funcion enviada en lote que si devolvio algo.
+    enum class BridgeOp : std::uint8_t { Resolve, Call, Send };
+    std::string bridgeBinary(BridgeOp op, const void* data, std::size_t size, std::vector<std::uint8_t>& reply);
+    std::uint32_t bridgeEpoch() const { return epoch_; }
+    std::size_t bridgeSlots() const { return slots_.size(); }
+
     // Objetos del motor que los scripts tienen (se sueltan al parar el juego).
     std::uint64_t handleId(const std::shared_ptr<Handle>& h);
     std::shared_ptr<Handle> handle(std::uint64_t id) const;
@@ -259,6 +274,21 @@ private:
     std::unordered_map<std::string, Dynamic> dynamic_;
     const Dynamic* dynamicFor(const std::string& full, std::string& key) const;
     std::uint64_t next_handle_ = kHandleBase;
+    // Puente binario: una clave por id (no se borran: son nombres de la API).
+    struct BridgeSlot {
+        std::string key;                 // "Audio.playOneShot", "Entity:translate" o, de un tipo, el nombre solo
+        bool member = false;             // ":nombre": del tipo de self (se busca por su duenio)
+        std::size_t entry = SIZE_MAX;    // en entries_ (SIZE_MAX: dinamica o no existe: por el nombre)
+        std::string owner;               // member: el ultimo duenio visto y su entrada
+        std::size_t owner_entry = SIZE_MAX;
+        bool warned = false;             // ya se aviso de que devolvio algo yendo en lote
+    };
+    // deque: una llamada puede resolver otra clave (una llamada anidada) sin
+    // mover la ranura que se esta usando.
+    std::deque<BridgeSlot> slots_;
+    std::unordered_map<std::string, std::uint32_t> slot_index_;
+    static std::uint32_t nextEpoch();
+    std::uint32_t epoch_ = nextEpoch();
     std::function<void(std::uint64_t, const std::string&)> sink_;
     std::function<void(std::uint64_t, const Value::Array&)> local_;
 };

@@ -8,6 +8,7 @@
 
 #include <CramionCore/profiling/Profiler.h>
 #include "EditorApp.h"
+#include "EditorBackground.h"
 #include "EditorLog.h"
 #include "ImGuiLayer.h"
 #include "LoadingScreen.h"
@@ -29,27 +30,12 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg
 
 namespace {
 
-// En segundo plano (otra aplicacion delante o minimizado) el editor va a
-// 10 fps: no gasta GPU ni CPU mientras no se usa. Las ventanas del propio
-// editor (dialogos, ventanas sueltas de ImGui) cuentan como primer plano.
-constexpr float kBackgroundFrameMs = 100.0f;
-// Y sin dibujar la escena: solo un frame cada kBackgroundRedrawMs (la
-// interfaz y los mensajes siguen a 10 fps). Dibujar la vista a 10 fps gastaba
-// la GPU de otro programa: con el juego exportado delante, el editor en una
-// escena con nubes y luz volumetrica pedia ~30 ms de GPU por frame y el
-// juego tenia tirones de 50 ms (p95). No si una IA lo usa por MCP (sus
-// capturas necesitan frames) ni mientras carga un proyecto o una escena.
-constexpr float kBackgroundRedrawMs = 2000.0f;
+// En segundo plano (otra aplicacion delante, minimizado o tapado) el editor
+// baja el ritmo y deja de dibujar la escena segun Editar > Segundo plano
+// (EditorBackground.h: Ahorro a 10 fps y la escena cada 2 s por defecto).
+// Una IA por MCP en los ultimos kMcpActiveSeconds cuenta como uso: sus
+// capturas necesitan frames de la escena.
 constexpr float kMcpActiveSeconds = 10.0f;
-
-bool inBackground(HWND main_window) {
-    if (IsIconic(main_window)) return true;
-    const HWND foreground = GetForegroundWindow();
-    if (foreground == nullptr) return true;
-    DWORD process = 0;
-    GetWindowThreadProcessId(foreground, &process);
-    return process != GetCurrentProcessId();
-}
 
 }  // namespace
 
@@ -185,9 +171,13 @@ int main(int argc, char** argv) {
         auto last_render = FrameClock::now();
         while (!app.quitRequested()) {
             const auto frame_start = FrameClock::now();
-            const bool background_idle = app.backgroundThrottleAllowed() && inBackground(window.handle()) &&
-                                         !app.projectLoading() && !app.sceneLoading() &&
-                                         app.secondsSinceMcp() > kMcpActiveSeconds;
+            // Una vez por frame: primer plano, detras u oculta, y que hacer.
+            // Cargando un proyecto o una escena no se limita (sus tandas van
+            // por frame: a 10 fps tardaria seis veces mas).
+            const editor::BackgroundDecision background = editor::decideBackground(
+                editor::windowPresence(window.handle()),
+                app.backgroundThrottleAllowed() && !app.projectLoading() && !app.sceneLoading(),
+                app.secondsSinceMcp() <= kMcpActiveSeconds, msSince(last_render));
             cramion::prof::beginFrame();
             // En modo cine (grabar por MCP) el tiempo avanza a pasos fijos.
             const float delta_seconds = app.cinemaDelta(clock.tick());
@@ -215,7 +205,7 @@ int main(int argc, char** argv) {
             scene.update(app.sceneWantsInput() ? input : idle_input, delta_seconds);
             const float scene_ms = msSince(t);
             const auto render_start = std::chrono::steady_clock::now();
-            const bool skip_render = background_idle && !app.xrFrameOpen() && msSince(last_render) < kBackgroundRedrawMs;
+            const bool skip_render = !background.draw_scene && !app.xrFrameOpen();
             if (!skip_render) {
                 last_render = FrameClock::now();
                 // Escena y Juego visibles a la vez: las dos se dibujan cada frame
@@ -248,10 +238,11 @@ int main(int argc, char** argv) {
 
             // Limite en segundo plano. No con el casco (al ponertelo la ventana
             // pierde el foco y el casco necesita su ritmo), en modo cine (MCP)
-            // ni en pruebas automaticas.
-            if (app.backgroundThrottleAllowed() && inBackground(window.handle())) {
-                const float wait_ms = kBackgroundFrameMs - msSince(frame_start);
-                if (wait_ms > 0.0f) Sleep(static_cast<DWORD>(wait_ms));
+            // ni en pruebas automaticas. Con temporizador de alta resolucion:
+            // Sleep redondeaba a ~15 ms y los 10 fps salian a 5-8.
+            if (background.throttle) {
+                editor::waitUntil(frame_start + std::chrono::duration_cast<FrameClock::duration>(
+                                                    std::chrono::duration<float, std::milli>(background.frame_ms)));
             }
         }
 
@@ -263,6 +254,14 @@ int main(int argc, char** argv) {
         window.destroy();
     } catch (const std::exception& error) {
         std::cerr << "Error fatal: " << error.what() << "\n";
+        // GPU perdida: VulkanRenderer::drawFrame ya escribio el informe (marcas
+        // y VK_EXT_device_fault) y llamo a VulkanDevice::setDeviceLostHandler
+        // (autoguardado). Aqui solo se dice donde quedo.
+        if (cramion::gfx::VulkanDevice::deviceLostOccurred()) {
+            const auto report = cramion::gfx::VulkanDevice::deviceLostReport();
+            std::cerr << "La GPU dejo de responder (" << report.where << ")."
+                      << (report.file.empty() ? std::string{} : " Informe: " + report.file.string()) << "\n";
+        }
         editor::EditorLog::instance().uninstall();
         return EXIT_FAILURE;
     }

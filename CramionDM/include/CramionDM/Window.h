@@ -70,6 +70,9 @@ public:
 
     // Vibracion corta (necesita el permiso VIBRATE en el manifiesto).
     void vibrate(int milliseconds);
+    // Mandos: aun sin vibracion en Android (la misma llamada que en PC).
+    bool setGamepadVibration(int, float, float, float = 0.0f) { return false; }
+    void setGamepadsInBackground(bool) {}
     // Orientacion pedida (Activity.setRequestedOrientation): uno de los
     // ActivityInfo.SCREEN_ORIENTATION_* (0 horizontal, 1 vertical, 6/7 con
     // sensor, 10 libre). Al girar llega un WindowResize.
@@ -113,6 +116,7 @@ private:
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 
 #include "CramionDM/Event.h"
@@ -129,6 +133,8 @@ struct WindowConfig {
     bool visible = true;
 };
 
+class EvdevGamepads;
+
 // Lo que necesita Vulkan (VK_KHR_xlib_surface): la conexion y la ventana.
 struct NativeHandle {
     void* display = nullptr;    // Display*
@@ -137,7 +143,7 @@ struct NativeHandle {
 
 class Window {
 public:
-    Window() = default;
+    Window();  // en el .cpp: los mandos son un tipo incompleto aqui
     ~Window();
 
     Window(const Window&) = delete;
@@ -164,9 +170,24 @@ public:
     void setCursorCaptured(bool captured);
     bool cursorCaptured() const { return cursor_captured_; }
 
+    // --- Mandos (evdev: /dev/input/event*, hasta 4) ---
+    // Se leen en pumpEvents sin bloquear y llegan como eventos Gamepad*
+    // (con gamepadIndex). Los nuevos se ven al momento (inotify) o en ~1 s.
+    // Sin foco no se leen y se sueltan los botones, salvo con
+    // setGamepadsInBackground(true). Hace falta leer /dev/input/event* (udev
+    // lo da al usuario de la sesion; si no, el grupo "input").
+    void setGamepadsInBackground(bool enabled) { gamepads_background_ = enabled; }
+    // Vibracion por force feedback (FF_RUMBLE); ver dm::setGamepadVibration.
+    bool setGamepadVibration(int pad, float low, float high, float seconds = 0.0f);
+
 private:
     void dispatch(Event& event);
     KeyMods currentMods(unsigned int state) const;
+    void pollGamepads();
+    static bool vibrationThunk(void* user, int pad, float low, float high, float seconds);
+
+    std::unique_ptr<EvdevGamepads> gamepads_;
+    bool gamepads_background_ = false;
 
     EventCallback callback_;
     NativeHandle native_{};
@@ -197,6 +218,7 @@ private:
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 
 #include "CramionDM/Event.h"
@@ -231,7 +253,7 @@ struct WindowConfig {
 //   }
 class Window {
 public:
-    Window() = default;
+    Window();  // en el .cpp: los mandos son un tipo incompleto aqui
     ~Window();
 
     Window(const Window&) = delete;
@@ -258,6 +280,8 @@ public:
 
     bool isOpen() const { return open_; }
     HWND handle() const { return hwnd_; }
+    // La ventana tiene el foco (como en Android y Linux).
+    bool focused() const { return hwnd_ != nullptr && GetForegroundWindow() == hwnd_; }
     uint32_t width() const { return width_; }
     uint32_t height() const { return height_; }
 
@@ -288,7 +312,33 @@ public:
     void setCursorCaptured(bool captured, const RECT* client_region = nullptr);
     bool cursorCaptured() const { return cursor_captured_; }
 
+    // --- Mandos (hasta 4) ---
+    // XInput (xinput1_4.dll cargada al vuelo: sin ella no hay mandos XInput,
+    // pero la ventana funciona) y DualShock 4 / DualSense por HID (raw
+    // input; CRAMION_GAMEPAD_HID=0 lo apaga). Se leen en pumpEvents sin
+    // bloquear y llegan como eventos Gamepad* (con gamepadIndex); un hueco
+    // XInput vacio se vuelve a mirar cada ~1 s (uno por frame) o al momento
+    // si Windows avisa de un dispositivo nuevo. Sin foco no se leen, se
+    // sueltan los botones y se para la vibracion, salvo con
+    // setGamepadsInBackground(true). Las ventanas sin mostrar no los leen.
+    void setGamepadsInBackground(bool enabled) { gamepads_background_ = enabled; }
+    // Vibracion de un mando (-1 = todos); ver dm::setGamepadVibration.
+    bool setGamepadVibration(int pad, float low, float high, float seconds = 0.0f);
+
 private:
+    struct Gamepads;
+    std::unique_ptr<Gamepads> gamepads_;
+    bool gamepads_background_ = false;
+    bool has_focus_ = false;
+    void createGamepads();
+    void destroyGamepads();
+    void pollGamepads();
+    void refreshRumble();
+    void handleGamepadInput(const RAWINPUT& raw);
+    void removeGamepadDevice(HANDLE device);
+    void applyRumble(int slot);
+    static bool vibrationThunk(void* user, int pad, float low, float high, float seconds);
+
     // WndProc estático que redirige al método de instancia.
     static LRESULT CALLBACK wndProcThunk(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT handleMessage(UINT msg, WPARAM wParam, LPARAM lParam);

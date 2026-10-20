@@ -17,6 +17,12 @@
 #
 # El zip queda en <BIN_DIR>/Cramion-win64.zip: nombre sin version para que el
 # enlace de descarga de la web (releases/latest/download/...) no cambie.
+#
+# Simbolos (Release con CRAMION_RELEASE_PDB): los .pdb de los mismos .exe NO
+# van en el zip del motor; se archivan por version en
+# <BIN_DIR>/symbols/<version>/ y en <BIN_DIR>/symbols/Cramion-<version>-win64-symbols.zip
+# (guardalo con la release: con el, los minidumps de esa version dan funcion
+# y linea en WinDbg o Visual Studio). Las versiones anteriores no se borran.
 # Las escenas de demostracion no se incluyen: pesan mucho y sus licencias no
 # permiten redistribuirlas.
 
@@ -172,3 +178,59 @@ message(STATUS "SHA-256: ${zip_hash}")
 file(SIZE "${zip}" size)
 math(EXPR size_mb "${size} / 1048576")
 message(STATUS "Paquete listo: ${zip} (${size_mb} MB)")
+
+# --- Simbolos de esta version (aparte del paquete) ---
+# Cada .pdb tiene que ser del mismo enlazado que su .exe (el GUID del .exe
+# apunta a el): uno mas viejo que su .exe no sirve y se avisa.
+set(symbols_root "${BIN_DIR}/symbols")
+set(symbols_name "Cramion-${VERSION}-win64-symbols")
+set(symbols_stage "${symbols_root}/${VERSION}")
+set(symbols_zip "${symbols_root}/${symbols_name}.zip")
+file(REMOVE_RECURSE "${symbols_stage}")
+file(MAKE_DIRECTORY "${symbols_stage}")
+set(symbols_count 0)
+set(symbols_list "")
+foreach(exe CramionEditor.exe CramionPlayer.exe cramion.exe CramionMcp.exe CramionUpdater.exe CramionScriptHost.exe crwpack.exe CramionServer.exe)
+    get_filename_component(stem "${exe}" NAME_WE)
+    set(pdb "${BIN_DIR}/${stem}.pdb")
+    if(NOT EXISTS "${BIN_DIR}/${exe}" OR NOT EXISTS "${pdb}")
+        continue()
+    endif()
+    # Un minuto de margen: el enlazador escribe los dos casi a la vez.
+    file(TIMESTAMP "${BIN_DIR}/${exe}" exe_time "%s" UTC)
+    file(TIMESTAMP "${pdb}" pdb_time "%s" UTC)
+    math(EXPR pdb_age "${exe_time} - ${pdb_time}")
+    if(pdb_age GREATER 60)
+        message(WARNING "${stem}.pdb es mas viejo que ${exe}: no se archiva (vuelve a compilar)")
+        continue()
+    endif()
+    file(COPY "${pdb}" DESTINATION "${symbols_stage}")
+    file(SHA256 "${BIN_DIR}/${exe}" exe_hash)
+    string(APPEND symbols_list "${exe}  ${exe_hash}\n")
+    math(EXPR symbols_count "${symbols_count} + 1")
+endforeach()
+if(symbols_count EQUAL 0)
+    file(REMOVE_RECURSE "${symbols_stage}")
+    message(WARNING "No hay .pdb junto a los .exe: el paquete sale sin simbolos "
+                    "(Release con -DCRAMION_RELEASE_PDB=ON los genera).")
+else()
+    # Que .exe corresponde a estos simbolos (por si se mezclan versiones).
+    file(WRITE "${symbols_stage}/SIMBOLOS.txt"
+"Simbolos de Cramion ${VERSION} (win64). Solo valen para estos ejecutables (SHA-256):
+
+${symbols_list}
+WinDbg / Visual Studio: anade esta carpeta a la ruta de simbolos y abre el
+minidump (.dmp) de %LOCALAPPDATA%/Cramion/Crashes.
+")
+    file(REMOVE "${symbols_zip}")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E tar cf "${symbols_zip}" --format=zip "${VERSION}"
+        WORKING_DIRECTORY "${symbols_root}"
+        RESULT_VARIABLE result)
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "No se pudo crear ${symbols_zip}")
+    endif()
+    file(SIZE "${symbols_zip}" size)
+    math(EXPR size_mb "${size} / 1048576")
+    message(STATUS "Simbolos: ${symbols_zip} (${symbols_count} .pdb, ${size_mb} MB)")
+endif()

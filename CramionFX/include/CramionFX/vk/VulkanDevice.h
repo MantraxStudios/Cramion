@@ -24,6 +24,7 @@ namespace cramion::gfx {
 class VulkanInstance;
 class VulkanSurface;
 class StagingRing;
+class VulkanDevice;  // (GpuTicket la apunta; el friend solo no la declara fuera de MSVC)
 
 // Trabajo enviado a la GPU sin esperarlo (VulkanDevice::submitAsync). Se
 // consulta su fence sin bloquear: el hilo principal adopta el resultado
@@ -40,6 +41,7 @@ public:
 private:
     friend class VulkanDevice;
     const vk::raii::Device* device_ = nullptr;
+    const VulkanDevice* owner_ = nullptr;  // espera con tope e informe (waitFence)
     vk::raii::Fence fence_{nullptr};
     mutable std::atomic<bool> signaled_{false};
 };
@@ -83,6 +85,63 @@ public:
     const vk::raii::PhysicalDevice& physicalDevice() const { return physical_device_; }
     const vk::raii::Device& handle() const { return device_; }
     const vk::raii::Queue& graphicsQueue() const { return graphics_queue_; }
+    // Diagnostico de cuelgues de la GPU (CRAMION_GPU_CHECKPOINTS=1 en NVIDIA:
+    // VK_NV_device_diagnostic_checkpoints). markPass deja una marca por pase y,
+    // si se pierde el dispositivo, reportDeviceLost dice en cual iba la GPU.
+    bool checkpointsEnabled() const { return checkpoints_enabled_; }
+    // VK_EXT_device_fault (si la GPU lo tiene, siempre activo: no cuesta nada
+    // por frame): tras un ErrorDeviceLost el driver dice que fallo (fallo de
+    // pagina, instruccion no valida, tiempo agotado...) y en que direccion.
+    bool deviceFaultEnabled() const { return device_fault_enabled_; }
+    // Etiquetas de VK_EXT_debug_utils en los command buffers (markPass, para
+    // RenderDoc, Nsight y los mensajes de la validacion). Solo con la
+    // validacion activa: es cuando la instancia trae la extension.
+    bool debugLabelsEnabled() const { return debug_labels_enabled_; }
+    // Nombre de un objeto de Vulkan (buffer, imagen, pipeline, command
+    // buffer...) para RenderDoc, Nsight y los mensajes de la validacion
+    // (vkSetDebugUtilsObjectNameEXT). No hace nada sin VK_EXT_debug_utils (la
+    // validacion apagada), con el handle nulo o sin nombre. El texto se copia:
+    // vale un temporal. Desde cualquier hilo (el objeto no debe usarse a la
+    // vez en otro, como pide Vulkan). La plantilla toma el handle de
+    // vulkan-hpp sin raii (`*buffer_`, `cmd`...).
+    void setObjectName(vk::ObjectType type, std::uint64_t handle, const char* name) const;
+    template <class Handle>
+    void setObjectName(Handle handle, const char* name) const {
+        if (!debug_labels_enabled_) return;
+        // (Conversion al estilo de los VK_DEFINE_HANDLE: puntero o uint64_t.)
+        const auto raw = static_cast<typename Handle::CType>(handle);
+        setObjectName(Handle::objectType, (std::uint64_t)(raw), name);
+    }
+    // ErrorDeviceLost (o una espera que agoto su tope): junta las ultimas
+    // marcas, lo que diga VK_EXT_device_fault y `detail`, lo imprime y lo
+    // guarda en %LOCALAPPDATA%/Cramion/Crashes/DeviceLost-<fecha>.txt. Una
+    // sola vez por proceso (despues falla todo a la vez); desde cualquier hilo.
+    void reportDeviceLost(const char* where, const std::string& detail = {}) const;
+
+    // --- Aviso de dispositivo perdido (para el autoguardado del editor) ---
+    struct DeviceLostReport {
+        std::string where;           // "drawFrame", "waitIdle", "espera de fence"...
+        std::string text;            // informe completo (lo que se escribio)
+        std::filesystem::path file;  // vacio si no se pudo escribir
+    };
+    using DeviceLostHandler = std::function<void(const DeviceLostReport&)>;
+    // Lo llama VulkanRenderer::drawFrame UNA vez, en el hilo principal, antes
+    // de relanzar el vk::DeviceLostError (el editor guarda ahi la escena). El
+    // informe ya esta escrito. Registrar antes del bucle principal.
+    static void setDeviceLostHandler(DeviceLostHandler handler);
+    // Llama al de arriba (una vez) si ya hubo un informe. Hilo principal.
+    static void notifyDeviceLost();
+    // ¿Se perdio el dispositivo en este proceso? (cualquier hilo). El informe,
+    // vacio si no.
+    static bool deviceLostOccurred();
+    static DeviceLostReport deviceLostReport();
+
+    // Espera a una fence con tope (CRAMION_GPU_TIMEOUT_MS, 10000 por defecto;
+    // 0 = sin tope): pasado el tope se trata como dispositivo perdido
+    // (reportDeviceLost con `where`) y lanza vk::DeviceLostError en vez de
+    // colgar el programa para siempre. A los 2 s avisa una vez en el log.
+    void waitFence(vk::Fence fence, const char* where) const;
+    static std::uint64_t gpuTimeoutNanoseconds();
     const vk::raii::Queue& presentQueue() const { return present_queue_; }
     const QueueFamilyIndices& queueFamilies() const { return queue_families_; }
     // La cola se usa desde varios hilos (las subidas del streaming): todo lo
@@ -148,6 +207,17 @@ public:
     // en vuelo.
     std::size_t collectAsync() const;
     std::size_t asyncInFlight() const;
+    // Cola de retirada por fence: `resources` (buffers, imagenes, pipelines
+    // viejos que aun puede usar algun frame en vuelo) viven hasta que la GPU
+    // termina TODO lo enviado hasta ahora a la cola de graficos (un envio
+    // vacio con fence: su senal cubre lo anterior en la cola). Los suelta
+    // collectAsync. En lugar de waitIdle al reemplazar un recurso. Lo usado
+    // en la cola de transferencia no cuenta (no pasa por aqui).
+    void retireAfterGpu(std::vector<std::shared_ptr<const void>> resources) const;
+    template <class T>
+    static std::shared_ptr<const void> keepAlive(T&& resource) {
+        return std::make_shared<std::decay_t<T>>(std::forward<T>(resource));
+    }
 
     // Tareas en segundo plano (ver TaskScheduler). setTaskScheduler al
     // arrancar (nullptr = el hilo propio). runTask desde cualquier hilo;
@@ -271,6 +341,11 @@ private:
     bool invocation_reorder_supported_ = false;
     bool mesh_shader_supported_ = false;
     bool memory_budget_supported_ = false;
+    bool checkpoints_enabled_ = false;
+    bool device_fault_enabled_ = false;
+    bool debug_labels_enabled_ = false;
+    // El texto de VK_EXT_device_fault (vacio si no lo hay o no dice nada).
+    std::string deviceFaultText() const;
     bool compat_mode_ = false;
     std::string compat_reason_;
     vk::PhysicalDeviceLimits limits_{};

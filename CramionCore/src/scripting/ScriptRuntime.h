@@ -234,8 +234,14 @@ private:
     struct PrefabFile {
         std::filesystem::file_time_type stamp{};
         std::string text;
+        std::uint64_t last_use = 0;  // reloj de prefab_clock_ (LRU)
     };
     std::unordered_map<std::string, PrefabFile> prefabs_;
+    // Cache con tope en bytes (kPrefabCacheBytes): antes guardaba el texto de
+    // cada prefab instanciado para siempre (recorrer Ashbound: 1780 celdas,
+    // ~173 MB). Fuera los menos usados.
+    std::size_t prefab_bytes_ = 0;
+    std::uint64_t prefab_clock_ = 0;
 };
 
 }  // namespace cramion::scripting

@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // Vidrio de las ventanas: pasada forward despues de la iluminacion diferida.
 // Un G-buffer solo guarda una superficie por pixel, asi que el vidrio no
@@ -27,8 +28,19 @@
 // vidrio tiene IOR, grosor y rugosidad. Lo de detras se lee desviado por la
 // refraccion y, si es rugoso, desenfocado (vidrio esmerilado), y se tine con
 // el color del material en vez de mezclarse por alfa.
+//
+// Los demas transparentes (material con mezcla "alfa" o "aditiva", o sin luz)
+// usan la misma pasada y la misma mezcla (src + dst * alfa del shader):
+//   alfa      color = iluminado * alfa + emision,   a = 1 - alfa (premultiplicado)
+//   aditivo   color = iluminado * alfa + emision,   a = 1 (solo suma)
+// Iluminados con el sol (y su sombra), las luces principales, las de los
+// clusteres (light_clusters.glsl) y el entorno; sin luz, el color tal cual.
+// La emision va en la misma escala HDR que la de lo opaco: entra en el bloom.
 
 layout(set = 1, binding = 0) uniform sampler2D albedo_map;
+layout(set = 1, binding = 1) uniform sampler2D metallic_roughness_map;
+layout(set = 1, binding = 2) uniform sampler2D normal_map;
+layout(set = 1, binding = 4) uniform sampler2D emissive_map;
 
 // Repeticion (xy) y desplazamiento (zw) de las UV del material (tiling del
 // .crmat; ver skinned.frag).
@@ -83,6 +95,7 @@ layout(set = 2, binding = 1) uniform LightBuffer {
     PointLightGpu points[32];
     SpotLightGpu spots[8];
     vec4 probes[2];
+    vec4 clouds;  // y, z = niebla (densidad, caida): transparent_fog.glsl
 } lights;
 
 layout(set = 2, binding = 2) uniform ShadowBuffer {
@@ -102,12 +115,34 @@ layout(set = 2, binding = 6) uniform samplerCube environment_map;
 #ifndef CRAMION_COMPAT
 layout(set = 2, binding = 7) uniform samplerCube reflection_probe_0;
 layout(set = 2, binding = 8) uniform samplerCube reflection_probe_1;
+// Las luces por clusteres (10 = cabecera y luces, 11 = listas). En el modo
+// compatible el set no las tiene: solo las principales.
+#define CLUSTER_SET 2
+#define CLUSTER_LIGHTS_BINDING 10
+#define CLUSTER_GRID_BINDING 11
+#define CLUSTER_TRANSLUCENT  // las luces de particula sin "affectsTranslucent" no llegan
+#include "light_clusters.glsl"
 #endif
 
 layout(location = 0) in vec3 v_normal;
 layout(location = 1) in vec2 v_uv;
 layout(location = 2) in vec4 v_tangent;
 layout(location = 3) in vec3 v_world_position;
+// Hueco de la instancia y color de vertice (skinned.vert).
+layout(location = 9) flat in uint v_instance_slot;
+layout(location = 10) in vec4 v_color;
+
+// Registro de la instancia (GpuLightmapRecord: lightmap_common.glsl): aqui
+// solo sus parametros por instancia (info.y = tinte y opacidad RGBA8, info.z =
+// escala de la emision en half float).
+struct InstanceRecord {
+    vec4 scale_offset;
+    uvec4 info;
+    vec4 data[2];  // INSTANCE_DATA de los .crshader (aqui sin uso; da el tamano, 64 B)
+};
+layout(std430, set = 0, binding = 8) readonly buffer InstanceRecords {
+    InstanceRecord instance_records[];
+};
 
 // rgb = reflejo, a = transmitancia (la mezcla multiplica lo de detras por a).
 layout(location = 0) out vec4 out_color;
@@ -119,6 +154,13 @@ float glass_f0 = kGlassF0;
 // Vidrio de ventana: casi liso (un poco de polvo y ondulacion).
 const float kGlassRoughness = 0.04;
 const float kMaxRadiance = 30.0;
+// Misma escala de la emision que skinned.frag (lo emisivo opaco).
+const float kEmissiveIntensity = 6.0;
+// Mezcla del material (SkinnedModel::shadingBits, bits 4-5) y sin luz (bit 6).
+const uint kBlendGlass = 0u;
+const uint kBlendAdditive = 2u;
+const uint kShadingUnlitBit = 1u << 6u;
+const uint kShadingVertexColorBit = 1u << 7u;
 
 // --- Trazado en pantalla (como ssr.frag, pero sobre este frame) ---
 const int kSteps = 40;
@@ -132,6 +174,9 @@ const float kSunDiskRadiance = 900.0;
 vec3 toLinear(vec3 color) {
     return pow(color, vec3(2.2));
 }
+
+// Niebla por altura (la de lighting.frag) sobre lo que se suma.
+#include "transparent_fog.glsl"
 
 float linearDepth(float depth) {
     return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
@@ -284,16 +329,179 @@ float slabReflectance(float cosine) {
     return 2.0 * f / (1.0 + f);
 }
 
+// --- Transparentes iluminados (mezcla alfa o aditiva) ---
+// Difuso de Lambert + GGX de una luz (la escala del motor: las luces ya
+// llevan pi, el difuso es albedo x N.L).
+vec3 transparentLight(vec3 light_direction, vec3 radiance, vec3 normal, vec3 view_direction, vec3 diffuse_color,
+                      vec3 f0, float roughness) {
+    float n_dot_l = dot(normal, light_direction);
+    if (n_dot_l <= 0.0) return vec3(0.0);
+    vec3 halfway = normalize(light_direction + view_direction);
+    float alpha = max(roughness * roughness, 0.002);
+    float n_dot_v = max(dot(normal, view_direction), 1e-4);
+    float specular = distributionGgx(max(dot(normal, halfway), 0.0), alpha) * visibilitySmith(n_dot_v, n_dot_l, alpha);
+    float m = 1.0 - clamp(dot(view_direction, halfway), 0.0, 1.0);
+    float m2 = m * m;
+    vec3 f = f0 + (1.0 - f0) * (m2 * m2 * m);
+    return radiance * n_dot_l * (diffuse_color * (1.0 - f) + f * specular * kPi);
+}
+
+// Caida de una luz local (la de lighting.frag).
+float localAttenuation(float d, float range) {
+    float ratio = d / max(range, 0.0001);
+    float window = clamp(1.0 - ratio * ratio * ratio * ratio, 0.0, 1.0);
+    return (window * window) / (d * d + 1.0);
+}
+
+// Color premultiplicado (rgb) y lo que deja pasar de detras (a) de un
+// transparente que no es vidrio.
+vec4 shadeTransparent(uint blend, bool unlit, vec2 uv) {
+    vec4 texel = texture(albedo_map, uv);
+    // Factor lineal, textura sRGB; con el tinte y la opacidad de la instancia
+    // y el color de vertice si el material lo pide.
+    vec4 instance_tint = unpackUnorm4x8(instance_records[v_instance_slot].info.y);
+    float instance_emission = unpackHalf2x16(instance_records[v_instance_slot].info.z).x;
+    vec3 base = toLinear(texel.rgb) * push.base_color.rgb * instance_tint.rgb;
+    float alpha = clamp(texel.a * push.base_color.a * instance_tint.a, 0.0, 1.0);
+    if ((push.pick_id & kShadingVertexColorBit) != 0u) base *= v_color.rgb;
+    vec3 emission = toLinear(texture(emissive_map, uv).rgb) * push.emissive.rgb * kEmissiveIntensity *
+                    instance_emission;
+
+    vec3 lit = base;
+    if (!unlit) {
+        vec3 view_direction = normalize(camera.position.xyz - v_world_position);
+        // Normal map (como skinned.frag) y por las dos caras.
+        vec3 n = normalize(v_normal);
+        vec3 normal = n;
+        vec3 t = v_tangent.xyz - n * dot(n, v_tangent.xyz);
+        if (dot(t, t) > 1e-8) {
+            t = normalize(t);
+            vec3 b = cross(n, t) * (v_tangent.w < 0.0 ? -1.0 : 1.0);
+            vec2 xy = texture(normal_map, uv).xy * 2.0 - 1.0;
+            vec3 tangent_normal = vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
+            float scale = push.material.w;
+            tangent_normal.y = scale >= 0.0 ? -tangent_normal.y : tangent_normal.y;
+            tangent_normal.xy *= abs(scale);
+            normal = normalize(mat3(t, b, n) * tangent_normal);
+        }
+        if (dot(n, view_direction) < 0.0) normal = -normal;
+
+        vec4 metallic_roughness = texture(metallic_roughness_map, uv);
+        float metallic = clamp(push.material.x * metallic_roughness.b, 0.0, 1.0);
+        float roughness = clamp(push.material.y * metallic_roughness.g, 0.04, 1.0);
+        vec3 f0 = mix(vec3(push.reflectance), base, metallic);
+        vec3 diffuse_color = base * (1.0 - metallic);
+
+        // Sol, con su sombra.
+        vec3 sun_direction = normalize(-lights.sun_direction_intensity.xyz);
+        vec3 sun_radiance = toLinear(lights.sun_color_ambient.rgb) * lights.sun_direction_intensity.w;
+        lit = transparentLight(sun_direction, sun_radiance, normal, view_direction, diffuse_color, f0, roughness);
+        if (dot(lit, lit) > 0.0) lit *= sunShadow(v_world_position, normal);
+
+        // Luces principales (sin teselas ni sombras: son pocos pixeles) y las
+        // de los clusteres.
+        int point_count = min(lights.counts.x, 32);
+        for (int i = 0; i < point_count; ++i) {
+            vec3 to_light = lights.points[i].position_range.xyz - v_world_position;
+            float d = length(to_light);
+            if (d > lights.points[i].position_range.w) continue;
+            vec3 radiance = lights.points[i].color_intensity.rgb * lights.points[i].color_intensity.a *
+                            localAttenuation(d, lights.points[i].position_range.w);
+            lit += transparentLight(to_light / max(d, 0.0001), radiance, normal, view_direction, diffuse_color, f0,
+                                    roughness);
+        }
+        int spot_count = min(lights.counts.y, 8);
+        for (int i = 0; i < spot_count; ++i) {
+            vec3 to_light = lights.spots[i].position_range.xyz - v_world_position;
+            float d = length(to_light);
+            if (d > lights.spots[i].position_range.w) continue;
+            vec3 l = to_light / max(d, 0.0001);
+            float cosine = dot(-l, normalize(lights.spots[i].direction_intensity.xyz));
+            float inner_cos = lights.spots[i].color_inner.a;
+            float outer_cos = lights.spots[i].outer_shadow.x;
+            float cone = clamp((cosine - outer_cos) / max(inner_cos - outer_cos, 0.0001), 0.0, 1.0);
+            if (cone <= 0.0) continue;
+            vec3 radiance = lights.spots[i].color_inner.rgb * lights.spots[i].direction_intensity.w * cone * cone *
+                            localAttenuation(d, lights.spots[i].position_range.w);
+            lit += transparentLight(l, radiance, normal, view_direction, diffuse_color, f0, roughness);
+        }
+#ifndef CRAMION_COMPAT
+        uvec2 cluster_range = clusterRange(gl_FragCoord.xy, v_world_position);
+        for (uint k = 0u; k < cluster_range.y; ++k) {
+            ClusterLight light = cluster_lights[cluster_items[cluster_range.x + k]];
+            vec3 l;
+            float d;
+            vec3 radiance;
+            if (!clusterLightIncoming(light, v_world_position, l, d, radiance)) continue;
+            lit += transparentLight(l, radiance, normal, view_direction, diffuse_color, f0, roughness);
+        }
+#endif
+
+        // Ambiente: el entorno muy filtrado como difuso, y su reflejo (la
+        // sonda si la hay) con el Fresnel de la rugosidad.
+        vec3 reflected = reflect(-view_direction, normal);
+        float n_dot_v = max(dot(normal, view_direction), 1e-4);
+        vec3 env_fresnel = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - n_dot_v, 5.0);
+        vec3 environment = textureLod(environment_map, reflected, roughness * 5.0).rgb;
+#ifndef CRAMION_COMPAT
+        float probe_weight = lights.probes[0].w + lights.probes[1].w;
+        if (probe_weight > 0.001) {
+            vec3 probe = vec3(0.0);
+            if (lights.probes[0].w > 0.001) {
+                probe += textureLod(reflection_probe_0, reflected, roughness * 5.0).rgb * lights.probes[0].w;
+            }
+            if (lights.probes[1].w > 0.001) {
+                probe += textureLod(reflection_probe_1, reflected, roughness * 5.0).rgb * lights.probes[1].w;
+            }
+            environment = probe / probe_weight;
+        }
+#endif
+        vec3 ambient = textureLod(environment_map, normal, 5.0).rgb;
+        lit += diffuse_color * (1.0 - env_fresnel) * ambient + min(environment, vec3(kMaxRadiance)) * env_fresnel;
+    }
+
+    vec3 color = lit * alpha + max(emission, vec3(0.0));
+    return vec4(color, blend == kBlendAdditive ? 1.0 : 1.0 - alpha);
+}
+
 void main() {
+    // Transparentes que no son vidrio (mezcla alfa o aditiva, o sin luz).
+    uint blend = (push.pick_id >> 4u) & 3u;
+    bool unlit = (push.pick_id & kShadingUnlitBit) != 0u;
+    vec2 surface_uv = v_uv * material_uv.xy + material_uv.zw;
+    if (blend != kBlendGlass || unlit) {
+        out_color = shadeTransparent(blend, unlit, surface_uv);
+        // Niebla: tapa lo que no deja pasar (a = lo que pasa de detras).
+        out_color.rgb = applyTransparentFog(out_color.rgb, 1.0 - out_color.a, v_world_position);
+        return;
+    }
+    // Emision del vidrio (una pantalla, un letrero): se suma a lo que refleja.
+    vec3 glass_emission = toLinear(texture(emissive_map, surface_uv).rgb) * push.emissive.rgb * kEmissiveIntensity *
+                          unpackHalf2x16(instance_records[v_instance_slot].info.z).x;
+
     // Tinte del vidrio (casi siempre blanco): el factor es lineal, la
     // textura sRGB.
     vec3 tint = toLinear(texture(albedo_map, v_uv * material_uv.xy + material_uv.zw).rgb) * push.base_color.rgb;
 
     vec3 to_camera = camera.position.xyz - v_world_position;
     vec3 view_direction = normalize(to_camera);
-    // El vidrio es una lamina: se ve igual por las dos caras.
-    vec3 normal = normalize(v_normal);
-    if (dot(normal, view_direction) < 0.0) {
+    // El vidrio es una lamina: se ve igual por las dos caras. Con su normal
+    // map (como skinned.frag): vidrio ondulado, escarchado o con gotas
+    // desvia el reflejo, el brillo del sol y lo refractado.
+    vec3 geometric_normal = normalize(v_normal);
+    vec3 normal = geometric_normal;
+    vec3 glass_tangent = v_tangent.xyz - geometric_normal * dot(geometric_normal, v_tangent.xyz);
+    if (dot(glass_tangent, glass_tangent) > 1e-8) {
+        glass_tangent = normalize(glass_tangent);
+        vec3 glass_bitangent = cross(geometric_normal, glass_tangent) * (v_tangent.w < 0.0 ? -1.0 : 1.0);
+        vec2 xy = texture(normal_map, surface_uv).xy * 2.0 - 1.0;
+        vec3 tangent_normal = vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
+        float scale = push.material.w;
+        tangent_normal.y = scale >= 0.0 ? -tangent_normal.y : tangent_normal.y;
+        tangent_normal.xy *= abs(scale);
+        normal = normalize(mat3(glass_tangent, glass_bitangent, geometric_normal) * tangent_normal);
+    }
+    if (dot(geometric_normal, view_direction) < 0.0) {
         normal = -normal;
     }
     float n_dot_v = max(dot(normal, view_direction), 1e-4);
@@ -372,9 +580,14 @@ void main() {
     if (transmission) {
         // Lo de detras ya va dentro (refractado y tenido): sustituye.
         vec3 behind = refractedScene(view_position, view_direction, normal, ior, thickness, roughness);
-        out_color = vec4(reflection * reflectance + sun + behind * transmittance * hue, 0.0);
+        // Niebla solo en lo que pone el vidrio: lo de detras ya trae la suya.
+        vec3 surface_light = applyTransparentFog(reflection * reflectance + sun + glass_emission, reflectance,
+                                                 v_world_position);
+        out_color = vec4(surface_light + behind * transmittance * hue, 0.0);
         return;
     }
-    out_color = vec4(reflection * reflectance + sun,
-                     transmittance * clamp(tint_transmission, 0.0, 1.0));
+    float glass_pass = transmittance * clamp(tint_transmission, 0.0, 1.0);
+    out_color = vec4(applyTransparentFog(reflection * reflectance + sun + glass_emission, 1.0 - glass_pass,
+                                         v_world_position),
+                     glass_pass);
 }

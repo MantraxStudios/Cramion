@@ -100,6 +100,7 @@ const char* bindingLabel(sg::PinDefault d) {
         case sg::PinDefault::VertexNormal: return "(normal vértice)";
         case sg::PinDefault::ViewDirection: return "(vista)";
         case sg::PinDefault::Time: return "(tiempo)";
+        case sg::PinDefault::ScreenUV: return "(pantalla)";
         default: return "";
     }
 }
@@ -611,6 +612,7 @@ void EditorApp::drawShaderGraphEditor() {
                     }
                 }
                 if (def->fragment_only) ImGui::TextDisabled("Solo en el píxel (no en los vértices).");
+                if (def->transparent_only) ImGui::TextDisabled("Solo con dominio Transparente (pestaña Grafo).");
             }
             ImGui::EndTabItem();
         }
@@ -621,6 +623,18 @@ void EditorApp::drawShaderGraphEditor() {
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Grafo")) {
+            // Dominio: la linea `domain` del .crshader (Opaco y Sin luz al
+            // G-buffer; Transparente, sobre la escena y con sus nodos Escena).
+            static const char* const kDomains[] = {"Opaco", "Sin luz (Unlit)", "Transparente (iluminado)",
+                                                   "Transparente sin luz"};
+            int domain = static_cast<int>(g.domain);
+            if (ImGui::Combo("Dominio", &domain, kDomains, IM_ARRAYSIZE(kDomains))) {
+                g.domain = static_cast<sg::GraphDomain>(std::clamp(domain, 0, 3));
+                changed = true;
+            }
+            if (sg::isTransparentDomain(g.domain)) {
+                ImGui::TextDisabled("Se mezcla con lo de detrás por el Alfa; lee la escena (nodos Escena).");
+            }
             changed |= ImGui::InputTextMultiline("Descripción", &g.description, ImVec2(-1.0f, 80.0f));
             ImGui::TextDisabled("%zu nodos · %zu enlaces · %zu grupos", g.nodes.size(), g.links.size(), g.groups.size());
             ImGui::TextDisabled("Genera: %s", shader_relative.c_str());

@@ -1,9 +1,11 @@
 #include "CramionCore/scripting/NativeApi.h"
 
 #include <CramionFX/core/Chars.h>
+#include <cramion/CppProtocol.h>
 #include <entt/entity/entity.hpp>
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -538,6 +540,310 @@ std::string NativeApi::bridgeCall(const nlohmann::json& request) {
         // El nombre delante, salvo que el error ya lo lleve ("no existe X").
         const bool named = what.find(fn) != std::string::npos;
         return json{{"ok", false}, {"error", named ? what : fn + ": " + what}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+    }
+}
+
+// --- Puente binario ----------------------------------------------------------------
+// Lo mismo que bridgeCall sin JSON: el nombre se busca una vez (ApiResolve) y
+// los valores van en binario (CppProtocol.h, ValueTag). Antes cada llamada
+// armaba y parseaba dos JSON y buscaba el nombre en el indice: decenas de us
+// en setQuaternion, playAnimation o setText.
+
+namespace {
+
+using cppproto::ValueTag;
+
+// Hasta 16 niveles, como toJson/fromJson; mas hondo llega nil.
+constexpr int kMaxDepth = 16;
+// Tope de ids por NativeApi: las claves son nombres de la API, pero un script
+// puede armar nombres (propiedades dinamicas); por encima, por el JSON.
+constexpr std::size_t kMaxSlots = 1u << 16;
+
+bool documented(const Doc& d) { return !d.args.empty() || !d.description.empty() || !d.returns.empty(); }
+
+// Una funcion o metodo que no devuelve nada (su Doc no dice "devuelve") puede
+// ir en el lote del SDK, sin esperar. Las que no tienen Doc, no (no se sabe).
+bool batchable(const Entry& e) {
+    return e.kind != Entry::Kind::Property && documented(e.doc) && e.doc.returns.empty();
+}
+
+}  // namespace
+
+std::uint32_t NativeApi::nextEpoch() {
+    static std::atomic<std::uint32_t> next{1};
+    std::uint32_t epoch = next.fetch_add(1, std::memory_order_relaxed);
+    if (epoch == 0) epoch = next.fetch_add(1, std::memory_order_relaxed);  // 0 = "usa el JSON"
+    return epoch;
+}
+
+namespace {
+
+class BinaryCodec {
+public:
+    explicit BinaryCodec(NativeApi& api) : api_(api) {}
+
+    void write(cppproto::Writer& w, const Value& v, int depth = 0) {
+        if (depth > kMaxDepth) {
+            w.u8(static_cast<std::uint8_t>(ValueTag::Nil));
+            return;
+        }
+        switch (v.type()) {
+            case Value::Type::Nil: w.u8(static_cast<std::uint8_t>(ValueTag::Nil)); return;
+            case Value::Type::Bool: w.u8(static_cast<std::uint8_t>(v.truthy() ? ValueTag::True : ValueTag::False)); return;
+            case Value::Type::Number: {
+                const double d = v.asNumber();
+                // Como toJson: lo que no es finito llega como nil.
+                if (!std::isfinite(d)) {
+                    w.u8(static_cast<std::uint8_t>(ValueTag::Nil));
+                } else {
+                    w.u8(static_cast<std::uint8_t>(ValueTag::Number)).f64(d);
+                }
+                return;
+            }
+            case Value::Type::String: w.u8(static_cast<std::uint8_t>(ValueTag::String)).str(v.asString()); return;
+            case Value::Type::Vec3: {
+                const core::Vec3 p = v.asVec3();
+                w.u8(static_cast<std::uint8_t>(ValueTag::Vec3)).f32(p.x).f32(p.y).f32(p.z);
+                return;
+            }
+            case Value::Type::Quat: {
+                const core::Quat q = v.asQuat();
+                w.u8(static_cast<std::uint8_t>(ValueTag::Quat)).f32(q.x).f32(q.y).f32(q.z).f32(q.w);
+                return;
+            }
+            case Value::Type::Entity: w.u8(static_cast<std::uint8_t>(ValueTag::Entity)).u64(entityId(v.asEntity())); return;
+            case Value::Type::Function: w.u8(static_cast<std::uint8_t>(ValueTag::Function)).u64(v.callbackId()); return;
+            case Value::Type::Handle: w.u8(static_cast<std::uint8_t>(ValueTag::Handle)).u64(api_.handleId(v.asHandle())); return;
+            case Value::Type::Array: {
+                const Value::Array& items = v.items();
+                w.u8(static_cast<std::uint8_t>(ValueTag::Array)).u32(static_cast<std::uint32_t>(items.size()));
+                for (const Value& item : items) write(w, item, depth + 1);
+                return;
+            }
+            case Value::Type::Object: {
+                const Value::Object& fields = v.fields();
+                w.u8(static_cast<std::uint8_t>(ValueTag::Object)).u32(static_cast<std::uint32_t>(fields.size()));
+                for (const auto& [key, item] : fields) {
+                    w.str(key);
+                    write(w, item, depth + 1);
+                }
+                return;
+            }
+        }
+        w.u8(static_cast<std::uint8_t>(ValueTag::Nil));
+    }
+
+    Value read(cppproto::Reader& r, int depth = 0) {
+        const auto tag = static_cast<ValueTag>(r.u8());
+        if (!r.ok()) return {};
+        switch (tag) {
+            case ValueTag::Nil: return {};
+            case ValueTag::False: return Value(false);
+            case ValueTag::True: return Value(true);
+            case ValueTag::Number: return Value(r.f64());
+            case ValueTag::String: return Value(r.str());
+            case ValueTag::Vec3: {
+                float v[3];
+                r.vec3(v);
+                return Value(core::Vec3{v[0], v[1], v[2]});
+            }
+            case ValueTag::Quat: {
+                core::Quat q;
+                q.x = r.f32();
+                q.y = r.f32();
+                q.z = r.f32();
+                q.w = r.f32();
+                return Value(q);
+            }
+            case ValueTag::Entity: return Value::entity(entityFromId(r.u64()));
+            case ValueTag::Function: return Value::function(r.u64());
+            case ValueTag::Handle: return Value::handle(api_.handle(r.u64()));
+            case ValueTag::Array: {
+                const std::uint32_t n = r.u32();
+                // Cada valor ocupa al menos un byte: un n mayor es un mensaje roto.
+                if (!r.ok() || n > r.remaining()) {
+                    bad_ = true;
+                    return {};
+                }
+                Value::Array list;
+                list.reserve(n);
+                for (std::uint32_t i = 0; i < n && r.ok(); ++i) list.push_back(depth < kMaxDepth ? read(r, depth + 1) : skipValue(r));
+                return Value(std::move(list));
+            }
+            case ValueTag::Object: {
+                const std::uint32_t n = r.u32();
+                if (!r.ok() || n > r.remaining()) {
+                    bad_ = true;
+                    return {};
+                }
+                Value o = Value::object();
+                for (std::uint32_t i = 0; i < n && r.ok(); ++i) {
+                    const std::string key = r.str();
+                    o.set(key, depth < kMaxDepth ? read(r, depth + 1) : skipValue(r));
+                }
+                return o;
+            }
+            case ValueTag::Json: {
+                const nlohmann::json j = nlohmann::json::parse(r.str(), nullptr, false);
+                return j.is_discarded() ? Value{} : api_.fromJson(j);
+            }
+        }
+        bad_ = true;  // etiqueta desconocida: no se puede seguir leyendo
+        return {};
+    }
+
+    bool bad() const { return bad_; }
+
+private:
+    // Demasiado hondo: se lee (para seguir con el resto) y llega nil.
+    Value skipValue(cppproto::Reader& r) {
+        read(r, kMaxDepth);
+        return {};
+    }
+    NativeApi& api_;
+    bool bad_ = false;
+};
+
+void writeError(std::vector<std::uint8_t>& reply, std::string_view text) {
+    cppproto::Writer w;
+    w.u32(static_cast<std::uint32_t>(cppproto::ApiStatus::Error)).str(text);
+    reply.insert(reply.end(), w.bytes.begin(), w.bytes.end());
+}
+
+}  // namespace
+
+std::string NativeApi::bridgeBinary(BridgeOp op, const void* data, std::size_t size, std::vector<std::uint8_t>& reply) {
+    cppproto::Reader r(data, size);
+    if (op == BridgeOp::Resolve) {
+        std::string key = r.str();
+        cppproto::Writer w;
+        if (!r.ok() || key.empty() || (slots_.size() >= kMaxSlots && !slot_index_.contains(key))) {
+            w.u32(0).u32(0).u32(0);  // epoca 0: el SDK usa el JSON
+            reply.insert(reply.end(), w.bytes.begin(), w.bytes.end());
+            return {};
+        }
+        std::uint32_t id = 0;
+        if (const auto it = slot_index_.find(key); it != slot_index_.end()) {
+            id = it->second;
+        } else {
+            BridgeSlot slot;
+            slot.member = key.front() == ':';
+            slot.key = slot.member ? key.substr(1) : key;
+            if (!slot.member) {
+                if (const auto found = index_.find(key); found != index_.end()) slot.entry = found->second;
+            }
+            id = static_cast<std::uint32_t>(slots_.size());
+            slots_.push_back(std::move(slot));
+            slot_index_.emplace(std::move(key), id);
+        }
+        const BridgeSlot& slot = slots_[id];
+        // De un tipo que no se sabe hasta ver self: nunca en lote (salvo los set).
+        const std::uint32_t flags = slot.entry != SIZE_MAX && batchable(entries_[slot.entry]) ? cppproto::ApiBatchable : 0u;
+        w.u32(epoch_).u32(id).u32(flags);
+        reply.insert(reply.end(), w.bytes.begin(), w.bytes.end());
+        return {};
+    }
+
+    const bool send = op == BridgeOp::Send;
+    const std::uint32_t epoch = r.u32();
+    const std::uint32_t id = r.u32();
+    const auto call_op = static_cast<cppproto::ApiOp>(r.u32());
+    if (!r.ok()) {
+        if (!send) writeError(reply, "peticion binaria rota");
+        return send ? "Api: peticion binaria rota" : std::string{};
+    }
+    if (epoch != epoch_ || id >= slots_.size()) {
+        if (send) return "Api: llamada en lote de otra sesion de scripts (se ignora)";
+        cppproto::Writer w;
+        w.u32(static_cast<std::uint32_t>(cppproto::ApiStatus::Stale));
+        reply.insert(reply.end(), w.bytes.begin(), w.bytes.end());
+        return {};
+    }
+    BridgeSlot& slot = slots_[id];
+    // El nombre que sale en los errores: el de la peticion JSON ("fn").
+    const std::string& shown = slot.key;
+    BinaryCodec codec(*this);
+    try {
+        const Value self = codec.read(r);
+        const std::uint32_t count = r.u32();
+        if (!r.ok() || codec.bad() || count > r.remaining()) throw Error("peticion binaria rota");
+        Value::Array args;
+        args.reserve(count);
+        for (std::uint32_t i = 0; i < count; ++i) args.push_back(codec.read(r));
+        if (!r.ok() || codec.bad()) throw Error("peticion binaria rota");
+
+        // self: como en bridgeCall (un handle que ya se solto o una entidad nula).
+        const bool has_self = slot.member || slot.key.find(':') != std::string::npos;
+        if (has_self) {
+            if (self.isNil() || (self.isEntity() && self.asEntity() == entt::null)) throw Error("el objeto ya no existe");
+            if (!self.isEntity() && !self.isHandle()) throw Error("el objeto no es del motor");
+        }
+
+        // La entrada: fija o, de un tipo, por el duenio de self (con cache del ultimo).
+        const Entry* entry = nullptr;
+        if (slot.member) {
+            const std::string_view owner = self.isEntity() ? std::string_view("Entity") : self.asHandle()->typeName();
+            if (owner != slot.owner) {
+                slot.owner.assign(owner);
+                const auto found = index_.find(slot.owner + ":" + slot.key);
+                slot.owner_entry = found != index_.end() ? found->second : SIZE_MAX;
+            }
+            if (slot.owner_entry != SIZE_MAX) entry = &entries_[slot.owner_entry];
+        } else if (slot.entry != SIZE_MAX) {
+            entry = &entries_[slot.entry];
+        }
+
+        Value result;
+        if (entry == nullptr) {
+            // Sin entrada registrada: el camino por nombre (propiedades
+            // dinamicas como Graphics.post.x y el error "no existe").
+            const Value& own = has_self ? self : Value::nil();
+            if (call_op == cppproto::ApiOp::Get) {
+                result = get(slot.key, own);
+            } else if (call_op == cppproto::ApiOp::Set) {
+                set(slot.key, args.empty() ? Value::nil() : args.front(), own);
+            } else {
+                result = call(slot.key, args, own);
+            }
+        } else if (call_op == cppproto::ApiOp::Call) {
+            if (entry->kind == Entry::Kind::Property) throw Error(shown + " no es una funcion");
+            Call c(self, args);
+            result = entry->call(c);
+        } else if (call_op == cppproto::ApiOp::Get) {
+            if (entry->kind != Entry::Kind::Property) throw Error(shown + " no es una propiedad");
+            const Value::Array no_args;
+            Call c(self, no_args);
+            result = entry->call(c);
+        } else {
+            if (entry->kind != Entry::Kind::Property) throw Error(shown + " no es una propiedad");
+            if (!entry->assign) throw Error(shown + " es de solo lectura");
+            if (args.size() > 1) args.resize(1);
+            if (args.empty()) args.emplace_back();
+            Call c(self, args);
+            entry->assign(c);
+        }
+
+        if (send) {
+            // En lote no hay a quien devolverlo: su Doc deberia decir "devuelve".
+            if (!result.isNil() && call_op == cppproto::ApiOp::Call && !slot.warned) {
+                slot.warned = true;
+                return "Api: " + shown + " devolvio un valor pero va en lote (su Doc no dice que devuelva nada): " +
+                       "anade lo que devuelve a su api::Doc";
+            }
+            return {};
+        }
+        cppproto::Writer w;
+        w.u32(static_cast<std::uint32_t>(cppproto::ApiStatus::Ok));
+        codec.write(w, result);
+        reply.insert(reply.end(), w.bytes.begin(), w.bytes.end());
+        return {};
+    } catch (const std::exception& e) {
+        const std::string what = e.what();
+        // El nombre delante, salvo que el error ya lo lleve (como bridgeCall).
+        const std::string text = what.find(shown) != std::string::npos ? what : shown + ": " + what;
+        if (send) return "Api::send: " + text;
+        writeError(reply, text);  // (nada se escribio antes en reply)
+        return {};
     }
 }
 

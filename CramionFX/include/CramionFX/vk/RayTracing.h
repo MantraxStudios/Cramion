@@ -143,20 +143,32 @@ public:
     void destroy();
 
     // Sube la escena: buffers, BLAS, materiales, texturas y los pipelines.
-    // Los modelos van con los indices 0..models.size()-1; la malla extra i,
-    // con el indice models.size() + i. Hay que haber parado la GPU.
+    // Los modelos van con los indices 0..model_slots-1 (model_slots >=
+    // models.size(): las filas de mas quedan para los que lleguen despues,
+    // addModel); la malla extra i, con el indice modelSlots() + i. No hace
+    // falta parar la GPU: la escena anterior la sueltan los frames en vuelo.
     // `used`: los modelos que tienen instancias (vacio = todos); los demas no
-    // entran (ni BLAS ni materiales) y sus instancias se ignoran hasta otra
-    // construccion. Los modelos con la misma geometria (variantes de
-    // material) comparten triangulos y BLAS; cada uno con sus materiales.
+    // entran (ni BLAS ni materiales) hasta que se anadan con addModel. Los
+    // modelos con la misma geometria (variantes de material) comparten
+    // triangulos y BLAS; cada uno con sus materiales.
     void build(const VulkanDevice& device, const std::vector<const asset::ModelData*>& models,
                const std::vector<SkinnedModel>& gpu_models, const VulkanBuffer& irradiance,
-               const ExtraScene& extra, const std::vector<bool>& used = {});
-    // Libera la escena (BLAS, TLAS, buffers, texturas, cache). Hay que haber
-    // parado la GPU.
+               const ExtraScene& extra, const std::vector<bool>& used = {}, std::uint32_t model_slots = 0);
+    // Libera la escena (BLAS, TLAS, buffers, texturas, cache) sin parar la
+    // GPU (cola de retirada del dispositivo).
     void releaseScene();
     bool sceneBuilt() const;
-    std::uint32_t modelCount() const;  // modelos + mallas extra
+    std::uint32_t modelCount() const;  // filas de modelos + mallas extra
+    std::uint32_t modelSlots() const;  // filas de modelos (las mallas extra van detras)
+    // El modelo ya esta en la escena (con su BLAS, la de su grupo o sin
+    // triangulos opacos ni recortados).
+    bool hasModel(std::uint32_t model) const;
+    // Un modelo que no estaba (streaming, variante nueva, sin instancias al
+    // construirla) entra solo: sus datos al final de los buffers y su BLAS en
+    // el siguiente recordUpdates, sin rehacer la escena ni parar la GPU. Sus
+    // instancias cuentan desde el setInstances siguiente. false = no tiene
+    // fila (indice >= modelSlots()): hay que reconstruirla entera.
+    bool addModel(std::uint32_t index, const asset::ModelData& model, const std::vector<SkinnedModel>& gpu_models);
 
     // Nuevos vertices de una malla extra `updatable` (la misma cantidad) y
     // nuevos mips de una textura propia (el mismo tamano): se suben y se rehace
@@ -166,11 +178,12 @@ public:
 
     // Instancias de la TLAS de este frame. Solo para la CPU: la TLAS se
     // reconstruye en recordUpdates si cambian. Si no caben, la TLAS crece
-    // (eso si espera a la GPU, como mucho unas pocas veces).
+    // (sin esperar a la GPU: la vieja la sueltan los frames en vuelo).
     void setInstances(const VulkanDevice& device, const std::vector<Instance>& instances);
 
     // Al principio del command buffer del frame (antes de cualquier pase de
-    // rayos): subidas pendientes, BLAS rehechas y la TLAS si cambio.
+    // rayos): subidas pendientes, BLAS nuevas (addModel) y rehechas, el set de
+    // la escena de este hueco y la TLAS si cambio.
     void recordUpdates(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
 
     void updateFrameSet(const VulkanDevice& device, std::uint32_t frame_index,

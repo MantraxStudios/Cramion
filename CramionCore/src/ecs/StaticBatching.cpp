@@ -153,6 +153,18 @@ public:
             v.weights[1] = v.weights[2] = v.weights[3] = 0.0f;
             batch.data.vertices.push_back(v);
         }
+        // Color de vertice: desde la primera pieza que lo trae, uno por
+        // vertice del lote (blanco en las que no).
+        const bool part_colors = part.vertex_colors.size() == part.vertices.size() && !part.vertex_colors.empty();
+        if (part_colors || !batch.data.vertex_colors.empty()) {
+            std::vector<std::uint32_t>& colors = batch.data.vertex_colors.mut();
+            colors.resize(base, 0xFFFFFFFFu);
+            if (part_colors) {
+                colors.insert(colors.end(), part.vertex_colors.get().begin(), part.vertex_colors.get().end());
+            } else {
+                colors.resize(batch.data.vertices.size(), 0xFFFFFFFFu);
+            }
+        }
 
         for (const asset::SubMesh& submesh : part.submeshes) {
             if (submesh.material >= slot_of.size()) continue;
@@ -336,6 +348,17 @@ bool buildStaticBatch(World& world, const assets::AssetDatabase& database, const
         const MeshRenderer* renderer = e.tryGet<MeshRenderer>();
         if (info == nullptr || !info->is_static || info->static_batched || renderer == nullptr) return;
         if (!renderer->visible || renderer->mesh || !renderer->model.valid() || !e.activeInHierarchy()) return;
+        // Con parametros por instancia (tinte, opacidad, emision) se queda
+        // suelto: el lote los perderia (y suelto se dibuja instanciado igual).
+        bool instance_data = false;
+        for (const core::Vec4& d : renderer->instance_data) {
+            instance_data = instance_data || d.x != 0.0f || d.y != 0.0f || d.z != 0.0f || d.w != 0.0f;
+        }
+        if (renderer->tint.x != 1.0f || renderer->tint.y != 1.0f || renderer->tint.z != 1.0f ||
+            renderer->alpha != 1.0f || renderer->emission_scale != 1.0f || !renderer->receive_decals || instance_data) {
+            ++report.kept_movable;
+            return;
+        }
         if (movable(world, e)) {
             ++report.kept_movable;
             return;

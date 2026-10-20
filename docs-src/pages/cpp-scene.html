@@ -8,12 +8,23 @@
     <tr><td><code>Entity create(std::string_view name = &quot;Nuevo&quot;)</code></td><td>Crea un objeto vacio.</td></tr>
     <tr><td><code>std::vector&lt;Vec3&gt; getPositions(const std::vector&lt;Entity&gt;&amp; entities)</code></td><td>Las posiciones de muchos objetos en una llamada (rapido).</td></tr>
     <tr><td><code>void setPositions(const std::vector&lt;Entity&gt;&amp; entities, const std::vector&lt;Vec3&gt;&amp; positions)</code></td><td>Mueve muchos objetos en una llamada (rapido).</td></tr>
+    <tr><td><code>void setTransforms(const std::vector&lt;Entity&gt;&amp; entities, const std::vector&lt;Vec3&gt;&amp; positions, const std::vector&lt;Quat&gt;&amp; rotations = {}, const std::vector&lt;Vec3&gt;&amp; scales = {}, bool local = false)</code></td><td>Posicion, giro y escala de muchos objetos en una llamada (va en el lote, sin esperar al motor). La posicion es del mundo (local = true: respecto al padre); el giro (Quat) y la escala, locales. Una lista vacia no se toca: setTransforms(balas, posiciones, giros) no cambia la escala. Si una lista es mas corta que entities, solo se mueven los que tienen todos sus datos.</td></tr>
+    <tr><td><code>Value acquire(texto, posicion, rotacion, padre)</code></td><td>Saca una copia del pool del prefab (o crea una si esta vacio), la pone donde se pide (rotacion en grados o Quat) y la activa Devuelve: Entity</td></tr>
+    <tr><td><code>Value cancelSpawn(id)</code></td><td>Cancela un Scene.instantiateAsync (borra lo que ya se habia creado) Devuelve: bool</td></tr>
     <tr><td><code>Value destroy(entity)</code></td><td>Lo destruye al final del frame (en la consola fuera de Play, al terminar el comando)</td></tr>
+    <tr><td><code>Value destroyDeferred(entity)</code></td><td>Lo desactiva ya y lo destruye (con sus hijos) repartido en varios frames (scene.DestroyBudgetMs)</td></tr>
     <tr><td><code>Value findAllWithTag(texto)</code></td><td>Lista de objetos con ese tag Devuelve: lista de Entity</td></tr>
     <tr><td><code>Value instantiate(arg, posicion, rotacion)</code></td><td>Copia de un objeto (con hijos y componentes) o instancia de un prefab Devuelve: Entity</td></tr>
+    <tr><td><code>Value instantiateAsync(texto, posicion, rotacion, padre)</code></td><td>Instancia un prefab sin tirones: lee y parsea en otro hilo y crea las entidades por tandas (scene.SpawnBudgetMs por frame) bajo una raiz desactivada que se activa al terminar. Devuelve un id para Scene.spawnProgress / Scene.spawnResult Devuelve: numero</td></tr>
     <tr><td><code>Value load(texto)</code></td><td>Cambia de escena al terminar el frame (nombre o ruta del .crscene) Devuelve: bool</td></tr>
     <tr><td><code>Value name(...)</code></td><td>Nombre de la escena actual Devuelve: texto</td></tr>
     <tr><td><code>Value origin(...)</code></td><td>x, y, z (doble precision) del origen flotante del mundo Devuelve: lista de 3 numeros</td></tr>
+    <tr><td><code>Value pool(texto, n)</code></td><td>Prepara un pool: deja n copias del prefab creadas y desactivadas (por tandas, con scene.SpawnBudgetMs) para Scene.acquire Devuelve: bool</td></tr>
+    <tr><td><code>Value poolCount(texto)</code></td><td>Copias libres (creadas y desactivadas) en el pool del prefab Devuelve: numero</td></tr>
+    <tr><td><code>Value preloadPrefab(texto)</code></td><td>Lee y parsea el prefab en otro hilo y lo guarda en la cache (sin instanciarlo) Devuelve: bool</td></tr>
+    <tr><td><code>Value release(entity)</code></td><td>Devuelve una copia de Scene.acquire a su pool (la desactiva: onDisable). Si no es de un pool, la destruye como Scene.destroy Devuelve: bool</td></tr>
+    <tr><td><code>Value spawnProgress(id)</code></td><td>Progreso de Scene.instantiateAsync: 0..1 (1 = lista), -1 si fallo o no existe Devuelve: numero</td></tr>
+    <tr><td><code>Value spawnResult(id)</code></td><td>La raiz instanciada por Scene.instantiateAsync cuando ya esta (nil si aun no o si fallo); se recoge una vez Devuelve: Entity</td></tr>
     <tr><td><code>Value toAbsolute(posicion)</code></td><td>x, y, z absolutos (para guardar posiciones en una partida) Devuelve: lista de 3 numeros</td></tr>
     <tr><td><code>Value toLocal(x, y, z)</code></td><td>Vec3 local de una posicion absoluta guardada Devuelve: Vec3</td></tr>
   </tbody>

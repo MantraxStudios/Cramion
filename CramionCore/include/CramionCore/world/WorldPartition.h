@@ -25,8 +25,21 @@
 // Celdas en disco (mundos grandes, MMO): con "Celdas en disco" activo, al
 // guardar la escena el editor escribe esos objetos en <escena>.cells/, un
 // archivo por celda, y no en la escena. El juego y el servidor solo leen las
-// celdas cercanas: el mundo entero nunca esta en memoria. El editor las
-// carga todas al abrir la escena (se ve y se edita entera).
+// celdas cercanas: el mundo entero nunca esta en memoria.
+//
+// Regiones cargadas en el editor (como las Loaded Regions de Unreal 5): con
+// "Celdas en disco", el editor tampoco carga la escena entera. Otro
+// WorldPartitionSystem en modo editor (beginEditor) tiene cargadas solo las
+// celdas a un radio de la camara del editor y las que el usuario fija en la
+// ventana "Regiones cargadas"; las carga y descarga con el mismo bombeo con
+// presupuesto (y borra lo que descarga por trozos, sin congelar). Lo
+// descargado que se edito queda en la cache de la sesion hasta que saveCells
+// lo escribe en <escena>.cells/: guardar no pierde nada. Al dar Play, el
+// sistema del juego toma las celdas descargadas del editor (inheritUnloadedFrom)
+// sin leerlas antes. Parar Play o volver de una pestana rehacen el mundo con
+// una instantanea que puede no tener entera una celda que se cargaba:
+// recoverAfterRebuild la recupera de donde se cargo. Lo que entra y sale no
+// es un paso de deshacer: el editor pone al dia su historial (worldChanges).
 //
 // Hilos (CVar wp.AsyncCells, encendida): leer y parsear una celda va al grupo
 // de IO y a un hilo trabajador; el hilo principal solo recrea lo ya parseado,
@@ -75,6 +88,7 @@
 #include <future>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -181,6 +195,8 @@ struct CellInfo {
     std::string layers;      // sus capas ("A,B"; "" = ninguna)
     bool loaded = true;
     bool loading = false;
+    int entities = 0;     // objetos raiz (cargados o guardados)
+    bool pinned = false;  // editor: fijada en "Regiones cargadas"
 };
 
 struct PartitionStats {
@@ -281,8 +297,69 @@ public:
     // Todas las celdas (todas las rejillas y capas).
     std::vector<CellInfo> cellInfos() const;
 
+    // Lo mismo reutilizando `out` (la ventana del editor, cada frame).
+    void cellInfos(std::vector<CellInfo>& out) const;
+
     // La entidad raiz se descargaria (para el Inspector / pruebas).
     static bool streamable(const ecs::Entity& root);
+
+    // --- Regiones cargadas en el editor (Loaded Regions de Unreal 5) ---
+    struct EditorRegions {
+        bool around_camera = true;  // carga lo que esta a `radius` de la camara
+        float radius = 256.0f;      // metros
+    };
+    // Como begin(), para el editor, con "Celdas en disco" (setSceneFile(escena,
+    // false) antes): las celdas en disco quedan registradas sin leer y update()
+    // carga y descarga segun la camara y las celdas fijadas, con presupuesto.
+    // Sin capas apagadas, dependencias ni HLOD (el editor lo ve todo). Si la
+    // escena no tiene un World Partition activo con celdas en disco, no empieza.
+    void beginEditor(ecs::World& world, const core::Vec3& camera);
+    bool editorMode() const { return editor_mode_; }
+    const std::filesystem::path& sceneFile() const { return scene_file_; }
+    std::uint64_t sceneGeneration() const { return scene_generation_; }
+    void setEditorRegions(const EditorRegions& regions) { regions_ = regions; }
+    const EditorRegions& editorRegions() const { return regions_; }
+    // Celdas fijadas: cargadas aunque esten lejos (todas sus capas).
+    void setCellPinned(int grid, const CellCoord& c, bool pinned);
+    bool cellPinned(int grid, const CellCoord& c) const;
+    void clearPinnedCells() { pins_.clear(); }
+    std::vector<std::pair<int, CellCoord>> pinnedCells() const;
+    // Las celdas de estas raices no se descargan (la seleccion del editor).
+    void holdCellsOf(ecs::World& world, const std::vector<ecs::Entity>& roots);
+    // Misma rejilla (tamanos, nombres y etiquetas): las celdas siguen siendo
+    // las mismas. Si no, hay que cargarlo todo (end) y empezar otra vez.
+    bool sameLayout(const WorldPartition& settings) const;
+    // Lo demas del componente (presupuestos, margen) sin empezar otra vez.
+    void refreshSettings(const WorldPartition& settings);
+    // La generacion del mundo cambio sin cambiar de escena (parar Play tras un
+    // Scene.load, volver de una pestana de prefab): sigue con sus celdas.
+    void adoptSceneGeneration(ecs::World& world);
+    // El mundo se rehizo entero (parar Play, volver de una pestana, recuperar
+    // el autoguardado): los handles ya no valen. El editor lo mira antes de update().
+    bool worldRebuilt(const ecs::World& world) const;
+    // Reparte el mundo nuevo y recupera de donde se cargaron las celdas que la
+    // instantanea no tenia enteras: las que acabaron de cargarse despues de
+    // `snapshot_epoch` (loadEpoch() cuando se hizo; 0 = no se sabe: todas).
+    void recoverAfterRebuild(ecs::World& world, std::uint64_t snapshot_epoch);
+    // Sube cada vez que una celda termina de cargarse en el editor.
+    std::uint64_t loadEpoch() const { return load_epoch_; }
+    // Termina ya las cargas a medias y los borrados pendientes (antes de Play).
+    void settle(ecs::World& world);
+    // Guarda <escena>.cells/: las celdas cargadas (del mundo) y las
+    // descargadas (de su archivo, de la cache o de la memoria). Fuera del modo
+    // editor, igual que writeExternalCells.
+    int saveCells(ecs::World& world, const WorldPartition& settings, const std::filesystem::path& scene,
+                  std::string* error = nullptr);
+    // Play desde el editor con regiones: el siguiente begin() toma las celdas
+    // descargadas de `editor` sin tocarlas (lee sus archivos y comparte lo que
+    // tiene en memoria, que nadie cambia). nullptr = ninguna.
+    void inheritUnloadedFrom(const WorldPartitionSystem* editor) { inherit_from_ = editor; }
+    // Raices descargadas que aun se estan borrando por trozos.
+    int pendingDestroys() const { return static_cast<int>(dying_.size() - dying_head_); }
+    // Sube cada vez que el sistema cambia lo que se guarda del mundo (recrea
+    // una raiz o descarga una celda; borrar lo ya descargado no cuenta): el
+    // editor pone al dia su historial de deshacer sin paso.
+    std::uint64_t worldChanges() const { return world_changes_; }
 
     // --- Rejillas y capas de un objeto (el editor, el HLOD, las pruebas) ---
     // Rejilla de una raiz: 0 = la principal, i + 1 = settings.grids[i].
@@ -353,9 +430,32 @@ private:
         std::vector<std::shared_ptr<PendingWrite>> older_writes;
         std::vector<PendingRoot> pending;
         std::size_t next = 0;  // siguiente de `pending` por recrear
+        // Editor: de donde se cargo (si el mundo se rehace con una instantanea
+        // que no la tenia, vuelve de aqui) y cuando termino de cargarse (loadEpoch).
+        std::shared_ptr<const std::vector<std::string>> source_stored;
+        std::filesystem::path source_file;
+        ecs::DVec3 source_origin{};
+        std::uint64_t loaded_epoch = 0;
+        // Recuperandose (recoverAfterRebuild): al terminar conserva su epoca.
+        bool recovering = false;
+        std::uint64_t recover_epoch = 0;
         bool loading() const { return reading || next < pending.size(); }
+        bool hasSource() const { return source_stored != nullptr || !source_file.empty(); }
     };
+    void start(ecs::World& world, const core::Vec3& viewer, bool editor);
     void unloadCell(ecs::World& world, const CellKey& c, Cell& cell);
+    // Editor: lo descargado se desactiva ya (sin UUID, sin guardarse) y se
+    // borra de las hojas hacia arriba con wp.EditorDestroyBudgetMs por frame.
+    void destroyLater(ecs::World& world, ecs::Entity root);
+    void pumpDestroys(ecs::World& world);
+    void flushDestroys(ecs::World& world);
+    // La celda vuelve a leerse de donde se cargo (con lo que ya hay en el
+    // mundo, sin duplicar UUID).
+    void reloadFromSource(Cell& cell);
+    // Play: las celdas descargadas del editor (inheritUnloadedFrom).
+    void inheritCells(ecs::World& world, const WorldPartitionSystem& from);
+    // El World Partition de la escena (la entidad) para el modo editor.
+    entt::entity findSettingsEntity(ecs::World& world) const;
     // Empieza a cargar (memoria: ya; disco: en otro hilo). false si no pudo
     // empezar ahora (demasiadas lecturas en marcha: se reintenta).
     bool requestLoad(Cell& cell);
@@ -385,6 +485,8 @@ private:
         float priority = 0.0f;
     };
     std::vector<std::pair<CellKey, Desire>> desires(const std::vector<std::pair<core::Vec3, float>>& srcs) const;
+    // Lo mismo en el editor: la camara, las fijadas y la seleccion.
+    std::vector<std::pair<CellKey, Desire>> editorDesires(const core::Vec3& camera) const;
     // Celda de una raiz (rejilla, capas y sitio) con el origen de ahora.
     CellKey keyOf(const ecs::Entity& root);
     int layerSetId(const std::string& canonical);
@@ -433,6 +535,19 @@ private:
     // de la escena anterior: nada de ella vuelve a entrar en la nueva).
     std::uint64_t scene_generation_ = 0;
     PartitionStats stats_{};
+    // --- Modo editor (regiones cargadas) ---
+    bool editor_mode_ = false;
+    EditorRegions regions_{};
+    std::set<GridCoord> pins_;     // fijadas a mano
+    std::vector<GridCoord> held_;  // de la seleccion (ordenadas)
+    // Raices descargadas por borrar (de dying_head_ en adelante).
+    std::vector<entt::entity> dying_;
+    std::size_t dying_head_ = 0;
+    // La entidad con el WorldPartition: si cambia, el mundo se rehizo.
+    entt::entity settings_entity_ = entt::null;
+    std::uint64_t load_epoch_ = 0;
+    std::uint64_t world_changes_ = 0;
+    const WorldPartitionSystem* inherit_from_ = nullptr;
 };
 
 // El sistema activo del mundo (scripts, MCP, Inspector). nullptr si no hay.

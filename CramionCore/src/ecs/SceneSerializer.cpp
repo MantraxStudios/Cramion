@@ -367,6 +367,12 @@ Entity restoreParsedEntities(World& world, const ParsedEntities& parsed, Entity 
     return detail::buildEntitiesImpl(world, *it, /*remap=*/false, parent, nullptr, /*skip_existing=*/true);
 }
 
+Uuid parsedRootUuid(const ParsedEntities& parsed) {
+    const auto it = parsed.root.find("entities");
+    if (it == parsed.root.end() || !it->is_array() || it->empty() || !(*it)[0].is_object()) return {};
+    return Uuid::parse((*it)[0].value("uuid", std::string{}));
+}
+
 Uuid readSceneUuid(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
@@ -377,6 +383,105 @@ Uuid readSceneUuid(const std::filesystem::path& path) {
         return {};
     }
     return Uuid::parse(root.value("uuid", std::string{}));
+}
+
+// --- Registros sueltos (historial de deshacer) ------------------------------------
+
+std::string serializeEntityRecord(const World& const_world, Entity entity) {
+    World& world = const_cast<World&>(const_world);  // reflect() no escribe al guardar
+    if (!entity.valid()) return {};
+    return entityRecord(world, entity, /*is_root_of_copy=*/false).dump();
+}
+
+bool applyEntityRecord(World& world, Entity e, const std::string& text, const std::string* current, Uuid* parent,
+                       std::string* error) {
+    if (!e.valid()) {
+        if (error) *error = "la entidad no existe";
+        return false;
+    }
+    const json record = json::parse(text, nullptr, false);
+    if (record.is_discarded() || !record.is_object()) {
+        if (error) *error = "registro no valido";
+        return false;
+    }
+    // Como esta ahora (si se sabe): los componentes que no cambian no se tocan.
+    json now;
+    if (current != nullptr && !current->empty()) {
+        now = json::parse(*current, nullptr, false);
+        if (now.is_discarded() || !now.is_object()) now = json();
+    }
+    const std::string name = record.value("name", std::string{"GameObject"});
+    if (e.name() != name) e.setName(name);
+    {
+        EntityInfo& info = e.get<EntityInfo>();
+        info.tag = record.value("tag", std::string{});
+        info.layer = record.value("layer", 0);
+        info.is_static = record.value("static", false);
+        info.static_batched = record.value("static_batched", false);
+    }
+    // setActive sube structureVersion: los recorridos de lo activo se rehacen.
+    const bool active = record.value("active", true);
+    if (e.activeSelf() != active) e.setActive(active);
+
+    static const json kNone = json::object();
+    const auto wanted_it = record.find("components");
+    const json& wanted = wanted_it != record.end() && wanted_it->is_object() ? *wanted_it : kNone;
+    const json* before = nullptr;
+    if (now.is_object()) {
+        if (const auto it = now.find("components"); it != now.end() && it->is_object()) before = &*it;
+    }
+    ComponentRegistry& registry = ComponentRegistry::instance();
+    for (const ComponentType& type : registry.types()) {
+        if (!wanted.contains(type.name) && type.has(world, e.handle())) type.remove(world, e.handle());
+    }
+    for (const auto& [component, data] : wanted.items()) {
+        const ComponentType* type = registry.find(component);
+        if (type == nullptr) {
+            std::cerr << "[Escena] Componente desconocido \"" << component << "\" en " << e.name() << ": se ignora\n";
+            continue;
+        }
+        const bool has = type->has(world, e.handle());
+        if (has && before != nullptr) {
+            const auto it = before->find(component);
+            if (it != before->end() && *it == data) continue;  // igual que ahora
+        }
+        // Desde cero, como al leer la escena: nada del estado de ejecucion
+        // viejo (maquina del Animator, malla creada por codigo...). El
+        // Transform se escribe en su sitio (su version sigue subiendo).
+        if (has && component != "Transform") type->remove(world, e.handle());
+        if (!type->has(world, e.handle())) type->add(world, e.handle());
+        detail::JsonReader reader(data);
+        type->reflect(world, e.handle(), reader);
+    }
+    if (parent != nullptr) {
+        const auto it = record.find("parent");
+        *parent = it != record.end() && it->is_string() ? Uuid::parse(it->get<std::string>()) : Uuid{};
+    }
+    return true;
+}
+
+std::string assembleScene(const SceneHeader& header, std::span<const std::string* const> records) {
+    json head;
+    head["format"] = "CramionScene";
+    head["version"] = kSceneFormatVersion;
+    head["uuid"] = header.uuid.toString();
+    head["name"] = header.name;
+    if (header.origin != DVec3{}) head["origin"] = json::array({header.origin.x, header.origin.y, header.origin.z});
+    std::string out = head.dump();
+    std::size_t total = out.size() + 16;
+    for (const std::string* r : records) total += (r != nullptr ? r->size() : 0) + 1;
+    out.reserve(total);
+    out.pop_back();  // la '}' del final: las entidades van dentro
+    out += ",\"entities\":[";
+    bool first = true;
+    for (const std::string* r : records) {
+        if (r == nullptr || r->empty()) continue;
+        if (!first) out += ',';
+        out += *r;
+        first = false;
+    }
+    out += "]}";
+    return out;
 }
 
 }  // namespace cramion::ecs

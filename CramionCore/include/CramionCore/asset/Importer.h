@@ -8,6 +8,7 @@
 #include "CramionCore/asset/AssetTypes.h"
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -40,6 +41,8 @@ private:
     std::string stage_ = "En cola";
 };
 
+enum class ModelLodMode : std::uint8_t { Off = 0, Auto = 1, Manual = 2 };
+
 struct ModelImportSettings {
     // Personaje animado: una sola pieza con esqueleto y animaciones (no se
     // parte en nodos). Si es false, cada malla del archivo es una pieza con
@@ -64,7 +67,23 @@ struct ModelImportSettings {
     // eran 1600 objetos. false = siempre una pieza por nodo (jerarquia entera).
     bool combine_meshes = true;
     int combine_above_parts = 16;
+    // LODs del modelo (como el LOD Group de Unity o los LOD de Unreal):
+    //   Off    = sin LODs (las mallas _LOD1.._LODn del archivo se descartan);
+    //   Auto   = las _LOD1.._LODn del archivo si las hay; si no, automaticos
+    //            (meshoptimizer, al cargar);
+    //   Manual = solo las _LOD1.._LODn del archivo (sin ellas, ninguno).
+    ModelLodMode lod_mode = ModelLodMode::Auto;
 };
+
+// LODs de un .crdata: el modo y, por cada pieza con LODs hechos a mano, sus
+// piezas por nivel (la primera, LOD0; las demas no tienen nodo y solo sirven
+// de LOD). Lo escribe el importador en la cabecera y lo usa
+// AssetManager::readModel.
+struct ModelLodInfo {
+    ModelLodMode mode = ModelLodMode::Auto;
+    std::vector<std::vector<std::int32_t>> groups;
+};
+ModelLodInfo modelLodInfo(const std::string& settings_json);
 
 struct ImportResult {
     bool ok = false;

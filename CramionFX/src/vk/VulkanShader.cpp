@@ -85,7 +85,10 @@ vk::raii::ShaderModule loadModule(const VulkanDevice& device, const std::string&
     vk::ShaderModuleCreateInfo create_info{};
     create_info.setCode(code);
 
-    return vk::raii::ShaderModule(device.handle(), create_info);
+    vk::raii::ShaderModule module(device.handle(), create_info);
+    // El nombre del archivo, para RenderDoc/Nsight/validacion (nada sin ella).
+    device.setObjectName(*module, file_name.c_str());
+    return module;
 }
 
 }  // namespace cramion::gfx::shaders

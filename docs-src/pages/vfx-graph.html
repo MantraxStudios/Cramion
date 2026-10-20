@@ -41,6 +41,45 @@ entity().setEffectColor("Color", Vec3{1, 0.4f, 0.1f}, 1.0f);
 entity().sendEffectEvent("Explode");   // bloque Spawn "Al recibir un evento"
 entity().stopEffect(false);             // deja de emitir (true = borra las que hay)</code></pre>
 
+<h3 id="salidas">Salidas: quads, cintas y mallas</h3>
+<ul>
+  <li><strong>Quads</strong>: de cara a la cámara con flipbook. <em>Fundir cuadros</em> mezcla cada cuadro con el siguiente (sin saltos)
+    y el bloque <em>Cuadro del flipbook</em> admite velocidad al azar por partícula.</li>
+  <li><strong>Cinta</strong>: une las vivas en una estela. Suavizado (tensión, 1-16 subdivisiones, adaptativas), orientación
+    Cámara / Emisor / Vector propio / Lado propio con giro, y UV <em>Estirar</em>, <em>Distancia</em> (la textura no resbala)
+    o <em>Edad</em>. El bloque Initialize <em>Atributos de cinta</em> da varias tiras paralelas en un mismo emisor. Al destruir
+    el objeto, la cola se apaga sola. Plantilla: <em>Estela de proyectil</em>.</li>
+  <li><strong>Malla 3D</strong>: un modelo por partícula y hasta 3 más (bloque <em>Índice de malla</em> o un nivel cada tantos m),
+    un quad a partir de cierta distancia, orientación Al azar / Velocidad / Fija (con rotación) / Hacia la cámara, escala al
+    azar por eje, bloque Update <em>Velocidad de giro</em> y un <code>.crmat</code> (color, textura, emisión, opaco, alfa o
+    aditivo, sin luz). No proyectan sombra.</li>
+  <li><strong>Distorsión</strong> (mezcla): deforma lo que hay detrás, en px a 1080p, con la textura como mapa de normales o de
+    alturas (sin textura, una lente blanda). <code>render.vfx.Distortion</code>; apagada en calidad Baja.</li>
+  <li><strong>Luz por partícula</strong> (bloque Output): las vivas iluminan el mundo con las luces por clústeres, sin sombra.
+    Radio, intensidad, caída física o lineal, máximo por emisor y prioridad. Tope global <code>render.vfx.MaxParticleLights</code>
+    (32) y por calidad (Baja 8, Media 16).</li>
+</ul>
+
+<h3 id="eventos">Eventos de la GPU y canales</h3>
+<p>
+  Los bloques Update <em>Emitir al morir</em>, <em>Emitir al chocar</em> y <em>Emitir cada t s</em> apuntan un evento
+  {tipo, posición, velocidad, color, valor} en un <strong>canal</strong> con nombre; el bloque Spawn <em>Al recibir un evento
+  de la GPU</em> de otro efecto hace nacer partículas en ese punto, sin pasar por la CPU (un frame después). Hasta 8 canales y
+  2048 eventos por canal y frame. Los scripts escriben en el mismo canal:
+</p>
+<pre><code class="language-cpp">Effects::pushEvent("Impactos", 1, hit_point, Vec3{0, 2, 0}, Vec3{1, 0.6f, 0.2f}, 1.0f);</code></pre>
+
+<h3 id="escalabilidad">Escalabilidad por tipo de efecto</h3>
+<p>
+  En <em>Escalabilidad</em> cada efecto dice qué es: <strong>Héroe</strong> (los del jugador), <strong>Combate</strong>,
+  <strong>Impacto</strong> o <strong>Ambiente</strong>. La calidad y la plataforma deciden para cada tipo la distancia máxima,
+  cuántos a la vez, cuántas partículas y qué salidas caras se apagan, y qué pasa al pasarse: no crear, quitar los más lejanos o
+  pausarlos. <em>Sin tipo</em> (lo de siempre) no tiene límites. También: orden de dibujo, caja fija para recortar por la vista
+  y ráfagas repartidas en varios frames. CVars: <code>vfx.scalability</code>, <code>vfx.quality</code>,
+  <code>vfx.platform</code>, <code>vfx.timeScale</code>, <code>vfx.prewarmFrames</code>, <code>vfx.curlNoiseBaked</code>.
+  El MCP <code>vfx_control</code> da las estadísticas por tipo (<code>stats</code>).
+</p>
+
 <h3 id="componente">Componente Visual Effect</h3>
 <ul>
   <li><strong>Efecto</strong>: el <code>.crvfx</code> (arrástralo desde el Proyecto).</li>

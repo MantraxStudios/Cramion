@@ -32,6 +32,7 @@ std::shared_ptr<ecs::Mesh> meshOf(const api::Value& v);
 
 void registerDebugApi(Runtime& rt);          // Debug.*, print
 void registerCoreApi(Runtime& rt);           // Time, Scene, Prefs, Game, Profiler, CVar, Physics, Audio, Random
+void registerSceneStreamingApi(Runtime& rt);  // Scene.instantiateAsync, Scene.destroyDeferred (sin tirones)
 void registerConsole(Runtime& rt);           // ScriptSystem::run (consola)
 void registerEntityApi(Runtime& rt);         // Entity (transformacion, componentes, fisica, sonido, UI...)
 void registerRigApi(Runtime& rt);            // huesos, IK, ragdoll, sockets, navegacion, CharacterController
@@ -56,6 +57,7 @@ void registerVideoApi(Runtime& rt);          // Entity:video*, Video, eventos On
 inline void registerAll(Runtime& rt) {
     registerDebugApi(rt);
     registerCoreApi(rt);
+    registerSceneStreamingApi(rt);
     registerConsole(rt);
     registerEntityApi(rt);
     registerRigApi(rt);

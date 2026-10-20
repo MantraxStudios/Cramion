@@ -406,7 +406,13 @@ void pipelineBarrier(const vk::raii::CommandBuffer& cmd, const vk::DependencyInf
                         images);
 }
 
-vk::raii::Pipeline makeGraphicsPipeline(const VulkanDevice& device, vk::GraphicsPipelineCreateInfo info) {
+vk::raii::Pipeline makeGraphicsPipeline(const VulkanDevice& device, vk::GraphicsPipelineCreateInfo info,
+                                        const char* name) {
+    // (Con nombre: se pone en cuanto existe el pipeline.)
+    const auto named = [&](vk::raii::Pipeline pipeline) {
+        if (name != nullptr) device.setObjectName(*pipeline, name);
+        return pipeline;
+    };
     State& s = state();
     if (!s.caps.dynamic_rendering && info.renderPass == VK_NULL_HANDLE) {
         // Busca el VkPipelineRenderingCreateInfo en la cadena y lo quita.
@@ -447,11 +453,11 @@ vk::raii::Pipeline makeGraphicsPipeline(const VulkanDevice& device, vk::Graphics
                     vk::BaseOutStructure* next;
                     ~Restore() { node->pNext = next; }
                 } restore{patched, original};
-                return vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+                return named(vk::raii::Pipeline(device.handle(), device.pipelineCache(), info));
             }
         }
     }
-    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+    return named(vk::raii::Pipeline(device.handle(), device.pipelineCache(), info));
 }
 
 VkRenderPass compatibleRenderPass(const std::vector<vk::Format>& colors, vk::Format depth) {

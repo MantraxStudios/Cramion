@@ -141,6 +141,12 @@ bool applyLightmapUvs(asset::ModelData& model, const LightmapUvLayout& layout) {
         const asset::SkinnedVertex copy = vertices[layout.duplicates[i]];
         vertices.push_back(copy);
     }
+    // El color de vertice de los duplicados, el de su original.
+    if (added > 0 && model.vertex_colors.size() == vertex_count) {
+        std::vector<std::uint32_t>& colors = model.vertex_colors.mut();
+        colors.reserve(vertex_count + added);
+        for (std::size_t i = 0; i < added; ++i) colors.push_back(colors[layout.duplicates[i]]);
+    }
     if (!layout.patch_corner.empty()) {
         std::vector<std::uint32_t>& indices = model.indices.mut();
         for (std::size_t j = 0; j < layout.patch_corner.size(); ++j) indices[layout.patch_corner[j]] = layout.patch_vertex[j];

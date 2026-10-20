@@ -6,6 +6,12 @@
 
 namespace cramion::gfx {
 
+// vfx.frag declara el principio de GpuLights (sol, ambiente, 32 + 8 luces) y
+// de GpuShadows; VfxPass enlaza solo ese tramo.
+static_assert(sizeof(GpuLights) >= 6 * 16 + 32 * 48 + 8 * 64, "vfx.frag lee mas de lo que tiene GpuLights");
+static_assert(sizeof(GpuShadows) >= 4 * 64 + 3 * 16, "vfx.frag lee mas de lo que tiene GpuShadows");
+static_assert(scene::kMaxPointLights == 32 && scene::kMaxSpotLights == 8, "vfx.frag declara 32 puntuales y 8 focos");
+
 void VulkanRenderer::recordVfxPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
     const vk::Extent2D extent = scene_color_.extent();
     if (extent.width == 0 || extent.height == 0) return;
@@ -16,8 +22,26 @@ void VulkanRenderer::recordVfxPass(const vk::raii::CommandBuffer& cmd, std::uint
     view.view_projection = camera_view_projection_;
     view.camera_position = camera_position_;
     view.light = precipitation_light_;
+    view.to_sun = ibl_to_light_;  // (las mallas iluminadas)
     view.extent = gbuffer_.depth().extent();
     view.scene_depth = *gbuffer_.depth().view();
+    // Luz real de los "lit": las luces, las cascadas y los clusteres de este
+    // hueco de frame (VfxPass reescribe los descriptores en cada prepare, asi
+    // que valen aunque los clusteres hayan crecido).
+    view.ambient = vfx_ambient_light_;
+    if (frame_index < light_buffers_.size() && light_buffers_[frame_index].isValid()) {
+        view.lights = *light_buffers_[frame_index].handle();
+    }
+    if (frame_index < shadow_buffers_.size() && shadow_buffers_[frame_index].isValid()) {
+        view.shadows = *shadow_buffers_[frame_index].handle();
+    }
+    view.shadow_map = *shadow_map_.image().view();
+    view.shadow_sampler = *shadow_map_.sampler();
+    if (frame_index < cluster_light_buffers_.size() && cluster_light_buffers_[frame_index].isValid() &&
+        frame_index < cluster_grid_buffers_.size() && cluster_grid_buffers_[frame_index].isValid()) {
+        view.cluster_lights = *cluster_light_buffers_[frame_index].handle();
+        view.cluster_grid = *cluster_grid_buffers_[frame_index].handle();
+    }
     // Las vistas secundarias (vista Juego, sondas) solo dibujan: la
     // simulacion avanza una vez por frame con la vista principal.
     const bool simulate = !isolated() && !xrSecondEye();  // una vez por frame (en VR, el primer ojo)

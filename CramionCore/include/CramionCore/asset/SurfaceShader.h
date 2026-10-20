@@ -19,6 +19,19 @@
 //
 //   void vertex(inout Vertex v) { ... }   // opcional
 //
+//   domain transparent   // opcional: forward, sobre la imagen ya iluminada
+//
+// vertex() tambien mueve la sombra (surface_shadow.vert) y se evalua otra vez
+// con la pose y el tiempo del frame anterior (TIME - DELTA_TIME) para los
+// vectores de movimiento. Con `domain transparent` el material se dibuja en
+// la pasada del vidrio (surface_forward.frag, sin luz: albedo * alpha +
+// emision, premultiplicado) y puede leer sceneColor(uv), sceneDepth(uv),
+// sceneLinearDepth(uv), sceneWorldPosition(uv), sceneEmission(uv),
+// depthFade(s, m) y SCREEN_UV: distorsion de calor, ondas de choque,
+// refraccion, escudos. Librerias en los dos stages: noise/fbm (las de
+// siempre), gradientNoise(D), simplexNoise, fbmNoise, ridgedNoise, voronoi,
+// curlNoise, random, pcgHash (surface_common.glsl).
+//
 // Propiedades: float, range (min, max), color, vector (hasta 8 en total) y
 // texture (hasta 4). Se leen por su nombre en el codigo y se editan en el
 // material (.crmat) que usa el shader.
@@ -38,6 +51,18 @@ inline constexpr int kMaxShaderTextures = 4;  // texture
 
 enum class ShaderPropertyType { Float, Range, Color, Vector, Texture };
 
+// Donde se dibuja: el G-buffer (lo de siempre, recibe toda la luz) o la
+// pasada forward de lo transparente (lee el color y la profundidad de la
+// escena). Los dos pueden ir sin luz (SurfaceShaderSource::unlit).
+enum class SurfaceDomain { Opaque, Transparent };
+
+// Que plantilla monta generateSurfaceGlsl.
+enum class SurfaceStage {
+    Vertex,        // surface.vert
+    Fragment,      // surface.frag (opaco) o surface_forward.frag (transparente)
+    ShadowVertex,  // surface_shadow.vert (solo con vertex())
+};
+
 struct ShaderProperty {
     std::string name;
     ShaderPropertyType type = ShaderPropertyType::Float;
@@ -53,6 +78,19 @@ struct SurfaceShaderSource {
     std::vector<ShaderProperty> properties;
     std::string code;  // el codigo, sin las lineas "property" (mismas lineas)
     bool has_vertex = false;
+    SurfaceDomain domain = SurfaceDomain::Opaque;  // linea "domain transparent"
+    // Sin luz: "domain unlit" (opaco: modelo 8 del G-buffer, color tal cual mas
+    // emision) o "domain transparent unlit" (lo transparente sin sol, luces ni
+    // sonda). "domain transparent" a secas va iluminado.
+    bool unlit = false;
+};
+
+// SPIR-V de un .crshader. shadow_vertex vacio: sin vertex() (la sombra es la
+// estandar).
+struct SurfaceShaderPrograms {
+    std::vector<std::uint32_t> vertex;
+    std::vector<std::uint32_t> fragment;
+    std::vector<std::uint32_t> shadow_vertex;
 };
 
 // Lee un .crshader. Los errores llevan "archivo:linea: ...".
@@ -65,21 +103,33 @@ bool loadSurfaceShader(const std::filesystem::path& file, SurfaceShaderSource& o
 // usuario y las propiedades como #define.
 bool generateSurfaceGlsl(const SurfaceShaderSource& shader, bool vertex_stage, const std::filesystem::path& template_dir,
                          std::string& glsl, std::string* error = nullptr);
+bool generateSurfaceGlsl(const SurfaceShaderSource& shader, SurfaceStage stage, const std::filesystem::path& template_dir,
+                         std::string& glsl, std::string* error = nullptr);
 
 // Genera y compila los dos stages a SPIR-V (shaderc). Los errores de
 // compilacion apuntan a las lineas del .crshader.
 bool compileSurfaceShader(const SurfaceShaderSource& shader, const std::filesystem::path& template_dir,
                           std::vector<std::uint32_t>& vertex_spirv, std::vector<std::uint32_t>& fragment_spirv,
                           std::string* error = nullptr);
+// Los dos stages y, con vertex(), el de la sombra.
+bool compileSurfaceShader(const SurfaceShaderSource& shader, const std::filesystem::path& template_dir,
+                          SurfaceShaderPrograms& programs, std::string* error = nullptr);
 
 // SPIR-V ya compilado junto al .crshader (<archivo>.vert.spv y .frag.spv):
 // el juego exportado a Android no tiene compilador y usa estos (los escribe
 // el editor al exportar con writePrecompiledSurfaceShader).
 bool loadPrecompiledSurfaceShader(const std::filesystem::path& crshader, std::vector<std::uint32_t>& vertex_spirv,
                                   std::vector<std::uint32_t>& fragment_spirv);
+// Igual, y la sombra (<archivo>.shadow.vert.spv) si esta: sin ella, la
+// estandar.
+bool loadPrecompiledSurfaceShader(const std::filesystem::path& crshader, SurfaceShaderPrograms& programs);
 bool writePrecompiledSurfaceShader(const std::filesystem::path& vertex_file, const std::filesystem::path& fragment_file,
                                    const std::vector<std::uint32_t>& vertex_spirv,
                                    const std::vector<std::uint32_t>& fragment_spirv);
+// La sombra precompilada (<archivo>.shadow.vert.spv): solo si el .crshader
+// tiene vertex() y es opaco (programs.shadow_vertex no vacio).
+bool writePrecompiledSurfaceShadow(const std::filesystem::path& shadow_file,
+                                   const std::vector<std::uint32_t>& shadow_spirv);
 
 // shaders/source junto al ejecutable.
 std::filesystem::path surfaceTemplateDirectory();

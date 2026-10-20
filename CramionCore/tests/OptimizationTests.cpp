@@ -7,6 +7,9 @@
 //     sin emitir.
 //   - Perfilador de los scripts: zona por fase, contador y aviso al pasarse
 //     de scripts.BudgetMs.
+//   - JobSystem con excepciones: se registran con el nombre de la tarea, el
+//     grupo termina igual, wait y parallelFor las vuelven a lanzar y los
+//     hilos siguen vivos.
 // Devuelve 0 si todo va.
 
 #include "CramionCore/cvar/CVar.h"
@@ -20,11 +23,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -396,6 +402,103 @@ void rayoDeLosPies() {
     physics.stop();
 }
 
+std::mutex g_job_log_mutex;
+std::vector<std::string> g_job_log;
+
+void jobLog(const std::string& line, bool) {
+    std::lock_guard<std::mutex> lock(g_job_log_mutex);
+    g_job_log.push_back(line);
+}
+
+bool jobLogHas(const std::string& text) {
+    std::lock_guard<std::mutex> lock(g_job_log_mutex);
+    for (const std::string& l : g_job_log) {
+        if (l.find(text) != std::string::npos) return true;
+    }
+    return false;
+}
+
+void jobExceptions() {
+    std::printf("JobSystem con excepciones\n");
+    jobs::setFailureReport(&jobLog);
+    const std::uint64_t failed_before = jobs::stats().failed;
+
+    // Una tarea sola: wait vuelve a lanzar la excepcion en quien espera.
+    const jobs::JobHandle one =
+        jobs::schedule([] { throw std::runtime_error("roto a proposito"); }, nullptr, jobs::Priority::Normal, "PruebaRota");
+    std::string caught;
+    try {
+        jobs::wait(one);
+    } catch (const std::runtime_error& e) {
+        caught = e.what();
+    }
+    check(caught == "roto a proposito" && one->done() && one->failed(), "wait vuelve a lanzar la excepcion de la tarea");
+    check(jobLogHas("PruebaRota") && jobLogHas("roto a proposito"), "el aviso lleva el nombre de la tarea y el motivo");
+
+    // Un grupo con varias que lanzan: el contador llega a 0 (wait no se cuelga).
+    jobs::JobHandle group = std::make_shared<jobs::JobCounter>();
+    std::atomic<int> ran{0};
+    for (int i = 0; i < 16; ++i) {
+        jobs::schedule(
+            [i, &ran] {
+                ran.fetch_add(1);
+                if (i % 5 == 0) throw std::logic_error("grupo");
+            },
+            group, jobs::Priority::Normal, "PruebaGrupo");
+    }
+    bool group_threw = false;
+    try {
+        jobs::wait(group);
+    } catch (const std::logic_error&) {
+        group_threw = true;
+    }
+    check(group_threw && group->done() && ran.load() == 16, "grupo con 4 fallos: terminan todas y wait lanza una vez");
+
+    // parallelFor: falla un trozo de otro hilo o el propio (el 0); en los dos
+    // casos sale la excepcion y ningun trozo sigue corriendo al salir.
+    for (const std::size_t bad : {std::size_t{0}, std::size_t{7000}}) {
+        std::atomic<int> running{0};
+        std::atomic<std::size_t> done_items{0};
+        bool threw = false;
+        int running_at_catch = -1;
+        try {
+            jobs::parallelFor(10000, 64, [&](std::size_t begin, std::size_t end) {
+                running.fetch_add(1);
+                busy(0.2);
+                if (bad >= begin && bad < end) {
+                    running.fetch_sub(1);
+                    throw std::runtime_error("trozo roto");
+                }
+                done_items.fetch_add(end - begin);
+                running.fetch_sub(1);
+            });
+        } catch (const std::runtime_error&) {
+            threw = true;
+            running_at_catch = running.load();
+        }
+        check(threw && running_at_catch == 0 && done_items.load() < 10000,
+              bad == 0 ? "parallelFor: el trozo propio lanza y se espera a los demas"
+                       : "parallelFor: un trozo de otro hilo lanza y sale en quien llama");
+    }
+
+    // Sin nadie que espere (disco): solo el aviso, y el proceso sigue.
+    const jobs::JobHandle io =
+        jobs::scheduleIo([] { throw 42; }, jobs::Priority::Background, "PruebaDiscoRota");
+    while (!io->done()) std::this_thread::yield();
+    check(io->failed() && jobLogHas("PruebaDiscoRota") && jobLogHas("desconocida"),
+          "tarea de disco que lanza algo que no es std::exception: aviso y sigue");
+
+    // Los hilos siguen vivos tras los fallos.
+    std::atomic<int> alive{0};
+    jobs::parallelFor(4096, 16, [&](std::size_t b, std::size_t e) { alive.fetch_add(static_cast<int>(e - b)); });
+    // 1 + 4 del grupo + 1 trozo de otro hilo + 1 de disco (sin hilos,
+    // parallelFor lanza en el que llama y no cuenta como tarea).
+    const std::uint64_t expected = jobs::workerCount() > 0 ? 7 : 6;
+    check(alive.load() == 4096 && jobs::stats().failed >= failed_before + expected,
+          "los trabajadores siguen vivos y stats().failed cuenta los fallos");
+    jobs::setFailureReport(nullptr);
+}
+
 }  // namespace
 
 int main() {
@@ -405,6 +508,7 @@ int main() {
     scriptsProfiler();
     sueloDelIK();
     rayoDeLosPies();
+    jobExceptions();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

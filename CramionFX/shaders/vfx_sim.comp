@@ -8,9 +8,15 @@
 //   RESET    todas muertas en la pila del efecto
 //   BEGIN    vivas del dibujo a 0 (un hilo por efecto)
 //   EMIT     un hilo por particula nueva: sale de la pila, bloques Initialize
+//   EMIT_EVENTS  un hilo por evento recibido (lo apunto otro efecto el frame
+//            anterior al morir o chocar una de sus particulas): nacen en su
+//            posicion y con su velocidad
 //   UPDATE   un hilo por particula del rango: bloques Update (fuerzas),
 //            integracion, colisiones; muere (vuelve a la pila) o pasa a la
-//            lista de vivas del dibujo indirecto
+//            lista de vivas del dibujo indirecto; los bloques Trigger apuntan
+//            eventos en la lista de otro efecto; los Emit*, en un canal
+//   EMIT_CHANNEL  dispatch indirecto, un hilo por evento del canal que
+//            escucha (del frame anterior; de otros efectos o de scripts)
 
 layout(local_size_x = 64) in;
 
@@ -70,6 +76,48 @@ vec3 curlNoise(vec3 p, int octaves) {
     return vec3(dy.z - dz.y, dz.x - dx.z, dx.y - dy.x) / (2.0 * e);
 }
 
+// Ruido rizado horneado (VfxPass: bakeVfxCurlVolume): 32^3 que se repite, el
+// texel i es el campo en q = i / 4 (8 celdas de ruido por vuelta). Una
+// lectura trilineal por octava en q * 2^o (el peso 0.5^o y la frecuencia 2^o
+// se cancelan en el rotacional): 8 lecturas contra ~150 hashes del calculado.
+layout(std430, set = 0, binding = 24) readonly buffer CurlVolume { vec4 curl_volume[]; };
+
+// Salida Luz (luces de particula; ver emitParticleLight). MISMOS numeros que
+// VfxPass::kMaxLightCandidates / kMaxInstances y kParticleLightBinding.
+const uint VFX_MAX_LIGHT_CANDIDATES = 1024u;
+layout(std430, set = 0, binding = 26) buffer VfxLightOut {
+    uvec4 light_header;
+    vec4 light_params[256];
+    uvec4 light_items[];
+};
+
+vec3 curlFetch(ivec3 c) {
+    c &= ivec3(31);
+    return curl_volume[(c.z * 32 + c.y) * 32 + c.x].xyz;
+}
+
+vec3 curlSample(vec3 q) {
+    vec3 t = q * 4.0;
+    vec3 i = floor(t);
+    vec3 f = t - i;
+    ivec3 c = ivec3(i);
+    vec3 x00 = mix(curlFetch(c), curlFetch(c + ivec3(1, 0, 0)), f.x);
+    vec3 x10 = mix(curlFetch(c + ivec3(0, 1, 0)), curlFetch(c + ivec3(1, 1, 0)), f.x);
+    vec3 x01 = mix(curlFetch(c + ivec3(0, 0, 1)), curlFetch(c + ivec3(1, 0, 1)), f.x);
+    vec3 x11 = mix(curlFetch(c + ivec3(0, 1, 1)), curlFetch(c + ivec3(1, 1, 1)), f.x);
+    return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
+}
+
+vec3 curlBaked(vec3 p, int octaves) {
+    vec3 sum = vec3(0.0);
+    float frequency = 1.0;
+    for (int o = 0; o < octaves; ++o) {
+        sum += curlSample(p * frequency);
+        frequency *= 2.0;
+    }
+    return sum;
+}
+
 // ---------------------------------------------------------------------------
 // Espacios: los bloques dan posiciones en el espacio del EMISOR (como el
 // "Local" de Unity) y la gravedad/viento en el del MUNDO. La simulacion va
@@ -119,6 +167,8 @@ void stageReset(uint slot) {
         uint base = instances[slot].range.z * 8u;
         counters[base + 0u] = int(capacity);
         counters[base + 1u] = 0;
+        counters[base + 2u] = 0;
+        counters[base + 3u] = 0;
         counters[base + 4u] = 6;
         counters[base + 5u] = 0;
         counters[base + 6u] = 0;
@@ -141,31 +191,64 @@ void stageReset(uint slot) {
 void stageBegin() {
     uint slot = gl_GlobalInvocationID.x;
     if (slot >= push.count) return;
+    if (slot == 0u) light_header.x = 0u;  // Salida Luz: candidatas de este frame
     uint base = slot * 8u;
     counters[base + 1u] = 0;
-    counters[base + 4u] = 6;
+    // Vertices por instancia del dibujo indirecto: 6 (un quad o un segmento
+    // de cinta) o los indices de la malla.
+    // Cinta suavizada: 6 por tramo (ribbon0.y tramos por segmento).
+    int vertices = 6;
+    if (instances[slot].extra.x == VFX_OUT_MESH) {
+        vertices = int(instances[slot].extra.z);
+    } else if (instances[slot].extra.x == VFX_OUT_RIBBON) {
+        vertices = 6 * clamp(int(abs(instances[slot].ribbon0.y) + 0.5), 1, 16);
+    }
+    counters[base + 4u] = vertices;
     counters[base + 5u] = 0;
     counters[base + 6u] = 0;
     counters[base + 7u] = 0;
+    // Los eventos de este frame empiezan de cero (los del anterior los lee
+    // EMIT_EVENTS en el otro contador).
+    counters[base + 2u + (push.pad & 1u)] = 0;
+    // Canales de datos (solo si alguien escucha): los de este frame a cero,
+    // el dispatch indirecto de los que escuchan con los del anterior (un
+    // hilo por evento) y las nacidas por cada bloque de escucha a cero.
+    if ((push.pad & VFX_PAD_CHANNELS) != 0u) {
+        if (slot < VFX_MAX_CHANNELS) {
+            uint cb = VFX_CHANNEL_COUNTERS + slot * 8u;
+            uint write = push.pad & 1u;
+            counters[cb + write] = 0;
+            int pending = clamp(counters[cb + (write ^ 1u)], 0, int(VFX_MAX_CHANNEL_EVENTS));
+            counters[cb + 4u] = (pending + 63) / 64;
+            counters[cb + 5u] = 1;
+            counters[cb + 6u] = 1;
+        }
+        for (uint k = 0u; k < VFX_MAX_LISTENS; ++k) counters[VFX_LISTEN_COUNTERS + slot * VFX_MAX_LISTENS + k] = 0;
+    }
 }
 
 // ---------------------------------------------------------------------------
 // EMIT
 // ---------------------------------------------------------------------------
 
-void stageEmit(uint slot) {
-    uint i = gl_GlobalInvocationID.x;
-    if (i >= instances[slot].range.w) return;
+// Saca una particula de la pila del efecto. false: no queda ninguna
+// (capacidad llena), no nace.
+bool popDead(uint slot, out uint p) {
     uint base = instances[slot].range.z * 8u;
     int top = atomicAdd(counters[base + 0u], -1);
     if (top <= 0) {
-        atomicAdd(counters[base + 0u], 1);  // pila vacia: no nace (capacidad llena)
-        return;
+        atomicAdd(counters[base + 0u], 1);
+        p = 0u;
+        return false;
     }
-    uint offset = instances[slot].range.x;
-    uint p = dead_list[offset + uint(top - 1)];
+    p = dead_list[instances[slot].range.x + uint(top - 1)];
+    return true;
+}
 
-    uint seed = vfxHash(instances[slot].flags.x ^ vfxHash(instances[slot].flags.y * 9781u + i * 6271u));
+// Una particula nueva en `p`: los bloques Initialize. Con evento, el emisor
+// es un punto del mundo sin giro (la posicion del evento) y la velocidad que
+// se hereda es la del evento (los que reciben eventos simulan en el mundo).
+void spawnParticle(uint slot, uint p, uint seed, bool from_event, vec3 event_position, vec3 event_velocity) {
     vec3 pos = vec3(0.0);
     vec3 vel = vec3(0.0);
     vec3 shape_dir = vec3(0.0, 1.0, 0.0);
@@ -176,6 +259,11 @@ void stageEmit(uint slot) {
     float spin = 0.0;
     float frame0 = 0.0;
     bool positioned = false;
+    // Cinta (RibbonAttributes): su id, su giro y el desplazamiento de su tira.
+    uint ribbon_id = 0u;
+    float ribbon_twist = 0.0;
+    vec3 ribbon_offset = vec3(0.0);
+    bool ribbon_attributes = false;
 
     uint first = instances[slot].blocks.x;
     uint count = instances[slot].blocks.y;
@@ -274,32 +362,153 @@ void stageEmit(uint slot) {
         } else if (type == B_ROTATION) {
             rotation = vfxRange(seed, k.a.x, k.a.y) * 0.0174532925;
             spin = vfxRange(seed, k.a.z, k.a.w) * 0.0174532925;
+        } else if (type == B_MESH_INDEX) {
+            // Variante de la salida Malla (en el hueco del cuadro inicial: las
+            // mallas no usan flipbook).
+            frame0 = floor(vfxRange(seed, max(k.a.x, 0.0), max(k.a.y, k.a.x) + 0.999));
         } else if (type == B_FLIPBOOK_FRAME) {
             frame0 = floor(vfxRange(seed, k.a.x, k.a.y + 0.999));
+            // Velocidad por particula (+-a.z) en la fraccion: velocidad - 0.5
+            // (0 = sin variacion; los .crvfx de antes no tiran el dado).
+            float variation = clamp(k.a.z, 0.0, 0.5);
+            if (variation > 0.0) {
+                float speed = 1.0 + variation * (vfxRand(seed) * 2.0 - 1.0);
+                frame0 += clamp(speed - 0.5, 0.001, 0.999);
+            }
+        } else if (type == B_RIBBON_ATTRIBUTES) {
+            // Tiras: el orden de nacimiento en este frame las reparte.
+            uint strands = uint(clamp(k.a.y, 1.0, 256.0));
+            uint strand = gl_GlobalInvocationID.x % strands;
+            ribbon_id = min(uint(clamp(k.a.x, 0.0, 255.0)) + strand, 255u);
+            if (k.a.z > 0.0) size = k.a.z;
+            ribbon_twist = vfxRange(seed, k.a.w, k.b.x) * 0.0174532925;
+            ribbon_offset = k.b.yzw * (float(strand) - float(strands - 1u) * 0.5);
+            ribbon_attributes = true;
         }
+    }
+    // Tiras paralelas: cada una corrida su parte de la separacion.
+    if (ribbon_attributes) {
+        pos += ribbon_offset;
+        positioned = positioned || dot(ribbon_offset, ribbon_offset) > 0.0;
     }
 
-    // A la simulacion: las posiciones y direcciones del emisor.
-    vec3 sim_pos = pointToSim(slot, positioned ? pos : vec3(0.0));
-    vec3 sim_vel = dirToSim(slot, vel);
-    // Heredar la velocidad del emisor (despues de pasar al mundo).
+    // A la simulacion: las posiciones y direcciones del emisor (o del evento).
+    vec3 sim_pos = from_event ? event_position + (positioned ? pos : vec3(0.0))
+                              : pointToSim(slot, positioned ? pos : vec3(0.0));
+    vec3 sim_vel = from_event ? vel : dirToSim(slot, vel);
+    // Heredar la velocidad del emisor o del evento (despues de pasar al mundo).
+    vec3 inherited = from_event ? event_velocity : worldDirToSim(slot, instances[slot].emitter_velocity.xyz);
     for (uint b = first; b < first + count; ++b) {
-        if (blocks[b].info.x == B_INHERIT_VELOCITY) {
-            sim_vel += worldDirToSim(slot, instances[slot].emitter_velocity.xyz) * blocks[b].a.x;
-        }
+        if (blocks[b].info.x == B_INHERIT_VELOCITY) sim_vel += inherited * blocks[b].a.x;
     }
-    // Nacen repartidas dentro del frame (sin "capas" con mucho caudal).
+    // Nacen repartidas dentro del frame (sin "capas" con mucho caudal). Las de
+    // los eventos, en el instante del evento.
     float dt = instances[slot].time.x;
-    float early = vfxRand(seed) * dt;
+    float early = from_event ? 0.0 : vfxRand(seed) * dt;
     sim_pos += sim_vel * early;
+    // Y donde estaba el emisor en ese instante (cintas, caudal por distancia):
+    // sin esto las de un frame salian todas del mismo punto y la estela de un
+    // emisor rapido iba a escalones.
+    bool interpolate = !from_event && worldSpace(slot) && (instances[slot].flags.z & VFX_INTERPOLATE) != 0u;
+    if (interpolate) sim_pos -= instances[slot].emitter_velocity.xyz * early;
     // UPDATE quitara el desplazamiento del origen de este frame: estas ya
-    // nacieron en las coordenadas nuevas.
-    if (worldSpace(slot)) sim_pos += instances[slot].shift.xyz;
+    // nacieron en las coordenadas nuevas (las de un evento no: su posicion es
+    // de cuando se apunto, el frame anterior).
+    if (worldSpace(slot) && !from_event) sim_pos += instances[slot].shift.xyz;
+
+    // Cinta: en el giro, su id y el eje "de cara al emisor" (su Y en el mundo
+    // al nacer) empaquetados; en la velocidad de giro, el giro de la cinta
+    // (RibbonAttributes); y la U por longitud (los metros que llevaba el
+    // emisor, en repeticiones de la textura).
+    if (instances[slot].extra.x == VFX_OUT_RIBBON) {
+        vec3 axis = mat3(instances[slot].local_to_world) * vec3(0.0, 1.0, 0.0);
+        rotation = vfxRibbonPack(ribbon_id, length(axis) > 1e-6 ? normalize(axis) : vec3(0.0, 1.0, 0.0));
+        spin = ribbon_twist;
+        float travelled = instances[slot].output2.y -
+                          (interpolate ? length(instances[slot].emitter_velocity.xyz) * early : 0.0);
+        frame0 = travelled / max(instances[slot].output2.x, 1e-3);
+    }
 
     particles[p * 4u + 0u] = vec4(sim_pos, early);
     particles[p * 4u + 1u] = vec4(sim_vel, lifetime);
     particles[p * 4u + 2u] = color;
     particles[p * 4u + 3u] = vec4(size, rotation, spin, frame0);
+}
+
+void stageEmit(uint slot) {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= instances[slot].range.w) return;
+    uint p;
+    if (!popDead(slot, p)) return;
+    uint seed = vfxHash(instances[slot].flags.x ^ vfxHash(instances[slot].flags.y * 9781u + i * 6271u));
+    spawnParticle(slot, p, seed, false, vec3(0.0), vec3(0.0));
+}
+
+// ---------------------------------------------------------------------------
+// EMIT_EVENTS (un hilo por evento, como mucho VFX_MAX_EVENTS)
+// ---------------------------------------------------------------------------
+
+void stageEmitEvents(uint slot) {
+    uint e = gl_GlobalInvocationID.x;
+    uint list = instances[slot].extra.w;
+    if (list == VFX_NO_EVENTS || e >= VFX_MAX_EVENTS) return;
+    // Los que se apuntaron el frame anterior (el otro contador).
+    uint read = (push.pad & 1u) ^ 1u;
+    uint base = instances[slot].range.z * 8u;
+    uint received = uint(clamp(counters[base + 2u + read], 0, int(VFX_MAX_EVENTS)));
+    if (e >= received) return;
+    uint index = vfxEventIndex(list, read, e);
+    vec4 E0 = events[index];
+    vec4 E1 = events[index + 1u];
+    uint n = uint(clamp(E0.w, 0.0, 64.0));
+    for (uint k = 0u; k < n; ++k) {
+        uint p;
+        if (!popDead(slot, p)) return;
+        uint seed = vfxHash(instances[slot].flags.x ^ vfxHash(instances[slot].flags.y * 7027u + e * 131u + k * 7919u + 17u));
+        spawnParticle(slot, p, seed, true, E0.xyz, E1.xyz);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EMIT_CHANNEL (dispatch indirecto: un hilo por evento del canal del frame
+// anterior). push.count = el bloque de escucha (detras de los Update).
+// ---------------------------------------------------------------------------
+
+void stageEmitChannel(uint slot) {
+    uint listen = push.count;
+    if (listen >= VFX_MAX_LISTENS) return;
+    VfxBlock L = blocks[instances[slot].blocks.z + instances[slot].blocks.w + listen];
+    if (L.info.x != B_ON_GPU_EVENT) return;  // no cupo en el buffer de bloques
+    uint channel = L.info.z;
+    if (channel >= VFX_MAX_CHANNELS) return;
+    uint read = (push.pad & 1u) ^ 1u;
+    uint received = uint(clamp(counters[VFX_CHANNEL_COUNTERS + channel * 8u + read], 0, int(VFX_MAX_CHANNEL_EVENTS)));
+    uint e = gl_GlobalInvocationID.x;
+    if (e >= received) return;
+    uint index = vfxChannelIndex(channel, read, e);
+    vec4 E0 = events[index];
+    vec4 E1 = events[index + 1u];
+    vec4 E2 = events[index + 2u];
+    if (L.a.x >= 0.0 && abs(E0.w - L.a.x) > 0.5) return;  // otro tipo
+    int want = int(clamp(L.a.y, 0.0, 64.0));
+    if (want <= 0) return;
+    // Maximo por frame: cada evento reserva las suyas con un atomico.
+    int n = want;
+    if (L.a.z > 0.0) {
+        int taken = atomicAdd(counters[VFX_LISTEN_COUNTERS + instances[slot].range.z * VFX_MAX_LISTENS + listen], want);
+        n = clamp(int(L.a.z) - taken, 0, want);
+    }
+    for (int j = 0; j < n; ++j) {
+        uint p;
+        if (!popDead(slot, p)) return;
+        uint seed = vfxHash(instances[slot].flags.x ^
+                            vfxHash(instances[slot].flags.y * 4111u + e * 197u + uint(j) * 7919u + listen * 31u + 29u));
+        spawnParticle(slot, p, seed, true, E0.xyz, E1.xyz);
+        // Velocidad heredada del evento, su color y su valor como tamano.
+        particles[p * 4u + 1u].xyz += E1.xyz * L.a.w;
+        if ((L.info.y & 1u) != 0u) particles[p * 4u + 2u] *= E2;
+        if ((L.info.y & 2u) != 0u) particles[p * 4u + 3u].x *= max(E1.w, 0.0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -316,12 +525,75 @@ vec3 worldFromDepth(vec2 uv, float depth) {
 }
 
 // Rebote contra una superficie (normal n, en el espacio de la simulacion).
-void bounce(inout vec3 vel, vec3 n, float restitution, float friction) {
+// Devuelve la rapidez con que llego contra ella (0 si ya se alejaba).
+float bounce(inout vec3 vel, vec3 n, float restitution, float friction) {
     float vn = dot(vel, n);
     if (vn < 0.0) {
         vec3 vt = vel - n * vn;
         vel = vt * (1.0 - clamp(friction, 0.0, 1.0)) - n * vn * clamp(restitution, 0.0, 1.0);
     }
+    return max(-vn, 0.0);
+}
+
+// Apunta un evento de un bloque Trigger en la lista del efecto destino.
+void emitEvent(uint slot, VfxBlock k, vec3 world_position, vec3 world_velocity, inout uint seed) {
+    uint target = k.info.z;
+    uint list = k.info.w;
+    if (target == VFX_NO_EVENTS || list == VFX_NO_EVENTS) return;
+    if (k.a.y < 1.0 && vfxRand(seed) >= k.a.y) return;  // probabilidad
+    uint write = push.pad & 1u;
+    int e = atomicAdd(counters[target * 8u + 2u + write], 1);
+    if (e < 0 || e >= int(VFX_MAX_EVENTS)) return;  // lista llena este frame
+    uint index = vfxEventIndex(list, write, uint(e));
+    events[index] = vec4(world_position, max(k.a.x, 0.0));
+    events[index + 1u] = vec4(world_velocity * k.a.w, 0.0);
+}
+
+// Apunta un evento de un bloque Emit* en su canal (con el tope por frame).
+void emitChannel(VfxBlock k, vec3 world_position, vec3 world_velocity, vec4 particle_color, inout uint seed) {
+    uint channel = k.info.z;
+    if (channel >= VFX_MAX_CHANNELS) return;
+    if (k.b.z < 1.0 && vfxRand(seed) >= k.b.z) return;  // probabilidad
+    uint write = push.pad & 1u;
+    int e = atomicAdd(counters[VFX_CHANNEL_COUNTERS + channel * 8u + write], 1);
+    if (e < 0 || e >= int(VFX_MAX_CHANNEL_EVENTS)) return;  // canal lleno este frame
+    uint index = vfxChannelIndex(channel, write, uint(e));
+    events[index] = vec4(world_position, k.b.x);
+    events[index + 1u] = vec4(world_velocity, k.b.y);
+    events[index + 2u] = (k.info.y & 1u) != 0u ? k.a * particle_color : k.a;
+}
+
+// ---------------------------------------------------------------------------
+// Salida Luz (luces de particula): las vivas de un efecto con luz apuntan
+// aqui su luz; la CPU las lee cuando vuelve este hueco de frame
+// (VfxPass::gatherLights), elige las que caben y van a las luces por
+// clusteres. Un buffer por hueco (kParticleLightBinding en VfxPass.cpp):
+//   cabecera   x = candidatas apuntadas (BEGIN la pone a 0)
+//   por ranura x alcance (m), y intensidad (0 = el efecto no da luz),
+//              w parte estable de las vivas que apuntan (0..1)
+//   candidatas 3 uvec4 (bits de float): (posicion en el mundo, alcance)
+//              (color por la intensidad, clave = ranura << 21 | particula)
+//              (velocidad en el mundo, -)
+// (VfxLightOut va declarado arriba, junto al ruido horneado.)
+// ---------------------------------------------------------------------------
+
+void emitParticleLight(uint slot, uint i, uint p, vec3 pos, vec3 vel, float age, float lifetime, vec4 color) {
+    vec4 params = light_params[slot];
+    if (params.y <= 0.0) return;  // sin luz (casi todos los efectos)
+    // Siempre las mismas de entre las vivas (la clave es la particula): con
+    // muchas vivas, solo una parte apunta y no salta de una a otra.
+    if (params.w < 1.0 && float(vfxHash(p * 2654435761u + 977u)) * (1.0 / 4294967296.0) >= params.w) return;
+    // El color de la particula con Color en la vida; el alfa la apaga.
+    if ((instances[slot].flags.z & VFX_COLOR_OVER_LIFE) != 0u) color *= vfxColorLut(slot, age / max(lifetime, 1e-5));
+    vec3 rgb = max(color.rgb, vec3(0.0)) * clamp(color.a, 0.0, 1.0) * params.y;
+    if (max(rgb.r, max(rgb.g, rgb.b)) < 1e-3) return;
+    uint n = atomicAdd(light_header.x, 1u);
+    if (n >= VFX_MAX_LIGHT_CANDIDATES) return;
+    vec3 world = simToWorld(slot, pos);
+    vec3 world_velocity = mat3(instances[slot].transform) * vel;
+    light_items[n * 3u + 0u] = uvec4(floatBitsToUint(world), floatBitsToUint(params.x));
+    light_items[n * 3u + 1u] = uvec4(floatBitsToUint(rgb), (slot << 21u) | (i & 0x1FFFFFu));
+    light_items[n * 3u + 2u] = uvec4(floatBitsToUint(world_velocity), 0u);
 }
 
 void stageUpdate(uint slot) {
@@ -347,6 +619,9 @@ void stageUpdate(uint slot) {
     uint seed = vfxHash(p * 7919u ^ vfxHash(instances[slot].flags.y));
     float radius = P3.x * 0.5;
     bool dies = false;
+    // Choques de este frame (bloques Trigger al chocar): la rapidez mayor.
+    bool collided = false;
+    float impact = 0.0;
 
     uint first = instances[slot].blocks.z;
     uint count = instances[slot].blocks.w;
@@ -369,7 +644,9 @@ void stageUpdate(uint slot) {
                 vec3 world = simToWorld(slot, pos);
                 vec3 q = world * max(k.a.y, 1e-4) + vec3(0.0, clock * k.a.w, clock * k.a.w * 0.37);
                 int octaves = clamp(int(k.a.z + 0.5), 1, 4);
-                vec3 force = curlNoise(q, octaves) * k.a.x;
+                // Horneado si el pase tiene el volumen; si no, calculado.
+                bool baked = (instances[slot].flags.z & VFX_CURL_BAKED) != 0u;
+                vec3 force = (baked ? curlBaked(q, octaves) : curlNoise(q, octaves)) * k.a.x;
                 vel += worldDirToSim(slot, force) * dt;
             } else if (type == B_ATTRACTOR) {
                 vec3 target = pointToSim(slot, k.a.xyz);
@@ -409,13 +686,20 @@ void stageUpdate(uint slot) {
                     // Pegajosidad: frena lo que va hacia fuera/dentro de la esfera.
                     vel -= n * dot(vel, n) * clamp(k.b.y * dt, 0.0, 1.0);
                 }
+            } else if (type == B_ANGULAR_VELOCITY && instances[slot].extra.x != VFX_OUT_RIBBON) {
+                // Velocidad de giro (P3.z, rad/s): aceleracion, rozamiento y,
+                // con a.z, rodar (giro = rapidez x rad por metro).
+                P3.z += k.a.x * dt;
+                P3.z *= 1.0 / (1.0 + max(k.a.y, 0.0) * dt);
+                if (k.a.z != 0.0) P3.z = length(vel) * k.a.z;
             }
         }
 
         // --- Integracion ---
         pos += vel * dt;
         age += dt;
-        P3.y += P3.z * dt;
+        // (En las cintas giro y velocidad de giro guardan su eje.)
+        if (instances[slot].extra.x != VFX_OUT_RIBBON) P3.y += P3.z * dt;
 
         // --- Colisiones y zonas, en orden ---
         for (uint b = first; b < first + count; ++b) {
@@ -428,7 +712,8 @@ void stageUpdate(uint slot) {
                 float d = dot(pos - on, n) - radius;
                 if (d < 0.0) {
                     pos -= n * d;
-                    bounce(vel, n, k.b.x, k.b.y);
+                    impact = max(impact, bounce(vel, n, k.b.x, k.b.y));
+                    collided = true;
                     age += clamp(k.b.z, 0.0, 1.0) * lifetime;
                 }
             } else if (type == B_COLLIDE_SPHERE) {
@@ -440,10 +725,12 @@ void stageUpdate(uint slot) {
                     vec3 n = rel / dist;
                     if (!inside && dist < k.a.w + radius) {
                         pos = center + n * (k.a.w + radius);
-                        bounce(vel, n, k.b.x, k.b.y);
+                        impact = max(impact, bounce(vel, n, k.b.x, k.b.y));
+                        collided = true;
                     } else if (inside && dist > k.a.w - radius) {
                         pos = center + n * max(k.a.w - radius, 0.0);
-                        bounce(vel, -n, k.b.x, k.b.y);
+                        impact = max(impact, bounce(vel, -n, k.b.x, k.b.y));
+                        collided = true;
                     }
                 }
             } else if (type == B_KILL_BOX) {
@@ -483,7 +770,8 @@ void stageUpdate(uint slot) {
                     float n_len = length(n_sim);
                     n_sim = n_len > 1e-6 ? n_sim / n_len : n_sim;
                     pos = worldToSim(slot, fixed_world);
-                    bounce(vel, n_sim, k.a.x, k.a.y);
+                    impact = max(impact, bounce(vel, n_sim, k.a.x, k.a.y));
+                    collided = true;
                     age += clamp(k.a.z, 0.0, 1.0) * lifetime;
                     if (k.b.y > 0.5) dies = true;
                 }
@@ -491,7 +779,43 @@ void stageUpdate(uint slot) {
         }
     }
 
-    if (dies || age >= lifetime) {
+    // --- Eventos (Trigger): al morir y al chocar, a la lista de otro efecto ---
+    bool dying = dies || age >= lifetime;
+    if (dt > 0.0 && (dying || collided)) {
+        vec3 world_position = simToWorld(slot, pos);
+        vec3 world_velocity = mat3(instances[slot].transform) * vel;
+        for (uint b = first; b < first + count; ++b) {
+            uint type = blocks[b].info.x;
+            if (type == B_TRIGGER_DIE && dying) {
+                emitEvent(slot, blocks[b], world_position, world_velocity, seed);
+            } else if (type == B_TRIGGER_COLLIDE && collided && impact >= blocks[b].a.z) {
+                emitEvent(slot, blocks[b], world_position, world_velocity, seed);
+            }
+        }
+    }
+
+    // --- Canales de datos (Emit*): al morir, al chocar y cada t segundos ---
+    // Solo los efectos con bloques Emit* y si alguien escucha este frame.
+    if (dt > 0.0 && (instances[slot].flags.z & VFX_EMITS_CHANNEL) != 0u && (push.pad & VFX_PAD_CHANNELS) != 0u) {
+        vec3 world_position = simToWorld(slot, pos);
+        vec3 world_velocity = mat3(instances[slot].transform) * vel;
+        for (uint b = first; b < first + count; ++b) {
+            uint type = blocks[b].info.x;
+            if (type == B_EMIT_ON_DEATH && dying) {
+                emitChannel(blocks[b], world_position, world_velocity, P2, seed);
+            } else if (type == B_EMIT_ON_COLLISION && collided && impact >= blocks[b].b.w) {
+                emitChannel(blocks[b], world_position, world_velocity, P2, seed);
+            } else if (type == B_EMIT_EVERY && !dying) {
+                // Cada vez que su edad pasa un multiplo del periodo.
+                float period = max(blocks[b].b.w, 0.01);
+                if (floor(age / period) > floor(P0.w / period)) {
+                    emitChannel(blocks[b], world_position, world_velocity, P2, seed);
+                }
+            }
+        }
+    }
+
+    if (dying) {
         // Muere: vuelve a la pila.
         particles[p * 4u + 1u] = vec4(vel, 0.0);
         int top = atomicAdd(counters[base + 0u], 1);
@@ -504,6 +828,8 @@ void stageUpdate(uint slot) {
     int slot_alive = atomicAdd(counters[base + 5u], 1);
     alive_list[offset + uint(slot_alive)] = p;
     atomicAdd(counters[base + 1u], 1);
+    // Salida Luz: si su efecto da luz (una lectura; sin luz, nada mas).
+    emitParticleLight(slot, i, p, pos, vel, age, lifetime, P2);
 }
 
 // ---------------------------------------------------------------------------
@@ -524,8 +850,17 @@ const float SORT_FAR = 3.0e38;  // fuera de las vivas: al final
 shared float sort_key[SORT_BLOCK];
 shared uint sort_item[SORT_BLOCK];
 
-// Menor = antes: la mas lejana primero.
+// Menor = antes: la mas lejana primero. Las cintas, por edad: la mas nueva
+// primero (la cabeza, junto al emisor) y cada una junto a la que nacio antes.
+// Con varias cintas (VFX_RIBBON_IDS): por (id, edad), el id en la parte alta
+// y la edad en ms debajo (id * 65536 + ms < 2^24: exacto en un float).
 float sortKey(uint slot, uint p) {
+    if (instances[slot].extra.x == VFX_OUT_RIBBON) {
+        float age = particles[p * 4u + 0u].w;
+        if ((instances[slot].flags.z & VFX_RIBBON_IDS) == 0u) return age;
+        uint id = vfxRibbonId(particles[p * 4u + 3u].y);
+        return float(id) * 65536.0 + clamp(age * 1024.0, 0.0, 65535.0);
+    }
     vec3 d = simToWorld(slot, particles[p * 4u + 0u].xyz) - frame.camera.xyz;
     return -dot(d, d);
 }
@@ -621,6 +956,10 @@ void main() {
         stageBegin();
     } else if (push.stage == STAGE_EMIT) {
         stageEmit(push.slot);
+    } else if (push.stage == STAGE_EMIT_EVENTS) {
+        stageEmitEvents(push.slot);
+    } else if (push.stage == STAGE_EMIT_CHANNEL) {
+        stageEmitChannel(push.slot);
     } else if (push.stage == STAGE_UPDATE) {
         stageUpdate(push.slot);
     } else if (push.stage == STAGE_SORT_LOCAL) {

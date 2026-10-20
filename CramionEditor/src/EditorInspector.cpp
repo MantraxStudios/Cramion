@@ -20,12 +20,34 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <unordered_map>
 
 namespace cramion::editor {
 
 using core::Vec3;
 
 namespace {
+
+// Cache de los valores mezclados de la multiseleccion (uno por componente).
+// Recoger los campos de N objetos cada frame cuesta O(N·campos); se rehace
+// solo si cambia la seleccion o la estructura del mundo, despues de editar un
+// campo desde el Inspector y, para ver lo que cambie por fuera (gizmo,
+// deshacer, scripts en Play), como mucho cada kMixedRefreshSeconds.
+struct MixedFieldsCache {
+    ecs::Entity active;
+    std::vector<ecs::Entity> selected;
+    std::uint64_t structure = 0;
+    std::uint64_t generation = 0;
+    double time = -1.0;
+    bool stale = true;
+    MixedFields mixed;
+};
+constexpr double kMixedRefreshSeconds = 0.25;
+
+std::unordered_map<std::string, MixedFieldsCache>& mixedFieldsCache() {
+    static std::unordered_map<std::string, MixedFieldsCache> cache;
+    return cache;
+}
 
 // Icono de cada tipo de componente (cabeceras del Inspector).
 std::optional<Icon> componentIcon(const std::string& name) {
@@ -408,6 +430,7 @@ void EditorApp::drawInspectorContents() {
                     // Como el Reset de Unity: el collider vuelve a la medida de la malla.
                     if (physics::isFittableCollider(type.name)) physics_.fitColliderToMesh(e, type.name);
                 }
+                mixedFieldsCache().erase(type.name);
                 commit();
             }
             if (physics::isFittableCollider(type.name) && ImGui::MenuItem("Ajustar a la malla (AABB)")) {
@@ -433,6 +456,7 @@ void EditorApp::drawInspectorContents() {
                         }
                     }
                 }
+                mixedFieldsCache().erase(type.name);
                 dirty_ = true;
                 commit();
             }
@@ -467,29 +491,53 @@ void EditorApp::drawInspectorContents() {
                 old_scale = entity.localScale();
             }
             // Valores distintos entre los seleccionados (se muestran con "—").
-            MixedFields mixed;
+            // Se cachean (mixedFieldsCache): solo se recogen de nuevo si cambio
+            // la seleccion, el mundo, se edito un campo o paso el intervalo.
+            MixedFieldsCache* mixed_cache = nullptr;
             if (multi) {
-                std::vector<FieldValues> values;
-                values.reserve(selected.size());
-                values.emplace_back();
-                CollectFieldsVisitor collect_active(values.back());
-                type.reflect(world_, entity.handle(), collect_active);
-                for (ecs::Entity other : selected) {
-                    if (other == entity) continue;
+                mixed_cache = &mixedFieldsCache()[type.name];
+                const double now = ImGui::GetTime();
+                const bool still_valid = !mixed_cache->stale && mixed_cache->active == entity &&
+                                         mixed_cache->selected == selected &&
+                                         mixed_cache->structure == world_.structureVersion() &&
+                                         mixed_cache->generation == world_.sceneGeneration() &&
+                                         now - mixed_cache->time < kMixedRefreshSeconds;
+                if (!still_valid) {
+                    std::vector<FieldValues> values;
+                    values.reserve(selected.size());
                     values.emplace_back();
-                    CollectFieldsVisitor collect(values.back());
-                    type.reflect(world_, other.handle(), collect);
+                    CollectFieldsVisitor collect_active(values.back());
+                    type.reflect(world_, entity.handle(), collect_active);
+                    for (ecs::Entity other : selected) {
+                        if (other == entity) continue;
+                        values.emplace_back();
+                        CollectFieldsVisitor collect(values.back());
+                        type.reflect(world_, other.handle(), collect);
+                    }
+                    mixed_cache->mixed = mixedFields(values);
+                    mixed_cache->active = entity;
+                    mixed_cache->selected = selected;
+                    mixed_cache->structure = world_.structureVersion();
+                    mixed_cache->generation = world_.sceneGeneration();
+                    mixed_cache->time = now;
+                    mixed_cache->stale = false;
                 }
-                mixed = mixedFields(values);
             }
+            const MixedFields* mixed = mixed_cache != nullptr ? &mixed_cache->mixed : nullptr;
             // C++ Script: el archivo (soltar el .cpp) y la clase, encima de sus propiedades.
             if (type.name == "CppScript") drawCppScriptInspector(entity, true);
             // Visual Script: sus variables expuestas con el control de su tipo (EditorBlueprint.cpp).
             if (type.name == "VisualScript" && !multi) drawVisualScriptVariables(entity);
-            visitor.beginComponent(multi ? &mixed : nullptr);
+            visitor.beginComponent(mixed);
             if (type.reflect(world_, entity.handle(), visitor)) {
                 dirty_ = true;
+                // Los valores cambiaron: el proximo frame se recalculan los mezclados.
+                if (mixed_cache != nullptr) mixed_cache->stale = true;
                 if (type.name == "PostProcessing") renderer_.resetAdaptiveBudget();
+                // Fisica de edicion incremental: el collider (o Rigidbody, capa,
+                // malla) cambio sin mover la entidad; se mira ya, sin esperar
+                // al commit de soltar el control.
+                physics_.touchEdit(entity.handle());
                 // El campo editado, a los demas (solo ese campo).
                 if (multi && !is_transform && visitor.lastChange()) {
                     const auto& [path, value] = *visitor.lastChange();
@@ -497,6 +545,7 @@ void EditorApp::drawInspectorContents() {
                         if (other == entity) continue;
                         ApplyFieldVisitor apply(path, value);
                         type.reflect(world_, other.handle(), apply);
+                        physics_.touchEdit(other.handle());
                     }
                 }
                 if (is_transform && selected.size() > 1) {
@@ -546,6 +595,48 @@ void EditorApp::drawInspectorContents() {
                             if (ecs::Decal* d = e.tryGet<ecs::Decal>()) d->texture.clear();
                         }
                         commit();
+                    }
+                    // Canales opcionales de la estampa: igual (dialogo, arrastrar o quitar).
+                    if (decal->type == ecs::DecalType::Stamp) {
+                        using Channel = std::string ecs::Decal::*;
+                        const std::pair<const char*, Channel> channels[] = {
+                            {"Normal map", &ecs::Decal::normal_texture},
+                            {"ORM", &ecs::Decal::orm_texture},
+                            {"Emision", &ecs::Decal::emission_texture},
+                        };
+                        for (const auto& [label, member] : channels) {
+                            ImGui::PushID(label);
+                            const std::string& current = decal->*member;
+                            const std::string pick = std::string(label) + (current.empty() ? ": elegir..." : ": cambiar...");
+                            if (ImGui::Button(pick.c_str(), ImVec2(ImGui::GetContentRegionAvail().x * 0.6f, 0.0f))) {
+                                const std::string texture = importDecalImage();
+                                if (!texture.empty()) {
+                                    for (ecs::Entity e : selected) {
+                                        if (ecs::Decal* d = e.tryGet<ecs::Decal>()) d->*member = texture;
+                                    }
+                                    commit();
+                                }
+                            }
+                            if (ImGui::BeginDragDropTarget()) {
+                                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kImagePayload)) {
+                                    const std::string texture =
+                                        decalImageInAssets(dialogs::fromUtf8(static_cast<const char*>(payload->Data)));
+                                    for (ecs::Entity e : selected) {
+                                        if (ecs::Decal* d = e.tryGet<ecs::Decal>()) d->*member = texture;
+                                    }
+                                    commit();
+                                }
+                                ImGui::EndDragDropTarget();
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button("Quitar", ImVec2(-1.0f, 0.0f))) {
+                                for (ecs::Entity e : selected) {
+                                    if (ecs::Decal* d = e.tryGet<ecs::Decal>()) (d->*member).clear();
+                                }
+                                commit();
+                            }
+                            ImGui::PopID();
+                        }
                     }
                 }
             }

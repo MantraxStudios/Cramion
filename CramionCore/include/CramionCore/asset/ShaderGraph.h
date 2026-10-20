@@ -36,7 +36,14 @@ namespace shadergraph {
 enum class PinType { Float, Vec2, Vec3, Vec4, Texture, Dynamic };
 
 // Valor por defecto de una entrada sin conectar que no es una constante.
-enum class PinDefault { Value, UV, Position, Normal, VertexNormal, ViewDirection, Time };
+// ScreenUV: este pixel en la pantalla (SCREEN_UV; solo dominios transparentes).
+enum class PinDefault { Value, UV, Position, Normal, VertexNormal, ViewDirection, Time, ScreenUV };
+
+// Dominio del grafo: la linea `domain` del .crshader generado. Opaco y Sin luz
+// van al G-buffer; los transparentes, a la pasada forward (pueden leer el
+// color y la profundidad de la escena: nodos de la categoria Escena).
+enum class GraphDomain { Opaque, Unlit, Transparent, TransparentUnlit };
+bool isTransparentDomain(GraphDomain domain);
 
 // Componentes de un tipo (Float 1 ... Vec4 4, Texture 0, Dynamic -1).
 int pinWidth(PinType type);
@@ -76,6 +83,7 @@ struct NodeDef {
     int value_components = 0;  // 1..4 componentes de `value` (si tiene Value)
     bool color_value = false;  // `value` es un color (selector de color)
     bool fragment_only = false;  // no vale para los vertices
+    bool transparent_only = false;  // lee la escena: solo con dominio transparente
     bool unique = false;         // solo puede haber uno (Salida)
 };
 
@@ -118,6 +126,7 @@ struct Graph {
     std::vector<Group> groups;
     int next_id = 1;
     std::string description;
+    GraphDomain domain = GraphDomain::Opaque;  // "domain" del JSON
 
     Node* find(int id);
     const Node* find(int id) const;

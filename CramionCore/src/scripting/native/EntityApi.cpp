@@ -13,6 +13,7 @@
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/RuntimeMesh.h"
 #include "CramionCore/physics/Cloth.h"
+#include "CramionCore/physics/Particles.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/physics/SoftBody.h"
@@ -689,6 +690,83 @@ void registerRendering(Runtime& rt) {
                return true;
            },
            {"0, \"Materials/Brillo.crmat\"", "material .crmat de un hueco de su MeshRenderer", "bool"});
+    // Parametros por instancia (como el MaterialPropertyBlock de Unity o el
+    // Custom Primitive Data de Unreal): sin otro .crmat ni romper el lote.
+    //   "tint" (Vec3 o r, g, b), "alpha", "emission", "receiveDecals": los del
+    //     MeshRenderer; "tint" y "alpha" tambien los de su ParticleSystem.
+    //   0 o 1: INSTANCE_DATA(i) de su .crshader (x, y, z, w; un Vec3 con w
+    //     aparte, un Quat o una lista de hasta 4 numeros).
+    method(rt, "setMaterialParam",
+           [&rt](api::Call& c) -> api::Value {
+               const ecs::Entity x = rt.selfEntity(c);
+               ecs::MeshRenderer* r = x.tryGet<ecs::MeshRenderer>();
+               physics::ParticleSystem* p = x.tryGet<physics::ParticleSystem>();
+               const api::Value& key = c.arg(0);
+               const api::Value& value = c.arg(1);
+               // r, g, b o Vec3 (el color de los scripts llega como Vec3).
+               const auto rgb = [&]() {
+                   if (value.isVec3() || value.isQuat()) return value.asVec3();
+                   if (value.isArray()) {
+                       return Vec3{static_cast<float>(value[0].asNumber(1.0)), static_cast<float>(value[1].asNumber(1.0)),
+                                   static_cast<float>(value[2].asNumber(1.0))};
+                   }
+                   const auto v = static_cast<float>(c.number(1, 1.0));
+                   return Vec3{v, static_cast<float>(c.number(2, v)), static_cast<float>(c.number(3, v))};
+               };
+               if (key.isString()) {
+                   const std::string name = key.asString();
+                   if (name == "tint" || name == "color") {
+                       if (r == nullptr && p == nullptr) return false;
+                       const Vec3 tint = rgb();
+                       if (r != nullptr) r->tint = tint;
+                       if (p != nullptr) p->tint = tint;
+                       return true;
+                   }
+                   if (name == "alpha" || name == "opacity") {
+                       if (r == nullptr && p == nullptr) return false;
+                       const auto alpha = std::clamp(static_cast<float>(c.number(1, 1.0)), 0.0f, 1.0f);
+                       if (r != nullptr) r->alpha = alpha;
+                       if (p != nullptr) p->alpha = alpha;
+                       return true;
+                   }
+                   if (r == nullptr) return false;
+                   if (name == "emission" || name == "emissionScale") {
+                       r->emission_scale = std::max(static_cast<float>(c.number(1, 1.0)), 0.0f);
+                       return true;
+                   }
+                   if (name == "receiveDecals") {
+                       r->receive_decals = c.boolean(1, true);
+                       return true;
+                   }
+                   if (name != "data0" && name != "data1") {
+                       rt.write(2, "setMaterialParam: parametro desconocido \"" + name +
+                                       "\" (tint, alpha, emission, receiveDecals, 0 o 1)");
+                       return false;
+                   }
+               }
+               if (r == nullptr) return false;
+               const long long index = key.isString() ? (key.asString() == "data1" ? 1 : 0) : c.integer(0, -1);
+               if (index < 0 || index >= ecs::MeshRenderer::kInstanceDataCount) return false;
+               core::Vec4& d = r->instance_data[index];
+               if (value.isQuat()) {
+                   const core::Quat q = value.asQuat();
+                   d = core::Vec4{q.x, q.y, q.z, q.w};
+               } else if (value.isVec3()) {
+                   const Vec3 v = value.asVec3();
+                   d = core::Vec4{v.x, v.y, v.z, static_cast<float>(c.number(2, 0.0))};
+               } else if (value.isArray()) {
+                   d = core::Vec4{static_cast<float>(value[0].asNumber()), static_cast<float>(value[1].asNumber()),
+                                  static_cast<float>(value[2].asNumber()), static_cast<float>(value[3].asNumber())};
+               } else {
+                   d = core::Vec4{static_cast<float>(c.number(1, 0.0)), static_cast<float>(c.number(2, 0.0)),
+                                  static_cast<float>(c.number(3, 0.0)), static_cast<float>(c.number(4, 0.0))};
+               }
+               return true;
+           },
+           {"parametro, valor, y, z, w",
+            "por instancia, sin otro .crmat: \"tint\" (Vec3), \"alpha\", \"emission\", \"receiveDecals\" o 0/1 = "
+            "INSTANCE_DATA(i) de su .crshader (x, y, z, w); tint y alpha tambien en su ParticleSystem",
+            "bool"});
     property(rt, "castShadows",
              [&rt](api::Call& c) -> api::Value {
                  const ecs::MeshRenderer* r = rt.selfEntity(c).tryGet<ecs::MeshRenderer>();

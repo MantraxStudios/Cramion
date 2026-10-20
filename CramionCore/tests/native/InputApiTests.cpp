@@ -397,7 +397,7 @@ void testDocs() {
         ++count;
         if (e.doc.description.empty()) ++missing;
     }
-    check(count == 47 + 5 + 22, "47 de Input, 5 de Screen y 22 de XR");
+    check(count == 52 + 5 + 22, "52 de Input, 5 de Screen y 22 de XR");  // +5 del mando en PC (2.5.2 R3)
     check(missing == 0, "todas con descripcion");
 }
 

@@ -11,36 +11,42 @@
 // algo encima (toldos, soportales, balcones) no se moja.
 layout(set = 0, binding = 2) uniform sampler2D rain_map;
 // Decals (GpuDecal): caja unidad proyectada a lo largo de su eje Y local.
-const int kMaxDecals = 64;
+const int kMaxDecals = 256;  // kMaxDecals (GpuTypes.h)
 struct Decal {
     mat4 world_to_decal;
     vec4 color;     // rgb = tinte (sRGB), a = opacidad
     vec4 axis;      // xyz = eje de proyeccion (mundo), w = coseno minimo con la superficie
-    vec4 params;    // x = tipo (0 estampa, 1 charco, 2 humedad), y = textura, z = borde, w = cantidad
-    vec4 material;  // x = rugosidad, y = cuanto la sustituye, z = metalicidad
+    vec4 params;    // x = tipo (0 estampa, 1 charco, 2 humedad), y = capa del color, z = borde, w = cantidad
+    vec4 material;  // x = rugosidad, y = cuanto la sustituye, z = metalicidad, w = fuerza del normal map
+    vec4 channels;  // capas del atlas (-1 = ninguna): x = normal, y = ORM, z = emision
+    vec4 emission;  // rgb = emision (HDR lineal, color x intensidad)
+};
+
+// 9 = los decals (GpuDecalBuffer, std430): cabecera, hasta kMaxDecals y, por
+// tesela de pantalla, un bit por decal (la CPU marca en cuales cae cada uno).
+layout(std430, set = 0, binding = 9) readonly buffer DecalBuffer {
+    uvec4 decal_header;  // x = numero, y = columnas, z = filas (0 = sin teselas), w = uint por tesela
+    vec4 decal_tiles;    // xy = teselas por pixel
+    Decal decals[kMaxDecals];
+    uint decal_masks[];
 };
 
 layout(set = 0, binding = 3) uniform WeatherBuffer {
     mat4 rain_view_projection;
     vec4 params;  // x = humedad (0..1), y = charcos (0..1), z = segundos, w = mapa listo
     vec4 flood;   // zona inundada: xy = centro (x, z), zw = radios (0 = sin agua)
-    vec4 decal_info;  // x = numero de decals
+    vec4 decal_info;  // x = numero de decals (los datos, en DecalBuffer), yzw = hacia el sol
     vec4 snow;        // x = cobertura (0..1), y = espesor (m), z = humedad al derretirse, w = reservado
     vec4 fire_zones[4];  // xy = esquina minima (x, z), z = lado (m), w = parte del mapa usada (0 = apagada)
-    Decal decals[kMaxDecals];
     // Lightmaps (GpuWeather::lightmap): x = 0 sin, 1 visibilidad del sol, 2 con
     // irradiancia; y = fuerza de la sombra horneada del sol; z = vista de
     // depuracion (1 irradiancia, 2 visibilidad del sol, 3 UV2/densidad).
     vec4 lightmap;
 } weather;
-#ifdef CRAMION_COMPAT
-// Modo compatible (moviles): 16 texturas por shader como mucho (el minimo de
-// Vulkan), asi que solo 4 de decals (VulkanRenderer::decalTextureSlots).
-const int kDecalTextures = 4;
-#else
-const int kDecalTextures = 32;  // kMaxDecalTextures (GpuTypes.h)
-#endif
-layout(set = 0, binding = 4) uniform sampler2D decal_textures[kDecalTextures];
+// Atlas de las imagenes de los decals (DecalAtlas.h): capa = imagen (color,
+// normal, ORM o emision). Una sola textura tambien en el modo compatible y la
+// capa se puede indexar distinta en cada pixel.
+layout(set = 0, binding = 4) uniform sampler2DArray decal_atlas;
 // 6 = mapa de quemado de las zonas de fuego.
 #include "fire_burn.glsl"
 
@@ -63,6 +69,11 @@ float surface_sun_shadow = 1.0;
 layout(location = 4) out vec4 out_shading;
 #endif
 vec4 surface_shading = vec4(0.0);
+
+// false: el objeto no recibe decals (MeshRenderer.receive_decals: los
+// personajes bajo el indicador de un area). Lo pone quien incluye antes de
+// writeSurface (skinned.frag y surface.frag, de su registro por instancia).
+bool surface_receive_decals = true;
 
 // --- Lightmaps (PLAN-LIGHTMAPS 2.6) ---
 // Donde cae el pixel en el atlas: xy = UV del atlas, z = capa (-1 = sin
@@ -199,18 +210,35 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
     // --- Decals: estampas, charcos y humedad locales (como los de Unreal) ---
     // Cada uno es una caja: lo que cae dentro recibe su textura/color, su agua
     // o su humedad, con el borde suavizado y sin pintar las caras que no miran
-    // al eje de proyeccion. El indice de textura sale del buffer: es el mismo
-    // para todo el grupo (uniforme dinamico), se puede indexar el array.
+    // al eje de proyeccion. Las imagenes estan en el atlas (una capa cada una):
+    // la capa puede ser distinta en cada pixel, asi que se recorren solo los
+    // bits marcados de la tesela (no hace falta que el indice sea uniforme).
     float decal_water = 0.0;
     float decal_wet = 0.0;
-    int decal_count = int(weather.decal_info.x);
-    for (int i = 0; i < decal_count; ++i) {
-        vec3 p = (weather.decals[i].world_to_decal * vec4(world_position, 1.0)).xyz;
+    uint decal_count = surface_receive_decals ? min(decal_header.x, uint(kMaxDecals)) : 0u;
+    // Solo los de la tesela de este pixel (la CPU marca en cuales cae cada
+    // uno); sin teselas (sondas, Render Textures, VR), todos.
+    bool decal_tiled = decal_header.y > 0u && decal_header.z > 0u;
+    uint decal_tile_first = 0u;
+    if (decal_tiled && decal_count > 0u) {
+        uvec2 tile = min(uvec2(gl_FragCoord.xy * decal_tiles.xy), decal_header.yz - 1u);
+        decal_tile_first = (tile.y * decal_header.y + tile.x) * decal_header.w;
+    }
+    uint decal_words = (decal_count + 31u) >> 5u;
+    for (uint word = 0u; word < decal_words; ++word) {
+        uint bits = decal_tiled ? decal_masks[decal_tile_first + word] : 0xFFFFFFFFu;
+        uint left = decal_count - word * 32u;
+        if (left < 32u) bits &= (1u << left) - 1u;
+        while (bits != 0u) {
+        uint i = word * 32u + uint(findLSB(bits));
+        bits &= bits - 1u;
+        mat4 world_to_decal = decals[i].world_to_decal;
+        vec3 p = (world_to_decal * vec4(world_position, 1.0)).xyz;
         if (any(greaterThan(abs(p), vec3(0.5)))) {
             continue;
         }
-        vec4 axis = weather.decals[i].axis;
-        vec4 params = weather.decals[i].params;
+        vec4 axis = decals[i].axis;
+        vec4 params = decals[i].params;
         float facing = dot(n, axis.xyz);
         if (facing < axis.w) {
             continue;
@@ -222,34 +250,77 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
         float angle_fade = smoothstep(axis.w, min(axis.w + 0.25, 1.0), facing);
         float mask = side.x * side.y * depth_fade * angle_fade;
 
+        // Derivadas explicitas: el bucle no es uniforme en el quad.
         vec2 uv = vec2(p.x + 0.5, 0.5 - p.z);
-        mat3 to_decal = mat3(weather.decals[i].world_to_decal);
+        mat3 to_decal = mat3(world_to_decal);
         vec2 duvdx = (to_decal * dpdx).xz * vec2(1.0, -1.0);
         vec2 duvdy = (to_decal * dpdy).xz * vec2(1.0, -1.0);
-        int texture_index = int(params.y);
-        if (texture_index >= kDecalTextures) texture_index = -1;
-        vec4 texel = texture_index >= 0 ? textureGrad(decal_textures[texture_index], uv, duvdx, duvdy)
-                                        : vec4(1.0);
-        vec4 color = weather.decals[i].color;
+        bool has_color = params.y >= 0.0;
+        vec4 texel = has_color ? textureGrad(decal_atlas, vec3(uv, params.y), duvdx, duvdy) : vec4(1.0);
+        vec4 color = decals[i].color;
         int type = int(params.x + 0.5);
         if (type == 0) {
-            // Estampa: color/textura encima del material.
+            // Estampa: color/textura encima del material, y sus canales.
             float a = clamp(texel.a * color.a * mask, 0.0, 1.0);
-            albedo.rgb = mix(albedo.rgb, texel.rgb * color.rgb, a);
-            vec4 material = weather.decals[i].material;
-            roughness = mix(roughness, clamp(material.x, 0.04, 1.0), a * material.y);
-            metallic = mix(metallic, material.z, a * material.y);
+            vec4 material = decals[i].material;
+            vec4 channels = decals[i].channels;
+            // Un decal solo de relieve, ORM o emision no pinta el color (sin
+            // ninguna imagen, si: la estampa de un color).
+            if (has_color || (channels.x < 0.0 && channels.y < 0.0 && channels.z < 0.0)) {
+                albedo.rgb = mix(albedo.rgb, texel.rgb * color.rgb, a);
+            }
+            if (channels.y >= 0.0) {
+                // ORM (como los materiales): r = oclusion, g = rugosidad, b = metalicidad.
+                vec3 orm = textureGrad(decal_atlas, vec3(uv, channels.y), duvdx, duvdy).rgb;
+                occlusion = mix(occlusion, occlusion * orm.r, a);
+                roughness = mix(roughness, clamp(orm.g, 0.04, 1.0), a);
+                metallic = mix(metallic, orm.b, a);
+            } else {
+                roughness = mix(roughness, clamp(material.x, 0.04, 1.0), a * material.y);
+                metallic = mix(metallic, material.z, a * material.y);
+            }
+            if (channels.x >= 0.0 && material.w != 0.0) {
+                // Normal map en el espacio de la caja: X = derecha de la imagen,
+                // +Z = arriba (v = 0.5 - z); verde hacia arriba (OpenGL/glTF),
+                // fuerza negativa = verde invertido (DirectX). Se apoya en la
+                // normal que ya tiene la superficie.
+                vec2 xy = textureGrad(decal_atlas, vec3(uv, channels.x), duvdx, duvdy).xy * 2.0 - 1.0;
+                vec3 tangent_decal = vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
+                if (material.w < 0.0) tangent_decal.y = -tangent_decal.y;
+                tangent_decal.xy *= abs(material.w);
+                tangent_decal = normalize(tangent_decal);
+                vec3 base = normal;
+                vec3 right = vec3(world_to_decal[0][0], world_to_decal[1][0], world_to_decal[2][0]);
+                vec3 image_up = vec3(world_to_decal[0][2], world_to_decal[1][2], world_to_decal[2][2]);
+                right -= base * dot(base, right);
+                if (dot(right, right) > 1e-12) {
+                    right = normalize(right);
+                    vec3 up_axis = cross(base, right);
+                    if (dot(up_axis, image_up) < 0.0) up_axis = -up_axis;
+                    vec3 decal_normal = normalize(right * tangent_decal.x + up_axis * tangent_decal.y + base * tangent_decal.z);
+                    normal = normalize(mix(normal, decal_normal, a));
+                    aa_normal = normalize(mix(aa_normal, decal_normal, a));
+                }
+            }
+            vec3 glow = decals[i].emission.rgb;
+            if (dot(glow, glow) > 0.0) {
+                // Emision: su imagen o, sin ella, el color de la estampa.
+                vec3 source = channels.z >= 0.0 ? toLinear(textureGrad(decal_atlas, vec3(uv, channels.z), duvdx, duvdy).rgb)
+                                                : (has_color ? toLinear(texel.rgb) : vec3(1.0));
+                emissive += source * glow * a;
+            }
         } else if (type == 1) {
             // Charco: la textura (su alfa o su luminancia) da la forma; sin
             // textura, una mancha con la orilla irregular.
-            float shape = texture_index >= 0 ? texel.a * dot(texel.rgb, vec3(0.333))
-                                             : clamp((1.0 - length(p.xz) * 2.0 +
-                                                      (rainFbm(world_position.xz * 1.3 + float(i) * 7.1) - 0.5) * 0.6) /
-                                                         0.35, 0.0, 1.0);
+            float shape = has_color ? texel.a * dot(texel.rgb, vec3(0.333))
+                                    : clamp((1.0 - length(p.xz) * 2.0 +
+                                             (rainFbm(world_position.xz * 1.3 + float(i) * 7.1) - 0.5) * 0.6) /
+                                                0.35, 0.0, 1.0);
             decal_water = max(decal_water, shape * mask * params.w * color.a);
         } else {
             // Humedad: moja sin encharcar.
             decal_wet = max(decal_wet, texel.a * mask * params.w * color.a);
+        }
         }
     }
 

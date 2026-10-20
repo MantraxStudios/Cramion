@@ -218,9 +218,30 @@ public:
     // reloadMaterial() al guardarlos: los colores y factores cambian en vivo;
     // texturas, tiling o modo rehacen los modelos que lo usan.
     std::shared_ptr<const assets::MaterialAsset> material(const Uuid& uuid);
-    void reloadMaterial(const Uuid& uuid);
+    // `from_disk`: cambio fuera del editor (recarga en caliente): los modelos
+    // que se rehacen suben en los hilos de streaming (se ve el de antes hasta
+    // que estan), no en el hilo principal.
+    void reloadMaterial(const Uuid& uuid, bool from_disk = false);
     // Igual, con los datos ya en memoria (el editor mientras se edita).
     void updateMaterial(const Uuid& uuid, const assets::MaterialAsset& data);
+
+    // --- Recarga en caliente de assets cambiados en disco (el editor, con su
+    // vigilante de carpetas). Nada espera a la GPU ni lee el disco en el hilo
+    // principal: lo nuevo llega en otro hilo y se cambia en el sitio en un
+    // sync() posterior (mismos indices de modelo: los actores siguen valiendo).
+    //
+    // El .crdata de un modelo: se relee con el streaming de modelos y sus
+    // piezas y variantes de material se cambian y se vuelven a subir en los
+    // hilos de streaming. Las animaciones de sus objetos empiezan de nuevo.
+    void reloadModel(const Uuid& uuid);
+    // Un .cranim: se relee para cada modelo que lo usa y se cambia su clip.
+    void reloadAnimationClip(const Uuid& uuid);
+    // Una imagen de Assets (ruta relativa con '/'): los .crmat que la usan
+    // rehacen sus variantes y la GPU deja de compartir la textura vieja.
+    // Devuelve cuantos materiales la usan.
+    int reloadTextureFile(const std::string& relative);
+    // Queda alguna recarga por llegar.
+    bool reloadsPending() const { return !model_reloads_.empty() || !clip_reloads_.empty() || !clip_reload_requests_.empty(); }
 
     // Shaders de superficie del usuario (.crshader, ruta dentro de Assets): se
     // compilan la primera vez que un material los usa. Devuelve su id en el
@@ -233,6 +254,8 @@ public:
     // ultimo error (vacio si compila).
     const assets::SurfaceShaderSource* surfaceShaderSource(const std::string& path);
     std::string surfaceShaderError(const std::string& path) const;
+    // Compilado pero aun sin renderizador: se instala en el primer sync().
+    bool surfaceShaderAwaitingRenderer(const std::string& path) const;
     // Modelos distintos que se dibujan (las variantes con materiales tambien):
     // los objetos que comparten uno se agrupan en las mismas llamadas.
     std::size_t variantCount() const { return variants_.size(); }
@@ -419,6 +442,13 @@ private:
     void applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& renderer);
     void syncActors(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                     float delta_seconds);
+    // RAM: los modelos fuera de la GPU y sin instancias durante
+    // render.streaming.CpuReleaseSeconds sueltan los pixeles de sus texturas
+    // releibles (con archivo); vuelven perezosas. Una pasada por segundo.
+    void releaseIdleModelMemory(scene::Scene& scene, gfx::VulkanRenderer& renderer);
+    std::vector<std::chrono::steady_clock::time_point> model_unused_since_;  // por modelo; {} = en uso
+    std::chrono::steady_clock::time_point cpu_release_at_{};
+    std::uint64_t cpu_released_bytes_ = 0;
     void syncLightsAndEnvironment(World& world, scene::Scene& scene,
                                   gfx::VulkanRenderer& renderer);
     void syncCamera(World& world, scene::Scene& scene);
@@ -596,6 +626,31 @@ private:
     bool foliage_uploaded_ = false;
     std::uint64_t foliage_count_ = 0;
     std::uint64_t foliage_job_generation_ = 0;  // World::sceneGeneration de la siembra en marcha
+    // Siembra por bosque, por su firma propia (parametros, posicion, agua y
+    // terrenos que pisa): al entrar o salir una celda solo se siembra la
+    // nueva; las demas salen de aqui. Antes cada cambio volvia a sembrar
+    // todos los bosques cargados. Se poda por antiguedad (`used`).
+    struct ForestSeed {
+        std::shared_ptr<const std::vector<gfx::FoliageInstance>> instances;
+        std::uint64_t used = 0;
+    };
+    std::unordered_map<std::uint64_t, ForestSeed> foliage_forest_cache_;
+    using ForestFresh = std::vector<std::pair<std::uint64_t, std::shared_ptr<const std::vector<gfx::FoliageInstance>>>>;
+    std::shared_ptr<ForestFresh> foliage_fresh_;  // lo que siembra el job en marcha (para la cache)
+    std::uint64_t foliage_seed_serial_ = 0;
+    std::uint64_t foliage_cache_generation_ = 0;  // World::sceneGeneration de la cache
+    // El bosque que decide las especies y los ajustes de toda la vegetacion.
+    // Fijo mientras siga activo: antes era el primero de la vista de EnTT, que
+    // cambia con cada celda que entra o sale (rehacia los arboles y cambiaba
+    // la forma de todos los del mapa al hacer streaming).
+    entt::entity foliage_species_owner_ = entt::null;
+    std::uint64_t foliage_species_generation_ = 0;
+    // Sin dueño y con un solo bosque activo distinto: se adopta solo si sigue
+    // solo un rato (el editor, o el ultimo que queda). Con streaming el primer
+    // bosque de una zona nueva esta solo unos frames: adoptarlo enseguida
+    // cambiaba las especies (y rehacia la escena de rayos) en cada pasada.
+    entt::entity foliage_lone_forest_ = entt::null;
+    std::chrono::steady_clock::time_point foliage_lone_since_{};
     // Agua de la escena para la siembra (rios y lagos): se rehace solo si
     // cambia su firma y la comparten todos los bosques (antes, la linea de
     // cada rio y una copia por bosque en cada frame: ~7 MB por frame).
@@ -664,6 +719,23 @@ private:
     std::unordered_map<Uuid, std::shared_ptr<const anim::MotionDatabaseAsset>> motion_databases_;
     std::unordered_set<Uuid> failed_motion_databases_;
     std::unordered_map<ClipKey, std::shared_ptr<anim::MotionFeatures>, ClipKeyHash> motion_features_;
+    // Recarga en caliente (reloadModel, reloadAnimationClip, reloadTextureFile):
+    // modelos pedidos otra vez al AssetManager, clips pedidos y clips
+    // releyendose (su indice en ModelData::animations), y los materiales cuyas
+    // variantes se rehacen por un cambio en disco (suben en otro hilo).
+    std::unordered_set<Uuid> model_reloads_;
+    std::unordered_set<Uuid> clip_reload_requests_;
+    struct ClipReload {
+        ClipKey key;
+        int index = -1;
+        std::future<std::optional<asset::AnimationClip>> clip;
+    };
+    std::vector<ClipReload> clip_reloads_;
+    std::unordered_set<Uuid> hot_materials_;
+    void pollAssetReloads(scene::Scene& scene, gfx::VulkanRenderer& renderer);
+    // Olvida lo que depende de la jerarquia o los clips del modelo `index`
+    // (animaciones de sus objetos, poses de reposo, clips sueltos anadidos).
+    void forgetModelState(std::uint32_t index);
     std::unordered_map<std::string, int> decal_textures_;  // ruta -> ranura del renderizador
     std::vector<entt::entity> actor_entities_;
     std::vector<entt::entity> previous_entities_;  // los del frame anterior (reutilizar actores)
@@ -722,9 +794,24 @@ private:
         assets::SurfaceShaderSource source;
         bool parsed = false;
         std::string error;
+        // Compilacion en un hilo (la primera vez): mientras, los materiales
+        // usan el shader estandar; al terminar se rehacen (pollSurfaceShaders).
+        struct Pending;
+        std::shared_ptr<Pending> pending;
+        // Compilado antes de que hubiera renderizador (el editor abre con la
+        // escena ya cargada): el SPIR-V espera aqui y pollSurfaceShaders lo
+        // instala en cuanto llega uno (antes se quedaba en "sin renderizador").
+        bool awaiting_renderer = false;
+        assets::SurfaceShaderPrograms deferred;
     };
     std::unordered_map<std::string, SurfaceShaderEntry> surface_shaders_;
     void compileSurfaceShader(const std::string& path, SurfaceShaderEntry& entry);
+    // Instala los shaders compilados en segundo plano (hilo principal, cada frame).
+    void pollSurfaceShaders();
+    // Como surfaceShader, pero la primera vez compila en otro hilo y devuelve
+    // -1 mientras (lo usan los materiales al construirse). surfaceShader (el
+    // editor, MCP) sigue siendo sincrono: espera a la compilacion pendiente.
+    std::int32_t surfaceShaderAsync(const std::string& path);
     // Shader y propiedades del .crmat en el material del renderizador; con
     // `texture`, tambien sus texturas (indice en el modelo).
     void applySurface(asset::MaterialData& data, const assets::MaterialAsset& material,

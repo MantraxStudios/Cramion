@@ -73,6 +73,9 @@ const float kEmissiveIntensity = 6.0;
 layout(constant_id = 0) const bool kAlphaCutout = true;
 
 const uint kFlagSpecularMap = 1u << 2;
+// Bit 7 del modelo de sombreado (push.pick_id): el color de vertice multiplica
+// al color base (SkinnedModel::shadingBits).
+const uint kShadingVertexColorBit = 1u << 7;
 const uint kFlagHeightMap = 1u << 3;
 const uint kFlagParallaxShadow = 1u << 5;
 
@@ -120,9 +123,20 @@ void main() {
     vec4 albedo = textureGrad(albedo_map, uv, uv_dx, uv_dy) *
                   vec4(pow(max(push.base_color.rgb, vec3(0.0)), vec3(1.0 / 2.2)), push.base_color.a);
 
+    // Parametros por instancia (tinte del color base; la opacidad, abajo) y
+    // color de vertice si el material lo pide (bit 7 del modelo de
+    // sombreado). Los dos son factores lineales: al sRGB del albedo.
+    vec4 instance_tint = instanceTint();
+    vec3 linear_factor = instance_tint.rgb;
+    if ((push.pick_id & kShadingVertexColorBit) != 0u) linear_factor *= v_color.rgb;
+    albedo.rgb *= pow(linear_factor, vec3(1.0 / 2.2));
+
     // Recorte por alfa (pelo, pestanas): un diferido no puede mezclar
-    // transparencias, asi que lo que es casi transparente se descarta.
-    bool cut_out = albedo.a < 0.5;
+    // transparencias, asi que lo que es casi transparente se descarta. Con
+    // opacidad por instancia < 1, ademas, la disolucion por tramado (solo en
+    // la pipeline con recorte: VulkanRenderer la elige para esos objetos).
+    bool cut_out = albedo.a < 0.5 || instanceDissolve(instance_tint.a, gl_FragCoord.xy, camera.jitter.xy) ||
+                   lodFadeDiscard(gl_FragCoord.xy, camera.jitter.xy);  // fundido de LOD
 
     // Todas las texturas con las derivadas de la UV original (textureGrad):
     // con parallax la UV desplazada salta entre pixeles y texture() elegia un
@@ -176,7 +190,7 @@ void main() {
 
     // --- Emision ---
     vec3 emissive = toLinear(textureGrad(emissive_map, uv, uv_dx, uv_dy).rgb) * push.emissive.rgb *
-                    kEmissiveIntensity;
+                    kEmissiveIntensity * instanceEmission();
 
     // --- Modelo de sombreado de Disney (push.pick_id: bits 0-3 modelo, 8-31
     // tres parametros de 8 bits) ---
@@ -200,9 +214,22 @@ void main() {
             params.y = shadingEncodeAngle(normal, normalize(direction));
         }
         surface_shading = vec4(float(model) / 255.0, params);
+#ifdef CRAMION_COMPAT
+        // Modo compatible: el G-buffer no guarda el modelo (4 destinos) y
+        // lighting.frag lo iluminaria. Sin luz (modelo 8): sin difuso ni
+        // reflejo y el color como emision (lo mismo que hace lighting.frag con
+        // el modelo 8: albedo lineal + emision; la niebla sigue).
+        if (model == kShadingUnlit) {
+            emissive += toLinear(albedo.rgb);
+            albedo.rgb = vec3(0.0);
+            metallic = 0.0;
+            reflectance = 0.0;
+        }
+#endif
     }
 
     setupLightmap(v_world_position, camera.position.xyz);
+    surface_receive_decals = instanceReceivesDecals();
     writeSurface(albedo, n, normal, tangent_normal, aa_normal, metallic, roughness, occlusion, emissive,
                  reflectance, v_world_position);
     writeVelocity(v_current_clip, v_previous_clip);

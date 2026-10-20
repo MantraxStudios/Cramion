@@ -50,7 +50,8 @@ enum class EventType : uint8_t {
     TouchMoved,
     TouchEnded,
 
-    // Mando (Android: Bluetooth/USB).
+    // Mando: Android (Bluetooth/USB), Windows (XInput y DualShock 4 /
+    // DualSense por HID) y Linux (evdev). gamepadIndex dice cual (0..3).
     GamepadButtonPressed,
     GamepadButtonReleased,
     GamepadAxisMoved,     // gamepadAxis + value
@@ -128,7 +129,9 @@ struct Event {
     // --- Gamepad* ---
     GamepadButton gamepadButton = GamepadButton::A;
     GamepadAxis gamepadAxis = GamepadAxis::LeftX;
-    float value = 0.0f;
+    float value = 0.0f;         // GamepadAxisMoved: valor en bruto (sin zona muerta)
+    int32_t gamepadIndex = 0;   // hueco del mando, 0..Input::kMaxGamepads-1
+    GamepadKind gamepadKind = GamepadKind::Unknown;  // GamepadConnected
 
     // --- FileDropped (rutas soltadas; x/y = posición del cursor al soltar) ---
     std::vector<std::wstring> paths;

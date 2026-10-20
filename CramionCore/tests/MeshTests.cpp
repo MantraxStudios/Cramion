@@ -679,6 +679,54 @@ void testLods() {
     check(bounds_ok && both_materials, "cada nivel conserva el terreno con sus cajas");
     check(model.lods.empty() || model.lods[0].submeshes.size() >= 2, "el LOD1 sigue partido en clusteres");
 
+    // Las mismas briznas con recorte por alfa (follaje): sin Prune ni sloppy,
+    // todas siguen en cada nivel (antes desaparecian enteras).
+    {
+        asset::ModelData masked = model;
+        masked.materials[1].base_color.w = 0.3f;
+        asset::generateLods(masked);
+        bool kept = !masked.lods.empty();
+        for (const asset::MeshLod& lod : masked.lods) {
+            std::size_t blades = 0;
+            for (const asset::SubMesh& submesh : lod.submeshes) {
+                if (submesh.material == 1) blades += submesh.index_count / 3;
+            }
+            kept = kept && blades == 3000u * 2u;
+        }
+        check(kept, "con recorte por alfa las briznas siguen enteras en todos los LODs (y el terreno baja)");
+    }
+
+    // LODs a mano (_LOD1 del archivo): sus vertices van detras de los de
+    // LOD0, su material se empareja por nombre y sustituyen a los automaticos.
+    {
+        asset::ModelData manual = model;
+        asset::ModelData level{};
+        level.materials.push_back(manual.materials[0]);
+        for (int k = 0; k < 4; ++k) {
+            asset::SkinnedVertex v{};
+            v.position = Vec3{k & 1 ? 15.0f : 0.0f, 0.0f, k & 2 ? 15.0f : 0.0f};
+            v.normal = Vec3{0, 1, 0};
+            v.weights[0] = 1.0f;
+            level.vertices.push_back(v);
+        }
+        level.indices = {0, 2, 1, 1, 2, 3};
+        asset::SubMesh quad{};
+        quad.index_count = 6;
+        level.submeshes = {quad};
+        const std::size_t base_vertices = manual.vertices.size();
+        const std::size_t levels_set = asset::setManualLods(manual, {&level});
+        bool ok = levels_set == 1 && manual.lods.size() == 1 && manual.vertices.size() == base_vertices + 4 &&
+                  manual.lods[0].error > 0.0f && !manual.lods[0].submeshes.empty();
+        for (const asset::SubMesh& submesh : ok ? manual.lods[0].submeshes : std::vector<asset::SubMesh>{}) {
+            ok = ok && submesh.material == 0 && submesh.first_index + submesh.index_count <= manual.lod_indices.size();
+            for (std::uint32_t i = 0; ok && i < submesh.index_count; ++i) {
+                const std::uint32_t v = manual.lod_indices[submesh.first_index + i];
+                ok = v >= base_vertices && v < manual.vertices.size();
+            }
+        }
+        check(ok, "los LODs a mano se anaden detras de LOD0 con su material");
+    }
+
     // Calidad de texturas: una imagen de 256 con el limite en 64 se reduce al
     // decodificar (y sin limite queda igual).
     {

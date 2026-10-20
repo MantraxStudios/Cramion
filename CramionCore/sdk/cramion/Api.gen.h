@@ -315,6 +315,15 @@ inline Value stop(Mas&&... mas) {
 }
 }  // namespace Dialogue
 
+namespace Effects {
+/// Effects.pushEvent("Impactos", tipo, posicion, velocidad, color, valor)
+/// evento en un canal de datos del VFX (lo dibujan los efectos con 'Al recibir un evento de la GPU' en ese canal)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value, typename T4 = Value, typename T5 = Value>
+inline Value pushEvent(const T0& texto = {}, const T1& tipo = {}, const T2& posicion = {}, const T3& velocidad = {}, const T4& color = {}, const T5& valor = {}) {
+    return detail::api("Effects.pushEvent", Values{Value(texto), Value(tipo), Value(posicion), Value(velocidad), Value(color), Value(valor)});
+}
+}  // namespace Effects
+
 namespace Environment {
 /// Environment.get()
 /// clima actual ("Storm")
@@ -963,6 +972,13 @@ inline Value urlEncode(const T0& texto = {}) {
 }  // namespace Http
 
 namespace Input {
+/// Input.activeDeviceChanged()
+/// cambio getActiveDevice() este frame
+/// Devuelve: bool
+template <typename... Mas>
+inline Value activeDeviceChanged(Mas&&... mas) {
+    return detail::api("Input.activeDeviceChanged", Values{Value(std::forward<Mas>(mas))...});
+}
 /// Input.addMappingContext("Vuelo", 1)
 /// activa un contexto (prioridad opcional)
 /// Devuelve: bool
@@ -1025,6 +1041,13 @@ template <typename... Mas>
 inline Value getActions(Mas&&... mas) {
     return detail::api("Input.getActions", Values{Value(std::forward<Mas>(mas))...});
 }
+/// Input.getActiveDevice()
+/// ultimo dispositivo usado: keyboard, gamepad o touch
+/// Devuelve: texto
+template <typename... Mas>
+inline Value getActiveDevice(Mas&&... mas) {
+    return detail::api("Input.getActiveDevice", Values{Value(std::forward<Mas>(mas))...});
+}
 /// Input.getAxis("Horizontal")
 /// -1..1: Horizontal (A/D), Vertical (W/S), Mouse X, Mouse Y
 /// Devuelve: numero
@@ -1039,33 +1062,47 @@ template <typename T0 = Value>
 inline Value getBindings(const T0& texto = {}) {
     return detail::api("Input.getBindings", Values{Value(texto)});
 }
-/// Input.getGamepadAxis("leftx")
-/// eje del mando: leftx, lefty, rightx, righty, lt, rt
+/// Input.getGamepadAxis("leftx", 1)
+/// eje del mando: leftx, lefty, rightx, righty, lt, rt (con zona muerta)
 /// Devuelve: numero
-template <typename T0 = Value>
-inline Value getGamepadAxis(const T0& texto = {}) {
-    return detail::api("Input.getGamepadAxis", Values{Value(texto)});
+template <typename T0 = Value, typename T1 = Value>
+inline Value getGamepadAxis(const T0& texto = {}, const T1& valor = {}) {
+    return detail::api("Input.getGamepadAxis", Values{Value(texto), Value(valor)});
 }
-/// Input.getGamepadButton("a")
-/// boton del mando mantenido: a, b, x, y, lb, rb, ls, rs, start, back, up, down, left, right
+/// Input.getGamepadButton("a", 1)
+/// boton del mando mantenido: a, b, x, y, lb, rb, ls, rs, start, back, up, down, left, right; mando 1..4 (opcional)
 /// Devuelve: bool
-template <typename T0 = Value>
-inline Value getGamepadButton(const T0& texto = {}) {
-    return detail::api("Input.getGamepadButton", Values{Value(texto)});
+template <typename T0 = Value, typename T1 = Value>
+inline Value getGamepadButton(const T0& texto = {}, const T1& valor = {}) {
+    return detail::api("Input.getGamepadButton", Values{Value(texto), Value(valor)});
 }
-/// Input.getGamepadButtonDown("a")
+/// Input.getGamepadButtonDown("a", 1)
 /// pulsado este frame
 /// Devuelve: bool
-template <typename T0 = Value>
-inline Value getGamepadButtonDown(const T0& texto = {}) {
-    return detail::api("Input.getGamepadButtonDown", Values{Value(texto)});
+template <typename T0 = Value, typename T1 = Value>
+inline Value getGamepadButtonDown(const T0& texto = {}, const T1& valor = {}) {
+    return detail::api("Input.getGamepadButtonDown", Values{Value(texto), Value(valor)});
 }
-/// Input.getGamepadButtonUp("a")
+/// Input.getGamepadButtonUp("a", 1)
 /// soltado este frame
 /// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value getGamepadButtonUp(const T0& texto = {}, const T1& valor = {}) {
+    return detail::api("Input.getGamepadButtonUp", Values{Value(texto), Value(valor)});
+}
+/// Input.getGamepadCount()
+/// mandos conectados (0..4)
+/// Devuelve: numero
+template <typename... Mas>
+inline Value getGamepadCount(Mas&&... mas) {
+    return detail::api("Input.getGamepadCount", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Input.getGamepadType(1)
+/// familia del mando (sin numero, el ultimo usado): xbox, playstation, nintendo, generic o unknown
+/// Devuelve: texto
 template <typename T0 = Value>
-inline Value getGamepadButtonUp(const T0& texto = {}) {
-    return detail::api("Input.getGamepadButtonUp", Values{Value(texto)});
+inline Value getGamepadType(const T0& valor = {}) {
+    return detail::api("Input.getGamepadType", Values{Value(valor)});
 }
 /// Input.getKey("W")
 /// tecla mantenida
@@ -1151,12 +1188,12 @@ template <typename... Mas>
 inline Value isCursorLocked(Mas&&... mas) {
     return detail::api("Input.isCursorLocked", Values{Value(std::forward<Mas>(mas))...});
 }
-/// Input.isGamepadConnected()
-/// hay un mando?
+/// Input.isGamepadConnected(1)
+/// hay un mando? (o ese mando, 1..4)
 /// Devuelve: bool
-template <typename... Mas>
-inline Value isGamepadConnected(Mas&&... mas) {
-    return detail::api("Input.isGamepadConnected", Values{Value(std::forward<Mas>(mas))...});
+template <typename T0 = Value>
+inline Value isGamepadConnected(const T0& valor = {}) {
+    return detail::api("Input.isGamepadConnected", Values{Value(valor)});
 }
 /// Input.isMobile()
 /// movil o pantalla tactil
@@ -1210,6 +1247,13 @@ template <typename... Mas>
 inline Value saveBindings(Mas&&... mas) {
     return detail::api("Input.saveBindings", Values{Value(std::forward<Mas>(mas))...});
 }
+/// Input.setGamepadVibration(0.5, 0.5, 0.2, 1)
+/// vibra el mando: motor grave y agudo (0..1), segundos (0 = hasta pararla con 0, 0) y mando 1..4 (sin el, todos)
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value setGamepadVibration(const T0& valor = {}, const T1& valor2 = {}, const T2& valor3 = {}, const T3& valor4 = {}) {
+    return detail::api("Input.setGamepadVibration", Values{Value(valor), Value(valor2), Value(valor3), Value(valor4)});
+}
 /// Input.setTouchButton("Saltar", true)
 /// muestra u oculta un boton tactil por su texto
 /// Devuelve: bool
@@ -1256,7 +1300,7 @@ inline Value unbindAction(const T0& id = {}) {
     return detail::api("Input.unbindAction", Values{Value(id)});
 }
 /// Input.vibrate(60)
-/// vibra el movil (ms)
+/// vibra el movil (ms); en PC, los mandos
 template <typename T0 = Value>
 inline Value vibrate(const T0& valor = {}) {
     return detail::api("Input.vibrate", Values{Value(valor)});
@@ -2096,11 +2140,31 @@ inline Value setValue(const T0& texto = {}, const T1& valor = {}) {
 }  // namespace Save
 
 namespace Scene {
+/// Scene.acquire("Prefabs/Bala", posicion, rotacion, padre)
+/// Saca una copia del pool del prefab (o crea una si esta vacio), la pone donde se pide (rotacion en grados o Quat) y la activa
+/// Devuelve: Entity
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value acquire(const T0& texto = {}, const T1& posicion = {}, const T2& rotacion = {}, const T3& padre = {}) {
+    return detail::api("Scene.acquire", Values{Value(texto), Value(posicion), Value(rotacion), Value(padre)});
+}
+/// Scene.cancelSpawn(id)
+/// Cancela un Scene.instantiateAsync (borra lo que ya se habia creado)
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value cancelSpawn(const T0& id = {}) {
+    return detail::api("Scene.cancelSpawn", Values{Value(id)});
+}
 /// Scene.destroy(entity)
 /// Lo destruye al final del frame (en la consola fuera de Play, al terminar el comando)
 template <typename T0 = Value>
 inline Value destroy(const T0& entity = {}) {
     return detail::api("Scene.destroy", Values{Value(entity)});
+}
+/// Scene.destroyDeferred(entity)
+/// Lo desactiva ya y lo destruye (con sus hijos) repartido en varios frames (scene.DestroyBudgetMs)
+template <typename T0 = Value>
+inline Value destroyDeferred(const T0& entity = {}) {
+    return detail::api("Scene.destroyDeferred", Values{Value(entity)});
 }
 /// Scene.findAllWithTag("tag")
 /// Lista de objetos con ese tag
@@ -2115,6 +2179,13 @@ inline Value findAllWithTag(const T0& texto = {}) {
 template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
 inline Value instantiate(const T0& arg = {}, const T1& posicion = {}, const T2& rotacion = {}) {
     return detail::api("Scene.instantiate", Values{Value(arg), Value(posicion), Value(rotacion)});
+}
+/// Scene.instantiateAsync("Prefabs/Celda", posicion, rotacion, padre)
+/// Instancia un prefab sin tirones: lee y parsea en otro hilo y crea las entidades por tandas (scene.SpawnBudgetMs por frame) bajo una raiz desactivada que se activa al terminar. Devuelve un id para Scene.spawnProgress / Scene.spawnResult
+/// Devuelve: numero
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value instantiateAsync(const T0& texto = {}, const T1& posicion = {}, const T2& rotacion = {}, const T3& padre = {}) {
+    return detail::api("Scene.instantiateAsync", Values{Value(texto), Value(posicion), Value(rotacion), Value(padre)});
 }
 /// Scene.load("Nivel2")
 /// Cambia de escena al terminar el frame (nombre o ruta del .crscene)
@@ -2136,6 +2207,48 @@ inline Value name(Mas&&... mas) {
 template <typename... Mas>
 inline Value origin(Mas&&... mas) {
     return detail::api("Scene.origin", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Scene.pool("Prefabs/Bala", n)
+/// Prepara un pool: deja n copias del prefab creadas y desactivadas (por tandas, con scene.SpawnBudgetMs) para Scene.acquire
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value pool(const T0& texto = {}, const T1& n = {}) {
+    return detail::api("Scene.pool", Values{Value(texto), Value(n)});
+}
+/// Scene.poolCount("Prefabs/Bala")
+/// Copias libres (creadas y desactivadas) en el pool del prefab
+/// Devuelve: numero
+template <typename T0 = Value>
+inline Value poolCount(const T0& texto = {}) {
+    return detail::api("Scene.poolCount", Values{Value(texto)});
+}
+/// Scene.preloadPrefab("Prefabs/Celda")
+/// Lee y parsea el prefab en otro hilo y lo guarda en la cache (sin instanciarlo)
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value preloadPrefab(const T0& texto = {}) {
+    return detail::api("Scene.preloadPrefab", Values{Value(texto)});
+}
+/// Scene.release(entity)
+/// Devuelve una copia de Scene.acquire a su pool (la desactiva: onDisable). Si no es de un pool, la destruye como Scene.destroy
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value release(const T0& entity = {}) {
+    return detail::api("Scene.release", Values{Value(entity)});
+}
+/// Scene.spawnProgress(id)
+/// Progreso de Scene.instantiateAsync: 0..1 (1 = lista), -1 si fallo o no existe
+/// Devuelve: numero
+template <typename T0 = Value>
+inline Value spawnProgress(const T0& id = {}) {
+    return detail::api("Scene.spawnProgress", Values{Value(id)});
+}
+/// Scene.spawnResult(id)
+/// La raiz instanciada por Scene.instantiateAsync cuando ya esta (nil si aun no o si fallo); se recoge una vez
+/// Devuelve: Entity
+template <typename T0 = Value>
+inline Value spawnResult(const T0& id = {}) {
+    return detail::api("Scene.spawnResult", Values{Value(id)});
 }
 /// Scene.toAbsolute(posicion)
 /// x, y, z absolutos (para guardar posiciones en una partida)

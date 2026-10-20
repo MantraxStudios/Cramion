@@ -121,6 +121,50 @@ struct GpuLights {
 };
 static_assert(kMaxLightTiles % 4 == 0, "point_tiles va en uvec4 en lighting.frag");
 
+// --- Luces locales por clusteres (light_clusters.glsl: lighting.frag,
+// bindings 29 y 30; glass.frag, set 2, bindings 9 y 10) ---
+// Las principales (las primeras kMaxPointLights puntuales y kMaxSpotLights
+// focos que tocan la vista, ya ordenadas por cercania) siguen en GpuLights.
+// Todas las demas que tocan la vista, sin tope, van aqui: la vista partida en
+// columnas x filas de pantalla x rebanadas de profundidad (exponenciales,
+// como Doom 2016 y Godot Forward+) y en cada cluster la lista de las que
+// pueden llegar a el. Sin sombras por rayos ni niebla volumetrica (si con su
+// hueco de mapa de sombra, si lo tienen). Lo reparte la CPU
+// (VulkanRenderer::buildLightClusters): en Ashbound, de ~1300 luces del mapa
+// las que se ven son unos cientos y cada una cae en pocos clusteres.
+inline constexpr std::uint32_t kLightClusterColumns = 16;
+inline constexpr std::uint32_t kLightClusterRows = 9;
+inline constexpr std::uint32_t kLightClusterSlices = 24;
+inline constexpr std::uint32_t kLightClusterCount = kLightClusterColumns * kLightClusterRows * kLightClusterSlices;
+
+// Una luz local (puntual o foco) del binding 29. std430.
+struct GpuClusterLight {
+    core::Vec4 position_range{};    // xyz = posicion, w = alcance
+    core::Vec4 color_intensity{};   // rgb = color (lineal), a = intensidad
+    core::Vec4 direction_inner{};   // foco: xyz = direccion, w = cos(angulo interior)
+    // x = cos(angulo exterior) (< -1.5 = puntual: sin cono), y = hueco de
+    // sombra (-1 = sin; de los focos o de las puntuales segun x), z = fuerza
+    // de la sombra, w = radio de la fuente (m).
+    core::Vec4 params{-2.0f, -1.0f, 0.0f, 0.0f};
+};
+static_assert(sizeof(GpuClusterLight) == 64, "GpuClusterLight debe coincidir con light_clusters.glsl");
+
+// Cabecera del binding 29 (delante de las luces). El binding 30 lleva, por
+// cluster, dos uint (primer indice y cuantas) y detras los indices de las
+// luces (en el binding 29) de todos los clusteres seguidos.
+struct GpuClusterHeader {
+    // x = columnas, y = filas, z = rebanadas, w = numero de luces (0 = ninguna).
+    std::uint32_t grid[4]{};
+    // xy = teselas por pixel (1 / pixeles de una tesela; 0 = una sola tesela),
+    // z, w = rebanada = log2(profundidad) * z + w.
+    core::Vec4 tile{};
+    // xyz = hacia donde mira la camara (unitario), w = dot(eje, camara): la
+    // profundidad de un punto es dot(eje, p) - w.
+    core::Vec4 view_axis{};
+    core::Vec4 reserved{};
+};
+static_assert(sizeof(GpuClusterHeader) == 64, "GpuClusterHeader debe coincidir con light_clusters.glsl");
+
 // Constante de push de los modelos con esqueleto (pasada de geometria). Son
 // exactamente 128 bytes, el minimo que garantiza Vulkan.
 struct GpuSkinnedPush {
@@ -152,6 +196,9 @@ struct GpuSkinnedPush {
     // en los dibujos de lo estatico (lotes y per_submesh): el hueco de la
     // instancia es el de su matriz en el buffer de huesos.
     static constexpr std::uint32_t kFlagLightmap = 1u << 6;
+    // El modelo tiene color de vertice (set 1, binding 11: RGBA8 por vertice):
+    // los vertices lo leen y lo pasan (v_color); si no, blanco.
+    static constexpr std::uint32_t kFlagVertexColor = 1u << 7;
     // Bits 8-15: teselacion maxima del material (1..64).
     static constexpr std::uint32_t kTessFactorShift = 8;
     static constexpr std::uint32_t kTessFactorMask = 0xFFu << kTessFactorShift;
@@ -192,8 +239,12 @@ struct GpuSkinnedShadowPush {
     core::Vec4 camera_model{};
     core::Vec4 model_scale{1.0f, 1.0f, 1.0f, 0.0f};
     // Alfa del color base del material (skinned_shadow.frag): el recorte de
-    // la sombra usa textura x factor, como el pase principal.
+    // la sombra usa textura x factor, como el pase principal. Negativo = sin
+    // recorte por alfa (lo opaco que va por esta pipeline solo por `opacity`).
     float alpha_factor = 1.0f;
+    // Opacidad por instancia (MeshRenderer.alpha): por debajo de 1 la sombra
+    // se disuelve con el mismo tramado que el G-buffer (skinned_shadow.frag).
+    float opacity = 1.0f;
 };
 
 // Un meshlet (mesh shaders): esfera, cono de normales (meshoptimizer) y
@@ -221,7 +272,7 @@ struct GpuMeshletShadowPush {
 static_assert(sizeof(GpuMeshletShadowPush) == 96, "GpuMeshletShadowPush debe coincidir con shadow_meshlet.task");
 
 static_assert(sizeof(GpuSkinnedPush) == 128, "GpuSkinnedPush debe coincidir con skinned.vert");
-static_assert(sizeof(GpuSkinnedShadowPush) == 116,
+static_assert(sizeof(GpuSkinnedShadowPush) == 120,
               "GpuSkinnedShadowPush debe coincidir con skinned_shadow.vert");
 
 // Constante de push del post-proceso (fxaa.frag): tamano de pixel,
@@ -307,24 +358,64 @@ static_assert(sizeof(GpuSsgiPush) == 128, "GpuSsgiPush: 128 bytes como mucho (mi
 
 // Decal (estampa, charco o mancha de humedad) proyectado sobre el G-buffer
 // en la pasada de geometria. Caja unidad [-0.5, 0.5]^3 en su espacio; se
-// proyecta a lo largo de su eje Y local.
-inline constexpr std::uint32_t kMaxDecals = 64;
-inline constexpr std::uint32_t kMaxDecalTextures = 32;
-// En el modo compatible (VulkanCompat.h, moviles): 16 texturas por shader como
-// mucho, asi que 4 ranuras (gbuffer_surface.glsl, CRAMION_COMPAT).
-inline constexpr std::uint32_t kCompatDecalTextures = 4;
-inline std::uint32_t decalTextureSlots(bool compat) { return compat ? kCompatDecalTextures : kMaxDecalTextures; }
+// proyecta a lo largo de su eje Y local. Van en un storage buffer propio
+// (GpuDecalBuffer, binding 9 del set de la geometria) y sus imagenes en el
+// atlas de decals (DecalAtlas.h, binding 4): capa = indice.
+inline constexpr std::uint32_t kMaxDecals = 256;
+// Teselas de pantalla de los decals (GpuDecalBuffer: masks).
+inline constexpr std::uint32_t kDecalTileColumns = 16;
+inline constexpr std::uint32_t kDecalTileRows = 9;
+inline constexpr std::uint32_t kDecalTileCount = kDecalTileColumns * kDecalTileRows;
+// Un bit por decal en cada tesela: kMaxDecals / 32 uint por tesela.
+inline constexpr std::uint32_t kDecalMaskWords = kMaxDecals / 32;
+static_assert(kMaxDecals % 32 == 0, "un uint por cada 32 decals");
+// Atlas: lado de cada capa y tope de capas (el modo compatible, moviles, mas
+// pequeno). Crece al doble segun se cargan imagenes.
+inline constexpr std::uint32_t kDecalAtlasLayerSize = 1024;
+inline constexpr std::uint32_t kDecalAtlasMaxLayers = 64;
+inline constexpr std::uint32_t kCompatDecalAtlasLayerSize = 512;
+inline constexpr std::uint32_t kCompatDecalAtlasMaxLayers = 32;
+// Imagenes distintas de decal (ranuras de VulkanRenderer::loadDecalTexture:
+// cada una acaba en una capa del atlas).
+inline constexpr std::uint32_t kMaxDecalTextures = kDecalAtlasMaxLayers;
 
 struct GpuDecal {
     core::Mat4 world_to_decal = core::Mat4::identity();
     core::Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};  // rgb = tinte (sRGB), a = opacidad
     core::Vec4 axis{0.0f, 1.0f, 0.0f, 0.2f};   // xyz = eje de proyeccion (mundo), w = coseno minimo
-    // x = tipo (0 estampa, 1 charco, 2 humedad), y = textura (-1 = ninguna),
-    // z = suavidad del borde (0..0.5), w = cantidad (nivel del agua / humedad)
+    // x = tipo (0 estampa, 1 charco, 2 humedad), y = capa del color en el
+    // atlas (-1 = ninguna), z = suavidad del borde (0..0.5), w = cantidad
+    // (nivel del agua / humedad)
     core::Vec4 params{0.0f, -1.0f, 0.1f, 1.0f};
-    // x = rugosidad, y = cuanto la sustituye (0..1), z = metalicidad, w = normal (0 = conservar)
-    core::Vec4 material{0.5f, 0.0f, 0.0f, 0.0f};
+    // x = rugosidad, y = cuanto la sustituye (0..1), z = metalicidad, w =
+    // fuerza del normal map (negativa: verde invertido, convencion DirectX)
+    core::Vec4 material{0.5f, 0.0f, 0.0f, 1.0f};
+    // Capas del atlas (-1 = ninguna): x = normal map, y = ORM (r oclusion, g
+    // rugosidad, b metalicidad), z = emision; w = reservado.
+    core::Vec4 channels{-1.0f, -1.0f, -1.0f, 0.0f};
+    // rgb = emision (HDR lineal: color x intensidad; 0 = sin emision), a = reservado.
+    core::Vec4 emission{};
 };
+static_assert(sizeof(GpuDecal) == 160, "GpuDecal debe coincidir con gbuffer_surface.glsl (std430)");
+
+// Storage buffer de los decals (gbuffer_surface.glsl, DecalBuffer, std430).
+// x = numero de decals, y = columnas, z = filas (0 = sin teselas: todos en
+// todos los pixeles; sondas, Render Textures, VR), w = uint por tesela.
+struct GpuDecalHeader {
+    std::uint32_t count = 0;
+    std::uint32_t tile_columns = 0;
+    std::uint32_t tile_rows = 0;
+    std::uint32_t mask_words = kDecalMaskWords;
+    core::Vec4 tiles{};  // xy = teselas por pixel
+};
+static_assert(sizeof(GpuDecalHeader) == 32);
+// Detras de la cabecera: GpuDecal decals[kMaxDecals] y uint masks[kDecalTileCount
+// * kDecalMaskWords] (por tesela, un bit por decal cuya caja proyectada puede
+// caer en ella; el pixel solo prueba esos).
+inline constexpr std::size_t kDecalBufferDecalsOffset = sizeof(GpuDecalHeader);
+inline constexpr std::size_t kDecalBufferMasksOffset = kDecalBufferDecalsOffset + sizeof(GpuDecal) * kMaxDecals;
+inline constexpr std::size_t kDecalBufferBytes =
+    kDecalBufferMasksOffset + sizeof(std::uint32_t) * kDecalTileCount * kDecalMaskWords;
 
 // Lluvia de la pasada de geometria (skinned.frag): mapa de lluvia y estado.
 struct GpuWeather {
@@ -333,7 +424,8 @@ struct GpuWeather {
     core::Vec4 params{};
     // Zona inundada: xy = centro (x, z), zw = radios (x, z); 0 = sin agua.
     core::Vec4 flood{};
-    // x = numero de decals.
+    // x = numero de decals (los datos van en GpuDecalBuffer); yzw = hacia el
+    // sol (parallax).
     core::Vec4 decal_info{};
     // Nieve (sistema de ambiente): x = cobertura (0..1), y = espesor de la
     // capa acumulada (m), z = humedad al derretirse (0..1), w = reservado.
@@ -343,7 +435,7 @@ struct GpuWeather {
     // apagada). La capa N del mapa de quemado (binding 6 del set de la
     // geometria, FirePass) es la zona N.
     core::Vec4 fire_zones[4]{};
-    GpuDecal decals[kMaxDecals]{};
+    // (Los decals estaban aqui, 64 como mucho: ahora en su storage buffer.)
     // Lightmaps (gbuffer_surface.glsl; al final: los shaders que leen solo el
     // principio del bloque no cambian). x = 0 sin lightmaps, 1 solo la
     // visibilidad del sol, 2 con irradiancia (Fase 3); y = fuerza de la
@@ -352,17 +444,30 @@ struct GpuWeather {
     // (PLAN-LIGHTMAPS 2.5 lo ponia en decal_info.yzw, que ya usa el parallax.)
     core::Vec4 lightmap{};
 };
+static_assert(sizeof(GpuWeather) <= 16384, "GpuWeather: uniform buffer de 16 KB como mucho (minimo de Vulkan)");
 inline constexpr std::uint32_t kMaxFireZones = 4;
 
-// Registro de lightmap de una instancia (set 0, binding 8, std430): mismo
-// hueco que su matriz en el buffer de huesos. layer = capa del atlas
+// Registro de una instancia (set 0, binding 8, std430): mismo hueco que su
+// matriz en el buffer de huesos. Lightmap: layer = capa del atlas
 // (0xFFFFFFFF = sin lightmap); uv_atlas = uv2 * scale_offset.xy + .zw.
+// Parametros por instancia (MeshRenderer, lightmap_common.glsl): tint =
+// RGBA8 (rgb = tinte del color base, a = opacidad; 0xFFFFFFFF = sin cambio),
+// emission = escala de la emision en half float (0x3C00 = 1), flags: bit 0 =
+// no recibe decals. data = los vec4 propios de la instancia
+// (MeshRenderer.instance_data, INSTANCE_DATA(i) en los .crshader). Los lee el
+// fragment shader en el hueco que le pasa el de vertices (v_instance_slot):
+// gl_InstanceIndex en los lotes, bone_offset en los demas.
+inline constexpr std::uint32_t kInstanceDataCount = 2;
 struct GpuLightmapRecord {
     core::Vec4 scale_offset{1.0f, 1.0f, 0.0f, 0.0f};
     std::uint32_t layer = 0xFFFFFFFFu;
-    std::uint32_t pad[3] = {0, 0, 0};
+    std::uint32_t tint = 0xFFFFFFFFu;
+    std::uint32_t emission = 0x3C00u;
+    std::uint32_t flags = 0;
+    core::Vec4 data[kInstanceDataCount]{};
+    static constexpr std::uint32_t kFlagNoDecals = 1u << 0;
 };
-static_assert(sizeof(GpuLightmapRecord) == 32, "GpuLightmapRecord debe coincidir con lightmap_common.glsl");
+static_assert(sizeof(GpuLightmapRecord) == 64, "GpuLightmapRecord debe coincidir con lightmap_common.glsl y glass.frag");
 
 // Constante de push de las nubes volumetricas (clouds.frag).
 // Constante de push de la luz volumetrica (volumetric.frag).

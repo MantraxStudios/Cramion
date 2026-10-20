@@ -242,6 +242,14 @@ public:
     // en pasos fijos (acumulador) y vuelca los resultados en los Transform.
     // Devuelve los pasos dados.
     int update(ecs::World& world, float delta_seconds, bool simulate = true);
+    // Sincronizacion incremental en edicion (update con simulate = false y
+    // CVar physics.IncrementalEditSync): solo se mira lo que se movio
+    // (Transform::version) y una tanda rotatoria por frame. Quien cambia un
+    // componente sin mover la entidad (Inspector, deshacer, MCP) lo avisa:
+    // touchEdit la mira en la siguiente sincronizacion y touchAllEdit hace
+    // una pasada completa (como antes en cada frame). Simulando no hace falta.
+    void touchEdit(entt::entity entity);
+    void touchAllEdit();
     // Un unico paso fijo (el boton "Paso" del modo Play en pausa).
     void singleStep(ecs::World& world);
     // Segundos de fisica simulados desde start() (pasos fijos dados por su

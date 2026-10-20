@@ -32,6 +32,7 @@
 #include <atomic>
 #include <thread>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -107,18 +108,29 @@ public:
     // retira lo viejo y pone lo subido en segundo plano. true si cambiaron
     // las instancias (las sombras cacheadas ya no valen).
     bool pollAsync();
-    bool asyncPending() const { return pending_ != nullptr; }
+    // Tambien mientras unas instancias ya subidas esperan a las texturas.
+    bool asyncPending() const { return pending_ != nullptr || waiting_instances_ != nullptr; }
     void setSettings(const FoliageSettings& settings) { settings_ = settings; }
-    // Las 3 especies (arboles procedurales). Si cambian, se rehacen sus mallas
-    // (espera a la GPU).
+    // Las 3 especies (arboles procedurales). Si cambian, sus mallas se rehacen
+    // en segundo plano (runTask) y pollAsync las cambia cuando estan subidas;
+    // las de antes se retiran unos frames. Sin waitIdle: antes paraba toda la
+    // GPU y rehacia las 9 mallas en el hilo principal (70-135 ms por celda).
     void setSpecies(const std::array<asset::TreeSpecies, kSpecies>& species);
     const std::array<asset::TreeSpecies, kSpecies>& species() const { return species_; }
     const FoliageSettings& settings() const { return settings_; }
     bool empty() const { return instance_count_ == 0; }
 
     // Antes de las sombras y fuera de cualquier render pass: recorte y niveles.
+    // En CADA command buffer que dibuje la vegetacion (tambien las capturas de
+    // la sonda): los comandos indirectos de un frame solo valen para las
+    // instancias y mallas con que se recortaron. `update_stats` = false en las
+    // vistas aisladas (no cuentan en las estadisticas).
     void recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, const core::Vec3& camera_position,
-                    const core::Mat4& view_projection, float delta_seconds);
+                    const core::Mat4& view_projection, float delta_seconds, bool update_stats = true);
+    // Si los comandos de `frame` no se recortaron con las instancias y mallas
+    // de ahora (sin recordCull desde el ultimo cambio), no dibujan nada: un
+    // buffer de comandos recien creado tiene basura (indices e instancias
+    // fuera de rango: ErrorDeviceLost).
     void recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
                        const vk::raii::DescriptorSet& frame_set) const;
     void recordShadow(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, const vk::raii::DescriptorSet& frame_set,
@@ -157,7 +169,7 @@ public:
     // Array de colores de los arboles (SRGB, creado con formato mutable: se
     // puede ver como UNORM, como leen las texturas los rayos).
     vk::Image albedoImage() const { return *albedo_array_.image; }
-    // R8G8B8A8_SRGB o, si ya estan en la cache de BC7 (ver createTextures),
+    // R8G8B8A8_SRGB o, si ya estan en la cache de BC7 (ver buildTextures),
     // BC7_SRGB.
     vk::Format albedoFormat() const { return albedo_format_; }
     std::uint32_t albedoMips() const { return albedo_mips_; }
@@ -172,8 +184,22 @@ private:
 
     void createPipelines(const VulkanDevice& device, std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats,
                          vk::Format depth_format, vk::Format shadow_format);
+    // Las 9 mallas (3 especies x 3 niveles) de unas especies, ya subidas.
+    // En cualquier hilo (solo crea buffers y espera a su propia copia).
+    struct SpeciesMeshes {
+        std::array<asset::TreeSpecies, kSpecies> species{};
+        VulkanBuffer vertices;
+        VulkanBuffer indices;
+        std::array<Mesh, kSpecies * 3> meshes{};
+        std::array<std::uint32_t, kSpecies * 3> triangles{};
+        std::array<asset::TreeMeshData, kSpecies> rt_meshes{};
+        std::array<core::Vec4, kSpecies> bounds{};
+    };
+    static std::unique_ptr<SpeciesMeshes> buildSpeciesMeshes(const VulkanDevice& device,
+                                                             const std::array<asset::TreeSpecies, kSpecies>& species);
+    // Pone unas mallas nuevas (las de antes se retiran unos frames).
+    void adoptSpeciesMeshes(SpeciesMeshes& meshes);
     void buildMeshes();
-    void createTextures();
     // Las texturas de los arboles a BC7 en segundo plano, a la cache del
     // usuario (las usa el siguiente arranque).
     void stopTextureCompression();
@@ -182,6 +208,34 @@ private:
         vk::raii::Image image{nullptr};
         vk::raii::ImageView view{nullptr};
     };
+    // Texturas de los arboles generadas y subidas en otro hilo (buildTextures,
+    // con runStreamingTask): generarlas cuesta ~1 s de CPU aunque esten en la
+    // cache de BC7 (su clave es el hash de lo generado). Antes se hacian en el
+    // hilo principal con los primeros arboles (1,1 s en un frame).
+    struct BuiltTextures {
+        TextureArray albedo;
+        TextureArray normal;
+        vk::Format albedo_format = vk::Format::eR8G8B8A8Srgb;
+        std::uint32_t mips = 1;
+        std::uint32_t layers = 0;
+        // Sin cache de BC7: lo generado y donde guardarlo comprimido (el
+        // hilo de compresion lo arranca el hilo principal al adoptarlas).
+        std::shared_ptr<asset::TreeTextures> generated;
+        std::filesystem::path cache_file;
+        std::uint64_t hash = 0;
+    };
+    struct PendingTextures {
+        std::unique_ptr<BuiltTextures> result;  // lo escribe la tarea
+        std::atomic<int> state{0};              // 0 creando, 1 listas, 2 fallo
+    };
+    static std::unique_ptr<BuiltTextures> buildTextures(const VulkanDevice& device);
+    // Lanza buildTextures una vez (con las primeras instancias).
+    void requestTextures();
+    // Hilo principal: pone las texturas (y la compresion a BC7 si no estaban
+    // en la cache).
+    void adoptTextures(BuiltTextures& built);
+    std::shared_ptr<PendingTextures> pending_textures_;
+    bool textures_failed_ = false;
     // Sets de computo y dibujo de un juego de instancias. false si el pool
     // esta lleno (demasiados juegos retirados a la vez).
     bool allocateSets(std::vector<vk::raii::DescriptorSet>& cull_sets,
@@ -216,6 +270,10 @@ private:
         std::atomic<int> state{0};                 // 0 creando, 1 enviado, 2 fallo
     };
     std::shared_ptr<PendingInstances> pending_;
+    // Instancias ya subidas que esperan a las texturas (las primeras): se
+    // adoptan en pollAsync en cuanto estan. Mientras, no hay arboles (unos
+    // cientos de ms la primera vez, en vez de parar el frame).
+    std::shared_ptr<InstanceBuffers> waiting_instances_;
     // Juegos de antes, hasta que ningun frame en vuelo los use.
     struct RetiredInstances {
         VulkanBuffer instances;
@@ -227,6 +285,20 @@ private:
         std::uint32_t frames = 0;
     };
     std::vector<RetiredInstances> retired_instances_;
+    // Especies que se estan construyendo en segundo plano (setSpecies).
+    struct PendingSpecies {
+        std::array<asset::TreeSpecies, kSpecies> species{};
+        std::unique_ptr<SpeciesMeshes> result;  // lo escribe la tarea
+        std::atomic<int> state{0};              // 0 creando, 1 lista, 2 fallo
+    };
+    std::shared_ptr<PendingSpecies> pending_species_;
+    // Mallas de antes, hasta que ningun frame en vuelo las dibuje.
+    struct RetiredMeshes {
+        VulkanBuffer vertices;
+        VulkanBuffer indices;
+        std::uint32_t frames = 0;
+    };
+    std::vector<RetiredMeshes> retired_meshes_;
 
     const VulkanDevice* device_ = nullptr;
     std::uint32_t frames_ = 2;
@@ -276,6 +348,14 @@ private:
     std::vector<VulkanBuffer> commands_;  // por frame: kSpecies x kLists comandos de dibujo indirecto
     std::vector<VulkanBuffer> readback_;  // por frame: los comandos (cuantos se dibujaron)
     std::vector<bool> readback_ready_;
+    // Generacion de lo que dibujan los comandos (sube al adoptar instancias o
+    // mallas) y la que tenian al recortar cada frame (recordCull): si no
+    // coinciden, los comandos de ese frame no se usan.
+    std::uint64_t draw_generation_ = 1;
+    std::vector<std::uint64_t> culled_generation_;
+    bool commandsCurrent(std::uint32_t frame) const {
+        return frame < culled_generation_.size() && culled_generation_[frame] == draw_generation_;
+    }
     std::uint32_t instance_count_ = 0;
     std::array<std::uint32_t, kSpecies> species_count_{};
     std::array<std::uint32_t, kSpecies * kLists> template_first_instance_{};

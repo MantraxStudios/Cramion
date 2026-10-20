@@ -2,11 +2,16 @@
 // eventos de X a los de CramionDM: teclado (con texto por XIM), raton, rueda,
 // foco, cierre y redimensionado. La captura del cursor (primera persona)
 // oculta el cursor, lo encierra (XGrabPointer) y lo devuelve al centro cada
-// movimiento, mandando el desplazamiento como MouseRawMoved.
+// movimiento, mandando el desplazamiento como MouseRawMoved. Los mandos van
+// por evdev (GamepadEvdev.h) y se leen en pumpEvents.
 
 #if defined(__linux__) && !defined(__ANDROID__)
 
 #include "CramionDM/Window.h"
+
+// Antes que Xlib: sus macros (None, Bool...) chocan con los enum de los mandos.
+#include "CramionDM/Input.h"
+#include "GamepadEvdev.h"
 
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
@@ -119,6 +124,7 @@ std::string narrow(const std::wstring& w) {
 
 }  // namespace
 
+Window::Window() = default;
 Window::~Window() { destroy(); }
 
 bool Window::create(const WindowConfig& config) {
@@ -173,10 +179,20 @@ bool Window::create(const WindowConfig& config) {
     }
     XFlush(dpy);
     open_ = true;
+    // Las ventanas sin mostrar (herramientas de prueba) no leen mandos.
+    if (config.visible) {
+        gamepads_ = std::make_unique<EvdevGamepads>();
+        if (gamepadVibrationUser() == nullptr) setGamepadVibrationHandler(&Window::vibrationThunk, this);
+    }
     return true;
 }
 
 void Window::destroy() {
+    if (gamepads_) {
+        gamepads_->stopAll();  // ningun mando se queda vibrando al cerrar
+        gamepads_.reset();
+        if (gamepadVibrationUser() == this) setGamepadVibrationHandler(nullptr, nullptr);
+    }
     Display* dpy = display(native_);
     if (dpy == nullptr) return;
     if (input_context_ != nullptr) XDestroyIC(static_cast<XIC>(input_context_));
@@ -246,6 +262,7 @@ void Window::pumpEvents() {
                 dispatch(e);
                 if (!focused_ && cursor_captured_) XUngrabPointer(dpy, CurrentTime);
                 if (focused_ && cursor_captured_) setCursorCaptured(true);
+                if (gamepads_) gamepads_->refreshRumble(focused_ || gamepads_background_);
                 break;
             case KeyPress:
             case KeyRelease: {
@@ -352,6 +369,22 @@ void Window::pumpEvents() {
                 break;
         }
     }
+    pollGamepads();
+}
+
+void Window::pollGamepads() {
+    if (!gamepads_) return;
+    gamepads_->poll(focused_ || gamepads_background_, [this](Event& e) { dispatch(e); });
+}
+
+bool Window::vibrationThunk(void* user, int pad, float low, float high, float seconds) {
+    return static_cast<Window*>(user)->setGamepadVibration(pad, low, high, seconds);
+}
+
+bool Window::setGamepadVibration(int pad, float low, float high, float seconds) {
+    if (!gamepads_) return false;
+    return gamepads_->vibrate(pad, std::clamp(low, 0.0f, 1.0f), std::clamp(high, 0.0f, 1.0f), std::max(seconds, 0.0f),
+                              focused_ || gamepads_background_);
 }
 
 void Window::setTitle(const std::wstring& title) {

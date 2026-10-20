@@ -13,6 +13,7 @@
 //     contactos, velocidades y consultas (rayos, esferas, cajas).
 
 #include <CramionCore/spline/Spline.h>
+#include <CramionCore/cvar/CVar.h>
 #include <CramionCore/profiling/Profiler.h>
 #include "EditorApp.h"
 
@@ -41,6 +42,17 @@ using core::Vec3;
 using physics::PhysicsEventType;
 
 namespace {
+
+// Parar Play sin rehacer el mundo (UndoHistory::revert): solo vuelven las
+// entidades que cambiaron. Apagado por defecto: el estado de ejecucion que no
+// entra en la huella (maquina del Animator, malla creada por codigo, arboles
+// de comportamiento...) de las entidades que no cambiaron se quedaria tras
+// parar. Con el, o si no se puede (Scene.load, origen movido...), el mundo
+// entero se lee de la instantanea como siempre.
+cvar::CVar<bool> g_incremental_stop("editor.play.IncrementalStop", false,
+                                    "Al parar Play solo se restauran las entidades que cambiaron (sin volver a leer "
+                                    "la escena entera); 0 = se lee entera",
+                                    cvar::Saved);
 
 constexpr ImU32 kColliderColor = IM_COL32(145, 244, 139, 255);  // el verde de Unity
 constexpr ImU32 kTriggerColor = IM_COL32(110, 190, 255, 255);
@@ -185,7 +197,12 @@ void EditorApp::enterPlay() {
     if (collider_handle_drag_ != 0 || light_handle_drag_ != 0) commit();
     flushCommit();
     collider_handle_drag_ = 0;
-    play_snapshot_ = ecs::serializeWorld(world_);
+    // Regiones cargadas: las celdas a medias se terminan antes de la
+    // instantanea y el World Partition del juego toma las descargadas.
+    prepareRegionsForPlay();
+    // Los registros del historial (ya al dia tras flushCommit): sin volver a
+    // serializar el mundo; el texto solo se arma al parar.
+    play_snapshot_ = history_.freeze(world_);
     play_dirty_before_ = dirty_;
     play_scene_changed_ = false;
     // Lo que cambien los scripts con Graphics se deshace al parar.
@@ -293,6 +310,15 @@ void EditorApp::exitPlay() {
     world_partition_.end(world_, false);  // el mundo entero vuelve con el snapshot
     // El mundo vuelve a como estaba al darle a Play (la seleccion va por UUID).
     const ecs::DVec3 origin_before = world_.origin();
+    // Con editor.play.IncrementalStop: solo las entidades que cambiaron en
+    // Play vuelven a su registro (las de siempre conservan su handle y lo
+    // subido a la GPU). Si no se puede (la instantanea cambio, otro origen),
+    // el mundo entero se lee como siempre.
+    bool reverted = false;
+    if (!play_scene_changed_ && g_incremental_stop.get()) {
+        reverted = history_.revert(world_, play_snapshot_.version);
+        if (reverted) alignOriginAfterLoad(origin_before);  // mismo origen: solo el del renderizador
+    }
     if (play_scene_changed_) {
         // Scene.load cambio de nivel: volver a la escena del editor es otro
         // cambio de escena (las teselas y lo cargado para el nivel de Play
@@ -302,8 +328,10 @@ void EditorApp::exitPlay() {
     }
     // Si no, las teselas se quedan (misma escena, sin volver a subirlas) y
     // deserializeWorld las recoloca si el origen flotante se movio en Play.
-    ecs::deserializeWorld(world_, play_snapshot_);
-    alignOriginAfterLoad(origin_before);
+    if (!reverted) {
+        ecs::deserializeWorld(world_, play_snapshot_.text());
+        alignOriginAfterLoad(origin_before);
+    }
     play_snapshot_.clear();
     dirty_ = play_dirty_before_;
     if (play_graphics_) {
@@ -429,8 +457,9 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
     if (scripts_.takeQuitRequest()) quit_play_requested_ = true;
     Vec3 position = scene_.camera().position();
     Vec3 forward = scene_.camera().forward();
-    world_.forEachDepthFirst([&](ecs::Entity e) {
-        if (const ecs::Camera* camera = e.tryGet<ecs::Camera>(); camera != nullptr && camera->is_main && e.activeInHierarchy()) {
+    // La camara principal (solo lo activo: no recorre las celdas desactivadas).
+    world_.forEachActiveDepthFirst([&](ecs::Entity e) {
+        if (const ecs::Camera* camera = e.tryGet<ecs::Camera>(); camera != nullptr && camera->is_main) {
             position = e.worldPosition();
             forward = e.forward();
         }
@@ -539,6 +568,7 @@ void EditorApp::updatePhysics(float delta_seconds) {
     }
     updateTerrainStreaming();  // teselas de los Terrenos grandes cerca de la camara (EditorTerrainGrid.cpp)
     updateDataLayerVisibility();  // Data Layers ocultas en la Escena (EditorWorldPartition.cpp)
+    updateEditorRegions();        // regiones cargadas del World Partition (fuera de Play)
     if (play_state_ == PlayState::Playing) {
         spline::updateSplineFollowers(world_, delta_seconds);
         world_partition_.update(world_, scene_.camera().position());  // celdas cerca del jugador

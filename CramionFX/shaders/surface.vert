@@ -71,6 +71,17 @@ layout(std430, set = 1, binding = 10) readonly buffer LightmapUvs {
 layout(location = 7) out vec2 v_lightmap_uv;
 layout(location = 8) flat out uint v_lightmap_slot;
 const uint kFlagLightmap = 1u << 6;
+// Hueco de la instancia (parametros por instancia, lightmap_common.glsl) y
+// color de vertice del modelo (set 1, binding 11; solo con kFlagVertexColor):
+// VERTEX_COLOR en vertex() y en surface().
+layout(location = 9) flat out uint v_instance_slot;
+layout(std430, set = 1, binding = 11) readonly buffer VertexColors {
+    uint vertex_colors[];
+};
+layout(location = 10) out vec4 v_color;
+const uint kFlagVertexColor = 1u << 7;
+vec4 cramion_vertex_color = vec4(1.0);
+#define VERTEX_COLOR cramion_vertex_color
 
 #define CRAMION_VERTEX_STAGE 1
 #include "surface_common.glsl"
@@ -82,6 +93,9 @@ void main() {
                 in_weights.y * bones[base + in_joints.y] +
                 in_weights.z * bones[base + in_joints.z] +
                 in_weights.w * bones[base + in_joints.w];
+    v_instance_slot = base;
+    if ((push.flags & kFlagVertexColor) != 0u) cramion_vertex_color = unpackUnorm4x8(vertex_colors[gl_VertexIndex]);
+    v_color = cramion_vertex_color;
 
     vec4 world_position = push.model * (skin * vec4(in_position, 1.0));
     mat3 to_world = mat3(push.model) * mat3(skin);
@@ -103,15 +117,14 @@ void main() {
     // aqui tambien la dejaba mirando hacia dentro (doble giro).
     vec3 normal = normal_to_world * in_normal;
     vec2 uv = in_uv * material_uv.xy + material_uv.zw;
-    vec3 offset = vec3(0.0);
 
 #ifdef CRAMION_HAS_VERTEX
+    cramion_time = weather.params.z;
     Vertex v;
     v.position = world_position.xyz;
     v.normal = normalize(normal);
     v.uv = uv;
     vertex(v);
-    offset = v.position - world_position.xyz;
     world_position.xyz = v.position;
     normal = v.normal;
     uv = v.uv;
@@ -131,9 +144,24 @@ void main() {
                          in_weights.z * bones[previous + in_joints.z] +
                          in_weights.w * bones[previous + in_joints.w];
     v_current_clip = camera.unjittered_view_projection * world_position;
-    // El desplazamiento del usuario se toma igual en el frame anterior.
     vec4 previous_world = previous_skin * vec4(in_position, 1.0);
-    previous_world.xyz += offset;
+#ifdef CRAMION_HAS_VERTEX
+    // El vertice del frame anterior pasa otra vez por vertex(), con su pose
+    // y su tiempo (TIME - DELTA_TIME): lo que mueve el usuario tambien tiene
+    // vector de movimiento. Antes se sumaba el mismo desplazamiento de este
+    // frame y una bandera u olas por TIME dejaban estelas con TAA/FSR/DLSS.
+    mat3 previous_to_world = mat3(previous_skin);
+    mat3 previous_normal_to_world =
+        mat3(cross(previous_to_world[1], previous_to_world[2]), cross(previous_to_world[2], previous_to_world[0]),
+             cross(previous_to_world[0], previous_to_world[1]));
+    cramion_time = weather.params.z - DELTA_TIME;
+    Vertex previous_vertex;
+    previous_vertex.position = previous_world.xyz;
+    previous_vertex.normal = normalize(previous_normal_to_world * in_normal);
+    previous_vertex.uv = in_uv * material_uv.xy + material_uv.zw;
+    vertex(previous_vertex);
+    previous_world.xyz = previous_vertex.position;
+#endif
     v_previous_clip = camera.previous_view_projection * previous_world;
 
     // Lightmap: su UV2 y el hueco de la instancia (el de su matriz en el

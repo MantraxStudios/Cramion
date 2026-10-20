@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Cramion
-    VERSION 2.5.1
+    VERSION 2.6.2
     DESCRIPTION "Motor con capa de plataforma DirectX 12 (CramionDM) y renderizador Vulkan (CramionFX)"
     LANGUAGES CXX
 )
@@ -40,6 +40,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Release con simbolos (PDB) en Windows con Clang (ROADMAP 2 #4): sin ellos
+# los minidumps solo dan modulo y desplazamiento. -gcodeview no cambia el
+# codigo que se genera (las mismas -O3 -DNDEBUG); /DEBUG:FULL deja cada .pdb
+# junto a su .exe y /OPT:REF,ICF devuelve lo que /DEBUG apaga en lld-link
+# (sin ellos el .exe saldria mas grande que sin simbolos). Los .pdb se
+# archivan por version al empaquetar (cmake/PackageRelease.cmake).
+# -DCRAMION_RELEASE_PDB=OFF: como antes (compila algo mas rapido y con menos RAM).
+option(CRAMION_RELEASE_PDB "Release con simbolos de depuracion (.pdb) para los informes de crash" ON)
+if(CRAMION_RELEASE_PDB AND WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Release"
+   AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-g>" "$<$<COMPILE_LANGUAGE:C,CXX>:-gcodeview>")
+    add_link_options("SHELL:-Xlinker /DEBUG:FULL" "SHELL:-Xlinker /OPT:REF" "SHELL:-Xlinker /OPT:ICF")
+    message(STATUS "Cramion: Release con simbolos (.pdb junto a cada .exe)")
+endif()
 
 # Compilaciones a la vez segun la RAM: Ninja lanza una por nucleo + 2 y los
 # archivos pesados (VulkanRenderer.cpp, RenderSync.cpp) llegan a ~1,5 GB; con 16

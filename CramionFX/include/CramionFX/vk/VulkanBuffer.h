@@ -30,8 +30,12 @@ public:
 
     // Crea el buffer y le asigna memoria con las propiedades indicadas. Si la
     // memoria es visible desde la CPU queda mapeada de forma permanente.
+    // `name` (opcional): nombre para RenderDoc/Nsight/validacion
+    // (VulkanDevice::setObjectName; no hace nada sin la validacion).
     void create(const VulkanDevice& device, vk::DeviceSize size, vk::BufferUsageFlags usage,
-                vk::MemoryPropertyFlags properties);
+                vk::MemoryPropertyFlags properties, const char* name = nullptr);
+    // Pone (o cambia) el nombre de depuracion de un buffer ya creado.
+    void setName(const char* name) const;
 
     // Crea un buffer en memoria de la GPU y copia `data` mediante staging.
     // Para datos que no cambian, como las mallas. Espera a la GPU.

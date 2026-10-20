@@ -54,6 +54,8 @@ void ComputePass::create(const VulkanDevice& device, const ComputePassDesc& desc
     pipeline_info.layout = *pipeline_layout_;
 
     pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+    // Nombre de depuracion: el del shader (nada sin la validacion).
+    device.setObjectName(*pipeline_, desc.shader.c_str());
 }
 
 void ComputePass::destroy() {

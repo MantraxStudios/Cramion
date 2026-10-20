@@ -50,6 +50,8 @@ layout(location = 3) in vec3 in_world_position[];
 layout(location = 6) in vec3 in_previous_world[];
 layout(location = 7) in vec2 in_lightmap_uv[];
 layout(location = 8) in uint in_lightmap_slot[];
+layout(location = 9) in uint in_instance_slot[];
+layout(location = 10) in vec4 in_color[];
 
 // Lo mismo que skinned.vert entrega a skinned.frag.
 layout(location = 0) out vec3 v_normal;
@@ -61,6 +63,8 @@ layout(location = 5) out vec4 v_previous_clip;
 // Lightmap: la UV2 con las baricentricas y el hueco del vertice 0.
 layout(location = 7) out vec2 v_lightmap_uv;
 layout(location = 8) flat out uint v_lightmap_slot;
+layout(location = 9) flat out uint v_instance_slot;
+layout(location = 10) out vec4 v_color;
 
 void main() {
     vec3 w = gl_TessCoord;
@@ -93,4 +97,6 @@ void main() {
     v_previous_clip = camera.previous_view_projection * vec4(previous, 1.0);
     v_lightmap_uv = w.x * in_lightmap_uv[0] + w.y * in_lightmap_uv[1] + w.z * in_lightmap_uv[2];
     v_lightmap_slot = in_lightmap_slot[0];
+    v_instance_slot = in_instance_slot[0];
+    v_color = w.x * in_color[0] + w.y * in_color[1] + w.z * in_color[2];
 }

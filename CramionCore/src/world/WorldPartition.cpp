@@ -42,6 +42,14 @@ cvar::CVar<float> g_restore_budget_ms("wp.RestoreBudgetMs", 2.0f,
                                       cvar::Saved, 0.0f, 100.0f);
 cvar::CVar<int> g_max_reads("wp.MaxIoInFlight", 8, "Celdas leyendose de disco a la vez en otros hilos", cvar::Saved, 1,
                             64);
+cvar::CVar<float> g_editor_unload_budget_ms("wp.EditorUnloadBudgetMs", 4.0f,
+                                            "Editor (regiones cargadas): milisegundos por frame para guardar las celdas "
+                                            "que se descargan (siempre entra al menos una)",
+                                            cvar::Saved, 0.0f, 100.0f);
+cvar::CVar<float> g_editor_destroy_budget_ms("wp.EditorDestroyBudgetMs", 1.0f,
+                                             "Editor (regiones cargadas): milisegundos por frame para borrar lo que se "
+                                             "descarga, de las hojas hacia arriba (siempre al menos una entidad)",
+                                             cvar::Saved, 0.0f, 100.0f);
 
 std::string trim(const std::string& s) {
     const std::size_t b = s.find_first_not_of(" \t\r\n");
@@ -440,6 +448,7 @@ std::vector<std::pair<WorldPartitionSystem::CellKey, WorldPartitionSystem::Desir
 void WorldPartitionSystem::track(entt::entity root, const CellKey& c) {
     tracked_[root] = c;
     cells_[c].roots.push_back(root);
+    ++world_changes_;  // solo se llama con raices recien recreadas
 }
 
 void WorldPartitionSystem::untrack(entt::entity root) { tracked_.erase(root); }
@@ -466,6 +475,8 @@ void WorldPartitionSystem::rescan(ecs::World& world) {
     for (const entt::entity h : world.roots()) {
         if (tracked_.find(h) == tracked_.end()) {
             if (rejected_.count(h) != 0) continue;
+            // Lo del motor (teselas) y lo descargado que aun se esta borrando.
+            if (world.registry().get<ecs::EntityInfo>(h).transient) continue;
             if (!streamable(world.wrap(h))) {
                 rejected_.insert(h);
                 continue;
@@ -600,6 +611,22 @@ ecs::Entity restorePending(ecs::World& world, const Pending& p, const ecs::DVec3
     return restoreRoot(world, p.text, saved);
 }
 
+// Editor: como restorePending, pero una raiz cuyo UUID ya esta en el mundo
+// (la trajo deshacer o la instantanea con la que se rehizo el mundo) no se
+// recrea ni avisa: es la buena. `skipped` dice si fue asi.
+template <typename Pending>
+ecs::Entity restorePendingQuiet(ecs::World& world, const Pending& p, const ecs::DVec3& saved, bool& skipped) {
+    skipped = false;
+    std::shared_ptr<const ecs::ParsedEntities> parsed = p.parsed;
+    if (!parsed) parsed = ecs::parseEntities(p.text);
+    if (!parsed) return {};
+    if (const Uuid id = ecs::parsedRootUuid(*parsed); id.valid() && world.find(id).valid()) {
+        skipped = true;
+        return {};
+    }
+    return placeRestored(world, ecs::restoreParsedEntities(world, *parsed), saved);
+}
+
 // "cell_X_Z.crcell" o "cell_X_Z_<hash>.crcell" -> X, Z.
 bool parseCellName(const std::filesystem::path& file, CellCoord& c) {
     const std::string name = file.filename().string();
@@ -661,30 +688,41 @@ int WorldPartitionSystem::writeExternalCells(ecs::World& world, float cell_size,
     return writeExternalCells(world, settings, scene, error);
 }
 
-int WorldPartitionSystem::writeExternalCells(ecs::World& world, const WorldPartition& settings,
-                                             const std::filesystem::path& scene, std::string* error) {
-    struct Out {
-        std::string grid;
-        std::string layers;
-        std::vector<std::string> roots;
-    };
-    std::map<std::string, Out> cells;  // por nombre de archivo
+namespace {
+
+// Lo que va a un archivo de celda al guardar (por nombre de archivo).
+struct CellOut {
+    std::string grid;
+    std::string layers;
+    ecs::DVec3 origin{};  // las posiciones de `roots` son relativas a este
+    std::vector<std::string> roots;
+};
+
+// Las raices del mundo que se descargan, por archivo de celda.
+void collectWorldCells(ecs::World& world, const WorldPartition& settings, std::map<std::string, CellOut>& cells) {
     for (const entt::entity h : world.roots()) {
         const ecs::Entity e = world.wrap(h);
-        if (e.get<ecs::EntityInfo>().transient || !streamable(e)) continue;
-        const int grid = gridOf(settings, e);
-        const CellCoord c = cellAt(world.absolute(e.worldPosition()), gridCellSize(settings, grid));
-        const std::string grid_name = gridName(settings, grid);
-        const std::string layers = layersOf(e);
-        Out& out = cells[cellName(c, grid_name, layers)];
+        if (e.get<ecs::EntityInfo>().transient || !WorldPartitionSystem::streamable(e)) continue;
+        const int grid = WorldPartitionSystem::gridOf(settings, e);
+        const CellCoord c = WorldPartitionSystem::cellAt(world.absolute(e.worldPosition()),
+                                                         WorldPartitionSystem::gridCellSize(settings, grid));
+        const std::string grid_name = WorldPartitionSystem::gridName(settings, grid);
+        const std::string layers = WorldPartitionSystem::layersOf(e);
+        CellOut& out = cells[cellName(c, grid_name, layers)];
         out.grid = grid_name;
         out.layers = layers;
+        out.origin = world.origin();
         out.roots.push_back(ecs::serializeEntity(world, e));
     }
-    const std::filesystem::path folder = cellsFolder(scene);
+}
+
+// Escribe `cells` en `folder` y borra las celdas que ya no tienen nada (las
+// de `keep` se quedan como estan). Cuantas celdas quedan; -1 si fallo.
+int writeCellSet(const std::filesystem::path& folder, const std::map<std::string, CellOut>& cells,
+                 const std::set<std::string>& keep, std::string* error) {
     std::error_code ec;
     for (const auto& [name, out] : cells) {
-        if (!writeCellFile(folder / name, out.roots, world.origin(), nullptr, out.grid, out.layers)) {
+        if (!writeCellFile(folder / name, out.roots, out.origin, nullptr, out.grid, out.layers)) {
             if (error != nullptr) *error = "no se pudo escribir " + (folder / name).string();
             return -1;
         }
@@ -694,13 +732,23 @@ int WorldPartitionSystem::writeExternalCells(ecs::World& world, const WorldParti
         std::vector<std::filesystem::path> stale;
         for (const auto& entry : std::filesystem::directory_iterator(folder, ec)) {
             CellCoord c;
-            if (parseCellName(entry.path(), c) && cells.count(entry.path().filename().string()) == 0) {
+            const std::string name = entry.path().filename().string();
+            if (parseCellName(entry.path(), c) && cells.count(name) == 0 && keep.count(name) == 0) {
                 stale.push_back(entry.path());
             }
         }
         for (const std::filesystem::path& file : stale) std::filesystem::remove(file, ec);
     }
-    return static_cast<int>(cells.size());
+    return static_cast<int>(cells.size() + keep.size());
+}
+
+}  // namespace
+
+int WorldPartitionSystem::writeExternalCells(ecs::World& world, const WorldPartition& settings,
+                                             const std::filesystem::path& scene, std::string* error) {
+    std::map<std::string, CellOut> cells;  // por nombre de archivo
+    collectWorldCells(world, settings, cells);
+    return writeCellSet(cellsFolder(scene), cells, {}, error);
 }
 
 void WorldPartitionSystem::removeExternalCells(const std::filesystem::path& scene) {
@@ -818,6 +866,14 @@ void WorldPartitionSystem::registerExternalCells(ecs::World& world) {
         const CellKey key{grid, c.x, c.z, layerSetId(meta.layers)};
         Cell& cell = cells_[key];
         if (!cell.roots.empty()) {
+            if (editor_mode_) {
+                // Editor: la celda ya esta en el mundo (se acaba de guardar
+                // desde el): manda el mundo y el archivo no se lee. Queda como
+                // su origen por si el mundo se rehace con una instantanea sin ella.
+                cell.source_file = entry.path();
+                cell.source_origin = saved;
+                continue;
+            }
             // Ya hay objetos de esta celda en la escena: la celda entera ya.
             for (const std::string& text : readCellFile(entry.path())) restoreTracked(world, text, saved);
             continue;
@@ -831,9 +887,21 @@ void WorldPartitionSystem::registerExternalCells(ecs::World& world) {
     }
 }
 
-void WorldPartitionSystem::begin(ecs::World& world, const Vec3& viewer) {
+void WorldPartitionSystem::begin(ecs::World& world, const Vec3& viewer) { start(world, viewer, false); }
+
+void WorldPartitionSystem::beginEditor(ecs::World& world, const Vec3& camera) { start(world, camera, true); }
+
+void WorldPartitionSystem::start(ecs::World& world, const Vec3& viewer, bool editor) {
     registerWorldPartitionComponents();
+    flushDestroys(world);  // lo de una vuelta anterior en el editor
     drainJobs();
+    // Las celdas descargadas del editor (Play desde el editor): solo esta vez.
+    const WorldPartitionSystem* inherit = editor ? nullptr : inherit_from_;
+    inherit_from_ = nullptr;
+    editor_mode_ = false;
+    settings_entity_ = entt::null;
+    held_.clear();
+    load_epoch_ = 0;
     cells_.clear();
     tracked_.clear();
     rejected_.clear();
@@ -847,32 +915,60 @@ void WorldPartitionSystem::begin(ecs::World& world, const Vec3& viewer) {
     raw_layer_ids_.clear();
     deps_.clear();
     bool found = false;
-    for (const entt::entity h : world.registry().view<WorldPartition>()) {
-        const ecs::Entity e = world.wrap(h);
-        const WorldPartition& wp = e.get<WorldPartition>();
-        if (!wp.enabled || !e.activeInHierarchy()) continue;
-        settings_ = wp;
-        found = true;
-        break;
+    if (editor) {
+        // El editor: el mismo World Partition que guarda las celdas en disco
+        // (EditorApp::saveScene), aunque su entidad este desactivada.
+        settings_entity_ = findSettingsEntity(world);
+        if (settings_entity_ != entt::null) {
+            settings_ = world.registry().get<WorldPartition>(settings_entity_);
+            found = true;
+        }
+    } else {
+        for (const entt::entity h : world.registry().view<WorldPartition>()) {
+            const ecs::Entity e = world.wrap(h);
+            const WorldPartition& wp = e.get<WorldPartition>();
+            if (!wp.enabled || !e.activeInHierarchy()) continue;
+            settings_ = wp;
+            found = true;
+            break;
+        }
     }
     if (!found) {
+        if (editor) {
+            pins_.clear();
+            return;  // sin celdas en disco: el editor lo tiene todo, como siempre
+        }
         // Sin World Partition activo, las celdas en disco entran todas.
         if (!cells_in_world_ && hasExternalCells(scene_file_)) {
             const int n = loadExternalCells(world, scene_file_);
             std::cout << "[WorldPartition] Sin World Partition activo: " << n << " objetos de las celdas en disco cargados\n";
         }
+        // Y las que el editor tenia descargadas.
+        if (inherit != nullptr) {
+            int n = 0;
+            for (const auto& [key, cell] : inherit->cells_) {
+                if (cell.loaded || cell.loading()) continue;
+                const std::vector<std::string> texts = cell.stored ? *cell.stored : readCellFile(cell.file);
+                for (const std::string& text : texts) n += restoreRoot(world, text, cell.origin).valid() ? 1 : 0;
+            }
+            std::cout << "[WorldPartition] Sin World Partition activo: " << n << " objetos descargados en el editor cargados\n";
+        }
         return;
     }
     // Capas: como dice el componente y, encima, las que ya se tocaron
-    // (setDataLayerActive antes de empezar o en una escena anterior).
+    // (setDataLayerActive antes de empezar o en una escena anterior). En el
+    // editor todas cuentan como activas (se ocultan aparte, sin descargarse).
     layer_state_.clear();
-    for (const DataLayer& l : settings_.data_layers) {
-        const std::string n = trim(l.name);
-        if (!n.empty()) layer_state_[n] = l.active;
+    if (!editor) {
+        for (const DataLayer& l : settings_.data_layers) {
+            const std::string n = trim(l.name);
+            if (!n.empty()) layer_state_[n] = l.active;
+        }
+        for (const auto& [n, a] : layer_overrides_) layer_state_[n] = a;
     }
-    for (const auto& [n, a] : layer_overrides_) layer_state_[n] = a;
-    // Dependencias (rejillas por nombre).
-    for (const CellDependency& d : settings_.dependencies) {
+    // Dependencias (rejillas por nombre). En el editor no se usan.
+    const std::vector<CellDependency> no_dependencies;
+    for (const CellDependency& d : editor ? no_dependencies : settings_.dependencies) {
         const int from = findGrid(settings_, d.grid);
         const int to = findGrid(settings_, d.load_grid);
         if (from < 0 || to < 0) {
@@ -883,12 +979,24 @@ void WorldPartitionSystem::begin(ecs::World& world, const Vec3& viewer) {
         deps_[GridCoord{from, d.x, d.z}].push_back(GridCoord{to, d.load_x, d.load_z});
     }
     active_ = true;
+    editor_mode_ = editor;
     // Raices que se pueden descargar, por celda, y las celdas en disco.
     rescan(world);
     registerExternalCells(world);
+    if (inherit != nullptr) inheritCells(world, *inherit);
     stats_.streamed_entities = static_cast<int>(tracked_.size());
     for (const auto& [coord, cell] : cells_) {
         if (!cell.loaded) stats_.streamed_entities += cell.entities;
+    }
+    if (editor) {
+        // El editor no espera a nada: update() carga lo cercano y descarga lo
+        // lejano por trozos (abrir la escena no congela).
+        proxies_dirty_ = false;
+        refreshStats();
+        std::cout << "[WorldPartition] Editor: regiones cargadas, " << stats_.cells << " celdas de "
+                  << settings_.cell_size << " m (" << stats_.loaded_cells << " en el mundo, " << stats_.external_cells
+                  << " en disco sin leer)\n";
+        return;
     }
     // Lo cercano (y lo que pide), cargado ya (el jugador empieza con su
     // alrededor completo); lo lejano y lo de las capas apagadas, fuera
@@ -930,9 +1038,20 @@ void WorldPartitionSystem::unloadCell(ecs::World& world, const CellKey& c, Cell&
         }
         stored.push_back(ecs::serializeEntity(world, r));
         untrack(h);
-        world.destroy(r);
+        // En el editor se borra por trozos en los frames siguientes (una celda
+        // grande borrada de golpe congelaba el editor).
+        if (editor_mode_) {
+            destroyLater(world, r);
+        } else {
+            world.destroy(r);
+        }
     }
     cell.roots.clear();
+    if (!stored.empty()) ++world_changes_;
+    // Lo que tenga ahora es lo bueno: lo de cuando se cargo ya no sirve.
+    cell.source_stored.reset();
+    cell.source_file.clear();
+    cell.recovering = false;
     cell.entities = static_cast<int>(stored.size());
     cell.stored.reset();
     cell.bytes = 0;
@@ -992,6 +1111,13 @@ void WorldPartitionSystem::unloadCell(ecs::World& world, const CellKey& c, Cell&
 
 bool WorldPartitionSystem::requestLoad(Cell& cell) {
     if (cell.loaded || cell.loading()) return true;
+    if (editor_mode_) {
+        // De donde viene (lo de memoria no cambia nunca; el archivo sigue ahi
+        // hasta que la celda se vuelva a descargar).
+        cell.source_stored = cell.stored;
+        cell.source_file = cell.file;
+        cell.source_origin = cell.origin;
+    }
     cell.pending.clear();
     cell.next = 0;
     const bool async = g_async_cells.get();
@@ -1063,6 +1189,15 @@ void WorldPartitionSystem::finishLoad(Cell& cell) {
     cell.bytes = 0;
     cell.file.clear();
     cell.disk_bytes = 0;
+    if (editor_mode_) {
+        // Recuperada tras deshacer: sigue siendo la carga de antes.
+        if (cell.recovering) {
+            cell.loaded_epoch = cell.recover_epoch;
+            cell.recovering = false;
+        } else {
+            cell.loaded_epoch = ++load_epoch_;
+        }
+    }
     proxies_dirty_ = true;
     ++stats_.loads;
 }
@@ -1080,21 +1215,29 @@ void WorldPartitionSystem::pumpLoads(ecs::World& world, int budget) {
             if (cell.pending.empty()) finishLoad(cell);
         }
     }
-    // Ademas del limite de objetos, uno de tiempo (los que ya vienen parseados).
-    const bool async = g_async_cells.get();
+    // Ademas del limite de objetos, uno de tiempo (los que ya vienen
+    // parseados). En el editor siempre (no hay pantalla de carga).
+    const bool timed = g_async_cells.get() || editor_mode_;
     jobs::FrameBudget time_budget(g_restore_budget_ms.get());
     // track() puede crear celdas: el map no mueve las que ya hay.
     for (auto& [coord, cell] : cells_) {
         if (cell.reading || cell.next >= cell.pending.size()) continue;
         while (budget > 0 && cell.next < cell.pending.size()) {
-            if (async && !time_budget.spend()) break;
+            if (timed && !time_budget.spend()) break;
             const PendingRoot root = std::move(cell.pending[cell.next++]);
-            const ecs::Entity r = restorePending(world, root, cell.origin);
-            if (r.valid() && !r.parent().valid()) track(r.handle(), keyOf(r));
+            if (editor_mode_) {
+                // Lo que ya esta (lo trajo deshacer o una instantanea) se queda, sin avisos.
+                bool skipped = false;
+                const ecs::Entity r = restorePendingQuiet(world, root, cell.origin, skipped);
+                if (r.valid() && !r.parent().valid()) track(r.handle(), keyOf(r));
+            } else {
+                const ecs::Entity r = restorePending(world, root, cell.origin);
+                if (r.valid() && !r.parent().valid()) track(r.handle(), keyOf(r));
+            }
             --budget;
         }
         if (cell.next >= cell.pending.size()) finishLoad(cell);
-        if (budget <= 0 || (async && !time_budget.hasTime())) break;
+        if (budget <= 0 || (timed && !time_budget.hasTime())) break;
     }
 }
 
@@ -1124,6 +1267,11 @@ void WorldPartitionSystem::loadCellNow(ecs::World& world, Cell& cell) {
         }
     } else if (!cell.loading()) {
         // Sincrono: lo de memoria o el archivo, aqui.
+        if (editor_mode_) {
+            cell.source_stored = cell.stored;
+            cell.source_file = cell.file;
+            cell.source_origin = cell.origin;
+        }
         cell.pending.clear();
         cell.next = 0;
         if (cell.stored) {
@@ -1136,7 +1284,9 @@ void WorldPartitionSystem::loadCellNow(ecs::World& world, Cell& cell) {
     }
     while (cell.next < cell.pending.size()) {
         const PendingRoot root = std::move(cell.pending[cell.next++]);
-        const ecs::Entity r = restorePending(world, root, cell.origin);
+        bool skipped = false;
+        const ecs::Entity r = editor_mode_ ? restorePendingQuiet(world, root, cell.origin, skipped)
+                                           : restorePending(world, root, cell.origin);
         if (r.valid() && !r.parent().valid()) track(r.handle(), keyOf(r));
     }
     finishLoad(cell);
@@ -1154,6 +1304,13 @@ void WorldPartitionSystem::update(ecs::World& world, const Vec3& viewer) {
     ++frame_;
     // Escrituras de celdas terminadas: lo guardado sale de la memoria.
     pollWrites();
+    if (editor_mode_) {
+        // Lo descargado en frames anteriores, borrandose por trozos.
+        pumpDestroys(world);
+        // El editor llama antes a recoverAfterRebuild con la epoca de la
+        // instantanea; si no lo hizo, sin saberla (recupera de mas, nunca de menos).
+        if (worldRebuilt(world)) recoverAfterRebuild(world, 0);
+    }
     // Lo creado, borrado o movido en Play: cada pocos frames y solo las raices
     // (antes, el arbol entero con cada hijo en cada frame).
     const bool rescanned = frame_ % 10 == 0;
@@ -1161,10 +1318,11 @@ void WorldPartitionSystem::update(ecs::World& world, const Vec3& viewer) {
     // Lo que entra (las mas cercanas primero) y lo que sale (las mas lejanas
     // y las de capas apagadas primero), cada cosa con su presupuesto por
     // frame. desires() va en el orden de cells_ (y nada cambia entre medias).
+    // En el editor manda su camara (`viewer`), no las fuentes de carga.
     std::vector<std::pair<float, CellKey>> to_load;
     std::vector<std::pair<float, CellKey>> to_unload;
     {
-        const auto wanted = desires(sources(world, viewer));
+        const auto wanted = editor_mode_ ? editorDesires(viewer) : desires(sources(world, viewer));
         auto cell_it = cells_.begin();
         for (const auto& [key, d] : wanted) {
             const Cell& cell = cell_it->second;
@@ -1178,7 +1336,11 @@ void WorldPartitionSystem::update(ecs::World& world, const Vec3& viewer) {
         if (!rescanned) rescan(world);
         std::sort(to_unload.begin(), to_unload.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         const int budget = std::max(settings_.unloads_per_frame, 1);
+        // En el editor, ademas, un tope de tiempo (guardar una celda serializa
+        // todas sus raices): siempre al menos una.
+        jobs::FrameBudget unload_time(g_editor_unload_budget_ms.get());
         for (int i = 0; i < static_cast<int>(to_unload.size()) && i < budget; ++i) {
+            if (editor_mode_ && !unload_time.spend()) break;
             const CellKey c = to_unload[static_cast<std::size_t>(i)].second;
             unloadCell(world, c, cells_[c]);
         }
@@ -1191,7 +1353,8 @@ void WorldPartitionSystem::update(ecs::World& world, const Vec3& viewer) {
     }
     pumpLoads(world, std::max(settings_.restores_per_frame, 1));
     if (proxies_dirty_) {
-        updateProxies(world);
+        // En el editor los HLOD siguen ocultos (se ve lo de verdad).
+        if (!editor_mode_) updateProxies(world);
         proxies_dirty_ = false;
     }
     refreshStats();
@@ -1218,7 +1381,7 @@ void WorldPartitionSystem::loadAll(ecs::World& world) {
     origin_ = world.origin();
     for (auto& [coord, cell] : cells_) loadCellNow(world, cell);
     if (proxies_dirty_) {
-        updateProxies(world);
+        if (!editor_mode_) updateProxies(world);
         proxies_dirty_ = false;
     }
     refreshStats();
@@ -1226,6 +1389,13 @@ void WorldPartitionSystem::loadAll(ecs::World& world) {
 
 void WorldPartitionSystem::end(ecs::World& world, bool restore) {
     if (active_ && restore) loadAll(world);
+    // Lo que se estaba borrando por trozos (editor), ya.
+    flushDestroys(world);
+    editor_mode_ = false;
+    pins_.clear();
+    held_.clear();
+    settings_entity_ = entt::null;
+    inherit_from_ = nullptr;
     // La cache no se borra con escrituras o lecturas en marcha.
     drainJobs();
     cells_.clear();
@@ -1265,6 +1435,12 @@ std::vector<std::pair<CellCoord, bool>> WorldPartitionSystem::cells() const {
 
 std::vector<CellInfo> WorldPartitionSystem::cellInfos() const {
     std::vector<CellInfo> out;
+    cellInfos(out);
+    return out;
+}
+
+void WorldPartitionSystem::cellInfos(std::vector<CellInfo>& out) const {
+    out.clear();
     out.reserve(cells_.size());
     for (const auto& [key, cell] : cells_) {
         CellInfo info;
@@ -1276,9 +1452,10 @@ std::vector<CellInfo> WorldPartitionSystem::cellInfos() const {
         }
         info.loaded = cell.loaded;
         info.loading = cell.loading();
+        info.entities = cell.loaded ? static_cast<int>(cell.roots.size()) : cell.entities;
+        info.pinned = !pins_.empty() && pins_.count(GridCoord{key.grid, key.x, key.z}) != 0;
         out.push_back(std::move(info));
     }
-    return out;
 }
 
 void WorldPartitionSystem::refreshStats() {
@@ -1303,6 +1480,336 @@ void WorldPartitionSystem::refreshStats() {
             if (cell.loading()) ++stats_.loading_cells;
         }
     }
+}
+
+// -----------------------------------------------------------------------------
+// Regiones cargadas en el editor
+// -----------------------------------------------------------------------------
+
+entt::entity WorldPartitionSystem::findSettingsEntity(ecs::World& world) const {
+    for (const entt::entity h : world.registry().view<WorldPartition>()) {
+        const WorldPartition& wp = world.registry().get<WorldPartition>(h);
+        if (wp.enabled && wp.external_cells) return h;
+    }
+    return entt::null;
+}
+
+std::vector<std::pair<WorldPartitionSystem::CellKey, WorldPartitionSystem::Desire>> WorldPartitionSystem::editorDesires(
+    const Vec3& camera) const {
+    std::vector<std::pair<CellKey, Desire>> out;
+    out.reserve(cells_.size());
+    // Como desires(): las capas de un mismo (rejilla, x, z) van seguidas.
+    float dist = 0.0f;
+    bool forced = false;
+    bool have = false;
+    CellKey last{};
+    for (const auto& [key, cell] : cells_) {
+        if (!have || key.grid != last.grid || key.x != last.x || key.z != last.z) {
+            dist = distanceToCell(camera, key);
+            const GridCoord g{key.grid, key.x, key.z};
+            forced = (!pins_.empty() && pins_.count(g) != 0) || std::binary_search(held_.begin(), held_.end(), g);
+            last = key;
+            have = true;
+        }
+        Desire d;
+        const bool close = regions_.around_camera && dist <= regions_.radius;
+        d.load = forced || close;
+        d.keep = d.load || (regions_.around_camera && dist <= regions_.radius + settings_.unload_margin);
+        d.priority = dist;
+        out.emplace_back(key, d);
+    }
+    return out;
+}
+
+void WorldPartitionSystem::setCellPinned(int grid, const CellCoord& c, bool pinned) {
+    const GridCoord g{grid, c.x, c.z};
+    if (pinned) {
+        pins_.insert(g);
+    } else {
+        pins_.erase(g);
+    }
+}
+
+bool WorldPartitionSystem::cellPinned(int grid, const CellCoord& c) const {
+    return pins_.count(GridCoord{grid, c.x, c.z}) != 0;
+}
+
+std::vector<std::pair<int, CellCoord>> WorldPartitionSystem::pinnedCells() const {
+    std::vector<std::pair<int, CellCoord>> out;
+    out.reserve(pins_.size());
+    for (const GridCoord& g : pins_) out.emplace_back(g.grid, CellCoord{g.x, g.z});
+    return out;
+}
+
+void WorldPartitionSystem::holdCellsOf(ecs::World& world, const std::vector<ecs::Entity>& roots) {
+    held_.clear();
+    if (!active_ || !editor_mode_) return;
+    origin_ = world.origin();
+    for (const ecs::Entity& r : roots) {
+        if (!r.valid() || r.parent().valid()) continue;
+        const CellKey k = keyOf(r);
+        held_.push_back(GridCoord{k.grid, k.x, k.z});
+    }
+    std::sort(held_.begin(), held_.end());
+    held_.erase(std::unique(held_.begin(), held_.end(),
+                            [](const GridCoord& a, const GridCoord& b) { return !(a < b) && !(b < a); }),
+                held_.end());
+}
+
+bool WorldPartitionSystem::sameLayout(const WorldPartition& settings) const {
+    if (std::max(settings.cell_size, 1.0f) != std::max(settings_.cell_size, 1.0f)) return false;
+    if (settings.grids.size() != settings_.grids.size()) return false;
+    for (std::size_t i = 0; i < settings.grids.size(); ++i) {
+        const PartitionGrid& a = settings.grids[i];
+        const PartitionGrid& b = settings_.grids[i];
+        if (std::max(a.cell_size, 1.0f) != std::max(b.cell_size, 1.0f) || trim(a.name) != trim(b.name) || a.tag != b.tag) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void WorldPartitionSystem::refreshSettings(const WorldPartition& settings) {
+    // Misma rejilla (sameLayout): las claves de cells_ siguen valiendo.
+    settings_ = settings;
+}
+
+void WorldPartitionSystem::adoptSceneGeneration(ecs::World& world) { scene_generation_ = world.sceneGeneration(); }
+
+bool WorldPartitionSystem::worldRebuilt(const ecs::World& world) const {
+    if (!active_ || !editor_mode_) return false;
+    return settings_entity_ == entt::null || !world.valid(settings_entity_) ||
+           !world.registry().all_of<WorldPartition>(settings_entity_);
+}
+
+void WorldPartitionSystem::reloadFromSource(Cell& cell) {
+    if (cell.read) cell.read->cancel->cancelled.store(true, std::memory_order_release);
+    cell.read.reset();
+    cell.reading = false;
+    cell.pending.clear();
+    cell.next = 0;
+    cell.loaded = false;
+    cell.stored = cell.source_stored;
+    cell.file = cell.source_file;
+    cell.origin = cell.source_origin;
+    cell.bytes = 0;
+    if (cell.stored) {
+        for (const std::string& text : *cell.stored) cell.bytes += text.size();
+    }
+    cell.disk_bytes = 0;
+    proxies_dirty_ = true;
+    // false: demasiadas lecturas en marcha; rescan() y update() lo reintentan
+    // (la celda tiene raices en el mundo y esta descargada).
+    requestLoad(cell);
+}
+
+void WorldPartitionSystem::recoverAfterRebuild(ecs::World& world, std::uint64_t snapshot_epoch) {
+    if (!active_ || !editor_mode_) return;
+    settings_entity_ = findSettingsEntity(world);
+    origin_ = world.origin();
+    // Los handles de antes ya no valen: se reparte el mundo nuevo entero.
+    rejected_.clear();
+    rescan(world);
+    int recovered = 0;
+    for (auto& [key, cell] : cells_) {
+        if (!cell.hasSource()) continue;
+        if (cell.loaded) {
+            // Terminada de cargar antes de la instantanea: la instantanea la
+            // tiene entera y manda (deshacer de verdad).
+            if (cell.loaded_epoch <= snapshot_epoch) continue;
+            // Despues: la instantanea no la tiene (o solo un trozo). Vuelve de
+            // donde se cargo; lo que ya trajo la instantanea se queda.
+            const std::uint64_t epoch = cell.loaded_epoch;
+            reloadFromSource(cell);
+            cell.recovering = true;
+            cell.recover_epoch = epoch;
+            ++recovered;
+        } else if (cell.loading() && cell.next > 0) {
+            // A medias: lo ya recreado que la instantanea no tenia se perdio
+            // al rehacer el mundo. Otra vez desde el principio.
+            reloadFromSource(cell);
+            ++recovered;
+        }
+    }
+    if (recovered > 0) {
+        std::cout << "[WorldPartition] Editor: " << recovered
+                  << " celda(s) cargadas despues de la instantanea vuelven de su archivo\n";
+    }
+    refreshStats();
+}
+
+void WorldPartitionSystem::settle(ecs::World& world) {
+    if (!active_) return;
+    origin_ = world.origin();
+    for (auto& [key, cell] : cells_) {
+        if (cell.loading()) loadCellNow(world, cell);
+    }
+    flushDestroys(world);
+    refreshStats();
+}
+
+void WorldPartitionSystem::destroyLater(ecs::World& world, ecs::Entity root) {
+    const entt::entity h = root.handle();
+    root.setActive(false);  // deja de verse, de dibujarse y de simularse ya
+    // Ni en la escena guardada ni en las instantaneas de deshacer o de Play
+    // (World::clearPersistent lo deja: sigue borrandose).
+    world.registry().get<ecs::EntityInfo>(h).transient = true;
+    // Lo que vuelva con su UUID (deshacer, recargar la celda) no choca.
+    world.releaseUuids(root);
+    dying_.push_back(h);
+}
+
+void WorldPartitionSystem::pumpDestroys(ecs::World& world) {
+    if (dying_head_ >= dying_.size()) return;
+    jobs::FrameBudget budget(g_editor_destroy_budget_ms.get());
+    while (dying_head_ < dying_.size()) {
+        const entt::entity root = dying_[dying_head_];
+        if (!world.valid(root)) {
+            ++dying_head_;
+            continue;
+        }
+        if (!budget.spend()) break;
+        // Una hoja (bajando por el ultimo hijo): borrar de abajo arriba es
+        // barato (sin recorrer subarboles) y el padre queda intacto.
+        entt::entity leaf = root;
+        for (;;) {
+            const auto& children = world.wrap(leaf).children();
+            if (children.empty()) break;
+            leaf = children.back();
+        }
+        world.destroy(world.wrap(leaf));
+        if (leaf == root) ++dying_head_;
+    }
+    if (dying_head_ >= dying_.size()) {
+        dying_.clear();
+        dying_head_ = 0;
+    }
+}
+
+void WorldPartitionSystem::flushDestroys(ecs::World& world) {
+    for (std::size_t i = dying_head_; i < dying_.size(); ++i) {
+        if (world.valid(dying_[i])) world.destroy(world.wrap(dying_[i]));
+    }
+    dying_.clear();
+    dying_head_ = 0;
+}
+
+void WorldPartitionSystem::inheritCells(ecs::World& world, const WorldPartitionSystem& from) {
+    int inherited = 0;
+    for (const auto& [k, src] : from.cells_) {
+        // settle() las dejo cargadas o descargadas del todo.
+        if (src.loaded || src.loading()) continue;
+        if (src.stored == nullptr && src.file.empty()) continue;  // vacia
+        const std::string grid_name = gridName(from.settings_, k.grid);
+        const int grid = findGrid(settings_, grid_name);
+        const std::string layers =
+            k.layers > 0 && k.layers < static_cast<int>(from.layer_sets_.size()) ? from.layer_sets_[static_cast<std::size_t>(k.layers)]
+                                                                                 : std::string();
+        const auto load_now = [&]() {
+            const std::vector<std::string> texts = src.stored ? *src.stored : readCellFile(src.file);
+            for (const std::string& text : texts) restoreTracked(world, text, src.origin);
+        };
+        if (grid < 0) {
+            load_now();  // su rejilla ya no existe: entra ya y se reparte
+            continue;
+        }
+        const CellKey key{grid, k.x, k.z, layerSetId(layers)};
+        Cell& cell = cells_[key];
+        if (!cell.loaded) continue;  // ya registrada (no deberia: el mundo tiene las celdas del editor)
+        if (!cell.roots.empty()) {
+            load_now();  // ya hay objetos de esta celda en el mundo: la celda entera ya
+            continue;
+        }
+        // Descargada sin leer nada: comparte lo de memoria (inmutable) y lee
+        // el archivo del editor (Play solo escribe en su propia cache).
+        cell.loaded = false;
+        cell.stored = src.stored;
+        cell.file = src.file;
+        cell.origin = src.origin;
+        cell.entities = src.entities;
+        cell.bytes = src.bytes;
+        cell.disk_bytes = src.disk_bytes;
+        ++inherited;
+    }
+    if (inherited > 0) std::cout << "[WorldPartition] " << inherited << " celdas descargadas en el editor, sin leer\n";
+}
+
+int WorldPartitionSystem::saveCells(ecs::World& world, const WorldPartition& settings, const std::filesystem::path& scene,
+                                    std::string* error) {
+    if (!active_ || !editor_mode_) return writeExternalCells(world, settings, scene, error);
+    origin_ = world.origin();
+    pollWrites();
+    // Lo que entro en una celda descargada (o se esta cargando), entero al
+    // mundo: cada celda sale de un solo sitio.
+    rescan(world);
+    for (auto& [key, cell] : cells_) {
+        if (!cell.loaded && (cell.loading() || !cell.roots.empty())) loadCellNow(world, cell);
+    }
+    std::map<std::string, CellOut> out;  // por nombre de archivo
+    collectWorldCells(world, settings, out);
+    const std::filesystem::path folder = cellsFolder(scene);
+    const auto file_name = [this](const CellKey& key, std::string& grid_name, std::string& layers) {
+        grid_name = gridName(settings_, key.grid);
+        layers = key.layers > 0 && key.layers < static_cast<int>(layer_sets_.size())
+                     ? layer_sets_[static_cast<std::size_t>(key.layers)]
+                     : std::string();
+        return cellName(CellCoord{key.x, key.z}, grid_name, layers);
+    };
+    // Una descargada con el mismo archivo que objetos del mundo (dos rejillas
+    // con el mismo nombre) entra en el mundo y va con ellos.
+    {
+        bool collided = false;
+        std::string grid_name;
+        std::string layers;
+        for (auto& [key, cell] : cells_) {
+            if (cell.loaded || (cell.stored == nullptr && cell.file.empty())) continue;
+            if (out.count(file_name(key, grid_name, layers)) == 0) continue;
+            loadCellNow(world, cell);
+            collided = true;
+        }
+        if (collided) {
+            out.clear();
+            collectWorldCells(world, settings, out);
+        }
+    }
+    // Las descargadas: su archivo si ya es el de la escena; si no (cache de la
+    // sesion, memoria, otra escena con Guardar como), se escriben.
+    std::set<std::string> keep;
+    std::vector<std::pair<Cell*, std::filesystem::path>> moved;
+    for (auto& [key, cell] : cells_) {
+        if (cell.loaded) continue;
+        if (cell.stored == nullptr && cell.file.empty()) continue;  // vacia
+        std::string grid_name;
+        std::string layers;
+        const std::string name = file_name(key, grid_name, layers);
+        const std::filesystem::path dest = folder / name;
+        std::error_code ec;
+        if (cell.stored == nullptr && std::filesystem::equivalent(cell.file, dest, ec)) {
+            keep.insert(name);
+            continue;
+        }
+        CellOut o;
+        o.grid = grid_name;
+        o.layers = layers;
+        o.origin = cell.origin;
+        o.roots = cell.stored ? *cell.stored : readCellFile(cell.file);
+        if (o.roots.empty()) continue;
+        out.emplace(name, std::move(o));
+        moved.emplace_back(&cell, dest);
+    }
+    const int written = writeCellSet(folder, out, keep, error);
+    if (written < 0) return -1;
+    // Ya en <escena>.cells/: fuera de la memoria y de la cache.
+    for (auto& [cell, dest] : moved) {
+        std::error_code ec;
+        cell->file = dest;
+        cell->stored.reset();
+        cell->bytes = 0;
+        cell->disk_bytes = static_cast<std::size_t>(std::filesystem::file_size(dest, ec));
+    }
+    scene_file_ = scene;
+    refreshStats();
+    return written;
 }
 
 }  // namespace cramion::worldpart

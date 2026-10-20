@@ -7,6 +7,10 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -42,7 +46,128 @@ std::string environment(const char* name) {
 struct Job {
     std::function<void()> fn;
     JobHandle counter;
+    const char* name = nullptr;
 };
+
+// -----------------------------------------------------------------------------
+// Fallos: avisos de tareas que lanzan e informe de std::terminate
+// -----------------------------------------------------------------------------
+
+std::atomic<FailureReport> g_failure_report{nullptr};
+std::atomic<std::uint64_t> g_failed{0};
+
+// Tarea en curso de este hilo (para el informe de terminate) y si es un hilo
+// de disco.
+thread_local const char* t_current_task = nullptr;
+thread_local bool t_io_thread = false;
+
+const char* taskName(const char* name) { return name != nullptr ? name : "sin nombre"; }
+
+// Texto de una excepcion (what() si es std::exception).
+std::string describe(const std::exception_ptr& error) {
+    if (!error) return "sin excepcion activa";
+    try {
+        std::rethrow_exception(error);
+    } catch (const std::exception& e) {
+        return e.what();
+    } catch (...) {
+        return "excepcion desconocida (no deriva de std::exception)";
+    }
+}
+
+void report(const std::string& line, bool fatal) {
+    // Nada de lo que se haga aqui puede lanzar (sale del catch de una tarea
+    // o de un manejador de terminate).
+    try {
+        // Una sola escritura: los avisos de varios hilos no se mezclan.
+        std::string text = line;
+        text += '\n';
+        std::cerr.write(text.data(), static_cast<std::streamsize>(text.size()));
+        std::cerr.flush();
+    } catch (...) {
+    }
+    if (const FailureReport hook = g_failure_report.load(std::memory_order_acquire)) {
+        try {
+            hook(line, fatal);
+        } catch (...) {
+        }
+    }
+}
+
+// Manejador de terminate que habia antes que el nuestro: en Windows el
+// manejador es por hilo y un trabajador nuevo trae el de por defecto; con
+// libstdc++/libc++ es global y aqui queda el de la aplicacion.
+std::atomic<std::terminate_handler> g_previous_terminate{nullptr};
+
+[[noreturn]] void onWorkerTerminate() {
+    // Una sola vez aunque fallen varios hilos a la vez.
+    static std::atomic<bool> reported{false};
+    if (!reported.exchange(true)) {
+        std::string line = "[Jobs] std::terminate en un hilo ";
+        try {
+            line += t_io_thread ? "de disco" : "trabajador";
+            line += " durante la tarea '";
+            line += t_current_task != nullptr ? t_current_task : "ninguna";
+            line += "': ";
+            line += describe(std::current_exception());
+        } catch (...) {
+        }
+        report(line, true);
+        // Informe en un archivo por si no hay consola (el player sin ventana).
+        try {
+            const std::filesystem::path file = std::filesystem::temp_directory_path() / "cramion_jobs_terminate.txt";
+            std::ofstream out(file, std::ios::trunc);
+            out << line << '\n';
+        } catch (...) {
+        }
+    }
+    const std::terminate_handler previous = g_previous_terminate.load(std::memory_order_acquire);
+    if (previous != nullptr && previous != &onWorkerTerminate) previous();  // minidump de la aplicacion
+    std::abort();
+}
+
+void installWorkerTerminate(bool io) {
+    t_io_thread = io;
+    const std::terminate_handler current = std::get_terminate();
+    if (current == &onWorkerTerminate) return;  // global y ya puesto por otro trabajador
+    g_previous_terminate.store(current, std::memory_order_release);
+    std::set_terminate(&onWorkerTerminate);
+}
+
+// Baja el contador del grupo pase lo que pase (RAII): quien espera en
+// waitFor nunca se queda colgado aunque la tarea lance.
+struct FinishJob {
+    Job& job;
+    std::atomic<std::uint64_t>& executed;
+    ~FinishJob() {
+        // Suelta lo capturado antes de avisar (quien espera puede destruirlo).
+        job.fn = nullptr;
+        executed.fetch_add(1, std::memory_order_relaxed);
+        if (job.counter) job.counter->pending.fetch_sub(1, std::memory_order_acq_rel);
+    }
+};
+
+// Avisa y guarda la primera excepcion del grupo (antes de bajar el contador).
+void recordFailure(const Job& job, std::exception_ptr error, bool io) {
+    g_failed.fetch_add(1, std::memory_order_relaxed);
+    std::string line = "[Jobs] La tarea '";
+    try {
+        line += taskName(job.name);
+        line += io ? "' (disco)" : "'";
+        line += " lanzo una excepcion: ";
+        line += describe(error);
+    } catch (...) {
+    }
+    report(line, false);
+    if (job.counter && !job.counter->failed_.exchange(true, std::memory_order_acq_rel)) {
+        job.counter->error = std::move(error);
+    }
+}
+
+// Vuelve a lanzar en quien espera la primera excepcion del grupo.
+void rethrowIfFailed(const JobHandle& handle) {
+    if (handle && handle->failed() && handle->error) std::rethrow_exception(handle->error);
+}
 
 constexpr std::size_t kPriorities = 3;
 
@@ -156,7 +281,8 @@ public:
         const auto start = std::chrono::steady_clock::now();
         while (!h->done()) {
             if (tryRunOneOf(h.get())) continue;
-            // Las del grupo ya estan en otros hilos. Esperas cortas (un
+            // Las del grupo ya estan en otros hilos (el contador baja siempre,
+            // tambien si una lanza: esto no se cuelga). Esperas cortas (un
             // parallelFor): yield, como antes. Largas (disco, cerrar escena):
             // dormir un poco para no quemar un nucleo. En Windows sin
             // timeBeginPeriod un sleep_for puede durar ~15 ms: solo pasados
@@ -186,12 +312,18 @@ private:
         return 1;
     }
 
+    // Ejecuta la tarea; una excepcion se registra y se guarda en su grupo
+    // (wait la vuelve a lanzar), nunca sale de aqui.
     void run(Job& job) {
-        if (job.fn) job.fn();
-        // Suelta lo capturado antes de avisar (quien espera puede destruirlo).
-        job.fn = nullptr;
-        executed_.fetch_add(1, std::memory_order_relaxed);
-        if (job.counter) job.counter->pending.fetch_sub(1, std::memory_order_acq_rel);
+        FinishJob finish{job, executed_};
+        const char* outer = t_current_task;  // run anidado (quien espera ayuda)
+        t_current_task = taskName(job.name);
+        try {
+            if (job.fn) job.fn();
+        } catch (...) {
+            recordFailure(job, std::current_exception(), io_);
+        }
+        t_current_task = outer;
     }
 
     bool popLocked(Job& out) {
@@ -206,6 +338,7 @@ private:
     }
 
     void workerLoop() {
+        installWorkerTerminate(io_);
         for (;;) {
             Job job;
             {
@@ -245,27 +378,26 @@ Pool& ioPool() {
 
 }  // namespace
 
-JobHandle schedule(std::function<void()> job, JobHandle group, Priority p) {
+JobHandle schedule(std::function<void()> job, JobHandle group, Priority p, const char* name) {
     JobHandle counter = group ? std::move(group) : std::make_shared<JobCounter>();
     counter->pending.fetch_add(1, std::memory_order_acq_rel);
-    pool().push(Job{std::move(job), counter}, p);
+    pool().push(Job{std::move(job), counter, name}, p);
     return counter;
 }
 
-JobHandle scheduleIo(std::function<void()> job, Priority p) {
+JobHandle scheduleIo(std::function<void()> job, Priority p, const char* name) {
     JobHandle counter = std::make_shared<JobCounter>();
     counter->pending.fetch_add(1, std::memory_order_acq_rel);
-    ioPool().push(Job{std::move(job), counter}, p);
+    ioPool().push(Job{std::move(job), counter, name}, p);
     return counter;
 }
 
 void wait(const JobHandle& handle) {
     if (!handle) return;
     // Una tarea de IO en cola puede ayudarse desde aqui igual (mismo grupo).
-    if (!handle->done() && ioPool().tryRunOneOf(handle.get())) {
-        if (handle->done()) return;
-    }
-    pool().waitFor(handle);
+    if (!handle->done()) ioPool().tryRunOneOf(handle.get());
+    if (!handle->done()) pool().waitFor(handle);
+    rethrowIfFailed(handle);
 }
 
 void parallelFor(std::size_t count, std::size_t grain, const std::function<void(std::size_t, std::size_t)>& body) {
@@ -285,9 +417,24 @@ void parallelFor(std::size_t count, std::size_t grain, const std::function<void(
     for (; begin < count; begin += chunk) {
         const std::size_t end = std::min(count, begin + chunk);
         // High: quien llama espera (no debe quedar detras del streaming).
-        schedule([&body, begin, end] { body(begin, end); }, group, Priority::High);
+        schedule([&body, begin, end] { body(begin, end); }, group, Priority::High, "parallelFor");
     }
-    body(0, std::min(chunk, count));
+    // Si el trozo propio lanza, hay que esperar a los demas antes de salir:
+    // usan `body` por referencia y quien llama lo destruiria al desenrollar.
+    std::exception_ptr own;
+    try {
+        body(0, std::min(chunk, count));
+    } catch (...) {
+        own = std::current_exception();
+    }
+    if (own) {
+        try {
+            wait(group);
+        } catch (...) {
+            // Va primero la del trozo propio; la de los otros ya salio en el log.
+        }
+        std::rethrow_exception(own);
+    }
     wait(group);
 }
 
@@ -303,6 +450,8 @@ int ioWorkerCount() {
 
 void setWorkerCount(int threads) { pool().restart(threads); }
 
+void setFailureReport(FailureReport report) { g_failure_report.store(report, std::memory_order_release); }
+
 void shutdown() {
     ioPool().stop();
     pool().stop();
@@ -315,6 +464,7 @@ JobStats stats() {
     s.workers = pool().workers();
     s.io_queued = ioPool().queued();
     s.io_workers = ioPool().workers();
+    s.failed = g_failed.load(std::memory_order_relaxed);
     return s;
 }
 

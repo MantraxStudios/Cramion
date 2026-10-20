@@ -7,6 +7,7 @@
 #include "EditorLog.h"
 
 #include <CramionCore/cvar/CVar.h>
+#include <CramionCore/jobs/JobSystem.h>
 #include <CramionCore/scripting/CppScripts.h>
 
 #include <nlohmann/json.hpp>
@@ -43,7 +44,23 @@ std::string megabytes(std::uint64_t bytes) {
 
 }  // namespace
 
+// Lo que mira la tarea de disco: si hay fuentes, si la DLL esta al dia y la
+// fecha de la fuente mas nueva (las tres recorren Assets/).
+struct EditorApp::CppSourceCheck {
+    jobs::JobHandle job;
+    bool forced = false;
+    bool has_sources = false;
+    bool up_to_date = true;
+    std::filesystem::file_time_type newest{};
+};
+
+void EditorApp::waitCppSourceCheck() {
+    if (cpp_check_ && cpp_check_->job) jobs::wait(cpp_check_->job);
+    cpp_check_.reset();
+}
+
 void EditorApp::setupCppScripts() {
+    waitCppSourceCheck();
     cpp_scripts_.stop();
     cpp_scripts_.setAssetsRoot(project_.assetsFolder());
     cpp_scripts_.setBuildFolder(project_.libraryFolder() / "CppScripts");
@@ -109,19 +126,34 @@ void EditorApp::updateCppScripts() {
         }
     }
     // Fuentes cambiadas: se compila sola (cada 2 s se mira; sin .cpp no hace nada).
-    if (now - cpp_last_check_ > 2.0 && !cpp_scripts_.compiling()) {
-        const bool forced = cpp_last_check_ < 0.0;  // al guardar, F7, Compilar
-        cpp_last_check_ = now;
-        cpp_has_sources_ = cpp_scripts_.hasSources();
-        if (cpp_has_sources_ && !cpp_scripts_.upToDate()) {
+    // La mirada va en un hilo de disco y se aplica cuando acaba.
+    if (cpp_check_ && cpp_check_->job->done()) {
+        const CppSourceCheck check = std::move(*cpp_check_);
+        cpp_check_.reset();
+        cpp_has_sources_ = check.has_sources;
+        if (check.has_sources && !check.up_to_date && !cpp_scripts_.compiling()) {
             // Con errores la DLL sigue vieja: no se repite hasta que cambie algun archivo.
-            const std::filesystem::file_time_type newest = cpp_scripts_.newestSourceTime();
-            if (forced || newest != cpp_attempted_) {
-                cpp_attempted_ = newest;
+            if (check.forced || check.newest != cpp_attempted_) {
+                cpp_attempted_ = check.newest;
                 cpp_status_ = "Compilando...";
                 cpp_scripts_.compileAsync();
             }
         }
+    }
+    if (!cpp_check_ && (now - cpp_last_check_ > 2.0 || cpp_last_check_ < 0.0) && !cpp_scripts_.compiling()) {
+        auto check = std::make_shared<CppSourceCheck>();
+        check->forced = cpp_last_check_ < 0.0;  // al guardar, F7, Compilar
+        cpp_last_check_ = now;
+        // La tarea solo lee cpp_scripts_ (rutas de Assets, la DLL y el SDK);
+        // waitCppSourceCheck() la espera antes de cambiarlas o soltarlas.
+        check->job = jobs::scheduleIo(
+            [check = check.get(), scripts = &cpp_scripts_] {
+                check->has_sources = scripts->hasSources();
+                check->up_to_date = !check->has_sources || scripts->upToDate();
+                if (!check->up_to_date) check->newest = scripts->newestSourceTime();
+            },
+            jobs::Priority::Background, "Mirar los scripts de C++");
+        cpp_check_ = std::move(check);
     }
     // CVars guardadas: al cambiar alguna (con 1 s de margen).
     cvar::Registry& registry = cvar::Registry::instance();

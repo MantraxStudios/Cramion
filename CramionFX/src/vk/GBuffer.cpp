@@ -31,6 +31,14 @@ void GBuffer::create(const VulkanDevice& device, vk::Extent2D extent) {
 
     extent_ = extent;
 
+    // Nombres para RenderDoc/Nsight/validacion (nada sin la validacion).
+    albedo_.setName(device, "GBuffer.Albedo");
+    normal_.setName(device, "GBuffer.Normal");
+    material_.setName(device, "GBuffer.Material");
+    velocity_.setName(device, "GBuffer.Velocity");
+    shading_.setName(device, "GBuffer.Shading");
+    depth_.setName(device, "GBuffer.Depth");
+
     std::cout << "[Vulkan] G-buffer creado: " << extent.width << "x" << extent.height
               << " (albedo RGBA8, normal RGBA16F, profundidad "
               << vk::to_string(depth_.format()) << ")\n";

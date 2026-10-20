@@ -265,12 +265,30 @@ std::string ScriptSystem::Impl::prefabText(const std::filesystem::path& file) {
     std::error_code ec;
     const auto stamp = std::filesystem::last_write_time(file, ec);
     if (ec) return {};
-    PrefabFile& entry = prefabs_[file.string()];
+    // Tope de la cache de texto de prefabs (LRU por bytes).
+    constexpr std::size_t kPrefabCacheBytes = 48u << 20;
+    const std::string key = file.string();
+    PrefabFile& entry = prefabs_[key];
+    entry.last_use = ++prefab_clock_;
     if (entry.text.empty() || entry.stamp != stamp) {
+        prefab_bytes_ -= std::min(prefab_bytes_, entry.text.size());
         entry.text = ecs::readPrefabFile(file);
         entry.stamp = stamp;
+        prefab_bytes_ += entry.text.size();
     }
-    return entry.text;
+    std::string text = entry.text;  // (entry puede salir abajo)
+    // Fuera los menos usados hasta caber (nunca el que se acaba de pedir).
+    while (prefab_bytes_ > kPrefabCacheBytes && prefabs_.size() > 1) {
+        auto oldest = prefabs_.end();
+        for (auto it = prefabs_.begin(); it != prefabs_.end(); ++it) {
+            if (it->first == key) continue;
+            if (oldest == prefabs_.end() || it->second.last_use < oldest->second.last_use) oldest = it;
+        }
+        if (oldest == prefabs_.end()) break;
+        prefab_bytes_ -= std::min(prefab_bytes_, oldest->second.text.size());
+        prefabs_.erase(oldest);
+    }
+    return text;
 }
 
 void ScriptSystem::Impl::buildKeys() {

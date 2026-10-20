@@ -143,4 +143,14 @@ const char* gamepadAxisName(GamepadAxis axis) {
     }
 }
 
+const char* gamepadKindName(GamepadKind kind) {
+    switch (kind) {
+        case GamepadKind::Xbox: return "xbox";
+        case GamepadKind::PlayStation: return "playstation";
+        case GamepadKind::Nintendo: return "nintendo";
+        case GamepadKind::Generic: return "generic";
+        default: return "unknown";
+    }
+}
+
 }  // namespace cramion::dm

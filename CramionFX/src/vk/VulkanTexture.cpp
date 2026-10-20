@@ -303,6 +303,12 @@ void VulkanTexture::createCompressed(const VulkanDevice& device, std::uint32_t w
     view_ = vk::raii::ImageView(device.handle(), view_info);
 }
 
+void VulkanTexture::setName(const char* name) const {
+    if (device_ == nullptr || !device_->debugLabelsEnabled()) return;
+    if (*image_ != VK_NULL_HANDLE) device_->setObjectName(*image_, name);
+    if (*view_ != VK_NULL_HANDLE) device_->setObjectName(*view_, name);
+}
+
 void VulkanTexture::destroy() {
     view_ = nullptr;
     image_ = nullptr;

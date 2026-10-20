@@ -22,6 +22,8 @@
 //   7 Hierba        g = translucidez, b = direccion de la brizna (como el
 //                   pelo: decodifica en la bitangente), a = brillo de la
 //                   hebra (0 = sheen ancho, 1 = estrecho). Siempre fina.
+//   8 Sin luz       (dominio Unlit) lighting.frag deja el color del
+//                   material mas su emision, sin luces ni ambiente.
 //
 // Las funciones devuelven "BRDF x pi x N.L" (la escala del motor: las luces
 // ya llevan pi, el difuso de Lambert es albedo x N.L).
@@ -35,6 +37,7 @@ const int kShadingAnisotropic = 4;
 const int kShadingTransmission = 5;
 const int kShadingHair = 6;
 const int kShadingGrass = 7;
+const int kShadingUnlit = 8;
 
 struct ShadingModel {
     int model;

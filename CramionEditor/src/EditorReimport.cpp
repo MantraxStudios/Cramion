@@ -184,6 +184,18 @@ void EditorApp::drawModelImportSettings(const Uuid& uuid) {
         ImGui::SetNextItemWidth(90.0f);
         ImGui::DragInt("piezas como mucho", &s.combine_above_parts, 1.0f, 1, 4096);
     }
+    // LODs del modelo: Off / Auto / Manual (assets::ModelLodMode).
+    {
+        static const char* const kLodModes[] = {"Off (sin LODs)", "Auto", "Manual (_LOD1.._LODn)"};
+        int lod_mode = static_cast<int>(s.lod_mode);
+        ImGui::SetNextItemWidth(200.0f);
+        if (ImGui::Combo("LODs", &lod_mode, kLodModes, IM_ARRAYSIZE(kLodModes))) {
+            s.lod_mode = static_cast<assets::ModelLodMode>(lod_mode);
+        }
+        ImGui::SetItemTooltip("Auto: las mallas _LOD1.._LODn del archivo si las trae; si no, LODs automaticos.\n"
+                              "Manual: solo las _LOD1.._LODn del archivo. Off: ninguno (las _LODn se descartan).\n"
+                              "Con Combinar mallas activo y el modelo agrupado por material no hay LODs a mano.");
+    }
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
     std::error_code error;
     const bool has_source = !model_import_source_.empty() &&
@@ -198,7 +210,8 @@ void EditorApp::drawModelImportSettings(const Uuid& uuid) {
     const bool changed = s.scale != model_import_saved_.scale || s.convert_units != model_import_saved_.convert_units ||
                          s.animated != model_import_saved_.animated || s.directx_normals != model_import_saved_.directx_normals ||
                          s.combine_meshes != model_import_saved_.combine_meshes ||
-                         s.combine_above_parts != model_import_saved_.combine_above_parts;
+                         s.combine_above_parts != model_import_saved_.combine_above_parts ||
+                         s.lod_mode != model_import_saved_.lod_mode;
     bool busy = false;
     for (const ImportJob& job : imports_) busy = busy || job.reimport == uuid;
     ImGui::BeginDisabled(!changed || !has_source || busy);

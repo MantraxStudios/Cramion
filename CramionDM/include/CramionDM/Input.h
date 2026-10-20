@@ -85,12 +85,39 @@ public:
     bool touchScreen() const { return touch_screen_; }
 
     // --- Mando ---
+    // Hasta 4 mandos (Event::gamepadIndex). Sin indice, "cualquiera": un
+    // boton cuenta si esta pulsado en alguno y los ejes son los del ultimo
+    // mando que se uso (el de un jugador, aunque haya otro conectado).
+    static constexpr int kMaxGamepads = 4;
     bool isGamepadButtonDown(GamepadButton button) const;
     bool isGamepadButtonPressed(GamepadButton button) const;
     bool isGamepadButtonReleased(GamepadButton button) const;
-    // Sticks en [-1, 1] con zona muerta aplicada; gatillos en [0, 1].
+    // Sticks en [-1, 1] con zona muerta radial aplicada; gatillos en [0, 1].
     float gamepadAxis(GamepadAxis axis) const;
-    bool gamepadConnected() const { return gamepad_connected_; }
+    bool gamepadConnected() const { return connected_mask_ != 0; }
+    // Un mando concreto (0..kMaxGamepads-1; fuera de rango, false / 0).
+    bool isGamepadButtonDown(int pad, GamepadButton button) const;
+    bool isGamepadButtonPressed(int pad, GamepadButton button) const;
+    bool isGamepadButtonReleased(int pad, GamepadButton button) const;
+    float gamepadAxis(int pad, GamepadAxis axis) const;
+    bool gamepadConnected(int pad) const;
+    GamepadKind gamepadKind(int pad) const;
+    int gamepadCount() const;
+    // El ultimo mando que se uso (el que dan las consultas sin indice).
+    int activeGamepad() const { return active_pad_; }
+    // Zonas muertas: stick radial (0.15 por defecto; XInput recomienda
+    // 0.24) y gatillo (0 por defecto). Se reescala lo de fuera a [0, 1].
+    void setGamepadDeadZones(float stick, float trigger);
+    float gamepadStickDeadZone() const { return stick_dead_zone_; }
+    float gamepadTriggerDeadZone() const { return trigger_dead_zone_; }
+
+    // --- Dispositivo activo (iconos de los botones en la interfaz) ---
+    // Cambia con la ultima entrada clara: tecla o clic (o raton de mas de
+    // unos pixeles), boton o eje del mando pasada la mitad, o un dedo.
+    enum class Device : uint8_t { KeyboardMouse = 0, Gamepad, Touch };
+    Device activeDevice() const { return active_device_; }
+    // true solo el frame en que activeDevice() cambio.
+    bool activeDeviceChanged() const { return device_changed_; }
 
     // --- Mandos de realidad virtual (los rellena el sistema OpenXR cada frame) ---
     void setXrButton(XrButton button, bool down);
@@ -135,11 +162,29 @@ private:
 
     static constexpr size_t kGamepadButtonCount = static_cast<size_t>(GamepadButton::Count);
     static constexpr size_t kGamepadAxisCount = static_cast<size_t>(GamepadAxis::Count);
+    struct Pad {
+        std::array<bool, kGamepadButtonCount> down{};
+        std::array<bool, kGamepadButtonCount> pressed{};
+        std::array<bool, kGamepadButtonCount> released{};
+        std::array<float, kGamepadAxisCount> axes{};  // en bruto
+        GamepadKind kind = GamepadKind::Unknown;
+    };
+    std::array<Pad, kMaxGamepads> pads_{};
+    // "Cualquier mando": OR de los botones de todos, con sus flancos propios.
     std::array<bool, kGamepadButtonCount> padDown_{};
     std::array<bool, kGamepadButtonCount> padPressed_{};
     std::array<bool, kGamepadButtonCount> padReleased_{};
-    std::array<float, kGamepadAxisCount> padAxes_{};
-    bool gamepad_connected_ = false;
+    uint8_t connected_mask_ = 0;  // bit por hueco
+    int active_pad_ = 0;
+    float stick_dead_zone_ = 0.15f;
+    float trigger_dead_zone_ = 0.0f;
+    void markPadConnected(int pad, GamepadKind kind);
+    void setPadButton(int pad, size_t button, bool down);
+    void releasePad(int pad);
+
+    Device active_device_ = Device::KeyboardMouse;
+    bool device_changed_ = false;
+    void useDevice(Device device);
 
     float virtualStickX_ = 0.0f;
     float virtualStickY_ = 0.0f;
@@ -150,5 +195,17 @@ private:
     std::array<bool, kXrButtonCount> xrReleased_{};
     std::array<float, static_cast<size_t>(XrAxis::Count)> xrAxes_{};
 };
+
+// --- Vibracion de los mandos ---
+// pad 0..3 (-1 = todos). low = motor grave (el grande, izquierdo), high = el
+// agudo (derecho), en [0, 1]; con seconds > 0 se para sola. 0, 0 la para.
+// La atiende la ventana que lee los mandos (Windows: XInput y DualShock 4 /
+// DualSense por USB o Bluetooth; Linux: evdev con force feedback). Sin
+// ventana que la atienda (Android, pruebas), devuelve false.
+bool setGamepadVibration(int pad, float low, float high, float seconds = 0.0f);
+// Uso interno de Window: quien atiende setGamepadVibration (nullptr = nadie).
+using GamepadVibrationHandler = bool (*)(void* user, int pad, float low, float high, float seconds);
+void setGamepadVibrationHandler(GamepadVibrationHandler handler, void* user);
+void* gamepadVibrationUser();
 
 }  // namespace cramion::dm

@@ -217,7 +217,9 @@ bool readModelFrom(const std::filesystem::path& file, Header& header, ModelConte
         const bool read = !geometry || wanted.empty() || (i < wanted.size() && wanted[i]);
         // Solo la geometria: los bytes de las texturas se saltan sin leerlos
         // (la ciudad de un usuario: 650 MB de texturas, 50 de mallas).
-        if (read && !asset::readModelPayload(in, part, geometry)) {
+        // Hasta el final de la pieza: los bloques opcionales del final (color
+        // de vertice) solo si estan dentro de ella.
+        if (read && !asset::readModelPayload(in, part, geometry, start + static_cast<std::streamoff>(bytes))) {
             return false;
         }
         // Robustez: seguir desde donde dice el tamano, no desde donde acabo

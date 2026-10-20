@@ -33,7 +33,7 @@ VulkanBuffer& VulkanBuffer::operator=(VulkanBuffer&& other) noexcept {
 }
 
 void VulkanBuffer::create(const VulkanDevice& device, vk::DeviceSize size,
-                          vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties) {
+                          vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties, const char* name) {
     if (size == 0) {
         throw std::runtime_error("No se puede crear un buffer de tamano 0.");
     }
@@ -75,6 +75,11 @@ void VulkanBuffer::create(const VulkanDevice& device, vk::DeviceSize size,
     memory_ticket_ = GpuMemoryTicket(host_visible ? GpuMemoryKind::Staging : GpuMemoryKind::Buffer, info.size);
     size_ = size;
     mapped_ = host_visible ? info.pMappedData : nullptr;
+    if (name != nullptr) device.setObjectName(*buffer_, name);
+}
+
+void VulkanBuffer::setName(const char* name) const {
+    if (device_ != nullptr && isValid()) device_->setObjectName(*buffer_, name);
 }
 
 std::shared_ptr<VulkanBuffer> VulkanBuffer::createDeviceLocal(const VulkanDevice& device, const void* data,

@@ -169,11 +169,13 @@ public:
     // recorte por el frustum). Una vez por frame antes de dibujar.
     void prepare(std::uint32_t frame, const core::Vec3& camera_position, const core::Mat4& view_projection);
     // Lo mismo para una vista aislada (las caras de la sonda de reflexion):
-    // solo cambia los trozos que se dibujan, sin tocar los buffers del frame,
+    // solo cambia los trozos que se dibujan y los parametros de su hueco, sin
     // lo retirado ni la camara del LOD de las luces locales (prepare() va una
     // vez por frame). `include` = false: el terreno no se dibuja en esa vista.
     // El siguiente prepare() vuelve a elegir los de la camara de pantalla.
-    void prepareView(const core::Vec3& camera_position, const core::Mat4& view_projection, bool include);
+    // `frame`: el hueco en que se dibuja la vista (sus parametros se escriben).
+    void prepareView(std::uint32_t frame, const core::Vec3& camera_position, const core::Mat4& view_projection,
+                     bool include);
     // Firma de lo que el terreno pinta en las cascadas del sol: un hash de
     // (id, height_revision, desc.cast_shadows, sitio y tamano, y los trozos
     // elegidos con su LOD) de todos los terrenos. Se calcula al final de
@@ -354,6 +356,8 @@ private:
                                                          const std::vector<std::vector<std::vector<std::uint8_t>>>* bc7 = nullptr);
     void writeDescriptors(Terrain& terrain);
     void selectChunks(Terrain& terrain, const core::Vec3& camera, const core::Mat4& view_projection);
+    // Los parametros del terreno (GpuTerrainParams) en el buffer del hueco `frame`.
+    void writeParams(Terrain& terrain, std::uint32_t frame);
     // Recalcula shadow_signature_ (final de prepare y prepareView).
     void updateShadowSignature();
     void createGrassPipelines(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,

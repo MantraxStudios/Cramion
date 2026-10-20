@@ -15,6 +15,8 @@
 
 #include "Dialogs.h"
 
+#include "CramionCore/ecs/MathUtil.h"
+
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
@@ -50,7 +52,13 @@ const char* const kContextHelp[] = {"Cuántas nacen", "Cómo nacen", "Qué les p
 const ImVec4 kContextColors[] = {ImVec4(0.30f, 0.55f, 0.30f, 1.0f), ImVec4(0.25f, 0.45f, 0.70f, 1.0f),
                                  ImVec4(0.65f, 0.45f, 0.20f, 1.0f), ImVec4(0.55f, 0.30f, 0.60f, 1.0f)};
 const char* const kOrientNames[] = {"De cara a la cámara", "Estirada por la velocidad", "Horizontal", "Vertical"};
-const char* const kBlendNames[] = {"Aditiva", "Alfa", "Premultiplicada"};
+const char* const kBlendNames[] = {"Aditiva", "Alfa", "Premultiplicada", "Distorsión", "Opaca"};
+const char* const kOutputNames[] = {"Quads", "Cinta (estela)", "Malla 3D"};
+const char* const kFacingNames[] = {"De cara a la cámara", "Eje Y del emisor", "Hacia un vector", "Lado = un vector"};
+const char* const kRibbonUvNames[] = {"Estirada (cabeza a cola)", "Por distancia (se repite, no resbala)",
+                                      "Por edad (0 cabeza .. 1 cola)"};
+const char* const kMeshOrientNames[] = {"Al azar (giran)", "Siguen la velocidad", "Fija (cuaternión + giro en Y)",
+                                        "Hacia la cámara"};
 const char* const kParamTypeNames[] = {"Float", "Vector3", "Color", "Bool"};
 
 bool paramFits(vfx::ParamType param, vfx::FieldType field) {
@@ -259,6 +267,11 @@ void EditorApp::updateEffects(float delta_seconds) {
         }
     }
     const float vfx_dt = play_state_ == PlayState::Paused ? 0.0f : delta_seconds;
+    // La camara: distancia y vista de los efectos con tipo o caja fija.
+    {
+        const scene::Camera& camera = scene_.camera();
+        vfx_.setCamera(camera.position(), camera.projection() * camera.view());
+    }
     vfx_.update(world_, vfx_dt, playing(), preview, renderer_);
 
     // 2D
@@ -383,6 +396,20 @@ void EditorApp::drawVfxEditor() {
     const vfx::VfxSystemStats stats = vfx_.stats();
     ImGui::TextDisabled("%u efectos · %u partículas vivas · %.1f MB en la GPU", stats.effects, stats.alive,
                         static_cast<double>(stats.memory_bytes) / (1024.0 * 1024.0));
+    // Por tipo de efecto (solo los que se usan).
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::Text("Calidad de los efectos: %d · pool: %u aparcadas · %u sueltos (playAt)", stats.quality, stats.parked,
+                    stats.one_shots);
+        for (int i = 0; i < vfx::kEffectTypeSlots; ++i) {
+            const vfx::VfxTypeStats& t = stats.types[static_cast<std::size_t>(i)];
+            if (t.instances == 0 && t.culled == 0) continue;
+            ImGui::Text("%s: %u activos, %u fuera, %u partículas, %.2f ms CPU + %.2f ms GPU (est.)",
+                        vfx::effectTypeLabel(static_cast<vfx::EffectType>(i)), t.instances, t.culled, t.particles,
+                        static_cast<double>(t.cpu_ms), static_cast<double>(t.gpu_ms));
+        }
+        ImGui::EndTooltip();
+    }
     if (!st.vfx_error.empty()) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "%s", st.vfx_error.c_str());
@@ -400,6 +427,38 @@ void EditorApp::drawVfxEditor() {
     changed |= ImGui::DragFloat("Retraso (s)", &g.start_delay, 0.05f, 0.0f, 3600.0f, "%.2f");
     changed |= ImGui::DragFloat("Precalentar (s)", &g.prewarm, 0.05f, 0.0f, 60.0f, "%.2f");
     ImGui::SetItemTooltip("Al empezar ya hay partículas (lluvia, nieve, luciérnagas)");
+
+    // Escalabilidad (MMO): tipo de efecto, orden de dibujo, caja fija y rafagas.
+    ImGui::SeparatorText("Escalabilidad");
+    {
+        int type = static_cast<int>(g.effect_type);
+        const char* type_names[vfx::kEffectTypeSlots] = {};
+        for (int i = 0; i < vfx::kEffectTypeSlots; ++i) type_names[i] = vfx::effectTypeLabel(static_cast<vfx::EffectType>(i));
+        if (ImGui::Combo("Tipo de efecto", &type, type_names, vfx::kEffectTypeSlots)) {
+            g.effect_type = static_cast<vfx::EffectType>(type);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("La calidad decide cuántos de cada tipo, a qué distancia, cuántas partículas y qué salidas\n"
+                              "caras se apagan (Héroe: los del jugador; Combate: los de los demás; Impacto: golpes;\n"
+                              "Ambiente: antorchas, polvo...). Sin tipo: sin límites, como antes.");
+        if (g.effect_type != vfx::EffectType::None) {
+            const vfx::EffectTypeBudget& b = vfx_.scalability().types[static_cast<std::size_t>(g.effect_type)];
+            ImGui::TextDisabled("Calidad %d: %s, %d a la vez, partículas x%.2f", vfx::qualityLevel(),
+                                b.max_distance > 0.0f ? (std::to_string(static_cast<int>(b.max_distance)) + " m").c_str()
+                                                      : "sin distancia",
+                                b.max_instances, static_cast<double>(b.particle_scale));
+        }
+        changed |= ImGui::DragInt("Orden de dibujo", &g.sort_order, 0.1f, -1000, 1000);
+        ImGui::SetItemTooltip("Entre efectos transparentes: mayor = encima (a igual orden, de atrás adelante)");
+        changed |= ImGui::Checkbox("Caja fija", &g.fixed_bounds);
+        ImGui::SetItemTooltip("Caja en el espacio del objeto: fuera de la vista no se dibuja (y con bucle se congela)");
+        if (g.fixed_bounds) {
+            changed |= ImGui::DragFloat3("Centro de la caja", &g.bounds_center.x, 0.05f);
+            changed |= ImGui::DragFloat3("Tamaño de la caja", &g.bounds_size.x, 0.05f, 0.0f, 10000.0f);
+        }
+        changed |= ImGui::SliderInt("Repartir ráfagas (frames)", &g.spawn_spread_frames, 1, 30);
+        ImGui::SetItemTooltip("Las ráfagas grandes nacen repartidas en estos frames (sin tirones); 1 = todas a la vez");
+    }
 
     ImGui::SeparatorText("Parámetros expuestos");
     ImGui::TextDisabled("Salen en el Inspector del objeto y\nlos cambian los scripts:\nentity().setEffectFloat(\"Rate\", 200)");
@@ -500,9 +559,51 @@ void EditorApp::drawVfxEditor() {
             if (open) {
                 ImGui::BeginDisabled(!b.enabled);
                 for (const vfx::FieldInfo& f : bi->fields) changed |= fieldEditor(b, f, g);
-                if (bi->has_text) changed |= ImGui::InputText("Evento", &b.text);
+                if (bi->has_text) {
+                    changed |= ImGui::InputText(bi->text_label != nullptr ? bi->text_label : "Evento", &b.text);
+                    // Canales de datos: el mismo nombre en quien apunta (Emit*) y en
+                    // quien escucha; tambien Effects.pushEvent desde los scripts.
+                    if (vfx::isChannelBlock(b.kind)) {
+                        ImGui::SetItemTooltip("Canal de datos: el mismo nombre en los bloques que apuntan "
+                                              "('evento al canal') y en los que escuchan ('Al recibir un evento de la "
+                                              "GPU'). Los scripts escriben con Effects.pushEvent(\"%s\", tipo, posicion, "
+                                              "velocidad, color, valor). Hasta %u canales y %u eventos por canal y frame.",
+                                              b.text.c_str(), gfx::VfxPass::kMaxChannels, gfx::VfxPass::kMaxChannelEvents);
+                        if (b.kind == vfx::BlockKind::OnGpuEvent && !g.world_space) {
+                            ImGui::TextDisabled("(escuchar un canal hace que simule en el mundo)");
+                        }
+                    }
+                }
                 if (bi->has_gradient) changed |= gradientEditor(b.gradient);
                 if (bi->has_curve) changed |= curveEditor(b.curve);
+                if (b.kind == vfx::BlockKind::ParticleLight) {
+                    // Luz por particula: el color es el de la particula y el tope
+                    // global (todas las luces de particula del frame) va aparte.
+                    ImGui::TextDisabled("Color: el de la partícula (Color en la vida y su alfa)");
+                    ImGui::TextDisabled("Tope por frame: %u (calidad y render.vfx.MaxParticleLights)",
+                                        renderer_.vfx().lightBudget());
+                }
+                if (bi->has_effect) {
+                    // Subemisor: el .crvfx que nace donde muere o choca.
+                    std::string label = "(arrastra un efecto .crvfx)";
+                    if (b.effect.valid() && database_) {
+                        if (const auto ei = database_->find(b.effect.uuid)) label = ei->name;
+                    }
+                    ImGui::Button(label.c_str(), ImVec2(-1.0f, 0.0f));
+                    ImGui::SetItemTooltip("Nace donde muere o choca cada particula (en la GPU, el frame siguiente)");
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
+                            Uuid uuid{};
+                            std::memcpy(&uuid, payload->Data, sizeof(Uuid));
+                            const auto ei = database_->find(uuid);
+                            if (ei && ei->type == assets::AssetType::VisualEffect && uuid != st.vfx_uuid) {
+                                b.effect = assets::AssetRef{uuid, assets::AssetType::VisualEffect};
+                                changed = true;
+                            }
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+                }
                 if (bi->has_mesh) {
                     std::string label = "(arrastra un modelo)";
                     if (b.mesh.valid() && database_) {
@@ -552,21 +653,192 @@ void EditorApp::drawVfxEditor() {
         if (context == vfx::Context::Output) {
             vfx::OutputSettings& o = g.output;
             ImGui::SeparatorText("Dibujo");
-            int orient = static_cast<int>(o.orient);
-            if (ImGui::Combo("Orientación", &orient, kOrientNames, 4)) {
-                o.orient = static_cast<gfx::VfxOrient>(orient);
+            int output_type = static_cast<int>(o.type);
+            if (ImGui::Combo("Salida", &output_type, kOutputNames, 3)) {  // Sprite (quads) / Cinta / Malla
+                o.type = static_cast<gfx::VfxOutput>(output_type);
                 changed = true;
             }
+            ImGui::SetItemTooltip("Quads; una cinta continua entre las vivas (estelas de espada y proyectil); o una "
+                                  "malla 3D por particula (casquillos, escombros)");
+            if (o.type == gfx::VfxOutput::Quads) {
+                int orient = static_cast<int>(o.orient);
+                if (ImGui::Combo("Orientación", &orient, kOrientNames, 4)) {
+                    o.orient = static_cast<gfx::VfxOrient>(orient);
+                    changed = true;
+                }
+            } else if (o.type == gfx::VfxOutput::Ribbon) {
+                int facing = static_cast<int>(o.ribbon_facing);
+                if (ImGui::Combo("Ancho hacia", &facing, kFacingNames, 4)) {
+                    o.ribbon_facing = static_cast<gfx::VfxRibbonFacing>(facing);
+                    changed = true;
+                }
+                ImGui::SetItemTooltip("Eje Y del emisor: el de cuando nacio cada punto (una espada con Y a lo largo de la hoja). "
+                                      "Hacia un vector: la cinta mira hacia el (ancho = tangente x vector). Lado: el ancho va por el");
+                if (o.ribbon_facing == gfx::VfxRibbonFacing::CustomFacing || o.ribbon_facing == gfx::VfxRibbonFacing::CustomSide) {
+                    changed |= ImGui::DragFloat3("Vector", &o.ribbon_vector.x, 0.01f, -1.0f, 1.0f, "%.2f");
+                    ImGui::SetItemTooltip("En el espacio del emisor");
+                }
+                int uv = static_cast<int>(o.ribbon_uv);
+                if (ImGui::Combo("Textura", &uv, kRibbonUvNames, 3)) {
+                    o.ribbon_uv = static_cast<gfx::VfxRibbonUv>(uv);
+                    changed = true;
+                }
+                if (o.ribbon_uv == gfx::VfxRibbonUv::Tile) {
+                    changed |= ImGui::DragFloat("Repetición (m)", &o.ribbon_tile, 0.01f, 0.01f, 100.0f, "%.2f");
+                }
+                changed |= ImGui::DragFloat("Corte (s)", &o.ribbon_gap, 0.005f, 0.0f, 10.0f, "%.3f");
+                ImGui::SetItemTooltip("Dos puntos que nacieron mas separados no se unen (el emisor paro). 0 = nunca");
+                changed |= ImGui::DragFloat2("Escala UV", &o.ribbon_uv_scale.x, 0.01f, -100.0f, 100.0f, "%.2f");
+                changed |= ImGui::DragFloat2("Desplazamiento UV", &o.ribbon_uv_offset.x, 0.01f, -100.0f, 100.0f, "%.2f");
+                changed |= ImGui::DragInt("Celda del atlas", &o.ribbon_atlas_cell, 0.1f, -1, 4095);
+                ImGui::SetItemTooltip("Celda de la textura (Columnas x Filas de abajo); -1 = la textura entera");
+                if (o.ribbon_atlas_cell >= 0) {
+                    changed |= ImGui::DragInt("Columnas", &o.flip_cols, 0.1f, 1, 64);
+                    changed |= ImGui::DragInt("Filas", &o.flip_rows, 0.1f, 1, 64);
+                }
+                changed |= ImGui::SliderInt("Subdivisiones", &o.ribbon_subdivisions, 1, 16);
+                ImGui::SetItemTooltip("Tramos por segmento (curva suave entre los puntos). 1 = sin suavizar (lo mas barato)");
+                if (o.ribbon_subdivisions > 1) {
+                    changed |= ImGui::SliderFloat("Tensión", &o.ribbon_tension, 0.0f, 1.0f, "%.2f");
+                    ImGui::SetItemTooltip("0 = Catmull-Rom (redonda), 1 = tramos rectos");
+                    changed |= ImGui::Checkbox("Adaptativa (por el ángulo)", &o.ribbon_adaptive);
+                    ImGui::SetItemTooltip("Solo subdivide donde la cinta gira (90 grados = todas)");
+                }
+                ImGui::TextDisabled("Ancho = tamaño (o Cinta: atributos); Tamaño y Color en la vida van a lo largo");
+            } else {
+                std::string label = "(arrastra un modelo)";
+                if (o.mesh.valid() && database_) {
+                    if (const auto mi = database_->find(o.mesh.uuid)) label = mi->name;
+                }
+                ImGui::Button(label.c_str(), ImVec2(-1.0f, 0.0f));
+                ImGui::SetItemTooltip("El modelo de cada particula (todas sus piezas; hasta 65536 vertices entre todas las mallas)");
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
+                        Uuid uuid{};
+                        std::memcpy(&uuid, payload->Data, sizeof(Uuid));
+                        const auto mi = database_->find(uuid);
+                        if (mi && mi->type == assets::AssetType::Model) {
+                            o.mesh = assets::AssetRef{uuid, assets::AssetType::Model};
+                            changed = true;
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+                int mesh_orient = static_cast<int>(o.mesh_orient);
+                if (ImGui::Combo("Giro", &mesh_orient, kMeshOrientNames, 4)) {
+                    o.mesh_orient = static_cast<gfx::VfxMeshOrient>(mesh_orient);
+                    changed = true;
+                }
+                ImGui::SetItemTooltip("El bloque Giro (Initialize) da el angulo y la velocidad de giro");
+                changed |= ImGui::DragFloat3("Escala", &o.mesh_scale.x, 0.01f, -100.0f, 100.0f, "%.2f");
+                ImGui::SetItemTooltip("Por el tamaño de la particula");
+                if (o.mesh_orient == gfx::VfxMeshOrient::Fixed) {
+                    // Se guarda en cuaternion; los grados solo son para editar.
+                    const core::Quat q{o.mesh_rotation.x, o.mesh_rotation.y, o.mesh_rotation.z, o.mesh_rotation.w};
+                    core::Vec3 euler = ecs::quatToEulerDegrees(q);
+                    if (ImGui::DragFloat3("Rotación", &euler.x, 0.5f, -360.0f, 360.0f, "%.1f°")) {
+                        const core::Quat r = ecs::quatFromEulerDegrees(euler);
+                        o.mesh_rotation = core::Vec4{r.x, r.y, r.z, r.w};
+                        changed = true;
+                    }
+                    ImGui::SetItemTooltip("Orientacion de todas (cuaternion); el bloque Giro gira cada una en su Y");
+                }
+                changed |= ImGui::SliderFloat3("Escala al azar", &o.mesh_scale_jitter.x, 0.0f, 1.0f, "%.2f");
+                ImGui::SetItemTooltip("Variacion por eje de cada particula (0.3 = +-30%)");
+                // Variantes (o niveles de LOD): hasta 3 modelos mas.
+                ImGui::SeparatorText("Variantes y LOD");
+                int remove_variant = -1;
+                for (std::size_t vi = 0; vi < o.mesh_variants.size(); ++vi) {
+                    ImGui::PushID(static_cast<int>(vi) + 9000);
+                    std::string vlabel = std::to_string(vi + 1) + ": (arrastra un modelo; vacia = la principal)";
+                    if (o.mesh_variants[vi].valid() && database_) {
+                        if (const auto mi = database_->find(o.mesh_variants[vi].uuid)) vlabel = std::to_string(vi + 1) + ": " + mi->name;
+                    }
+                    ImGui::Button(vlabel.c_str(), ImVec2(-ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x, 0.0f));
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
+                            Uuid uuid{};
+                            std::memcpy(&uuid, payload->Data, sizeof(Uuid));
+                            const auto mi = database_->find(uuid);
+                            if (mi && mi->type == assets::AssetType::Model) {
+                                o.mesh_variants[vi] = assets::AssetRef{uuid, assets::AssetType::Model};
+                                changed = true;
+                            }
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+                    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+                    if (ImGui::Button("x", ImVec2(ImGui::GetFrameHeight(), 0.0f))) remove_variant = static_cast<int>(vi);
+                    ImGui::PopID();
+                }
+                if (remove_variant >= 0) {
+                    o.mesh_variants.erase(o.mesh_variants.begin() + remove_variant);
+                    changed = true;
+                }
+                if (o.mesh_variants.size() + 1 < gfx::kVfxMeshVariants && ImGui::Button("+ Variante", ImVec2(-1.0f, 0.0f))) {
+                    o.mesh_variants.push_back(assets::AssetRef{{}, assets::AssetType::Model});
+                    changed = true;
+                }
+                ImGui::SetItemTooltip("Otro modelo: cada particula usa el de su bloque Índice de malla (Initialize)");
+                changed |= ImGui::DragFloat("LOD cada (m)", &o.mesh_lod_distance, 0.5f, 0.0f, 10000.0f, "%.1f");
+                ImGui::SetItemTooltip("> 0: las variantes son niveles de detalle (la 1 a partir de esta distancia, la 2 al "
+                                      "doble...). 0 = por particula (Índice de malla)");
+                changed |= ImGui::DragFloat("Sprite desde (m)", &o.mesh_sprite_distance, 0.5f, 0.0f, 100000.0f, "%.1f");
+                ImGui::SetItemTooltip("Mas lejos, un quad con la textura (o el disco suave) en lugar de la malla. 0 = nunca");
+                // Material (.crmat): manda sobre la mezcla, "Iluminadas" y la textura.
+                {
+                    std::string mlabel = "(arrastra un material .crmat)";
+                    if (o.material.valid() && database_) {
+                        if (const auto mi = database_->find(o.material.uuid)) mlabel = "Material: " + mi->name;
+                    }
+                    ImGui::Button(mlabel.c_str(), ImVec2(o.material.valid() ? -ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x
+                                                                            : -1.0f,
+                                                         0.0f));
+                    ImGui::SetItemTooltip("Color base, textura base, emision, opaco o transparente y sin luz del material. "
+                                          "Sin sombras (las particulas no las proyectan)");
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
+                            Uuid uuid{};
+                            std::memcpy(&uuid, payload->Data, sizeof(Uuid));
+                            const auto mi = database_->find(uuid);
+                            if (mi && mi->type == assets::AssetType::Material) {
+                                o.material = assets::AssetRef{uuid, assets::AssetType::Material};
+                                changed = true;
+                            }
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+                    if (o.material.valid()) {
+                        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+                        if (ImGui::Button("x##material", ImVec2(ImGui::GetFrameHeight(), 0.0f))) {
+                            o.material = assets::AssetRef{{}, assets::AssetType::Material};
+                            changed = true;
+                        }
+                    }
+                }
+            }
             int blend = static_cast<int>(o.blend);
-            if (ImGui::Combo("Mezcla", &blend, kBlendNames, 3)) {
+            if (ImGui::Combo("Mezcla", &blend, kBlendNames, 5)) {
                 o.blend = static_cast<gfx::VfxBlend>(blend);
                 changed = true;
+            }
+            ImGui::SetItemTooltip("Distorsión: no pinta, desplaza la imagen de detrás (calor, ondas de choque; la "
+                                  "textura es un normal map). Opaca: sin mezcla (mallas)");
+            if (o.blend == gfx::VfxBlend::Distortion) {
+                changed |= ImGui::SliderFloat("Distorsión (px)", &o.distortion, 0.0f, gfx::kVfxMaxDistortionPixels, "%.1f");
+                ImGui::SetItemTooltip("Desplazamiento maximo en pixeles a 1080p (por el alfa de la particula). Se apaga "
+                                      "en calidad Baja y con render.vfx.Distortion = false");
+                changed |= ImGui::Checkbox("Textura = mapa de alturas", &o.distortion_height);
+                ImGui::SetItemTooltip("Gris: desplaza por la pendiente. Si no, la textura es un normal map (RG); sin "
+                                      "textura, una lente blanda");
             }
             changed |= ImGui::DragFloat("Intensidad", &o.intensity, 0.05f, 0.0f, 100.0f, "%.2f");
             ImGui::SetItemTooltip("> 1 brilla con el bloom");
             changed |= ImGui::DragFloat("Suaves (m)", &o.soft_distance, 0.01f, 0.0f, 10.0f, "%.2f");
             ImGui::SetItemTooltip("Se funden al tocar la escena (0 = bordes duros)");
-            if (o.orient == gfx::VfxOrient::Stretched) changed |= ImGui::DragFloat("Estela (s)", &o.stretch, 0.005f, 0.0f, 2.0f, "%.3f");
+            if (o.type == gfx::VfxOutput::Quads && o.orient == gfx::VfxOrient::Stretched) {
+                changed |= ImGui::DragFloat("Estela (s)", &o.stretch, 0.005f, 0.0f, 2.0f, "%.3f");
+            }
             changed |= ImGui::SliderFloat("Recorte alfa", &o.alpha_clip, 0.0f, 1.0f, "%.2f");
             changed |= ImGui::Checkbox("Iluminadas (humo, polvo)", &o.lit);
             changed |= assetFilePicker("vfx_tex", project_.assetsFolder(), kImageFileExts, "imagen", o.texture);
@@ -582,10 +854,15 @@ void EditorApp::drawVfxEditor() {
                 ImGui::EndDragDropTarget();
             }
             ImGui::SetItemTooltip("Arrastra una imagen del Proyecto (PNG con alfa)");
-            changed |= ImGui::DragInt("Columnas", &o.flip_cols, 0.1f, 1, 64);
-            changed |= ImGui::DragInt("Filas", &o.flip_rows, 0.1f, 1, 64);
-            changed |= ImGui::DragFloat("Cuadros/s", &o.flip_fps, 0.1f, 0.0f, 120.0f, "%.1f");
-            ImGui::SetItemTooltip("Flipbook: 0 = la animación dura la vida de la partícula");
+            if (o.type == gfx::VfxOutput::Quads) {
+                changed |= ImGui::DragInt("Columnas", &o.flip_cols, 0.1f, 1, 64);
+                changed |= ImGui::DragInt("Filas", &o.flip_rows, 0.1f, 1, 64);
+                changed |= ImGui::DragFloat("Cuadros/s", &o.flip_fps, 0.1f, 0.0f, 120.0f, "%.1f");
+                ImGui::SetItemTooltip("Flipbook: 0 = la animación dura la vida de la partícula");
+                changed |= ImGui::Checkbox("Fundir cuadros", &o.flip_blend);
+                ImGui::SetItemTooltip("Mezcla cada cuadro con el siguiente (animación suave con pocos cuadros). "
+                                      "Cuadro inicial al azar y variación de velocidad: bloque Cuadro del flipbook");
+            }
         }
         ImGui::EndChild();
         ImGui::PopID();

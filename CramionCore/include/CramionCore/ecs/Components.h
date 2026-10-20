@@ -106,6 +106,22 @@ struct MeshRenderer {
     // Materiales (.crmat) que sustituyen a los del modelo, por hueco (el
     // indice es el del material en el modelo). Vacio o invalido = el suyo.
     std::vector<assets::AssetRef> materials;
+    // Parametros por instancia (como el MaterialPropertyBlock de Unity o el
+    // Custom Primitive Data de Unreal): sin otro .crmat ni romper el lote.
+    // Color de equipo, destello de golpe, aparecer y desaparecer.
+    //   tint: multiplica al color base (lineal, 0..1).
+    //   alpha: opacidad; por debajo de 1 lo opaco se disuelve con un tramado
+    //     (lo suaviza el TAA/FSR/DLSS) y lo transparente se mezcla menos.
+    //   emission_scale: multiplica a la emision del material (0 = apagada).
+    core::Vec3 tint{1.0f, 1.0f, 1.0f};
+    float alpha = 1.0f;
+    float emission_scale = 1.0f;
+    // false: los decals no lo pintan (el indicador de un area sobre un heroe).
+    bool receive_decals = true;
+    // Datos propios del objeto para su .crshader: INSTANCE_DATA(0) e
+    // INSTANCE_DATA(1) (entity().setMaterialParam(0, x, y, z, w)). Cero = nada.
+    static constexpr int kInstanceDataCount = 2;
+    core::Vec4 instance_data[kInstanceDataCount]{};
     // Malla creada por codigo (RuntimeMesh.h; como MeshFilter.mesh de Unity):
     // si hay, se dibuja en lugar de `model`. No se guarda en la escena.
     std::shared_ptr<Mesh> mesh;
@@ -472,6 +488,14 @@ struct Decal {
     float roughness = 0.5f;       // estampa
     float roughness_amount = 0.0f;
     float metallic = 0.0f;
+    // Canales opcionales de la estampa (imagenes dentro de Assets/; vacias =
+    // ninguno). Las escenas de antes no los traen y quedan como estaban.
+    std::string normal_texture;          // normal map (verde arriba, OpenGL/glTF)
+    float normal_strength = 1.0f;        // negativa: verde invertido (DirectX)
+    std::string orm_texture;             // r oclusion, g rugosidad, b metalicidad (sustituye a las de arriba)
+    std::string emission_texture;        // sin ella, emite el color de la estampa
+    core::Vec3 emission_color{1.0f, 1.0f, 1.0f};
+    float emission_intensity = 0.0f;     // 0 = sin emision
 
     void reflect(PropertyVisitor& v);
 };

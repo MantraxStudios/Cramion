@@ -42,6 +42,9 @@
 #include "Terminal.h"
 #include "CodeCompletion.h"
 #include "Clangd.h"
+#include "Autosave.h"
+#include "EditorHistory.h"
+#include "EditorSelection.h"
 #include "McpServer.h"
 #include "ModelPreviews.h"
 #include "ProfilerOverlay.h"
@@ -273,6 +276,15 @@ private:
     void performPending();
     void updateTitle();
 
+    // --- Autoguardado (EditorApp.cpp; ver Autosave.h) ---
+    void updateAutosave();  // cada frame: barato
+    // Si `scene` (vacia = escena sin guardar) tiene un autoguardado mas nuevo, se pregunta.
+    void checkAutosaveRecovery(const std::filesystem::path& scene);
+    void applyAutosaveRecovery();
+    void discardSceneAutosave();  // escena guardada o cambios descartados
+    void drawAutosaveRecovery();
+    void drawAutosaveMenu();
+
     // --- Deshacer (EditorApp.cpp) ---
     void resetUndo();
     void commit();  // punto de deshacer tras una accion completa (se hace al final del frame)
@@ -347,9 +359,14 @@ private:
     // Instancias que se quedaron en una revision vieja (al abrir la escena o
     // si cambio el .crprefab): se ponen al dia.
     void syncPrefabInstances();
-    // Apunta en cada instancia lo que difiere de su prefab (antes de cada
-    // instantanea de deshacer).
-    void recordPrefabOverrides();
+    // Apunta en las instancias a las que pertenece lo que cambio (`changed`,
+    // del historial de deshacer) lo que difiere de su prefab, antes de cada
+    // paso; deja en `touched` las raices que toco. Solo las instancias sucias y
+    // con el prefab parseado en cache (prefabDocument).
+    void recordPrefabOverrides(std::span<const ecs::Entity> changed, std::vector<ecs::Entity>& touched);
+    // El .crprefab ya parseado (cache por ruta y fecha del archivo); nullptr
+    // si no existe o no se puede leer.
+    std::shared_ptr<const ecs::ParsedPrefab> prefabDocument(const Uuid& uuid);
     void drawPrefabInspectorBar(ecs::Entity entity);
     void drawPrefabHierarchyMenu(ecs::Entity entity);
 
@@ -1064,6 +1081,23 @@ private:
     int data_layer_frame_ = 0;                            // repaso completo de vez en cuando
     // PartitionObject: su rejilla, su celda, sus capas y "carga la celda de...".
     void drawPartitionObjectInspector(ecs::Entity entity);
+    // Regiones cargadas (como las Loaded Regions de Unreal 5): con "Celdas en
+    // disco", el editor solo tiene las celdas cerca de su camara y las fijadas
+    // en Ventana > Regiones cargadas (el resto, en disco o en la cache).
+    worldpart::WorldPartitionSystem editor_regions_;
+    struct LoadedRegionsUi;  // vista de la cuadricula y epocas de deshacer (EditorWorldPartition.cpp)
+    std::shared_ptr<LoadedRegionsUi> regions_ui_;
+    bool show_loaded_regions_ = false;
+    LoadedRegionsUi& regionsUi();
+    // Al abrir o guardar la escena: empieza si la escena tiene celdas en disco
+    // (y no se apagaron para esta escena). false = el editor lo carga todo.
+    bool beginEditorRegions(const std::filesystem::path& scene);
+    void updateEditorRegions();       // cada frame fuera de Play
+    void prepareRegionsForPlay();     // antes de la instantanea de Play
+    void prepareRegionsForSave(const worldpart::WorldPartition* external);  // sin celdas en disco: todo al mundo
+    void drawLoadedRegionsWindow();
+    void loadRegionsPrefs();
+    void saveRegionsPrefs();
 
     // --- Splines (EditorSplines.cpp) ---
     // shape: 0 carretera, 1 camino, 2 rio, 3 muro, 4 valla, 5 tuberia,
@@ -1236,9 +1270,17 @@ private:
     // la raiz: su Transform, nombre, padre, componentes, Static y los .crmat
     // por nombre de material). Devuelve cuantas instancias rehizo.
     int rebuildModelInstances(const Uuid& model, const std::vector<std::vector<std::string>>& old_materials);
-    // Vigila Assets/ (archivos nuevos, copiados, borrados o movidos desde
-    // fuera) y refresca la base de datos sola.
+    // Vigila Assets/ (archivos nuevos, copiados, borrados, movidos o editados
+    // desde fuera) con assets::FileWatcher: rescan incremental de las rutas
+    // avisadas en un hilo de disco y recarga en caliente de lo que cambio
+    // (modelos, materiales, texturas, clips, controladores, prefabs, shaders).
     void watchAssets();
+    void applyAssetScan();
+    // Archivos o carpetas movidos/renombrados en el panel (rutas absolutas,
+    // ya en su sitio nuevo): reescribe las referencias por ruta en todos los
+    // JSON del proyecto, en la escena abierta y en las otras pestanas, y avisa
+    // de cuantos archivos cambio.
+    void updatePathReferences(const std::vector<std::pair<std::filesystem::path, std::filesystem::path>>& moves);
     void createSceneAsset(const std::filesystem::path& folder);
     // Copia/importa una carpeta del disco (y sus subcarpetas) dentro de Assets.
     void importFolder(const std::filesystem::path& source, const std::filesystem::path& target);
@@ -1386,7 +1428,8 @@ private:
     bool dirty_ = false;
 
     // Seleccion (por UUID: sobrevive a deshacer, que recrea las entidades).
-    std::vector<Uuid> selection_;
+    // En orden y con indice hash (EditorSelection.h): isSelected en O(1).
+    SelectionSet selection_;
     // Clic sin Ctrl/Mayus sobre una fila ya seleccionada con varias: se
     // deja solo esa al soltar (si no se arrastro), como Unity; asi se puede
     // arrastrar toda la seleccion.
@@ -1405,11 +1448,33 @@ private:
     // Prefabs: texto de cada .crprefab leido (se vacia con database_version_).
     std::unordered_map<std::string, std::string> prefab_texts_;
     std::uint64_t prefab_texts_version_ = ~0ull;
+    // Prefabs ya parseados para los cambios propios (por UUID; se rehacen si
+    // cambia la ruta, la fecha del archivo o su texto).
+    struct PrefabDocCache {
+        std::filesystem::path path;
+        std::filesystem::file_time_type stamp{};
+        std::size_t size = 0;
+        std::shared_ptr<const ecs::ParsedPrefab> doc;
+    };
+    std::unordered_map<Uuid, PrefabDocCache> prefab_docs_;
 
-    // Deshacer: instantaneas del mundo en JSON.
-    std::deque<std::string> undo_;
-    std::deque<std::string> redo_;
-    std::string current_state_;
+    // Deshacer: historial por diferencias por entidad (EditorHistory.h).
+    UndoHistory history_;
+
+    // Autoguardado: copia el texto de history_ cada N minutos y la escribe en
+    // su hilo (Library/Autosave). Despues de history_: se destruye antes.
+    SceneAutosave autosave_;
+    SafetyPreferences safety_prefs_ = loadSafetyPreferences();  // autoguardado y token del MCP
+    std::filesystem::path autosave_scene_;  // la escena de autosave_file_ (la ruta no se rehace cada frame)
+    std::filesystem::path autosave_file_;
+    bool autosave_file_valid_ = false;
+    struct AutosaveRecovery {
+        std::filesystem::path file;
+        std::filesystem::path scene;  // vacia = escena sin guardar
+        std::string when;             // hora del autoguardado
+        bool pending = false;
+    };
+    AutosaveRecovery autosave_recovery_;
 
     // Vista de escena.
     float view_x_ = 0.0f;
@@ -1559,6 +1624,12 @@ private:
     double cpp_last_check_ = 0.0;
     std::filesystem::file_time_type cpp_attempted_{};  // fuentes de la ultima compilacion intentada
     bool cpp_has_sources_ = false;
+    // Mirar las fuentes recorre Assets/ entero (hasta 3 veces): va en un hilo
+    // de disco (EditorCppScripts.cpp). En el hilo principal eran ~200 ms cada
+    // 2 s con un proyecto grande (o en OneDrive), aun con la escena vacia.
+    struct CppSourceCheck;
+    std::shared_ptr<CppSourceCheck> cpp_check_;
+    void waitCppSourceCheck();  // antes de cambiar o soltar cpp_scripts_ (la tarea lo lee)
     bool show_cvars_window_ = false;
     std::string cvar_filter_;
     std::uint64_t cvar_saved_generation_ = 0;
@@ -1887,9 +1958,10 @@ private:
     // Fraccion total de la cola (terminados + parte de los que estan en curso).
     float importFraction() const;
     // Vigilancia de Assets/ por notificacion del sistema (sin recorrer el
-    // disco cada frame): HANDLE de FindFirstChangeNotificationW.
-    void* assets_watch_ = nullptr;
-    double refresh_at_ = -1.0;  // refresco pendiente (se agrupan rafagas de cambios)
+    // disco cada frame): el vigilante, el rescan en marcha y lo que avisa.
+    // Definido en EditorProject.cpp (shared_ptr: se suelta sin verlo entero).
+    struct AssetHotReload;
+    std::shared_ptr<AssetHotReload> hot_reload_;
 
     // Cache del navegador: el disco solo se lee cuando algo cambia.
     struct FolderNode {
@@ -2067,9 +2139,7 @@ private:
         std::string world;
         std::filesystem::path scene_path;
         bool dirty = false;
-        std::deque<std::string> undo;
-        std::deque<std::string> redo;
-        std::string current_state;
+        UndoHistory history;  // su deshacer (con la instantanea)
         std::deque<char> undo_kinds;
         std::deque<char> redo_kinds;
         std::deque<TerrainUndo> terrain_undo;
@@ -2262,7 +2332,7 @@ private:
     ecs::Entity createFluidEntity(int kind);
     physics::PhysicsSettings physics_settings_;
     PlayState play_state_ = PlayState::Edit;
-    std::string play_snapshot_;     // el mundo al darle a Play
+    UndoHistory::Frozen play_snapshot_;  // el mundo al darle a Play (los registros del historial)
     bool play_dirty_before_ = false;
     // Graphics (la API) y lo grafico al darle a Play (se restaura al parar).
     std::unique_ptr<RendererGraphicsHost> graphics_host_;

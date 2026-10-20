@@ -77,6 +77,9 @@ bool loadMaterial(const std::filesystem::path& path, MaterialAsset& out, std::st
     MaterialAsset m;
     m.uuid = Uuid::parse(text(j, "uuid"));
     m.mode = text(j, "mode") == "transparent" ? MaterialMode::Transparent : MaterialMode::Opaque;
+    m.blend = transparentBlendFromKey(text(j, "blend"));
+    m.unlit = j.value("unlit", false);
+    m.vertex_color = j.value("vertex_color", false);
     const auto color = numbers<4>(j, "base_color", {1.0f, 1.0f, 1.0f, 1.0f});
     m.base_color = core::Vec4{color[0], color[1], color[2], color[3]};
     m.metallic = number(j, "metallic", m.metallic);
@@ -153,6 +156,10 @@ bool saveMaterial(MaterialAsset& m, const std::filesystem::path& path, std::stri
     j["type"] = "material";
     j["version"] = 1;
     j["mode"] = m.mode == MaterialMode::Transparent ? "transparent" : "opaque";
+    // Solo si no son los de siempre: los .crmat viejos no cambian al guardarse.
+    if (m.blend != TransparentBlend::Glass) j["blend"] = transparentBlendKey(m.blend);
+    if (m.unlit) j["unlit"] = true;
+    if (m.vertex_color) j["vertex_color"] = true;
     j["base_color"] = vec(m.base_color);
     j["metallic"] = m.metallic;
     j["roughness"] = m.roughness;
@@ -243,6 +250,20 @@ std::uint64_t materialStructureHash(const MaterialAsset& m) {
     return h;
 }
 
+const char* transparentBlendKey(TransparentBlend blend) {
+    switch (blend) {
+        case TransparentBlend::Alpha: return "alpha";
+        case TransparentBlend::Additive: return "additive";
+        default: return "glass";
+    }
+}
+
+TransparentBlend transparentBlendFromKey(const std::string& key) {
+    if (key == "alpha") return TransparentBlend::Alpha;
+    if (key == "additive") return TransparentBlend::Additive;
+    return TransparentBlend::Glass;
+}
+
 namespace {
 constexpr const char* kShadingKeys[kShadingModelCount] = {"standard",    "clearcoat",    "cloth", "subsurface",
                                                           "anisotropic", "transmission", "hair"};
@@ -272,6 +293,9 @@ asset::MaterialData toMaterialData(const MaterialAsset& m, const std::string& na
     d.normal_map_directx = m.normal_directx;
     d.reflectance = m.reflectance;
     d.transparent = m.mode == MaterialMode::Transparent;
+    d.transparent_blend = static_cast<std::uint8_t>(m.blend);
+    d.unlit = m.unlit;
+    d.vertex_color_albedo = m.vertex_color;
     d.height_scale = m.height_map.empty() ? 0.0f : std::max(m.height_scale, 0.0f);
     d.tessellation = m.relief == ReliefMode::Tessellation;
     d.tessellation_density = m.tessellation_density;

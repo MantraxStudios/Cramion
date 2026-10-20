@@ -83,7 +83,20 @@ void testVfx() {
     check(r["ok"] == true, "parametros y eventos (tambien por el puente)");
     const json bad = t.bridge({{"fn", "setEffectFloat"}, {"self", selfOf(e)}, {"args", {"Rate", "mucho"}}});
     check(bad["ok"] == false && bad["error"].get<std::string>().find("numero") != std::string::npos, "un argumento mal: error");
+
+    // Canal de datos: los impactos de varios jugadores (100 por segundo) a un
+    // solo efecto que escucha "Impactos"; los argumentos que faltan, por defecto.
+    for (int i = 0; i < 100; ++i) {
+        t.call("Effects.pushEvent", {Value("Impactos"), Value(1), Value(Vec3{static_cast<float>(i % 4), 0, static_cast<float>(i)}),
+                                     Value(Vec3{0, 2, 0}), Value(Vec3{1, 0.5f, 0}), Value(2)});
+    }
+    t.call("Effects.pushEvent", {Value("Rastro")});
+    check(system.pendingGpuEvents() == 101 && system.channelId("Impactos") == 0 && system.channelId("Rastro") == 1,
+          "Effects.pushEvent: 100 impactos en un canal (y otro con valores por defecto)");
+    system.clear();
     vfx::setActiveSystem(nullptr);
+    t.call("Effects.pushEvent", {Value("Impactos"), Value(1)});
+    check(system.pendingGpuEvents() == 0, "Effects.pushEvent sin VfxSystem: no hace nada");
 }
 
 void testPhysics2D() {

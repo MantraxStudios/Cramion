@@ -14,6 +14,7 @@
 #include <CramionFX/core/Math.h>
 
 #include <entt/entity/entity.hpp>
+#include <entt/entity/fwd.hpp>
 
 #include <cstdint>
 #include <functional>
@@ -167,6 +168,10 @@ struct ComponentType {
     std::function<bool(World&, entt::entity, PropertyVisitor&)> reflect;
     // Copia el componente de una entidad a otra (duplicar).
     std::function<void(World&, entt::entity from, entt::entity to)> copy;
+    // El pool de EnTT del tipo (nullptr si aun no hay ninguno): recorrer solo
+    // las entidades que lo tienen en vez de preguntar `has` a todas (el
+    // historial de deshacer compara asi el mundo entero).
+    const entt::sparse_set* (*pool)(const World&) = nullptr;
 };
 
 // Todos los tipos de componente registrados, en orden de registro (el del

@@ -60,6 +60,16 @@ layout(std430, set = 1, binding = 10) readonly buffer LightmapUvs {
 layout(location = 7) out vec2 v_lightmap_uv;
 layout(location = 8) flat out uint v_lightmap_slot;
 const uint kFlagLightmap = 1u << 6;
+// Hueco de la instancia en el buffer de huesos: ahi esta su registro con los
+// parametros por instancia (tinte, opacidad, emision; lightmap_common.glsl).
+layout(location = 9) flat out uint v_instance_slot;
+// Color de vertice del modelo (set 1, binding 11: RGBA8 por vertice), solo
+// con kFlagVertexColor; si no, blanco.
+layout(std430, set = 1, binding = 11) readonly buffer VertexColors {
+    uint vertex_colors[];
+};
+layout(location = 10) out vec4 v_color;
+const uint kFlagVertexColor = 1u << 7;
 
 void main() {
     // Instanciado: push.model es la identidad y la matriz de mundo del actor
@@ -110,6 +120,9 @@ void main() {
     vec4 previous_world = previous_skin * vec4(in_position, 1.0);
     v_previous_clip = camera.previous_view_projection * previous_world;
     v_previous_world = previous_world.xyz;
+
+    v_instance_slot = base;
+    v_color = (push.flags & kFlagVertexColor) != 0u ? unpackUnorm4x8(vertex_colors[gl_VertexIndex]) : vec4(1.0);
 
     // Lightmap: su UV2 y el hueco de la instancia (el de su matriz en el
     // buffer de huesos: ahi esta su registro, lightmap_common.glsl).
