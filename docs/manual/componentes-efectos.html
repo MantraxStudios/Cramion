@@ -26,7 +26,7 @@
   <header class="site-header">
     <div class="header-inner">
       <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.6.2</span></a>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.6.3</span></a>
       <nav class="main-nav" aria-label="Secciones">
         <a href="index.html" data-nav="index">Documentación</a>
         <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
@@ -211,10 +211,22 @@
     <tr><td>Semilla<br><code>seed</code></td><td>entero</td><td>0</td><td>0 a 1000000</td><td>0 = al azar cada vez</td></tr>
     <tr><td>Velocidad<br><code>simulation_speed</code></td><td>numero</td><td>1</td><td>0 a 10</td><td>Multiplica el tiempo de la simulacion</td></tr>
     <tr><td>Vista previa en el editor<br><code>preview_in_editor</code></td><td>si/no</td><td>si</td><td></td><td>Simular en la escena si esta seleccionado</td></tr>
+    <tr><td>Apartar hierba (m)<br><code>grass_radius</code></td><td>numero</td><td>0</td><td>0 a 20</td><td>Aparta la hierba del terreno en este radio alrededor del efecto, sin fisica (circulos de suelo, impactos a ras de suelo). 0 = no</td></tr>
     <tr><td colspan="5"><strong class="text-white">Parámetros (lista)</strong> <code>params</code> — Valores de los parametros expuestos del efecto para este objeto</td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Valor<br><code>value</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td>Float = X; Color = RGB (y A abajo)</td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Alfa / W<br><code>w</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Del jugador local<br><code>local_player</code></td><td>si/no</td><td>no</td><td></td><td>Presupuesto: nunca se descarta (ni por distancia ni por tope) y usa los limites del tipo Heroe</td></tr>
+    <tr><td>Prioridad<br><code>priority</code></td><td>entero</td><td>0</td><td>-100 a 100</td><td>Presupuesto: con el tope lleno se quedan antes los de mas prioridad</td></tr>
+  </tbody>
+</table>
+<h3 id="VfxGroup">VFX Group (presupuesto) <code>VfxGroup</code></h3>
+<p>Agrupa los VisualEffect de debajo (una habilidad): el presupuesto los cuenta como una sola instancia y los crea o los quita juntos.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Del jugador local<br><code>local_player</code></td><td>si/no</td><td>no</td><td></td><td>El grupo entero (todos los VisualEffect de debajo) nunca se descarta por presupuesto</td></tr>
+    <tr><td>Prioridad<br><code>priority</code></td><td>entero</td><td>0</td><td>-100 a 100</td><td>Con el tope lleno se quedan antes los grupos de mas prioridad</td></tr>
   </tbody>
 </table>
 <h3 id="Profiler">Profiler <code>Profiler</code></h3>
@@ -255,7 +267,7 @@
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.6.2. Gratis para hacer y vender tus juegos.</span>
+      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.6.3. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="../store/index.html">Assets</a>

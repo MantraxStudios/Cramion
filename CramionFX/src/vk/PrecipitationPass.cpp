@@ -149,14 +149,16 @@ vk::raii::Pipeline PrecipitationPass::createPipeline(const VulkanDevice& device,
     depth_stencil.depthWriteEnable = VK_FALSE;
     depth_stencil.depthCompareOp = vk::CompareOp::eLessOrEqual;
 
-    // El alfa de la imagen HDR guarda la distancia de lo que se ve: no se toca.
+    // Alfa de la imagen HDR: la opacidad acumulada ("sobre"), la mascara
+    // reactiva del TAA y de FSR 3 (en la vista principal empieza a 0; en las
+    // capturas de la sonda no se dibuja la lluvia).
     vk::PipelineColorBlendAttachmentState blend{};
     blend.blendEnable = VK_TRUE;
     blend.srcColorBlendFactor = additive ? vk::BlendFactor::eOne : vk::BlendFactor::eSrcAlpha;
     blend.dstColorBlendFactor = additive ? vk::BlendFactor::eOne : vk::BlendFactor::eOneMinusSrcAlpha;
     blend.colorBlendOp = vk::BlendOp::eAdd;
-    blend.srcAlphaBlendFactor = vk::BlendFactor::eZero;
-    blend.dstAlphaBlendFactor = vk::BlendFactor::eOne;
+    blend.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+    blend.dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
     blend.alphaBlendOp = vk::BlendOp::eAdd;
     blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;

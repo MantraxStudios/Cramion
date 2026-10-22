@@ -37,6 +37,10 @@ public:
     // frame. Si el array crece, view() cambia: quien lo tenga en un set debe
     // reescribirlo antes de su siguiente frame.
     int add(const VulkanDevice& device, std::uint32_t width, std::uint32_t height, const std::uint8_t* rgba);
+    // Sube la imagen encima de una capa ya usada (la imagen cambio en disco);
+    // la barrera espera a los frames anteriores que la leen. false si no existe.
+    bool replace(const VulkanDevice& device, std::uint32_t layer, std::uint32_t width, std::uint32_t height,
+                 const std::uint8_t* rgba);
 
     vk::ImageView view() const;
     std::uint32_t layers() const { return used_; }
@@ -54,6 +58,9 @@ private:
     };
     std::shared_ptr<Storage> createStorage(const VulkanDevice& device, std::uint32_t size, std::uint32_t levels,
                                            std::uint32_t layers) const;
+    // add y replace: `replace_layer` < 0, capa nueva.
+    int upload(const VulkanDevice& device, std::uint32_t width, std::uint32_t height, const std::uint8_t* rgba,
+               int replace_layer);
 
     std::shared_ptr<Storage> storage_;
     std::uint32_t layer_size_ = 1024;

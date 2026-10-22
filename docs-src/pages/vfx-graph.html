@@ -27,7 +27,13 @@
 <p>
   Cada bloque se activa o desactiva con su casilla y se reordena con <code>^</code>. Los de Update se aplican en orden.
   <strong>Colisión con la escena</strong> choca contra lo que ve la cámara (sin colliders): las chispas rebotan en el suelo y
-  la lluvia muere al tocarlo.
+  la lluvia muere al tocarlo. Lo que cae fuera de la pantalla o tapado no choca; con <em>Suelo sin la vista</em> el terreno
+  bajo el emisor hace además de suelo (plano a su altura), así los impactos fuera de la vista también apuntan sus eventos.
+  <strong>Colisión con plano</strong> va en el espacio del emisor; con <em>En el mundo</em> el plano queda fijo y con
+  <em>Sobre el terreno</em> es horizontal a la altura del terreno bajo el emisor más la <em>Distancia</em>, sin depender de
+  la vista. <strong>Matar en caja</strong> también va en el espacio del emisor (la caja se mueve y gira con él: con
+  <em>Matar fuera</em> y un emisor lejos del origen, las partículas mueren al nacer si la caja no las cubre); con
+  <em>En el mundo</em> la caja queda fija y alineada con los ejes.
 </p>
 
 <h3 id="parametros">Parámetros expuestos</h3>
@@ -47,7 +53,10 @@ entity().stopEffect(false);             // deja de emitir (true = borra las que 
     y el bloque <em>Cuadro del flipbook</em> admite velocidad al azar por partícula.</li>
   <li><strong>Cinta</strong>: une las vivas en una estela. Suavizado (tensión, 1-16 subdivisiones, adaptativas), orientación
     Cámara / Emisor / Vector propio / Lado propio con giro, y UV <em>Estirar</em>, <em>Distancia</em> (la textura no resbala)
-    o <em>Edad</em>. El bloque Initialize <em>Atributos de cinta</em> da varias tiras paralelas en un mismo emisor. Al destruir
+    o <em>Edad</em>. El bloque Initialize <em>Atributos de cinta</em> da varias tiras paralelas en un mismo emisor y, con
+    <em>Id del evento</em>, una cinta por cada valor de evento: un solo emisor que escucha un canal dibuja una estela por
+    proyectil (los proyectiles con <em>Emitir cada t s</em> y <em>Valor = id de la partícula</em>, o un script con
+    <code>Effects::pushEvent</code> y el id del proyectil como valor; 256 cintas por efecto). Al destruir
     el objeto, la cola se apaga sola. Plantilla: <em>Estela de proyectil</em>.</li>
   <li><strong>Malla 3D</strong>: un modelo por partícula y hasta 3 más (bloque <em>Índice de malla</em> o un nivel cada tantos m),
     un quad a partir de cierta distancia, orientación Al azar / Velocidad / Fija (con rotación) / Hacia la cámara, escala al
@@ -68,6 +77,10 @@ entity().stopEffect(false);             // deja de emitir (true = borra las que 
   2048 eventos por canal y frame. Los scripts escriben en el mismo canal:
 </p>
 <pre><code class="language-cpp">Effects::pushEvent("Impactos", 1, hit_point, Vec3{0, 2, 0}, Vec3{1, 0.6f, 0.2f}, 1.0f);</code></pre>
+<p>
+  Los <em>Emitir…</em> tienen <em>Valor = id de la partícula</em>: el valor del evento es el id de la partícula que lo apunta
+  (igual toda su vida), para las cintas con <em>Id del evento</em>.
+</p>
 
 <h3 id="escalabilidad">Escalabilidad por tipo de efecto</h3>
 <p>
@@ -78,6 +91,17 @@ entity().stopEffect(false);             // deja de emitir (true = borra las que 
   y ráfagas repartidas en varios frames. CVars: <code>vfx.scalability</code>, <code>vfx.quality</code>,
   <code>vfx.platform</code>, <code>vfx.timeScale</code>, <code>vfx.prewarmFrames</code>, <code>vfx.curlNoiseBaked</code>.
   El MCP <code>vfx_control</code> da las estadísticas por tipo (<code>stats</code>).
+</p>
+<p>
+  <strong>Qué cuenta en el presupuesto.</strong> Un efecto que ya terminó (no emite, sin eventos pendientes ni partículas vivas)
+  no cuenta ni se simula; vuelve con <code>playEffect()</code>, un evento o un ciclo nuevo. Los efectos se cuentan por
+  <strong>grupo</strong>: el componente <code>VfxGroup</code> más cercano hacia arriba o, sin él, la raíz del prefab (solo los
+  Héroe, Combate e Impacto; <code>vfx.groupPrefabs</code> = 0 lo apaga). Un grupo ocupa <em>una</em> instancia del tipo más
+  importante de sus efectos y se crea o se quita entero: una habilidad de 23 emisores ya no llena el tope de Baja ni sale a trozos.
+  <strong>Del jugador local</strong> (<code>local_player</code> en el VisualEffect o en el VfxGroup, o
+  <code>entity().setEffectLocalPlayer(true)</code> sobre la raíz de la habilidad): nunca se descarta, ni por distancia ni por
+  tope, y usa los límites de Héroe; con el tope lleno salen antes los de otros jugadores y los de ambiente.
+  <code>priority</code> (o <code>setEffectPriority(n)</code>) ordena el resto: con el tope lleno se quedan los de más prioridad.
 </p>
 
 <h3 id="componente">Componente Visual Effect</h3>

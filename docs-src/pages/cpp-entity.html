@@ -166,6 +166,8 @@
     <tr><td><code>Value setEffectBool(texto, activar) const</code></td><td>entity().setEffectBool(&quot;Activo&quot;, true) parametro expuesto (bool)</td></tr>
     <tr><td><code>Value setEffectColor(texto, arg, valor) const</code></td><td>entity().setEffectColor(&quot;Color&quot;, Vec3(1, 0.5, 0), 1) parametro expuesto (color y alfa)</td></tr>
     <tr><td><code>Value setEffectFloat(texto, valor) const</code></td><td>entity().setEffectFloat(&quot;Rate&quot;, 200) parametro expuesto (float)</td></tr>
+    <tr><td><code>Value setEffectLocalPlayer(activar) const</code></td><td>entity().setEffectLocalPlayer(true) presupuesto de VFX: del jugador local (nunca se descarta); en la raiz de una habilidad vale para todo el grupo</td></tr>
+    <tr><td><code>Value setEffectPriority(valor) const</code></td><td>entity().setEffectPriority(2) presupuesto de VFX: con el tope lleno se quedan antes los de mas prioridad (-100..100)</td></tr>
     <tr><td><code>Value setEffectVector(texto, arg) const</code></td><td>entity().setEffectVector(&quot;Viento&quot;, Vec3(1, 0, 0)) parametro expuesto (Vector3)</td></tr>
     <tr><td><code>Value setFootGrounding(activar) const</code></td><td>entity().setFootGrounding(true) Patas al suelo</td></tr>
     <tr><td><code>Value setGear(marcha) const</code></td><td>entity().setGear(marcha) Vehicle con cambio manual: -1 atras, 0 punto muerto, 1..n</td></tr>
@@ -174,7 +176,7 @@
     <tr><td><code>Value setIKWeight(texto, valor) const</code></td><td>entity().setIKWeight(&quot;PieIzq&quot;, 1) Peso 0..1</td></tr>
     <tr><td><code>Value setLookAt(objetivo, peso) const</code></td><td>entity().setLookAt(objetivo, peso) Mirar con cabeza y cuello</td></tr>
     <tr><td><code>Value setMaterial(valor, texto) const</code></td><td>entity().setMaterial(0, &quot;Materials/Brillo.crmat&quot;) material .crmat de un hueco de su MeshRenderer Devuelve: bool</td></tr>
-    <tr><td><code>Value setMaterialParam(parametro, valor, y, z, w) const</code></td><td>entity().setMaterialParam(parametro, valor, y, z, w) por instancia, sin otro .crmat: &quot;tint&quot; (Vec3), &quot;alpha&quot;, &quot;emission&quot;, &quot;receiveDecals&quot; o 0/1 = INSTANCE_DATA(i) de su .crshader (x, y, z, w); tint y alpha tambien en su ParticleSystem Devuelve: bool</td></tr>
+    <tr><td><code>Value setMaterialParam(parametro, valor, y, z, w) const</code></td><td>entity().setMaterialParam(parametro, valor, y, z, w) por instancia, sin otro .crmat: &quot;tint&quot; (Vec3), &quot;alpha&quot;, &quot;emission&quot;, &quot;receiveDecals&quot;, &quot;smoothFade&quot; (alpha con fundido suave en vez de tramado) o 0/1 = INSTANCE_DATA(i) de su .crshader (x, y, z, w); tint y alpha tambien en su ParticleSystem Devuelve: bool</td></tr>
     <tr><td><code>Value setMotionFacing(vec) const</code></td><td>entity().setMotionFacing(Vec3) Motion Matching: hacia donde mirar (cero = hacia donde se mueve)</td></tr>
     <tr><td><code>Value setMotionTags(texto) const</code></td><td>entity().setMotionTags(&quot;agachado&quot;) Motion Matching: solo fotogramas con esas etiquetas</td></tr>
     <tr><td><code>Value setMotionVelocity(vec) const</code></td><td>entity().setMotionVelocity(Vec3) Motion Matching (modo Script): velocidad que se pide (m/s)</td></tr>

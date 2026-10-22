@@ -337,8 +337,8 @@ void main() {
     s.alpha *= instance_tint.a;
     s.emission *= unpackHalf2x16(instance_records[v_instance_slot].info.z).x * instance_tint.a;
 
-    // Premultiplicado: el alfa del destino (la distancia, para la sonda) no
-    // se toca (el pipeline solo escribe RGB).
+    // Premultiplicado. El alfa de salida tambien se acumula en el del destino
+    // (la mascara reactiva del TAA y de FSR 3; SkinnedPass::createSurfacePipeline).
     float alpha = clamp(s.alpha, 0.0, 1.0);
 #ifdef CRAMION_UNLIT
     vec3 lit = toLinear(clamp(s.albedo, 0.0, 1.0));

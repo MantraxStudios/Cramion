@@ -77,6 +77,8 @@ void EditorApp::setupCppScripts() {
     clangd_.stop();  // otro proyecto: se arranca de nuevo al abrir un .cpp
     cpp_compile_errors_.clear();
     cpp_status_.clear();
+    cpp_last_result_.reset();
+    cpp_play_wait_ = CppPlayWait::None;
     cpp_has_sources_ = cpp_scripts_.hasSources();
     cpp_last_check_ = 0.0;
     // Las CVars guardadas del proyecto.
@@ -97,8 +99,16 @@ void EditorApp::updateCppScripts() {
     }
     if (!has_project_) return;
     const double now = ImGui::GetTime();
+    // Compilando: el estado dice cuanto lleva (el editor no se para).
+    if (cpp_scripts_.compiling() && cpp_compile_started_ >= 0.0) {
+        cpp_status_ = "Compilando" + cpp_compile_reason_ + "... " +
+                      std::to_string(static_cast<int>(now - cpp_compile_started_)) + " s";
+    }
     // Compilacion terminada.
     if (std::optional<scripting::CppCompileResult> r = cpp_scripts_.takeCompileResult()) {
+        cpp_last_result_ = *r;
+        cpp_compile_done_job_ = cpp_compile_job_;
+        cpp_compile_started_ = -1.0;
         cpp_compile_errors_ = r->errors;
         if (r->nothing_to_compile) {
             cpp_status_.clear();
@@ -124,6 +134,12 @@ void EditorApp::updateCppScripts() {
                 std::cerr << "[C++] " << (e.file.empty() ? "" : e.file + ":" + std::to_string(e.line) + ": ") << e.message << std::endl;
             }
         }
+        // Play esperaba a esta compilacion: entra ahora (con errores, como
+        // antes, con la DLL anterior).
+        if (cpp_play_wait_ == CppPlayWait::Waiting) {
+            cpp_play_wait_ = CppPlayWait::Compiled;
+            enterPlay();
+        }
     }
     // Fuentes cambiadas: se compila sola (cada 2 s se mira; sin .cpp no hace nada).
     // La mirada va en un hilo de disco y se aplica cuando acaba.
@@ -135,8 +151,7 @@ void EditorApp::updateCppScripts() {
             // Con errores la DLL sigue vieja: no se repite hasta que cambie algun archivo.
             if (check.forced || check.newest != cpp_attempted_) {
                 cpp_attempted_ = check.newest;
-                cpp_status_ = "Compilando...";
-                cpp_scripts_.compileAsync();
+                startCppCompile("");
             }
         }
     }
@@ -171,12 +186,45 @@ void EditorApp::updateCppScripts() {
     }
 }
 
+std::uint64_t EditorApp::startCppCompile(const std::string& reason) {
+    if (cpp_scripts_.compiling()) return cpp_compile_job_;  // ya hay una: esa vale
+    ++cpp_compile_job_;
+    cpp_compile_started_ = ImGui::GetTime();
+    cpp_compile_reason_ = reason;
+    cpp_status_ = "Compilando" + reason + "...";
+    std::cout << "[C++] Compilando los scripts" << reason << " (en segundo plano)" << std::endl;
+    cpp_scripts_.compileAsync();
+    return cpp_compile_job_;
+}
+
+bool EditorApp::waitCppCompileBeforePlay() {
+    if (cpp_play_wait_ == CppPlayWait::Compiled) return false;  // ya compilado para este Play
+    if (cpp_play_wait_ == CppPlayWait::Waiting) {
+        if (cpp_scripts_.compiling()) return true;  // Play otra vez mientras compila
+        cpp_play_wait_ = CppPlayWait::None;          // su resultado lo recogio otro (exportar, MCP sync)
+    }
+    if (!cpp_scripts_.compiling()) {
+        // (Recorre Assets: el resultado vale para startCppScripts, sin repetirlo.)
+        if (!cpp_scripts_.hasSources() || cpp_scripts_.upToDate()) {
+            cpp_play_wait_ = CppPlayWait::Compiled;
+            return false;
+        }
+        startCppCompile(" antes de Play");
+    }
+    cpp_play_wait_ = CppPlayWait::Waiting;
+    pushToast("Compilando los scripts de C++", "Play empieza al terminar; el editor sigue disponible", 0);
+    return true;
+}
+
 void EditorApp::startCppScripts() {
     cpp_scripts_.clearErrors();
-    if (cpp_scripts_.hasSources() && !cpp_scripts_.upToDate()) {
+    // Lo normal es que waitCppCompileBeforePlay ya haya compilado (sin parar
+    // el editor). Esto solo queda para un cambio entre esa compilacion y Play.
+    const bool compiled_for_play = cpp_play_wait_ == CppPlayWait::Compiled;
+    cpp_play_wait_ = CppPlayWait::None;
+    if (!compiled_for_play && cpp_scripts_.hasSources() && !cpp_scripts_.upToDate()) {
         // Al dar Play con cambios sin compilar: se espera (o se compila ya).
-        if (!cpp_scripts_.compiling()) cpp_scripts_.compileAsync();
-        std::cout << "[C++] Compilando los scripts antes de Play..." << std::endl;
+        if (!cpp_scripts_.compiling()) startCppCompile(" antes de Play");
         while (cpp_scripts_.compiling()) Sleep(20);
         cpp_last_check_ = -10.0;
         updateCppScripts();
@@ -640,7 +688,7 @@ void EditorApp::drawCVarsWindow() {
         }
         ImGui::TextUnformatted(cpp_scripts_.compiling() ? "Compilando..." : (cpp_status_.empty() ? "Sin scripts de C++ en Assets." : cpp_status_.c_str()));
         ImGui::BeginDisabled(cpp_scripts_.compiling() || !cpp_has_sources_);
-        if (ImGui::Button("Compilar ahora")) cpp_scripts_.compileAsync();
+        if (ImGui::Button("Compilar ahora")) startCppCompile("");
         ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button("Nuevo script C++")) createCppScriptAsset({}, world_.find(active_));

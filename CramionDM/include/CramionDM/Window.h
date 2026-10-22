@@ -67,6 +67,10 @@ public:
     void setTitle(const std::wstring&) {}
     void setCursorCaptured(bool captured) { cursor_captured_ = captured; }
     bool cursorCaptured() const { return cursor_captured_; }
+    // Sin cursor en Android: solo se recuerda (la misma llamada que en PC).
+    void setCursorConfined(bool confined) { cursor_confined_ = confined; }
+    bool cursorConfined() const { return cursor_confined_; }
+    void setCursorVisible(bool) {}
 
     // Vibracion corta (necesita el permiso VIBRATE en el manifiesto).
     void vibrate(int milliseconds);
@@ -101,6 +105,7 @@ private:
     bool focused_ = true;
     bool resumed_ = true;
     bool cursor_captured_ = false;
+    bool cursor_confined_ = false;
     float axes_[8] = {};
     float hat_x_ = 0.0f;
     float hat_y_ = 0.0f;
@@ -169,6 +174,12 @@ public:
 
     void setCursorCaptured(bool captured);
     bool cursorCaptured() const { return cursor_captured_; }
+    // Cursor confinado (visible, sin salir de la ventana: XGrabPointer con
+    // confine_to). Sin foco se suelta y al volver se encierra otra vez.
+    void setCursorConfined(bool confined);
+    bool cursorConfined() const { return cursor_confined_; }
+    // Ocultar el cursor sobre la ventana (sin capturarlo).
+    void setCursorVisible(bool visible);
 
     // --- Mandos (evdev: /dev/input/event*, hasta 4) ---
     // Se leen en pumpEvents sin bloquear y llegan como eventos Gamepad*
@@ -185,6 +196,7 @@ private:
     KeyMods currentMods(unsigned int state) const;
     void pollGamepads();
     static bool vibrationThunk(void* user, int pad, float low, float high, float seconds);
+    void applyPointer();  // cursor oculto y agarre del puntero segun el estado
 
     std::unique_ptr<EvdevGamepads> gamepads_;
     bool gamepads_background_ = false;
@@ -201,6 +213,8 @@ private:
     bool focused_ = true;
     bool maximized_ = false;
     bool cursor_captured_ = false;
+    bool cursor_confined_ = false;
+    bool cursor_visible_ = true;
     float last_x_ = 0.0f;
     float last_y_ = 0.0f;
     bool have_last_ = false;
@@ -312,6 +326,19 @@ public:
     void setCursorCaptured(bool captured, const RECT* client_region = nullptr);
     bool cursorCaptured() const { return cursor_captured_; }
 
+    // --- Cursor confinado (Confined de Unity: estrategia, MOBA...) ---
+    // El cursor sigue visible y se mueve normal, pero no sale de la ventana
+    // (o de `client_region`, en pixeles del area cliente: la vista Juego del
+    // editor). Se vuelve a calcular al mover o redimensionar la ventana; sin
+    // foco se suelta y al recuperarlo se encierra otra vez. La captura manda
+    // si estan las dos. Llamarlo cada frame con el mismo rectangulo no hace nada.
+    void setCursorConfined(bool confined, const RECT* client_region = nullptr);
+    bool cursorConfined() const { return cursor_confined_; }
+    // Oculta el cursor mientras la ventana tiene el foco (Cursor.visible =
+    // false de Unity). La captura lo oculta siempre.
+    void setCursorVisible(bool visible);
+    bool cursorVisible() const { return cursor_visible_; }
+
     // --- Mandos (hasta 4) ---
     // XInput (xinput1_4.dll cargada al vuelo: sin ella no hay mandos XInput,
     // pero la ventana funciona) y DualShock 4 / DualSense por HID (raw
@@ -326,6 +353,8 @@ public:
     bool setGamepadVibration(int pad, float low, float high, float seconds = 0.0f);
 
 private:
+    // El rectangulo (en pantalla) en el que se encierra el cursor confinado.
+    bool confineScreenRect(RECT& out) const;
     struct Gamepads;
     std::unique_ptr<Gamepads> gamepads_;
     bool gamepads_background_ = false;
@@ -367,7 +396,12 @@ private:
     bool haveLastMouse_ = false;
 
     void applyCursorClip();
+    void updateCursorShown();  // ShowCursor segun captura, visible y foco
     bool cursor_captured_ = false;
+    bool cursor_confined_ = false;
+    bool cursor_visible_ = true;
+    bool has_confine_rect_ = false;
+    RECT confine_rect_{};
     bool cursor_hidden_ = false;
     bool raw_input_registered_ = false;
     bool has_capture_rect_ = false;

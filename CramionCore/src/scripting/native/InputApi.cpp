@@ -185,7 +185,37 @@ void registerDevices(Runtime& rt) {
         },
         {"true", "captura el raton (primera persona); false lo suelta"});
     n.function("Input.isCursorLocked", [&rt](api::Call&) { return api::Value(rt.cursor_locked); },
-               {"", "esta capturado?", "bool"});
+               {"", "esta capturado ahora? (false tras Escape en el editor o sin foco)", "bool"});
+    // Modo del cursor como Cursor.lockState de Unity: "none", "locked"
+    // (= lockCursor(true)) o "confined" (visible, sin salir de la ventana;
+    // en el editor, de la vista Juego). Escape en el editor lo suelta hasta
+    // el proximo clic en la vista; al perder el foco se suelta solo.
+    n.function(
+        "Input.setCursorLockMode",
+        [&rt](api::Call& c) {
+            CursorLockMode mode = CursorLockMode::None;
+            const api::Value& v = c.arg(0);
+            const std::string text = v.isNumber() ? std::to_string(static_cast<long long>(v.asNumber())) : c.string(0, "none");
+            if (!parseCursorLockMode(text, mode)) {
+                throw api::Error("Input.setCursorLockMode: modo desconocido \"" + text + "\" (none, locked o confined)");
+            }
+            rt.cursor.request(mode);
+            rt.refreshCursor();
+            return api::Value{};
+        },
+        {"\"confined\"", "modo del cursor: \"none\" (libre), \"locked\" (oculto, en el centro) o \"confined\" (sin salir de la ventana)"});
+    n.function("Input.getCursorLockMode", [&rt](api::Call&) { return api::Value(std::string(cursorLockModeName(rt.cursor.requested()))); },
+               {"", "el modo que pidio el juego: \"none\", \"locked\" o \"confined\"", "texto"});
+    n.function(
+        "Input.setCursorVisible",
+        [&rt](api::Call& c) {
+            rt.cursor.setVisible(c.boolean(0, true));
+            rt.refreshCursor();
+            return api::Value{};
+        },
+        {"false", "muestra u oculta el cursor sobre el juego (Locked siempre lo oculta)"});
+    n.function("Input.isCursorVisible", [&rt](api::Call&) { return api::Value(rt.cursor.visible()); },
+               {"", "el juego pidio el cursor visible?", "bool"});
 
     // La interfaz del juego y el raton: un clic que empieza sobre la UI ya no
     // llega a Input.getMouseButton* ni a las acciones (UiSystem::filterGameInput);

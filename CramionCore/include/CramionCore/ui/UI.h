@@ -49,6 +49,12 @@ class Input;
 namespace cramion::ui {
 
 enum class ScaleMode : int { ConstantPixelSize = 0, ScaleWithScreen = 1 };
+// Como el Screen Match Mode del Canvas Scaler de uGUI. Expand: la resolucion
+// de referencia cabe entera en la pantalla (lo anclado a 1920x1080 nunca se
+// sale; sobra sitio por un lado). MatchWidthOrHeight: media logaritmica con
+// `match` (en pantallas de otra proporcion, un lado de la referencia se sale).
+// Shrink: la referencia cubre la pantalla (se recorta por un lado).
+enum class ScreenMatchMode : int { MatchWidthOrHeight = 0, Expand = 1, Shrink = 2 };
 enum class RenderMode : int { ScreenSpace = 0, WorldSpace = 1 };
 enum class HAlign : int { Left = 0, Center = 1, Right = 2 };
 enum class VAlign : int { Top = 0, Middle = 1, Bottom = 2 };
@@ -57,7 +63,8 @@ enum class LayoutType : int { Vertical = 0, Horizontal = 1, Grid = 2 };
 struct Canvas {
     core::Vec2 reference{1920.0f, 1080.0f};
     ScaleMode scale_mode = ScaleMode::ScaleWithScreen;
-    float match = 0.5f;  // 0 = ancho, 1 = alto
+    ScreenMatchMode match_mode = ScreenMatchMode::Expand;
+    float match = 0.5f;  // 0 = ancho, 1 = alto (solo con MatchWidthOrHeight)
     int sort_order = 0;
     // Mundo: un panel de reference / pixels_per_meter metros (por la escala de
     // la entidad), centrado en ella y de cara a su +Z (X derecha, Y arriba).
@@ -408,6 +415,12 @@ public:
     // on_drag_end) o entt::null.
     entt::entity draggedElement() const { return drag_active_ ? drag_source_ : entt::entity{entt::null}; }
     float scaleOf(entt::entity entity) const;  // escala de su Canvas
+    // UI.scale de los scripts: pixeles de la vista por unidad del Canvas de
+    // `entity` (el suyo o, si es un Canvas, el propio; entt::null = el primer
+    // Canvas de pantalla), con el tamano de la vista del ultimo update(). 1 si
+    // no hay. Para pasar pixeles (Input.mouse, un punto del mundo en
+    // pantalla) a unidades del Canvas: pixeles / escala.
+    float scaleFor(ecs::World& world, entt::entity entity) const;
     // Elemento visible mas arriba bajo un punto (seleccion en el editor).
     entt::entity pick(float x, float y) const;
     // Hay un control que se puede pulsar (Button, Slider, Toggle, InputField)
@@ -448,6 +461,7 @@ private:
     }
     // Lista abierta de un Dropdown: rectangulo de la opcion i (pixeles).
     UiRect dropdownItemRect(const UiRect& box, const Dropdown& d, int i) const;
+    float view_width_ = 0.0f;
     float view_height_ = 0.0f;
     float last_time_ = -1.0f;
     entt::entity open_dropdown_ = entt::null;
@@ -500,6 +514,11 @@ private:
 
 // Rectangulo de un RectTransform dentro del de su padre (unidades del Canvas).
 UiRect layoutRect(const RectTransform& rt, const UiRect& parent);
+
+// Escala de un Canvas de pantalla en una vista de width x height pixeles
+// (pixeles por unidad del Canvas). La raiz del Canvas mide width / escala x
+// height / escala unidades.
+float canvasScale(const Canvas& canvas, float width, float height);
 
 // Texto enriquecido troceado: cada trozo con su estilo. Lo usan el render de
 // la UI y quien quiera medir.

@@ -4,6 +4,19 @@
   lightmap de superficie, accesibilidad, mods, informe de cierres, job system y Linux.
 </p>
 
+<h3 id="v263">2.6.3: efectos nítidos y que no desaparecen en combate</h3>
+<p>
+  Respuesta a la petición de Keryan sobre VFX, imagen y nitidez. Ver el detalle en el <code>CHANGELOG.md</code>.
+</p>
+<ul>
+  <li><strong>Nitidez con TAA y escalado</strong>: el VFX Graph, las partículas, la lluvia y los sprites se dibujan con el jitter del TAA; una máscara reactiva (en el alfa de la imagen HDR) quita la estela en el TAA del motor y se pasa a FSR 3. CVars <code>render.taa.FrameWeight</code>, <code>render.taa.ReactiveWeight</code> y <code>render.taa.ReactiveStrength</code>. Samplers de VFX y Decals con anisotropía y sesgo de mips.</li>
+  <li><strong>Presupuesto de efectos</strong>: los terminados no cuentan, los grupos (<code>VfxGroup</code> o la raíz del prefab) se crean o se quitan enteros y los del jugador local (<code>local_player</code>) nunca se descartan. <code>Physics.raycast</code> con la opción <code>triggers</code>.</li>
+  <li><strong>Topes</strong>: ranuras de textura del VFX Graph (hasta 256) y mallas de partículas (128, pool que crece) que se sueltan cuando nadie las usa, con aviso en la consola y en el editor del efecto.</li>
+  <li><strong>Dibujo</strong>: halos aditivos con alfa 0, partículas de malla con su propio material, decals que tiñen la hierba y «Apartar hierba», fundido suave en lo opaco, una cinta por proyectil, colisiones fuera de la vista y KillBox en el mundo.</li>
+  <li><strong>Herramientas</strong>: recarga en caliente de <code>.crvfx</code> y de texturas con la misma ruta, número suelto en <code>shader_values</code>, 16 propiedades en los <code>.crshader</code>, compilación de C++ en segundo plano, MCP asíncrono (<code>cpp_compile_status</code>) y <code>force</code> que borra el autoguardado.</li>
+  <li><strong>Cursor</strong>: <code>Input.setCursorLockMode</code> («none», «locked», «confined») y <code>setCursorVisible</code>.</li>
+</ul>
+
 <h3 id="v262">2.6.2: streaming sin tirones, luces sin tope y editor rápido con escenas grandes</h3>
 <p>
   Novedad sobre la 2.5.1 (de la 2.5.2 a la 2.6.1 no se publicaron). Ver el detalle en el <code>CHANGELOG.md</code>.

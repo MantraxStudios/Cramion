@@ -75,6 +75,12 @@ vec4 surface_shading = vec4(0.0);
 // writeSurface (skinned.frag y surface.frag, de su registro por instancia).
 bool surface_receive_decals = true;
 
+// Hierba (grass.frag): los decals se prueban en la RAIZ de la brizna (xyz) y
+// como si la superficie mirara hacia arriba, asi la brizna entera toma el
+// color del decal del suelo en vez de taparlo; sin su normal map (rompia la
+// hoja). w = 1 activo.
+vec4 surface_decal_root = vec4(0.0);
+
 // --- Lightmaps (PLAN-LIGHTMAPS 2.6) ---
 // Donde cae el pixel en el atlas: xy = UV del atlas, z = capa (-1 = sin
 // lightmap). Los rellena setupLightmap (lightmap_common.glsl) en skinned.frag
@@ -233,13 +239,14 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
         uint i = word * 32u + uint(findLSB(bits));
         bits &= bits - 1u;
         mat4 world_to_decal = decals[i].world_to_decal;
-        vec3 p = (world_to_decal * vec4(world_position, 1.0)).xyz;
+        bool on_root = surface_decal_root.w > 0.5;
+        vec3 p = (world_to_decal * vec4(on_root ? surface_decal_root.xyz : world_position, 1.0)).xyz;
         if (any(greaterThan(abs(p), vec3(0.5)))) {
             continue;
         }
         vec4 axis = decals[i].axis;
         vec4 params = decals[i].params;
-        float facing = dot(n, axis.xyz);
+        float facing = dot(on_root ? vec3(0.0, 1.0, 0.0) : n, axis.xyz);
         if (facing < axis.w) {
             continue;
         }
@@ -279,7 +286,7 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
                 roughness = mix(roughness, clamp(material.x, 0.04, 1.0), a * material.y);
                 metallic = mix(metallic, material.z, a * material.y);
             }
-            if (channels.x >= 0.0 && material.w != 0.0) {
+            if (channels.x >= 0.0 && material.w != 0.0 && !on_root) {
                 // Normal map en el espacio de la caja: X = derecha de la imagen,
                 // +Z = arriba (v = 0.5 - z); verde hacia arriba (OpenGL/glTF),
                 // fuerza negativa = verde invertido (DirectX). Se apoya en la

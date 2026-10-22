@@ -32,7 +32,7 @@
 // siempre), gradientNoise(D), simplexNoise, fbmNoise, ridgedNoise, voronoi,
 // curlNoise, random, pcgHash (surface_common.glsl).
 //
-// Propiedades: float, range (min, max), color, vector (hasta 8 en total) y
+// Propiedades: float, range (min, max), color, vector (hasta 16 en total) y
 // texture (hasta 4). Se leen por su nombre en el codigo y se editan en el
 // material (.crmat) que usa el shader.
 
@@ -46,7 +46,7 @@
 namespace cramion::assets {
 
 inline constexpr const char* kSurfaceShaderExtension = ".crshader";
-inline constexpr int kMaxShaderValues = 8;    // float, range, color, vector
+inline constexpr int kMaxShaderValues = 16;   // float, range, color, vector (= gfx::kSurfaceParamCount)
 inline constexpr int kMaxShaderTextures = 4;  // texture
 
 enum class ShaderPropertyType { Float, Range, Color, Vector, Texture };

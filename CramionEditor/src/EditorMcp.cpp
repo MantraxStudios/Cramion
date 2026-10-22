@@ -46,6 +46,19 @@ struct ToolError : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+// Resultado de una compilacion de los scripts de C++ (cpp_compile con sync y
+// cpp_compile_status): errores (archivo:linea), fallos en Play y clases.
+nlohmann::json cppCompileJson(const scripting::CppCompileResult& r, const scripting::CppScriptSystem& scripts) {
+    using json = nlohmann::json;
+    json errors = json::array();
+    for (const scripting::ScriptError& e : r.errors) errors.push_back(json{{"file", e.file}, {"line", e.line}, {"message", e.message}});
+    json runtime = json::array();
+    for (const scripting::ScriptError& e : scripts.errors()) runtime.push_back(json{{"file", e.file}, {"line", e.line}, {"message", e.message}});
+    return json{{"ok", r.ok}, {"nothing_to_compile", r.nothing_to_compile}, {"compiler", r.compiler}, {"seconds", r.seconds},
+                {"errors", errors}, {"runtime_errors", runtime}, {"classes", scripts.classes()},
+                {"log", r.ok ? std::string() : r.log.substr(0, 4000)}};
+}
+
 std::string base64(const std::vector<std::uint8_t>& data) {
     static const char* table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string out;
@@ -186,9 +199,16 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"cvar_set", "Cambia una CVar (o la vuelve a su valor por defecto con reset). Las 'guardadas' se escriben en ProjectSettings/CVars.json.",
                      {{"name", prop("string", "Nombre (p. ej. script.cpp.TimeoutMs)")}, {"value", prop("string", "Valor nuevo")},
                       {"reset", prop("boolean", "Volver al valor por defecto")}}, {"name"}});
-        d.push_back({"cpp_compile", "Scripts de C++ (Assets/**/*.cpp, aislados en un proceso aparte): compila ahora y devuelve los errores (archivo:linea), las clases y los fallos en Play. Con 'create' crea un script nuevo desde la plantilla (y con 'entity' se lo pone).",
+        d.push_back({"cpp_compile", "Scripts de C++ (Assets/**/*.cpp, aislados en un proceso aparte): lanza la compilacion EN SEGUNDO PLANO y responde al momento "
+                                    "con {status:'compiling', job}; el editor sigue funcionando. El resultado (errores archivo:linea, clases, fallos en Play) "
+                                    "se pide con cpp_compile_status hasta status 'done'. Con 'create' crea un script nuevo desde la plantilla (y con 'entity' se lo pone).",
                      {{"create", prop("string", "Nombre de la clase de un script nuevo (Assets/Scripts/<Nombre>.h y .cpp)")}, {"entity", entity},
-                      {"ask_name", prop("boolean", "Abrir la ventana del editor que pide el nombre")}}, {}});
+                      {"ask_name", prop("boolean", "Abrir la ventana del editor que pide el nombre")},
+                      {"sync", prop("boolean", "Esperar al resultado (bloquea el editor; mas de 120 s acaba en 504). Por defecto false")}}, {}});
+        d.push_back({"cpp_compile_status", "Estado de la compilacion de los scripts de C++: status 'compiling' (con elapsed en s), 'idle' o 'done' "
+                                           "(con ok, errors, runtime_errors, classes, seconds y log de la ultima terminada, done_job). "
+                                           "play_pending: Play espera a que termine.",
+                     json::object(), {}});
         d.push_back({"cpp_intellisense", "IntelliSense de C++ (clangd) en el editor: abre el archivo en el editor de codigo (opcionalmente con otro texto, sin guardar), y devuelve el estado de clangd, los errores/avisos y las sugerencias e informacion en una posicion (linea y columna desde 1).",
                      {{"file", prop("string", "Archivo dentro de Assets (p. ej. Scripts/Jugador.cpp)")}, {"text", prop("string", "Texto a poner en la pestana (sin guardar)")},
                       {"line", prop("integer", "Linea (desde 1) para sugerencias e informacion")}, {"column", prop("integer", "Columna (desde 1)")},
@@ -408,7 +428,9 @@ const std::vector<ToolDef>& toolDefs() {
                       {"name", prop("string", "Nombre del paquete (por defecto el de la primera escena)")},
                       {"async", prop("boolean", "true: exporta en segundo plano con la ventana de progreso del editor (el resultado sale en la Consola)")}}, {"file"}});
         d.push_back({"save_scene", "Guarda la escena (en su archivo o en el que se indique).", {{"path", prop("string", "Ruta dentro de Assets (opcional, p. ej. Scenes/Nivel1.crscene)")}}, {}});
-        d.push_back({"play", "Entra en modo Play (el juego corre en el editor).", json::object(), {}});
+        d.push_back({"play", "Entra en modo Play (el juego corre en el editor). No espera: si hay scripts de C++ por compilar responde "
+                             "mode 'starting' y Play entra solo al terminar (mira get_editor_state.mode o cpp_compile_status). stop lo cancela.",
+                     json::object(), {}});
         d.push_back({"export_game", "Exporta el juego con la configuracion de compilacion activa (en segundo plano: ver export_status). "
                                     "Con platform android sale un APK/AAB; install lo instala y abre en el dispositivo por adb.",
                      {{"folder", prop("string", "Carpeta de destino (fuera del proyecto)")},
@@ -499,7 +521,7 @@ const std::vector<ToolDef>& toolDefs() {
                       {"display_name", prop("string", "Nombre visible")}, {"description", prop("string", "Descripcion")}, {"author", prop("string", "Autor")},
                       {"dependencies", prop("object", "{identificador: version minima}")}, {"changelog", prop("string", "Cambios de esta version")},
                       {"level", prop("string", "Compresion: fast, normal (por defecto) o max")}}, {"folder", "output", "name", "version"}});
-        d.push_back({"create_vfx", "Crea un efecto del VFX Graph (.crvfx) desde una plantilla (Chispas, Fuego, Humo, Chispas que rebotan, Explosion, Magia, Luciernagas, Nieve, Lluvia, Estela, Estela (cinta), Estela de proyectil; o su indice 0..11) o desde 'graph' (el JSON del .crvfx: capacity, world_space, duration, loop, params, spawn/initialize/update/output_blocks [{type, values{campo: valor}, bind{campo: parametro}}], output{type Quads/Ribbon/Mesh, orient, blend, intensity, texture, flip_blend, ribbon_facing Camera/Emitter/CustomFacing/CustomSide, ribbon_vector, ribbon_uv Stretch/Tile(Distance)/Age, ribbon_tile, ribbon_uv_scale, ribbon_uv_offset, ribbon_subdivisions 1..16, ribbon_tension, ribbon_adaptive, ribbon_atlas_cell...; malla: mesh (uuid del modelo), mesh_orient Random/Velocity/Fixed/Camera, mesh_rotation [x,y,z,w] (Fixed), mesh_scale, mesh_scale_jitter [0..1 x3], mesh_variants [uuid, hasta 3], mesh_lod_distance (m por nivel; 0 = bloque MeshIndex), mesh_sprite_distance (m; quad mas lejos), material (uuid .crmat: opaco/transparente, color, emision); blend Additive/Alpha/Premultiplied/Distortion/Opaque, distortion (px a 1080p, 0..5; textura = normal map), distortion_height}; bloque Initialize MeshIndex {min, max}; bloque Update AngularVelocity {acceleration, drag, roll (grados)}; bloque Initialize RibbonAttributes {id, strands, width, twist_min, twist_max, spacing}; bloque Output ParticleLight {lightEnabled, lightRadius, lightIntensity, falloff 0 fisica/1 lineal, exponent, maxLights, priority 0 intensidad x alcance/1 distancia, affectsTranslucent}). output_type: Sprite, Ribbon o Mesh. light: las particulas tambien iluminan (anade o cambia el bloque ParticleLight). attach_to: le pone el componente Visual Effect.",
+        d.push_back({"create_vfx", "Crea un efecto del VFX Graph (.crvfx) desde una plantilla (Chispas, Fuego, Humo, Chispas que rebotan, Explosion, Magia, Luciernagas, Nieve, Lluvia, Estela, Estela (cinta), Estela de proyectil; o su indice 0..11) o desde 'graph' (el JSON del .crvfx: capacity, world_space, duration, loop, params, spawn/initialize/update/output_blocks [{type, values{campo: valor}, bind{campo: parametro}}], output{type Quads/Ribbon/Mesh, orient, blend, intensity, texture, flip_blend, ribbon_facing Camera/Emitter/CustomFacing/CustomSide, ribbon_vector, ribbon_uv Stretch/Tile(Distance)/Age, ribbon_tile, ribbon_uv_scale, ribbon_uv_offset, ribbon_subdivisions 1..16, ribbon_tension, ribbon_adaptive, ribbon_atlas_cell...; malla: mesh (uuid del modelo), mesh_orient Random/Velocity/Fixed/Camera, mesh_rotation [x,y,z,w] (Fixed), mesh_scale, mesh_scale_jitter [0..1 x3], mesh_variants [uuid, hasta 3], mesh_lod_distance (m por nivel; 0 = bloque MeshIndex), mesh_sprite_distance (m; quad mas lejos), material (uuid .crmat: opaco/transparente, color, emision), mesh_output_texture (true: la textura de la salida con la UV de la malla; sin el y sin material, color y textura base del modelo); blend Additive/Alpha/Premultiplied/Distortion/Opaque, distortion (px a 1080p, 0..5; textura = normal map), distortion_height}; bloque Initialize MeshIndex {min, max}; bloque Update AngularVelocity {acceleration, drag, roll (grados)}; bloque Initialize RibbonAttributes {id, strands, width, twist_min, twist_max, spacing}; bloque Output ParticleLight {lightEnabled, lightRadius, lightIntensity, falloff 0 fisica/1 lineal, exponent, maxLights, priority 0 intensidad x alcance/1 distancia, affectsTranslucent}). output_type: Sprite, Ribbon o Mesh. light: las particulas tambien iluminan (anade o cambia el bloque ParticleLight). attach_to: le pone el componente Visual Effect.",
                      {{"name", prop("string", "Nombre del archivo")}, {"folder", prop("string", "Carpeta dentro de Assets (Efectos)")}, {"preset", prop("string", "Plantilla")},
                       {"graph", prop("object", "JSON del .crvfx")}, {"output_type", prop("string", "Sprite, Ribbon o Mesh")},
                       {"flip_blend", prop("boolean", "Fundir los cuadros del flipbook")},
@@ -539,7 +561,7 @@ giros en grados (Euler, orden YXZ como Unity).
 1. editor_state (hay proyecto abierto?). Si no: list_projects y open_project / create_project.
 2. list_entities para ver la escena; get_entity para los detalles.
 3. Crea/cambia con create_entity, modify_entity, set_component (list_component_types da los campos).
-4. Logica: create_script (C++) y engancharlo (attach_to); cpp_compile da los errores. Aspecto: create_material / create_shader.
+4. Logica: create_script (C++) y engancharlo (attach_to); cpp_compile compila en segundo plano y cpp_compile_status da los errores. Aspecto: create_material / create_shader.
 5. Prueba con play, get_console (errores), screenshot; stop. Guarda con save_scene.
 
 ## Scripts de C++ (Assets/Scripts/*.cpp; la clase se llama como el archivo)
@@ -795,6 +817,8 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
             j["scene_file"] = a.scene_path_.empty() ? json(nullptr) : json(a.assetRelative(a.scene_path_));
             j["unsaved_changes"] = a.dirty_;
             j["mode"] = a.play_state_ == EditorApp::PlayState::Edit ? "edit" : a.play_state_ == EditorApp::PlayState::Playing ? "play" : "paused";
+            j["cpp_compiling"] = a.cpp_scripts_.compiling();
+            j["play_pending"] = a.pending_play_ || a.cpp_play_wait_ == EditorApp::CppPlayWait::Waiting;
             j["entities"] = a.world_.entityCount();
             json selection = json::array();
             for (const ecs::Entity e : a.selectedEntities()) selection.push_back(json{{"uuid", e.uuid().toString()}, {"name", e.name()}});
@@ -819,6 +843,7 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
     }
     if (name == "open_project") {
         if (a.has_project_ && unsavedBlocks(args)) throw ToolError("hay cambios sin guardar: save_scene o force=true");
+        if (a.has_project_ && args.value("force", false)) a.forceDiscardUnsaved(a.scene_path_);
         if (args.value("show_loading", false)) {
             // Como el Hub: por etapas con el dialogo de carga (vuelve enseguida).
             a.beginOpenProject(dialogs::fromUtf8(arg(args, "path")));
@@ -829,6 +854,7 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
     }
     if (name == "create_project") {
         if (a.has_project_ && unsavedBlocks(args)) throw ToolError("hay cambios sin guardar: save_scene o force=true");
+        if (a.has_project_ && args.value("force", false)) a.forceDiscardUnsaved(a.scene_path_);
         const std::string template_id = arg(args, "template", "blank");
         ProjectTemplate chosen;
         bool found = false;
@@ -975,9 +1001,24 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
                 a.commit();
             }
         }
+        // Lo de siempre: en segundo plano, sin parar el editor. La respuesta
+        // sale al momento con el numero de la compilacion; el resultado, con
+        // cpp_compile_status. Antes esperaba en el hilo principal y una
+        // compilacion de mas de 120 s acababa en 504 aunque terminara bien.
+        if (!args.value("sync", false)) {
+            const bool already = a.cpp_scripts_.compiling();
+            if (!already) a.cpp_attempted_ = a.cpp_scripts_.newestSourceTime();
+            const std::uint64_t job = a.startCppCompile(" (MCP)");
+            return json{{"status", "compiling"}, {"job", job}, {"already_running", already},
+                        {"next", "pregunta con cpp_compile_status hasta que status sea 'done' (y done_job >= job)"}};
+        }
         while (a.cpp_scripts_.compiling()) Sleep(20);
         a.cpp_scripts_.takeCompileResult();
         const scripting::CppCompileResult r = a.cpp_scripts_.compile();
+        a.cpp_last_result_ = r;
+        a.cpp_compile_done_job_ = ++a.cpp_compile_job_;
+        a.cpp_compile_started_ = -1.0;
+        const bool play_after = a.cpp_play_wait_ == EditorApp::CppPlayWait::Waiting;
         a.cpp_compile_errors_ = r.errors;
         a.cpp_attempted_ = a.cpp_scripts_.newestSourceTime();
         a.cpp_status_ = r.nothing_to_compile ? std::string()
@@ -990,13 +1031,32 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
             a.cpp_scripts_.setBuildFolder(a.project_.libraryFolder() / "CppScripts");
             if (a.playing()) a.cpp_scripts_.reload();
         }
-        json errors = json::array();
-        for (const scripting::ScriptError& e : r.errors) errors.push_back(json{{"file", e.file}, {"line", e.line}, {"message", e.message}});
-        json runtime = json::array();
-        for (const scripting::ScriptError& e : a.cpp_scripts_.errors()) runtime.push_back(json{{"file", e.file}, {"line", e.line}, {"message", e.message}});
-        return json{{"ok", r.ok}, {"nothing_to_compile", r.nothing_to_compile}, {"compiler", r.compiler}, {"seconds", r.seconds},
-                    {"errors", errors}, {"runtime_errors", runtime}, {"classes", a.cpp_scripts_.classes()},
-                    {"log", r.ok ? std::string() : r.log.substr(0, 4000)}};
+        if (play_after) {  // Play esperaba a la compilacion que se acaba de recoger
+            a.cpp_play_wait_ = EditorApp::CppPlayWait::Compiled;
+            a.enterPlay();
+        }
+        json out = cppCompileJson(r, a.cpp_scripts_);
+        out["status"] = "done";
+        return out;
+    }
+    if (name == "cpp_compile_status") {
+        needProject();
+        json out{{"job", a.cpp_compile_job_}, {"done_job", a.cpp_compile_done_job_},
+                 {"play_pending", a.cpp_play_wait_ == EditorApp::CppPlayWait::Waiting}};
+        // (Terminada pero aun sin recoger: el editor la recoge en este mismo frame.)
+        if (a.cpp_scripts_.compiling() || a.cpp_compile_done_job_ < a.cpp_compile_job_) {
+            out["status"] = "compiling";
+            out["elapsed"] = a.cpp_compile_started_ >= 0.0 ? ImGui::GetTime() - a.cpp_compile_started_ : 0.0;
+            return out;
+        }
+        if (!a.cpp_last_result_) {
+            out["status"] = "idle";
+            return out;
+        }
+        json result = cppCompileJson(*a.cpp_last_result_, a.cpp_scripts_);
+        result.update(out);
+        result["status"] = "done";
+        return result;
     }
     if (name == "cpp_intellisense") {
         needProject();
@@ -2462,6 +2522,7 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
     if (name == "new_scene") {
         if (a.playing()) a.exitPlay();
         if (unsavedBlocks(args)) throw ToolError("hay cambios sin guardar: save_scene o force=true");
+        if (args.value("force", false)) a.forceDiscardUnsaved({});
         a.newScene();
         return json{{"scene", a.world_.sceneName()}};
     }
@@ -2470,6 +2531,7 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (unsavedBlocks(args)) throw ToolError("hay cambios sin guardar: save_scene o force=true");
         const auto info = findAsset(arg(args, "scene"));
         if (!info || info->type != assets::AssetType::Scene) throw ToolError("no existe la escena " + arg(args, "scene"));
+        if (args.value("force", false)) a.forceDiscardUnsaved(info->path);  // sin autoguardado ni dialogo de recuperar
         if (!a.openScene(info->path)) throw ToolError("no se pudo abrir la escena");
         return json{{"scene", a.world_.sceneName()}, {"entities", a.world_.entityCount()}};
     }
@@ -2574,11 +2636,18 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         return json{{"running", false}, {"message", a.export_message_}};
     }
     if (name == "play") {
+        // No espera: con scripts de C++ por compilar, Play entra al terminar
+        // (mode "starting"; get_editor_state o cpp_compile_status lo dicen).
         if (!a.playing()) a.enterPlay();
-        return json{{"mode", "play"}};
+        if (a.playing()) return json{{"mode", "play"}};
+        if (a.cpp_play_wait_ == EditorApp::CppPlayWait::Waiting) {
+            return json{{"mode", "starting"}, {"waiting_for", "cpp_compile"}, {"job", a.cpp_compile_job_},
+                        {"next", "Play entra solo al terminar de compilar: mira get_editor_state (mode) o cpp_compile_status"}};
+        }
+        return json{{"mode", a.pending_play_ ? "starting" : "edit"}};
     }
     if (name == "stop") {
-        if (a.playing()) a.exitPlay();
+        a.exitPlay();  // (sin Play: cancela el que esperaba a compilar)
         return json{{"mode", "edit"}};
     }
     if (name == "pause") {

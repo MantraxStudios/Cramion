@@ -101,6 +101,23 @@ int main(int argc, char** argv) {
     check(parse_error("void vertex(inout Vertex v) {}").find("surface") != std::string::npos, "falta surface()");
     check(parse_error("property float a\nproperty float a\nvoid surface(inout Surface s) {}").find(":2:") != std::string::npos,
           "propiedad repetida");
+    {
+        // E11: 16 propiedades de numeros valen; la 17.a da un error que nombra
+        // el shader, la propiedad y el limite (antes: 8 y un error de glslang).
+        std::string sixteen, seventeen;
+        for (int i = 0; i < 17; ++i) {
+            const std::string line = "property float p" + std::to_string(i) + " = 1\n";
+            if (i < 16) sixteen += line;
+            seventeen += line;
+        }
+        sixteen += "void surface(inout Surface s) {}";
+        seventeen += "void surface(inout Surface s) {}";
+        const std::string too_many = parse_error(seventeen.c_str());
+        check(parse_error(sixteen.c_str()).empty(), "16 propiedades de numeros", parse_error(sixteen.c_str()));
+        check(too_many.find("Malo.crshader:17:") == 0 && too_many.find("p16") != std::string::npos &&
+                  too_many.find("16") != std::string::npos,
+              "la 17.a propiedad: error claro con shader, linea y limite", too_many);
+    }
 
     std::printf("Montar y compilar (shaderc)\n");
     std::string vertex_glsl, fragment_glsl;

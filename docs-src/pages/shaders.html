@@ -54,7 +54,7 @@ void vertex(inout Vertex v) {
   </tbody>
 </table>
 <p>
-  Como mucho 8 propiedades de números (float, range, color, vector) y 4 texturas. Los valores se cambian en vivo desde el
+  Como mucho 16 propiedades de números (float, range, color, vector) y 4 texturas. Los valores se cambian en vivo desde el
   material sin recompilar nada. Clic derecho sobre una propiedad: <em>Valor por defecto</em>.
 </p>
 
@@ -195,7 +195,7 @@ void surface(inout Surface s) {
 <ul>
   <li>Las <strong class="text-white">sombras</strong> y la selección con el ratón usan la forma original: lo que muevas en <code>vertex()</code> no cambia la sombra.</li>
   <li>Materiales opacos (con recortes por <code>s.alpha</code>). El modo <em>Transparente</em> del material no usa el shader propio.</li>
-  <li>8 propiedades de números y 4 texturas por shader.</li>
+  <li>16 propiedades de números y 4 texturas por shader.</li>
   <li>El shader se compila al usarse la primera vez (unas décimas de segundo). El juego exportado lleva el compilador (<code>shaderc_shared.dll</code>) y los compila igual.</li>
 </ul>
 <div class="note">

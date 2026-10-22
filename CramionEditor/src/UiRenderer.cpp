@@ -78,7 +78,9 @@ void drawPiece(ImDrawList* draw, const Piece& p, ImVec2 pos, float outline, ImU3
         if (p.fake_bold) draw->AddText(p.font, p.size, ImVec2(at.x + std::max(p.size * 0.04f, 0.6f), at.y), col, begin, end);
         if (p.italic) shear(draw, first, baseline + (at.y - pos.y), 0.2f);
     };
-    if (shadow) emit(ImVec2(pos.x + p.size * 0.06f, pos.y + p.size * 0.06f), IM_COL32(0, 0, 0, 170));
+    // La sombra se desvanece con el texto (antes quedaba opaca con alpha 0).
+    const ImU32 shadow_alpha = ((p.color >> IM_COL32_A_SHIFT) & 0xFFu) * 170u / 255u;
+    if (shadow) emit(ImVec2(pos.x + p.size * 0.06f, pos.y + p.size * 0.06f), IM_COL32(0, 0, 0, shadow_alpha));
     if (outline > 0.0f) {
         const int steps = outline > 2.5f ? 16 : 8;
         for (int k = 0; k < steps; ++k) {
@@ -288,7 +290,12 @@ void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCom
                         bold = nullptr;  // con fuente propia la negrita se simula
                     }
                 }
-                const bool simple = !c.rich && !c.bold && !c.italic && c.outline <= 0.0f && c.line_spacing == 1.0f;
+                // Varias lineas (ajuste o saltos) centradas o a la derecha: cada
+                // linea se alinea sola en drawText (AddText las deja todas a la
+                // izquierda del bloque: un texto centrado con wrap salia torcido).
+                const bool multiline = c.wrap || c.text.find('\n') != std::string::npos;
+                const bool simple = !c.rich && !c.bold && !c.italic && c.outline <= 0.0f && c.line_spacing == 1.0f &&
+                                    (c.h_align == 0 || !multiline);
                 if (simple) {
                     const float size = std::max(c.font_size, 1.0f);
                     const float wrap = c.wrap ? c.rect.w : 0.0f;
@@ -300,7 +307,7 @@ void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCom
                     if (c.v_align == 1) y += (c.rect.h - text_size.y) * 0.5f;
                     if (c.v_align == 2) y += c.rect.h - text_size.y;
                     if (c.shadow) {
-                        draw->AddText(regular, size, ImVec2(x + size * 0.06f, y + size * 0.06f), IM_COL32(0, 0, 0, 170),
+                        draw->AddText(regular, size, ImVec2(x + size * 0.06f, y + size * 0.06f), IM_COL32(0, 0, 0, static_cast<int>(170.0f * std::clamp(c.color.w, 0.0f, 1.0f))),
                                       c.text.c_str(), nullptr, wrap);
                     }
                     draw->AddText(regular, size, ImVec2(x, y), color, c.text.c_str(), nullptr, wrap);

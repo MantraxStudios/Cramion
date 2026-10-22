@@ -55,6 +55,9 @@ struct Actor {
     float emission_scale = 1.0f;
     // false: los decals no lo pintan (personajes bajo el indicador de un area).
     bool receive_decals = true;
+    // Con opacidad < 1, fundido suave (mezcla alfa en la pasada de los
+    // transparentes) en lugar de la disolucion por tramado (MeshRenderer.smooth_fade).
+    bool smooth_fade = false;
     // Datos propios de la instancia (MeshRenderer.instance_data): los lee el
     // .crshader con INSTANCE_DATA(0) e INSTANCE_DATA(1).
     core::Vec4 instance_data[2]{};

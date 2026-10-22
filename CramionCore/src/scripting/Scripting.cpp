@@ -58,6 +58,19 @@ cvar::CVar<float> g_scripts_budget("scripts.BudgetMs", 2.0f,
                                    "Tiempo maximo de los scripts por frame (ms) antes de avisar (0 = sin aviso)",
                                    cvar::Saved, 0.0f, 100.0f);
 
+// Modo del cursor al empezar el juego (sin codigo: un juego de estrategia
+// Confined, uno en primera persona Locked). Los scripts lo cambian despues.
+cvar::CVar<std::string> g_cursor_lock_mode("input.CursorLockMode", "none",
+                                           "Modo del cursor al empezar el juego: none, confined (no sale de la ventana) o "
+                                           "locked (oculto y en el centro)",
+                                           cvar::Saved);
+// En el juego exportado Escape no suelta el cursor (como en Unity): el juego
+// decide (menu de pausa...). Con esto, Escape lo suelta hasta el proximo clic.
+cvar::CVar<bool> g_escape_releases_cursor("input.EscapeReleasesCursor", false,
+                                          "Juego exportado: Escape suelta el cursor confinado o capturado hasta el proximo clic "
+                                          "(en el editor siempre)",
+                                          cvar::Saved);
+
 // Zonas del perfilador (dentro de "Scripts"), una por fase del frame.
 constexpr std::array<const char*, kPhaseCount> kPhaseZones = {
     "Red y HTTP", "Gameplay", "Entrada", "Eventos", "Visual Scripts", "IA", "LateUpdate", "Envio de red",
@@ -365,9 +378,25 @@ bool ScriptSystem::Impl::gamepadButton(const std::string& name, dm::GamepadButto
 }
 
 void ScriptSystem::Impl::lockCursor(bool on) {
-    if (on == cursor_locked) return;
-    cursor_locked = on;
-    if (cursor_lock) cursor_lock(on);
+    // lockCursor(false) con Confined pedido tambien lo suelta (vuelve a None).
+    if (!on && cursor.requested() == CursorLockMode::None) return;
+    cursor.request(on ? CursorLockMode::Locked : CursorLockMode::None);
+    refreshCursor();
+}
+
+void ScriptSystem::Impl::refreshCursor() {
+    const CursorLockMode mode = cursor.effective();
+    const bool hidden = cursor.hidden();
+    const bool locked = mode == CursorLockMode::Locked;
+    if (locked != cursor_locked) {
+        cursor_locked = locked;
+        if (cursor_lock) cursor_lock(locked);
+    }
+    if (mode != cursor_applied || hidden != cursor_applied_hidden) {
+        cursor_applied = mode;
+        cursor_applied_hidden = hidden;
+        if (cursor_mode) cursor_mode(mode, hidden);
+    }
 }
 
 void ScriptSystem::Impl::flushDestroys() {
@@ -450,8 +479,35 @@ void ScriptSystem::setXr(xr::XrSystem* system, const xr::XrRig* rig) {
     impl_->xr_rig = rig;
 }
 void ScriptSystem::setUi(ui::UiSystem* ui) { impl_->ui = ui; }
+void ScriptSystem::setCursorMode(CursorModeCallback callback) { impl_->cursor_mode = std::move(callback); }
 bool ScriptSystem::cursorLocked() const { return impl_->cursor_locked; }
-void ScriptSystem::releaseCursor() { impl_->lockCursor(false); }
+void ScriptSystem::releaseCursor() {
+    impl_->cursor.release();
+    impl_->refreshCursor();
+}
+CursorLockMode ScriptSystem::cursorLockMode() const { return impl_->cursor.requested(); }
+CursorLockMode ScriptSystem::effectiveCursorLockMode() const { return impl_->cursor.effective(); }
+bool ScriptSystem::cursorHidden() const { return impl_->cursor.hidden(); }
+void ScriptSystem::cursorFocus(bool focused) {
+    impl_->cursor.focus(focused);
+    impl_->refreshCursor();
+}
+void ScriptSystem::setCursorResumeOnFocus(bool on) { impl_->cursor.setResumeOnFocus(on); }
+void ScriptSystem::cursorViewActive(bool active) {
+    impl_->cursor.setViewActive(active);
+    impl_->refreshCursor();
+}
+void ScriptSystem::cursorClick() {
+    impl_->cursor.click();
+    impl_->refreshCursor();
+}
+void ScriptSystem::carryCursorToNextStart() {
+    Impl& d = *impl_;
+    if (!d.running) return;
+    d.cursor_carry = true;
+    d.cursor_carry_mode = d.cursor.requested();
+    d.cursor_carry_visible = d.cursor.visible();
+}
 void ScriptSystem::setLog(LogCallback log) { impl_->log = std::move(log); }
 
 std::filesystem::path ScriptSystem::takeSceneRequest() {
@@ -497,6 +553,23 @@ void ScriptSystem::start(ecs::World& world) {
     d.delta = 0.0f;
     d.frame = 0;
     d.warned_budget = false;
+    // El modo del cursor del proyecto (input.CursorLockMode); los scripts lo
+    // cambian en Awake/Start si quieren.
+    // Tras Scene.load sigue el modo que tenia el juego (como en Unity).
+    if (d.cursor_carry) {
+        d.cursor_carry = false;
+        d.cursor.request(d.cursor_carry_mode);
+        d.cursor.setVisible(d.cursor_carry_visible);
+        d.refreshCursor();
+    } else {
+        CursorLockMode mode = CursorLockMode::None;
+        if (!parseCursorLockMode(g_cursor_lock_mode.get(), mode)) {
+            std::cerr << "[Input] input.CursorLockMode: modo desconocido \"" << g_cursor_lock_mode.get()
+                      << "\" (none, confined o locked)" << std::endl;
+        }
+        d.cursor.request(mode);
+        d.refreshCursor();
+    }
     // Contextos del principio y las teclas que el jugador guardo.
     if (const auto saved = d.prefs.find(Impl::kBindingsPref); saved != d.prefs.end()) {
         d.actions.applyOverridesJson(saved->second);
@@ -577,7 +650,8 @@ void ScriptSystem::stop() {
     d.net_entities.clear();
     if (d.http) d.http->cancelAll();
     d.running = false;
-    d.lockCursor(false);  // el raton vuelve al sistema
+    d.cursor.reset();  // el raton vuelve al sistema (libre y visible)
+    d.refreshCursor();
 }
 
 void ScriptSystem::shutdownNetwork() {

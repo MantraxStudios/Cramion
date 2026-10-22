@@ -194,6 +194,9 @@ void EditorApp::enterPlay() {
         pending_play_ = true;
         return;
     }
+    // Scripts de C++ sin compilar: se compilan en segundo plano y Play entra
+    // al terminar (updateCppScripts). Antes el editor se quedaba parado.
+    if (waitCppCompileBeforePlay()) return;
     if (collider_handle_drag_ != 0 || light_handle_drag_ != 0) commit();
     flushCommit();
     collider_handle_drag_ = 0;
@@ -282,7 +285,11 @@ void EditorApp::enterPlay() {
 }
 
 void EditorApp::exitPlay() {
-    if (!playing()) return;
+    if (!playing()) {
+        // Parar mientras Play esperaba a compilar: ya no entra.
+        if (cpp_play_wait_ == CppPlayWait::Waiting) cpp_play_wait_ = CppPlayWait::None;
+        return;
+    }
     play_vr_ = false;
     if (play_switched_view_) {
         play_switched_view_ = false;

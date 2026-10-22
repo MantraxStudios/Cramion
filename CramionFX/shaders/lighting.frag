@@ -55,6 +55,10 @@ layout(set = 0, binding = 0) uniform CameraBuffer {
     mat4 view_projection;
     mat4 inverse_view_projection;
     vec4 position;
+    mat4 unjittered_view_projection;
+    mat4 previous_view_projection;
+    vec4 jitter;
+    uvec4 motion;  // z = 1: vista principal (el alfa es la mascara reactiva del TAA)
 } camera;
 
 layout(set = 0, binding = 1) uniform sampler2D g_albedo;
@@ -2006,5 +2010,8 @@ void main() {
     // del sol con el sol alto lo supera) y los filtros que lo leen (FSR, bloom)
     // lo convertian en NaN. Se limita aqui, en el origen.
     color = min(mix(color, vec3(0.0), isnan(color)), vec3(65504.0));
-    out_color = vec4(color, surface_distance);
+    // Vista principal: el alfa empieza a 0 y los transparentes acumulan en el
+    // su opacidad (mascara reactiva del TAA y de FSR 3). La distancia solo la
+    // usan las capturas de la sonda.
+    out_color = vec4(color, camera.motion.z == 1u ? 0.0 : surface_distance);
 }

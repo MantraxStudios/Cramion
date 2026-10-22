@@ -65,7 +65,7 @@ public:
         // Shader de superficie del usuario (-1 = el estandar) y sus
         // propiedades; editables en vivo como el color.
         std::int32_t surface_shader = -1;
-        std::array<core::Vec4, 8> surface_params{};
+        std::array<core::Vec4, asset::kSurfaceParamCount> surface_params{};
         // Tiling de las UV: xy = repeticion, zw = desplazamiento (lo mismo que
         // el binding SkinnedPass::kMaterialUvBinding de su set). Lo leen los
         // rayos.

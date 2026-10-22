@@ -613,6 +613,12 @@ void EditorApp::updateAutosave() {
 void EditorApp::checkAutosaveRecovery(const std::filesystem::path& scene) {
     if (!has_project_ || autosave_recovery_.pending) return;
     const std::filesystem::path file = SceneAutosave::fileFor(project_.libraryFolder(), project_.assetsFolder(), scene);
+    if (const auto skip = std::find(autosave_skip_recovery_.begin(), autosave_skip_recovery_.end(), file);
+        skip != autosave_skip_recovery_.end()) {
+        autosave_skip_recovery_.erase(skip);
+        autosave_.discard(file);  // descartado con force: no se pregunta
+        return;
+    }
     std::error_code ec;
     if (!std::filesystem::exists(file, ec)) return;
     if (!SceneAutosave::newerThanScene(file, scene)) {
@@ -675,6 +681,24 @@ void EditorApp::discardSceneAutosave() {
     if (!has_project_) return;
     autosave_.discard(autosave_.lastWritten());
     autosave_.discard(SceneAutosave::fileFor(project_.libraryFolder(), project_.assetsFolder(), scene_path_));
+}
+
+void EditorApp::forceDiscardUnsaved(const std::filesystem::path& next_scene) {
+    if (!has_project_) return;
+    if (autosave_recovery_.pending) {  // el aviso que ya estaba: se descarta como con su boton
+        autosave_.protect({});
+        autosave_.discard(autosave_recovery_.file);
+        autosave_recovery_ = {};
+    }
+    // (Al abrir la otra escena, el borrado aun puede estar en la cola: se marca.)
+    for (const std::filesystem::path& scene : {scene_path_, next_scene}) {
+        const std::filesystem::path file = SceneAutosave::fileFor(project_.libraryFolder(), project_.assetsFolder(), scene);
+        if (std::find(autosave_skip_recovery_.begin(), autosave_skip_recovery_.end(), file) == autosave_skip_recovery_.end()) {
+            autosave_skip_recovery_.push_back(file);
+        }
+    }
+    discardSceneAutosave();
+    dirty_ = false;
 }
 
 void EditorApp::drawAutosaveRecovery() {

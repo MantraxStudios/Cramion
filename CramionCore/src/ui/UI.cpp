@@ -197,7 +197,20 @@ void Canvas::reflect(ecs::PropertyVisitor& v) {
     if (v.wantsAllFields() || render_mode == RenderMode::ScreenSpace) {
         static constexpr std::array<const char*, 2> kModes = {"Pixeles constantes", "Escalar con la pantalla"};
         ecs::enumField(v, {"scale_mode", "Escalado"}, scale_mode, kModes);
-        v.field({"match", "Ajustar a", "0 = ancho, 1 = alto"}, match, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+        // Los nombres se guardan en la escena: no cambiarlos.
+        static constexpr std::array<const char*, 3> kMatch = {"Ajustar a ancho o alto", "Expandir (todo cabe)",
+                                                              "Encoger (cubre la pantalla)"};
+        if (v.wantsAllFields() || scale_mode == ScaleMode::ScaleWithScreen) {
+            ecs::enumField(v, {"match_mode", "Ajuste a la pantalla",
+                               "Expandir: la resolucion de referencia cabe entera (lo anclado nunca se sale de la pantalla). "
+                               "Ajustar a ancho o alto: con otra proporcion, un lado de la referencia se sale. "
+                               "Encoger: la referencia cubre la pantalla"},
+                           match_mode, kMatch);
+        }
+        if (v.wantsAllFields() || match_mode == ScreenMatchMode::MatchWidthOrHeight) {
+            v.field({"match", "Ajustar a", "0 = ancho, 1 = alto (con Ajustar a ancho o alto)"}, match,
+                    FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+        }
     }
     if (v.wantsAllFields() || render_mode == RenderMode::WorldSpace) {
         v.field({"pixels_per_meter", "Pixeles por metro",
@@ -382,6 +395,46 @@ UiRect layoutRect(const RectTransform& rt, const UiRect& parent) {
     return r;
 }
 
+float canvasScale(const Canvas& canvas, float width, float height) {
+    if (canvas.scale_mode != ScaleMode::ScaleWithScreen || canvas.reference.x <= 0.0f || canvas.reference.y <= 0.0f ||
+        width <= 0.0f || height <= 0.0f) {
+        return 1.0f;
+    }
+    const float sx = width / canvas.reference.x;
+    const float sy = height / canvas.reference.y;
+    switch (canvas.match_mode) {
+        case ScreenMatchMode::Expand: return std::min(sx, sy);  // la referencia cabe entera
+        case ScreenMatchMode::Shrink: return std::max(sx, sy);  // la referencia cubre la vista
+        case ScreenMatchMode::MatchWidthOrHeight: break;
+    }
+    // Media logaritmica entre ajustar al ancho y al alto (como uGUI).
+    const float lw = std::log2(sx);
+    const float lh = std::log2(sy);
+    return std::pow(2.0f, lw + (lh - lw) * std::clamp(canvas.match, 0.0f, 1.0f));
+}
+
+float UiSystem::scaleFor(ecs::World& world, entt::entity entity) const {
+    if (entity != entt::null) {
+        for (const Laid& l : laid_) {
+            if (l.entity == entity) return l.scale;
+        }
+    }
+    const entt::registry& r = world.registry();
+    // Su Canvas (el de mas arriba: los anidados se colocan con el padre).
+    const Canvas* canvas = nullptr;
+    if (entity != entt::null && r.valid(entity)) {
+        for (ecs::Entity p = world.wrap(entity); p.valid(); p = p.parent()) {
+            if (const Canvas* c = p.tryGet<Canvas>()) canvas = c;
+        }
+    }
+    if (canvas == nullptr && entity == entt::null) {
+        const std::vector<ecs::Entity> roots = rootCanvases(world, false);
+        if (!roots.empty()) canvas = &roots.front().get<Canvas>();
+    }
+    if (canvas == nullptr || canvas->render_mode == RenderMode::WorldSpace) return 1.0f;
+    return canvasScale(*canvas, view_width_, view_height_);
+}
+
 void UiSystem::reset() {
     laid_.clear();
     draw_.clear();
@@ -458,6 +511,7 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
     laid_.clear();
     draw_.clear();
     if (width <= 0.0f || height <= 0.0f) return;
+    view_width_ = width;
     view_height_ = height;
     const float dt = last_time_ < 0.0f ? 0.0f : std::clamp(time - last_time_, 0.0f, 0.1f);
     last_time_ = time;
@@ -467,16 +521,22 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
 
 
     for (const ecs::Entity& canvas_entity : canvases) {
-        const Canvas& canvas = canvas_entity.get<Canvas>();
-        float scale = 1.0f;
-        if (canvas.scale_mode == ScaleMode::ScaleWithScreen && canvas.reference.x > 0.0f && canvas.reference.y > 0.0f) {
-            // Media logaritmica entre ajustar al ancho y al alto (como uGUI).
-            const float lw = std::log2(width / canvas.reference.x);
-            const float lh = std::log2(height / canvas.reference.y);
-            scale = std::pow(2.0f, lw + (lh - lw) * std::clamp(canvas.match, 0.0f, 1.0f));
-        }
+        // La raiz es toda la vista en unidades del Canvas: las anclas van a
+        // los bordes de la vista (no a los de la resolucion de referencia).
+        const float scale = canvasScale(canvas_entity.get<Canvas>(), width, height);
         const UiRect root{0.0f, 0.0f, width / scale, height / scale};
         layoutCanvas(world, canvas_entity, root, scale, laid_);
+    }
+    // El campo con el foco se oculto (setActive(false) suyo o de un padre),
+    // se borro o dejo de responder: pierde el foco. Si no, UI.isTyping seguia
+    // en true y el teclado no volvia al juego.
+    if (focused_ != entt::null) {
+        UiRect unused;
+        const InputField* f = world.registry().valid(focused_) ? world.registry().try_get<InputField>(focused_) : nullptr;
+        if (f == nullptr || !f->interactable || !rectOf(focused_, unused)) {
+            focused_ = entt::null;
+            ignore_enter_ = false;
+        }
     }
 
     // --- Interaccion: el control mas arriba bajo el raton ---
@@ -531,19 +591,29 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
                 }
             }
         }
+        // Como el raycast de uGUI: decide el elemento mas arriba que recibe el
+        // raton. Si es un control, ese; si no, el control que lo contiene (el
+        // icono o el texto de un boton cuentan como el boton); si tampoco, nada:
+        // un panel opaco tapa los botones que tiene debajo (antes el clic lo
+        // atravesaba y pulsaba lo de abajo).
+        const auto is_control = [](const ecs::Entity& x) {
+            return x.has<Button>() || x.has<Slider>() || x.has<InputField>() || x.has<Toggle>() || x.has<Dropdown>();
+        };
         for (auto it = laid_.rbegin(); it != laid_.rend() && !consumed; ++it) {
+            if (!visibleAt(*it, input.mouse_x, input.mouse_y)) continue;
             const ecs::Entity e = world.wrap(it->entity);
-            const bool control = e.has<Button>() || e.has<Slider>() || e.has<InputField>() || e.has<Toggle>() ||
-                                 e.has<Dropdown>();
-            if (visibleAt(*it, input.mouse_x, input.mouse_y)) {
-                const Image* image = e.tryGet<Image>();
-                const bool blocks_image = image != nullptr && image->raycast_target && image->alpha > 0.0f;
-                capturing_mouse_ = capturing_mouse_ || control || blocks_image || e.has<ScrollView>() || e.has<EventTrigger>();
-                if (control) {
-                    hovered = it->entity;
+            const Image* image = e.tryGet<Image>();
+            const bool blocks_image = image != nullptr && image->raycast_target && image->alpha > 0.0f;
+            if (!is_control(e) && !blocks_image && !e.has<ScrollView>() && !e.has<EventTrigger>()) continue;
+            capturing_mouse_ = true;
+            for (ecs::Entity p = e; p.valid(); p = p.parent()) {
+                if (is_control(p)) {
+                    hovered = p.handle();
                     break;
                 }
+                if (p.has<Canvas>()) break;
             }
+            break;
         }
         // UIEventTrigger bajo el raton (o el padre que lo tiene).
         const entt::entity trigger = over_dropdown_list ? entt::entity{entt::null}
@@ -1523,12 +1593,13 @@ void UiSystem::buildDraw(ecs::World& world, const std::vector<Laid>& laid, const
             c.italic = text->italic;
             c.font = text->font;
             c.outline = text->outline * s;
+            c.outline_color = rgba(text->outline_color, text->alpha);
             if (gameplay::accessibility().high_contrast_ui) {
-                // Alto contraste: contorno oscuro en todo el texto.
+                // Alto contraste: contorno oscuro en todo el texto (antes el
+                // color del componente lo pisaba justo despues).
                 c.outline = std::max(c.outline, 1.5f * s);
                 c.outline_color = Vec4{0.0f, 0.0f, 0.0f, text->alpha};
             }
-            c.outline_color = rgba(text->outline_color, text->alpha);
             c.line_spacing = text->line_spacing;
             out.push_back(c);
         }

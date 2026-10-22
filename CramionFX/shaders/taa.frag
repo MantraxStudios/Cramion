@@ -13,6 +13,11 @@
 //     varianza): lo que ya no esta alli no deja fantasmas.
 //   - Se mezcla en un espacio comprimido (x / (1 + luma)) para que un punto
 //     muy brillante no parpadee.
+//   - Mascara reactiva (alfa de la imagen HDR, ver lighting.frag): lo que
+//     dibujaron encima los transparentes (VFX Graph, particulas, sprites,
+//     lluvia, mallas .crshader transparentes) no tiene vectores de movimiento
+//     propios (toma los del fondo). Alli el frame nuevo pesa mas y la caja de
+//     recorte se estrecha: sin estela en proyectiles, chispas y humo.
 
 layout(set = 0, binding = 0) uniform sampler2D scene_color;   // resolucion interna
 layout(set = 0, binding = 1) uniform sampler2D scene_depth;
@@ -24,6 +29,7 @@ layout(push_constant) uniform PushConstants {
     vec4 output_size;  // igual, en pantalla
     vec4 jitter;       // xy = desplazamiento de este frame en UV; z = historia valida
     mat4 reproject;    // NDC sin jitter de este frame -> recorte del anterior (cielo)
+    vec4 params;       // x = peso maximo del frame nuevo, y = peso con mascara llena, z = fuerza de la mascara
 } push;
 
 layout(location = 0) in vec2 v_uv;
@@ -79,10 +85,13 @@ void main() {
     vec3 m2 = vec3(0.0);
     float nearest_depth = 1.0;
     ivec2 nearest = center;
+    float neighbor_reactive = 0.0;  // la mascara, dilatada un pixel (bordes)
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
             ivec2 p = clamp(center + ivec2(x, y), ivec2(0), last);
-            vec3 c = toYCoCg(compress(texelFetch(scene_color, p, 0).rgb));
+            vec4 s = texelFetch(scene_color, p, 0);
+            neighbor_reactive = max(neighbor_reactive, s.a);
+            vec3 c = toYCoCg(compress(s.rgb));
             m1 += c;
             m2 += c * c;
             float d = texelFetch(scene_depth, p, 0).r;
@@ -92,12 +101,18 @@ void main() {
             }
         }
     }
+    vec4 current_sample = textureLod(scene_color, source_uv, 0.0);
+    vec3 current = max(current_sample.rgb, vec3(0.0));
+    // Mascara reactiva: el alfa (0 en lo opaco, la opacidad acumulada de los
+    // transparentes). Fuera de la vista principal guarda una distancia: el
+    // TAA solo corre en ella.
+    float reactive = clamp(max(current_sample.a, neighbor_reactive) * push.params.z, 0.0, 1.0);
+
     vec3 mean = m1 / 9.0;
     vec3 sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
-    vec3 box_min = mean - 1.25 * sigma;
-    vec3 box_max = mean + 1.25 * sigma;
-
-    vec3 current = max(textureLod(scene_color, source_uv, 0.0).rgb, vec3(0.0));
+    float gamma = mix(1.25, 0.75, reactive);
+    vec3 box_min = mean - gamma * sigma;
+    vec3 box_max = mean + gamma * sigma;
 
     // --- Donde estaba este punto el frame anterior ---
     vec2 velocity;
@@ -130,9 +145,12 @@ void main() {
     vec2 texel_offset = source_pixel - (vec2(center) + 0.5);
     float closeness = exp(-2.29 * dot(texel_offset, texel_offset));
     float scale = push.render_size.x * push.output_size.z;  // < 1 al escalar
-    float alpha = mix(0.04, 0.12, closeness) * mix(0.6, 1.0, scale);
+    float frame_weight = max(push.params.x, 0.01);
+    float alpha = mix(frame_weight / 3.0, frame_weight, closeness) * mix(0.6, 1.0, scale);
     float speed = length(velocity * push.output_size.xy);
     alpha = clamp(alpha + speed * 0.01, 0.03, 0.5);
+    // Transparentes encima: mas del frame nuevo cuanto mas cubren.
+    alpha = max(alpha, mix(alpha, clamp(push.params.y, 0.0, 1.0), reactive));
 
     vec3 now = toYCoCg(compress(current));
     vec3 result = mix(previous, now, alpha);

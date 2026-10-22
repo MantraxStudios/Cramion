@@ -1810,6 +1810,30 @@ struct CppScriptSystem::Impl {
         return v;
     }
 
+    // Al reves, para setComponent/setField: lo que manda el SDK a lo que lee
+    // la reflexion. Un Vec3 ({"$v": [x, y, z]}) pasa a [x, y, z] (los Vec2 y
+    // Vec3 de los componentes son listas: antes el campo se ignoraba sin
+    // aviso, p. ej. setComponent("UIText", {{"color", Vec3{...}}})) y una
+    // entidad ({"$e": id}) a su UUID (el "target" de un UIButton).
+    void componentValue(json& v) {
+        if (v.is_array()) {
+            for (json& item : v) componentValue(item);
+            return;
+        }
+        if (!v.is_object()) return;
+        if (v.size() == 1 && v.contains("$v") && v["$v"].is_array()) {
+            json list = v["$v"];
+            v = std::move(list);
+            return;
+        }
+        if (v.size() == 1 && v.contains("$e") && v["$e"].is_number_unsigned()) {
+            const ecs::Entity e = entity(v["$e"].get<std::uint64_t>());
+            v = e.valid() ? json(e.uuid().toString()) : json(std::string());
+            return;
+        }
+        for (auto it = v.begin(); it != v.end(); ++it) componentValue(it.value());
+    }
+
     // Ninguna excepcion (json, componentes...) sale de aqui: tumbaria el motor
     // por una llamada mala de un script. La respuesta queda vacia (el script lee
     // ceros y textos vacios) y se avisa en la consola.
@@ -2063,7 +2087,14 @@ struct CppScriptSystem::Impl {
             case proto::Rpc::SetComponent: {
                 ecs::Entity e = entity(r.u64());
                 const std::string type = r.str();
-                const std::string fields = r.str();
+                std::string fields = r.str();
+                if (fields.find("\"$") != std::string::npos) {  // Vec3 o entidades del SDK
+                    json parsed = json::parse(fields, nullptr, false);
+                    if (!parsed.is_discarded()) {
+                        componentValue(parsed);
+                        fields = parsed.dump();
+                    }
+                }
                 std::string err;
                 const bool ok = e.valid() && ecs::componentFromJson(w, e, type, fields, &err);
                 if (!ok && !err.empty()) std::cerr << "[C++] setComponent(" << type << "): " << err << std::endl;
@@ -2109,6 +2140,8 @@ struct CppScriptSystem::Impl {
                         (*node)["y"] = (*vec)[1];
                         (*node)["z"] = (*vec)[2];
                     } else {
+                        // Vec3 -> lista (Vec2/Vec3 de la reflexion), entidad -> UUID.
+                        if (!parsed.is_discarded()) componentValue(parsed);
                         *node = parsed.is_discarded() ? json(value) : parsed;
                     }
                     ok = ecs::componentFromJson(w, e, type, doc.dump());

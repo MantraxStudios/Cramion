@@ -248,7 +248,10 @@ bool popDead(uint slot, out uint p) {
 // Una particula nueva en `p`: los bloques Initialize. Con evento, el emisor
 // es un punto del mundo sin giro (la posicion del evento) y la velocidad que
 // se hereda es la del evento (los que reciben eventos simulan en el mundo).
-void spawnParticle(uint slot, uint p, uint seed, bool from_event, vec3 event_position, vec3 event_velocity) {
+// event_value: el valor del evento (canales: E1.w; 0 en los demas), del que
+// puede salir el id de la cinta (RibbonAttributes con id del evento).
+void spawnParticle(uint slot, uint p, uint seed, bool from_event, vec3 event_position, vec3 event_velocity,
+                   float event_value) {
     vec3 pos = vec3(0.0);
     vec3 vel = vec3(0.0);
     vec3 shape_dir = vec3(0.0, 1.0, 0.0);
@@ -380,6 +383,12 @@ void spawnParticle(uint slot, uint p, uint seed, bool from_event, vec3 event_pos
             uint strands = uint(clamp(k.a.y, 1.0, 256.0));
             uint strand = gl_GlobalInvocationID.x % strands;
             ribbon_id = min(uint(clamp(k.a.x, 0.0, 255.0)) + strand, 255u);
+            // Id del evento (flags 1): una cinta por cada valor de evento (un
+            // proyectil = un valor), cada una con sus tiras. 256 ids por efecto.
+            if ((k.info.y & 1u) != 0u && from_event) {
+                uint source = uint(max(event_value, 0.0) + 0.5);
+                ribbon_id = (uint(clamp(k.a.x, 0.0, 255.0)) + source * strands + strand) & 255u;
+            }
             if (k.a.z > 0.0) size = k.a.z;
             ribbon_twist = vfxRange(seed, k.a.w, k.b.x) * 0.0174532925;
             ribbon_offset = k.b.yzw * (float(strand) - float(strands - 1u) * 0.5);
@@ -441,7 +450,7 @@ void stageEmit(uint slot) {
     uint p;
     if (!popDead(slot, p)) return;
     uint seed = vfxHash(instances[slot].flags.x ^ vfxHash(instances[slot].flags.y * 9781u + i * 6271u));
-    spawnParticle(slot, p, seed, false, vec3(0.0), vec3(0.0));
+    spawnParticle(slot, p, seed, false, vec3(0.0), vec3(0.0), 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -465,7 +474,7 @@ void stageEmitEvents(uint slot) {
         uint p;
         if (!popDead(slot, p)) return;
         uint seed = vfxHash(instances[slot].flags.x ^ vfxHash(instances[slot].flags.y * 7027u + e * 131u + k * 7919u + 17u));
-        spawnParticle(slot, p, seed, true, E0.xyz, E1.xyz);
+        spawnParticle(slot, p, seed, true, E0.xyz, E1.xyz, E1.w);
     }
 }
 
@@ -503,7 +512,7 @@ void stageEmitChannel(uint slot) {
         if (!popDead(slot, p)) return;
         uint seed = vfxHash(instances[slot].flags.x ^
                             vfxHash(instances[slot].flags.y * 4111u + e * 197u + uint(j) * 7919u + listen * 31u + 29u));
-        spawnParticle(slot, p, seed, true, E0.xyz, E1.xyz);
+        spawnParticle(slot, p, seed, true, E0.xyz, E1.xyz, E1.w);
         // Velocidad heredada del evento, su color y su valor como tamano.
         particles[p * 4u + 1u].xyz += E1.xyz * L.a.w;
         if ((L.info.y & 1u) != 0u) particles[p * 4u + 2u] *= E2;
@@ -550,7 +559,9 @@ void emitEvent(uint slot, VfxBlock k, vec3 world_position, vec3 world_velocity, 
 }
 
 // Apunta un evento de un bloque Emit* en su canal (con el tope por frame).
-void emitChannel(VfxBlock k, vec3 world_position, vec3 world_velocity, vec4 particle_color, inout uint seed) {
+// flags 2: el valor es el id de la particula que lo apunta (estable en su
+// vida): las cintas con "id del evento" hacen una cinta por particula.
+void emitChannel(VfxBlock k, uint particle, vec3 world_position, vec3 world_velocity, vec4 particle_color, inout uint seed) {
     uint channel = k.info.z;
     if (channel >= VFX_MAX_CHANNELS) return;
     if (k.b.z < 1.0 && vfxRand(seed) >= k.b.z) return;  // probabilidad
@@ -559,7 +570,7 @@ void emitChannel(VfxBlock k, vec3 world_position, vec3 world_velocity, vec4 part
     if (e < 0 || e >= int(VFX_MAX_CHANNEL_EVENTS)) return;  // canal lleno este frame
     uint index = vfxChannelIndex(channel, write, uint(e));
     events[index] = vec4(world_position, k.b.x);
-    events[index + 1u] = vec4(world_velocity, k.b.y);
+    events[index + 1u] = vec4(world_velocity, (k.info.y & 2u) != 0u ? float(particle) : k.b.y);
     events[index + 2u] = (k.info.y & 1u) != 0u ? k.a * particle_color : k.a;
 }
 
@@ -707,8 +718,13 @@ void stageUpdate(uint slot) {
             uint type = k.info.x;
             if (!isCollision(type)) continue;
             if (type == B_COLLIDE_PLANE) {
-                vec3 n = normalize(dirToSim(slot, length(k.a.xyz) > 1e-4 ? k.a.xyz : vec3(0.0, 1.0, 0.0)));
-                vec3 on = pointToSim(slot, (length(k.a.xyz) > 1e-4 ? normalize(k.a.xyz) : vec3(0.0, 1.0, 0.0)) * k.a.w);
+                // flags 1: el plano en el mundo (no se mueve ni gira con el
+                // emisor); "Sobre el terreno" lo deja asi con la altura del
+                // suelo bajo el emisor (VfxSystem). Sin depender de la vista.
+                bool plane_world = (k.info.y & 1u) != 0u;
+                vec3 normal = length(k.a.xyz) > 1e-4 ? normalize(k.a.xyz) : vec3(0.0, 1.0, 0.0);
+                vec3 n = normalize(plane_world ? worldDirToSim(slot, normal) : dirToSim(slot, normal));
+                vec3 on = plane_world ? worldToSim(slot, normal * k.a.w) : pointToSim(slot, normal * k.a.w);
                 float d = dot(pos - on, n) - radius;
                 if (d < 0.0) {
                     pos -= n * d;
@@ -734,13 +750,34 @@ void stageUpdate(uint slot) {
                     }
                 }
             } else if (type == B_KILL_BOX) {
-                vec3 local = (instances[slot].world_to_local * vec4(simToWorld(slot, pos), 1.0)).xyz - k.a.xyz;
+                // En el espacio del emisor (gira y se mueve con el); flags 2:
+                // caja fija en el mundo (alineada con los ejes).
+                vec3 world_point = simToWorld(slot, pos);
+                vec3 local = ((k.info.y & 2u) != 0u ? world_point
+                                                    : (instances[slot].world_to_local * vec4(world_point, 1.0)).xyz) - k.a.xyz;
                 bool in_box = all(lessThanEqual(abs(local), max(k.b.xyz, vec3(0.0)) * 0.5));
                 bool kill_outside = (k.info.y & 1u) != 0u;
                 if (in_box != kill_outside) dies = true;
-            } else if (type == B_COLLIDE_DEPTH && frame.camera.w > 0.5) {
-                // Contra lo que ve la camara (el depth de la escena).
+            } else if (type == B_COLLIDE_DEPTH) {
                 vec3 world = simToWorld(slot, pos);
+                float r = radius * max(k.a.w, 0.0);
+                // Suelo sin la vista (c.y > 0.5: "Suelo fuera de la vista",
+                // c.x la altura del terreno bajo el emisor, la pone VfxSystem):
+                // lo que cae fuera de la pantalla o detras de algo tambien
+                // choca (y apunta sus eventos).
+                if (k.c.y > 0.5 && world.y < k.c.x + r) {
+                    vec3 n_sim = worldDirToSim(slot, vec3(0.0, 1.0, 0.0));
+                    float n_len = length(n_sim);
+                    n_sim = n_len > 1e-6 ? n_sim / n_len : n_sim;
+                    pos = worldToSim(slot, vec3(world.x, k.c.x + r, world.z));
+                    impact = max(impact, bounce(vel, n_sim, k.a.x, k.a.y));
+                    collided = true;
+                    age += clamp(k.a.z, 0.0, 1.0) * lifetime;
+                    if (k.b.y > 0.5) dies = true;
+                    continue;
+                }
+                if (frame.camera.w <= 0.5) continue;
+                // Contra lo que ve la camara (el depth de la escena).
                 vec4 clip = frame.view_projection * vec4(world, 1.0);
                 if (clip.w <= 1e-4) continue;
                 vec3 ndc = clip.xyz / clip.w;
@@ -752,7 +789,6 @@ void stageUpdate(uint slot) {
                 vec3 cam = frame.camera.xyz;
                 float d_particle = length(world - cam);
                 float d_surface = length(surface - cam);
-                float r = radius * max(k.a.w, 0.0);
                 float thickness = max(k.b.x, 0.05);
                 if (d_particle > d_surface - r && d_particle < d_surface + thickness) {
                     vec2 texel = frame.viewport.zw;
@@ -802,14 +838,14 @@ void stageUpdate(uint slot) {
         for (uint b = first; b < first + count; ++b) {
             uint type = blocks[b].info.x;
             if (type == B_EMIT_ON_DEATH && dying) {
-                emitChannel(blocks[b], world_position, world_velocity, P2, seed);
+                emitChannel(blocks[b], p, world_position, world_velocity, P2, seed);
             } else if (type == B_EMIT_ON_COLLISION && collided && impact >= blocks[b].b.w) {
-                emitChannel(blocks[b], world_position, world_velocity, P2, seed);
+                emitChannel(blocks[b], p, world_position, world_velocity, P2, seed);
             } else if (type == B_EMIT_EVERY && !dying) {
                 // Cada vez que su edad pasa un multiplo del periodo.
                 float period = max(blocks[b].b.w, 0.01);
                 if (floor(age / period) > floor(P0.w / period)) {
-                    emitChannel(blocks[b], world_position, world_velocity, P2, seed);
+                    emitChannel(blocks[b], p, world_position, world_velocity, P2, seed);
                 }
             }
         }

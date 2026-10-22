@@ -16,6 +16,7 @@
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/navigation/Navigation.h"
 #include "CramionCore/physics/PhysicsComponents.h"
+#include "CramionCore/vfx/VisualEffect.h"
 #include "CramionCore/spline/Spline.h"
 #include "CramionCore/gameplay/Accessibility.h"
 #include "CramionCore/environment/FogVolume.h"
@@ -27,6 +28,7 @@
 #include <CramionFX/vk/ShaderCompiler.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <array>
 #include <cmath>
@@ -153,6 +155,19 @@ cvar::CVar<bool> g_async_surface_shaders("render.AsyncSurfaceShaders", true,
                                          "Compilar los .crshader en otro hilo la primera vez (mientras, sus materiales "
                                          "se ven con el shader estandar); apagado: en el frame, como antes",
                                          cvar::Saved);
+// TAA del motor (taa.frag): VulkanRenderer::setTaaTuning, cada frame.
+cvar::CVar<float> g_taa_frame_weight("render.taa.FrameWeight", 0.12f,
+                                     "TAA: peso maximo del frame nuevo en la mezcla con la historia (0,12 = el de "
+                                     "siempre; mas = mas nitido y con menos estela, pero con mas dientes y parpadeo)",
+                                     cvar::Saved, 0.02f, 0.5f);
+cvar::CVar<float> g_taa_reactive_weight("render.taa.ReactiveWeight", 0.5f,
+                                        "TAA: peso del frame nuevo donde la mascara reactiva esta llena (VFX, "
+                                        "particulas, sprites, lluvia y .crshader transparentes encima): sin estela",
+                                        cvar::Saved, 0.0f, 1.0f);
+cvar::CVar<float> g_taa_reactive_strength("render.taa.ReactiveStrength", 1.0f,
+                                          "Fuerza de la mascara reactiva de los transparentes en el TAA y en FSR 3 "
+                                          "(0 = sin mascara, como antes)",
+                                          cvar::Saved, 0.0f, 4.0f);
 cvar::CVar<bool> g_async_foliage_upload("render.foliage.AsyncUpload", true,
                                         "Subir la vegetacion sembrada sin parar la GPU (se cambia al terminar de subir); "
                                         "apagado: se sube en el frame, como antes",
@@ -343,6 +358,22 @@ int RenderSync::reloadTextureFile(const std::string& relative) {
     // cache BC la recomprime: su clave lleva la fecha del archivo).
     gfx::invalidateSharedTextureFile(relative);
     int count = 0;
+    // Decals: su ranura se vuelve a pedir y el renderizador, al ver otra
+    // fecha en el archivo, relee la imagen en su capa del atlas.
+    {
+        const auto normalized = [](std::string path) {
+            std::replace(path.begin(), path.end(), '\\', '/');
+#if defined(_WIN32)
+            std::transform(path.begin(), path.end(), path.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#endif
+            return path;
+        };
+        const std::string wanted = normalized(relative);
+        count += static_cast<int>(std::erase_if(decal_textures_, [&](const auto& entry) {
+            return normalized(entry.first) == wanted;
+        }));
+    }
     for (const auto& [uuid, entry] : materials_) {
         if (!entry.data || !materialUsesTexture(*entry.data, relative)) continue;
         rebuild_materials_.insert(uuid);
@@ -523,10 +554,13 @@ void RenderSync::compileSurfaceShader(const std::string& path, SurfaceShaderEntr
     entry.parsed = assets::loadSurfaceShader(file, entry.source, &error);
     assets::SurfaceShaderPrograms programs;
     // Sin compilador (el juego en Android): el SPIR-V que dejo el editor al exportar.
-    const bool compiled = gfx::shaders::compilerAvailable()
-                              ? assets::compileSurfaceShader(entry.source, assets::surfaceTemplateDirectory(), programs, &error)
-                              : assets::loadPrecompiledSurfaceShader(file, programs) ||
-                                    (error = "sin compilador de shaders ni SPIR-V precompilado para " + path, false);
+    // Si el .crshader no se pudo leer (p. ej. demasiadas propiedades) no se
+    // compila: el error de glslang del codigo a medias tapaba el mensaje claro.
+    const bool compiled = entry.parsed &&
+                          (gfx::shaders::compilerAvailable()
+                               ? assets::compileSurfaceShader(entry.source, assets::surfaceTemplateDirectory(), programs, &error)
+                               : assets::loadPrecompiledSurfaceShader(file, programs) ||
+                                     (error = "sin compilador de shaders ni SPIR-V precompilado para " + path, false));
     entry.awaiting_renderer = false;
     entry.deferred = {};
     // Aun sin renderizador (el editor lee el material antes del primer frame):
@@ -760,6 +794,8 @@ void RenderSync::applySurface(asset::MaterialData& data, const assets::MaterialA
                 it != material.shader_textures.end() && !it->second.empty() ? (*texture)(it->second) : -1;
             continue;
         }
+        static_assert(std::tuple_size_v<decltype(data.surface_params)> >= assets::kMaxShaderValues,
+                      "surface_params (CramionFX) tiene menos huecos que kMaxShaderValues");
         if (p.slot < 0 || p.slot >= assets::kMaxShaderValues) continue;
         const auto it = material.shader_values.find(p.name);
         data.surface_params[static_cast<std::size_t>(p.slot)] = it != material.shader_values.end() ? it->second : p.value;
@@ -3360,6 +3396,7 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
     renderer.setGrassPoolSize(static_cast<std::uint32_t>(std::max(g_grass_pool.get(), 0)));
     renderer.setTerrainAsyncLayers(g_async_terrain_layers.get());
     renderer.setRayTracingAsyncTerrain(g_rt_async_terrain.get());
+    renderer.setTaaTuning(g_taa_frame_weight.get(), g_taa_reactive_weight.get(), g_taa_reactive_strength.get());
     // Preparaciones abandonadas: se sueltan cuando su copia termino (sin
     // esperar nunca a la GPU).
     for (auto it = draining_terrains_.begin(); it != draining_terrains_.end();) {
@@ -3561,6 +3598,17 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
             const core::Vec3 p = e.worldPosition();
             if (core::length(p - eye) > 120.0f) continue;
             spheres.push_back(core::Vec4{p.x, p.y, p.z, radius});
+        }
+        // Efectos con "Apartar hierba" (VisualEffect.grass_radius): sin fisica,
+        // circulos de suelo e impactos a ras de suelo sin briznas encima.
+        for (const entt::entity handle : world.registry().view<vfx::VisualEffect>()) {
+            const vfx::VisualEffect& effect = world.registry().get<vfx::VisualEffect>(handle);
+            if (effect.grass_radius <= 0.0f) continue;
+            const Entity e = world.wrap(handle);
+            if (!e.activeInHierarchy()) continue;
+            const core::Vec3 p = e.worldPosition();
+            if (core::length(p - eye) > 120.0f) continue;
+            spheres.push_back(core::Vec4{p.x, p.y, p.z, std::min(effect.grass_radius, 20.0f)});
         }
         std::sort(spheres.begin(), spheres.end(), [&](const core::Vec4& a, const core::Vec4& b) {
             const core::Vec3 da{a.x - eye.x, a.y - eye.y, a.z - eye.z};
@@ -4207,6 +4255,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                           std::clamp(renderer_component->alpha, 0.0f, 1.0f)};
         actor.emission_scale = std::max(renderer_component->emission_scale, 0.0f);
         actor.receive_decals = renderer_component->receive_decals;
+        actor.smooth_fade = renderer_component->smooth_fade;
         // INSTANCE_DATA(i) de su .crshader.
         for (int k = 0; k < MeshRenderer::kInstanceDataCount; ++k) {
             actor.instance_data[k] = renderer_component->instance_data[k];

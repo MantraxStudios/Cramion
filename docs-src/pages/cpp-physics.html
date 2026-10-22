@@ -7,11 +7,14 @@
     <tr><td><code>std::uint32_t kDefaultLayers = ~(1u &lt;&lt; 2)</code></td><td>Mascara de capas por defecto de las consultas: todas menos &quot;Ignore Raycast&quot; (capa 2).</td></tr>
     <tr><td><code>std::uint32_t kAllLayers = 0xFFFFFFFFu</code></td><td>Todas las capas.</td></tr>
     <tr><td><code>bool hitFromValue(const Value&amp; r, RaycastHit* hit)</code></td><td>(interno) Un resultado de la API {entity, point, normal, distance} a RaycastHit.</td></tr>
-    <tr><td><code>bool raycast(const Vec3&amp; origin, const Vec3&amp; direction, float max_distance, RaycastHit* hit, std::uint32_t layer_mask, Entity ignore = {})</code></td><td>Rayo solo contra las capas de layer_mask (bit i = capa i; Physics::layerMask(&quot;Default&quot;, &quot;Terreno&quot;)).</td></tr>
-    <tr><td><code>bool sphereCast(const Vec3&amp; origin, float radius, const Vec3&amp; direction, float max_distance, RaycastHit* hit, std::uint32_t layer_mask = kDefaultLayers, Entity ignore = {})</code></td><td>Esfera de `radius` que avanza desde origin (colision de camara con grosor, ataques); true si choca.</td></tr>
+    <tr><td><code>enum class QueryTriggers { UseGlobal, Collide, Ignore }</code></td><td>Si una consulta toca los triggers: UseGlobal = Project Settings &gt; Physics (queries_hit_triggers).</td></tr>
+    <tr><td><code>Value triggersValue(QueryTriggers triggers)</code></td><td>(interno) QueryTriggers al argumento de la API (nil, true o false).</td></tr>
+    <tr><td><code>bool raycast(const Vec3&amp; origin, const Vec3&amp; direction, float max_distance, RaycastHit* hit, std::uint32_t layer_mask, Entity ignore = {}, QueryTriggers triggers = QueryTriggers::UseGlobal)</code></td><td>Rayo solo contra las capas de layer_mask (bit i = capa i; Physics::layerMask(&quot;Default&quot;, &quot;Terreno&quot;)); triggers: si los toca.</td></tr>
+    <tr><td><code>bool raycast(const Vec3&amp; origin, const Vec3&amp; direction, float max_distance, RaycastHit* hit, QueryTriggers triggers, Entity ignore = {})</code></td><td>Rayo con las capas por defecto que toca o ignora los triggers (QueryTriggers::Ignore: solo colliders solidos).</td></tr>
+    <tr><td><code>bool sphereCast(const Vec3&amp; origin, float radius, const Vec3&amp; direction, float max_distance, RaycastHit* hit, std::uint32_t layer_mask = kDefaultLayers, Entity ignore = {}, QueryTriggers triggers = QueryTriggers::UseGlobal)</code></td><td>Esfera de `radius` que avanza desde origin (colision de camara con grosor, ataques); true si choca.</td></tr>
     <tr><td><code>Value ignoreCollision(a, b, activar)</code></td><td>a y b no chocan entre si (false lo deshace)</td></tr>
     <tr><td><code>Value layerMask(texto, texto2, ...)</code></td><td>mascara (bit i = capa i) de esas capas Devuelve: numero</td></tr>
-    <tr><td><code>Value overlapSphere(centro, radio, mascara, ignorar)</code></td><td>los objetos que tocan la esfera Devuelve: lista de Entity</td></tr>
+    <tr><td><code>Value overlapSphere(centro, radio, mascara, ignorar, triggers)</code></td><td>los objetos que tocan la esfera (triggers como en raycast) Devuelve: lista de Entity</td></tr>
     <tr><td><code>Value simulatedTime(...)</code></td><td>Segundos de fisica simulados desde el Play (pasos fijos dados) Devuelve: numero</td></tr>
     <tr><td><code>Entity entity</code></td><td></td></tr>
     <tr><td><code>Vec3 point</code></td><td></td></tr>

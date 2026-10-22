@@ -257,6 +257,21 @@ void EditorApp::effectsExitPlay() {
     vfx_.clear();
 }
 
+void EditorApp::effectsAssetChanged(const Uuid& uuid) {
+    vfx_.reloadAsset(uuid);
+    // Abierto en el editor de efectos y sin cambios: se ve el del disco.
+    EffectsEditorState& st = effectsEditor();
+    if (st.vfx_uuid != uuid || st.vfx_dirty || st.vfx_path.empty()) return;
+    vfx::VfxGraph graph;
+    std::string error;
+    if (!vfx::loadVfxGraph(st.vfx_path, graph, &error)) return;  // a medio escribir: llegara otro aviso
+    if (!graph.uuid.valid()) graph.uuid = uuid;
+    vfx_.clearGraphOverride(uuid);
+    st.graph = std::move(graph);
+}
+
+int EditorApp::effectsTextureChanged(const std::string& relative) { return vfx_.reloadTextureFile(relative); }
+
 void EditorApp::updateEffects(float delta_seconds) {
     if (!has_project_) return;
     // VFX Graph
@@ -272,6 +287,8 @@ void EditorApp::updateEffects(float delta_seconds) {
         const scene::Camera& camera = scene_.camera();
         vfx_.setCamera(camera.position(), camera.projection() * camera.view());
     }
+    // Suelo bajo los emisores (bloques "Sobre el terreno" / "Suelo sin la vista").
+    vfx_.setGroundQuery([this](float x, float z, float& h) { return sync_ && sync_->terrainHeight(x, z, h); });
     vfx_.update(world_, vfx_dt, playing(), preview, renderer_);
 
     // 2D
@@ -413,6 +430,16 @@ void EditorApp::drawVfxEditor() {
     if (!st.vfx_error.empty()) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "%s", st.vfx_error.c_str());
+    }
+    // Lo que le falta para dibujarse entero (textura o malla que no cabe o
+    // no se pudo leer): antes solo salia en la consola.
+    if (const std::string warning = vfx_.resourceWarning(st.vfx_uuid); !warning.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Aviso: %s", warning.c_str());
+        if (ImGui::IsItemHovered()) {
+            const gfx::VfxPass& pass = renderer_.vfx();
+            ImGui::SetTooltip("Texturas de efectos en la GPU: %u de %u · mallas: %u de %u", pass.texturesInUse(),
+                              pass.textureLimit(), pass.meshesInUse(), gfx::VfxPass::kMaxMeshes);
+        }
     }
 
     // --- Izquierda: ajustes y parametros ---
@@ -744,6 +771,12 @@ void EditorApp::drawVfxEditor() {
                     ImGui::SetItemTooltip("Orientacion de todas (cuaternion); el bloque Giro gira cada una en su Y");
                 }
                 changed |= ImGui::SliderFloat3("Escala al azar", &o.mesh_scale_jitter.x, 0.0f, 1.0f, "%.2f");
+                if (!o.material.valid()) {
+                    changed |= ImGui::Checkbox("Textura de la salida en la malla", &o.mesh_output_texture);
+                    ImGui::SetItemTooltip("Apagado (por defecto): color y textura base del propio modelo, con su UV. "
+                                          "Encendido: la textura de arriba con la UV de la malla (una textura de "
+                                          "sprite con alfa casi 0 deja la malla invisible)");
+                }
                 ImGui::SetItemTooltip("Variacion por eje de cada particula (0.3 = +-30%)");
                 // Variantes (o niveles de LOD): hasta 3 modelos mas.
                 ImGui::SeparatorText("Variantes y LOD");

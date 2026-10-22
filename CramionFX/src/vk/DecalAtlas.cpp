@@ -121,12 +121,24 @@ vk::ImageView DecalAtlas::view() const {
 }
 
 int DecalAtlas::add(const VulkanDevice& device, std::uint32_t width, std::uint32_t height, const std::uint8_t* rgba) {
+    return upload(device, width, height, rgba, -1);
+}
+
+bool DecalAtlas::replace(const VulkanDevice& device, std::uint32_t layer, std::uint32_t width, std::uint32_t height,
+                         const std::uint8_t* rgba) {
+    if (layer >= used_) return false;
+    return upload(device, width, height, rgba, static_cast<int>(layer)) >= 0;
+}
+
+int DecalAtlas::upload(const VulkanDevice& device, std::uint32_t width, std::uint32_t height, const std::uint8_t* rgba,
+                       int replace_layer) {
     if (!storage_ || rgba == nullptr || width == 0 || height == 0) return -1;
-    if (used_ >= max_layers_) {
+    const bool replacing = replace_layer >= 0;
+    if (!replacing && used_ >= max_layers_) {
         std::cerr << "[Vulkan] Atlas de decals lleno (" << max_layers_ << " imagenes de " << layer_size_ << " px)\n";
         return -1;
     }
-    const std::uint32_t layer = used_;
+    const std::uint32_t layer = replacing ? static_cast<std::uint32_t>(replace_layer) : used_;
 
     // Crece si no cabe: la imagen nueva copia las capas ya subidas (todos sus
     // mips). La anterior (tambien el ficticio) la mantiene viva el propio
@@ -204,6 +216,12 @@ int DecalAtlas::add(const VulkanDevice& device, std::uint32_t width, std::uint32
             barrier(cmd, imageBarrier(atlas, colorRange(0, levels, 0, capacity), vk::ImageLayout::eUndefined,
                                       vk::ImageLayout::eTransferDstOptimal, Stage::eNone, Access::eNone,
                                       Stage::eTransfer, Access::eTransferWrite));
+        } else if (replacing) {
+            // Una capa que ya leen los decals: espera a los frames anteriores
+            // en la cola (la barrera cubre todo lo enviado antes).
+            barrier(cmd, imageBarrier(atlas, colorRange(0, levels, layer, 1), vk::ImageLayout::eShaderReadOnlyOptimal,
+                                      vk::ImageLayout::eTransferDstOptimal, Stage::eAllCommands,
+                                      Access::eShaderSampledRead, Stage::eTransfer, Access::eTransferWrite));
         } else {
             // La capa nueva (nadie la lee aun: ningun decal la usa).
             barrier(cmd, imageBarrier(atlas, colorRange(0, levels, layer, 1), vk::ImageLayout::eUndefined,
@@ -273,7 +291,7 @@ int DecalAtlas::add(const VulkanDevice& device, std::uint32_t width, std::uint32
                                   Stage::eTransfer, Access::eTransferWrite, Stage::eFragmentShader,
                                   Access::eShaderSampledRead));
     }, std::move(keep_alive));
-    ++used_;
+    if (!replacing) ++used_;
     return static_cast<int>(layer);
 }
 

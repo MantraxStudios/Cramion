@@ -806,6 +806,14 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         motion.color_format = GBuffer::kVelocityFormat;
         upscaler_motion_pass_.create(device_, motion);
 
+        // Mascara reactiva de FSR 3: el alfa de la imagen HDR a un R8.
+        FullscreenPassDesc reactive{};
+        reactive.fragment_shader = "upscaler_reactive.frag.spv";
+        reactive.bindings = one_texture;
+        reactive.push_constant_size = sizeof(Vec4);
+        reactive.color_format = kReactiveFormat;
+        upscaler_reactive_pass_.create(device_, reactive);
+
         FullscreenPassDesc easu{};
         easu.fragment_shader = "fsr_easu.frag.spv";
         easu.bindings = one_texture;
@@ -920,6 +928,9 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         sampler_info.addressModeV = vk::SamplerAddressMode::eClampToEdge;
         sampler_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
         sampler_info.maxLod = VK_LOD_CLAMP_NONE;
+        // Anisotropico y sesgo de mips de los modelos (applyTextureFiltering
+        // lo rehace al cambiar): los decals de suelo se ven en angulo.
+        gfx::applyTextureFiltering(sampler_info, device_.physicalDevice(), applied_texture_filtering_);
         decal_sampler_ = vk::raii::Sampler(device_.handle(), sampler_info);
     }
 
@@ -953,6 +964,7 @@ void VulkanRenderer::shutdown() {
     fsr3_.destroy();
     dlss_.shutdown();
     upscaler_motion_ = VulkanImage{};
+    upscaler_reactive_ = VulkanImage{};
     for (VulkanImage& image : xr_staging_) image = VulkanImage{};
 
     skinned_models_.clear();
@@ -976,6 +988,7 @@ void VulkanRenderer::shutdown() {
     camera_fx_sets_.clear();
     taa_sets_.clear();
     upscaler_motion_sets_.clear();
+    upscaler_reactive_sets_.clear();
     easu_sets_.clear();
     rcas_sets_.clear();
     outline_sets_.clear();
@@ -1055,6 +1068,7 @@ void VulkanRenderer::shutdown() {
     camera_fx_pass_.destroy();
     taa_pass_.destroy();
     upscaler_motion_pass_.destroy();
+    upscaler_reactive_pass_.destroy();
     easu_pass_.destroy();
     rcas_pass_.destroy();
     easu_ldr_pass_.destroy();
@@ -1331,7 +1345,16 @@ int VulkanRenderer::loadDecalTexture(const std::filesystem::path& file) {
     std::error_code error;
     const std::filesystem::path key = std::filesystem::weakly_canonical(file, error);
     for (std::uint32_t slot = 0; slot < kMaxDecalTextures; ++slot) {
-        if (decal_texture_paths_[slot] == key) return static_cast<int>(slot);
+        if (decal_texture_paths_[slot] != key) continue;
+        // La misma ruta con otra imagen (se guardo encima, o se reabrio el
+        // proyecto): se relee en su capa. Quien pide la ranura la guarda
+        // (RenderSync), asi que esto solo se mira al volver a pedirla.
+        const std::filesystem::file_time_type stamp = std::filesystem::last_write_time(file, error);
+        if (!error && stamp != decal_texture_stamps_[slot] && !decal_loads_[slot]) {
+            std::cout << "[Vulkan] Textura de decal cambiada en disco: " << file.filename().string() << "\n";
+            startDecalTextureLoad(slot, file, /*reload=*/true);
+        }
+        return static_cast<int>(slot);
     }
     const std::uint32_t slots = std::min(kMaxDecalTextures, decal_atlas_.maxLayers());
     std::uint32_t slot = 0;
@@ -1349,7 +1372,19 @@ int VulkanRenderer::loadDecalTexture(const std::filesystem::path& file) {
     // ruta) y va sin imagen hasta que adoptDecalTextures la sube al atlas.
     decal_texture_paths_[slot] = key;
     decal_layers_[slot] = 0;
+    startDecalTextureLoad(slot, file, /*reload=*/false);
+    if (VulkanDevice::debugLog()) {
+        std::cout << "[Vulkan] Textura de decal " << file.filename().string() << " en la ranura " << slot
+                  << " (cargandose)\n";
+    }
+    return static_cast<int>(slot);
+}
+
+void VulkanRenderer::startDecalTextureLoad(std::uint32_t slot, const std::filesystem::path& file, bool reload) {
+    std::error_code error;
+    decal_texture_stamps_[slot] = std::filesystem::last_write_time(file, error);
     auto load = std::make_shared<DecalTextureLoad>();
+    load->reload = reload;
     decal_loads_[slot] = load;
     device_.runStreamingTask([load, file]() {
         try {
@@ -1383,11 +1418,6 @@ int VulkanRenderer::loadDecalTexture(const std::filesystem::path& file) {
             load->state.store(2, std::memory_order_release);
         }
     });
-    if (VulkanDevice::debugLog()) {
-        std::cout << "[Vulkan] Textura de decal " << file.filename().string() << " en la ranura " << slot
-                  << " (cargandose)\n";
-    }
-    return static_cast<int>(slot);
 }
 
 void VulkanRenderer::adoptDecalTextures() {
@@ -1396,10 +1426,23 @@ void VulkanRenderer::adoptDecalTextures() {
         if (!load) continue;
         const int state = load->state.load(std::memory_order_acquire);
         if (state == 0) continue;
-        if (state == 2) {
+        if (state == 2 && load->reload) {
+            // Releyendo (a medio guardar en disco, p. ej.): se queda la de
+            // antes; la fecha se olvida para volver a probar la proxima vez.
+            std::cerr << "[Vulkan] No se pudo releer la textura de decal " << decal_texture_paths_[slot].string() << "\n";
+            decal_texture_stamps_[slot] = {};
+        } else if (state == 2) {
             std::cerr << "[Vulkan] No se pudo leer la textura de decal " << decal_texture_paths_[slot].string() << "\n";
             decal_texture_paths_[slot].clear();  // la ranura vuelve a estar libre (sin imagen)
             decal_layers_[slot] = 0;
+        } else if (load->reload && decal_layers_[slot] > 0) {
+            // Encima de su capa (la barrera espera a los frames que la leen).
+            try {
+                decal_atlas_.replace(device_, static_cast<std::uint32_t>(decal_layers_[slot] - 1), load->width,
+                                     load->height, load->pixels.data());
+            } catch (const std::exception& e) {
+                std::cerr << "[Vulkan] Textura de decal al atlas: " << e.what() << "\n";
+            }
         } else {
             // A su capa del atlas, sin esperar a la GPU: el envio va delante
             // de este frame en la cola. Si el atlas crecio (otra imagen), el
@@ -1570,12 +1613,13 @@ void VulkanRenderer::createDescriptors() {
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 13},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
                                // (+ kMaxFramesInFlight: la distorsion de la composicion)
-                               kMaxFramesInFlight * 30 + kBloomSets + 2 + 1 + 1 + 6 + 3 + 4},
+                               // (+ 1: la mascara reactiva de FSR 3)
+                               kMaxFramesInFlight * 30 + kBloomSets + 2 + 1 + 1 + 6 + 3 + 4 + 1},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 + kMaxFramesInFlight * 2}};
 
     vk::DescriptorPoolCreateInfo post_pool_info{};
     post_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    post_pool_info.maxSets = kMaxFramesInFlight * 9 + kBloomSets + 5 + 3 + 1 + 1;
+    post_pool_info.maxSets = kMaxFramesInFlight * 9 + kBloomSets + 5 + 3 + 1 + 1 + 1;
     post_pool_info.setPoolSizes(post_sizes);
     post_pool_ = vk::raii::DescriptorPool(device_.handle(), post_pool_info);
 
@@ -1595,6 +1639,7 @@ void VulkanRenderer::createDescriptors() {
     camera_fx_sets_ = allocate(camera_fx_pass_, 1);
     taa_sets_ = allocate(taa_pass_, 2);  // uno por ojo (VR)
     upscaler_motion_sets_ = allocate(upscaler_motion_pass_, 1);
+    upscaler_reactive_sets_ = allocate(upscaler_reactive_pass_, 1);
     easu_sets_ = allocate(easu_pass_, 1);
     rcas_sets_ = allocate(rcas_pass_, 1);
     {
@@ -1896,6 +1941,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         draw.cast_shadows = actor.cast_shadows;
         draw.shadows_only = actor.shadows_only;
         draw.dissolve = actor.tint.w < 0.999f;
+        draw.smooth_fade = draw.dissolve && actor.smooth_fade;
         draw.opacity = std::clamp(actor.tint.w, 0.0f, 1.0f);
         // Dibujando una Render Texture: lo que la muestra (la pantalla) no lo
         // ve su camara; si no, sale dentro de si misma una y otra vez (tunel).
@@ -2045,8 +2091,10 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
             const std::uint32_t instance = draw.bone_offset + static_cast<std::uint32_t>(bones.size());
             for (std::uint32_t i = 0; i < lod_submeshes.size(); ++i) {
                 const std::uint32_t group = model.lodSubmeshGroup(draw.lod, i);
-                if (group == SkinnedModel::kNoGroup || draw.shadows_only || tiny) {
-                    continue;  // Transparente, solo sombras o diminuto: la camara no lo ve.
+                if (group == SkinnedModel::kNoGroup || draw.shadows_only || tiny || draw.smooth_fade) {
+                    // Transparente, solo sombras o diminuto: la camara no lo ve
+                    // (fundido suave: lo dibuja recordGlassPass mezclado).
+                    continue;
                 }
                 const asset::SubMesh& submesh = lod_submeshes[i];
                 const core::Aabb& box = *submeshBox(draw, i);  // del LOD elegido: siempre estan
@@ -2100,7 +2148,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
             // matriz se copia abajo): su registro lleva la trama inversa. Los
             // lotes que lo reciben (y los del que entra) van con la pipeline
             // con recorte, como la disolucion.
-            if (draw.lod_fade < 1.0f && !draw.shadows_only && !tiny) {
+            if (draw.lod_fade < 1.0f && !draw.shadows_only && !tiny && !draw.smooth_fade) {
                 const std::uint32_t from = draw.lod_fade_from;
                 const std::vector<asset::SubMesh>& from_submeshes = model.lodSubmeshes(from);
                 for (std::uint32_t i = 0; i < from_submeshes.size(); ++i) {
@@ -3791,6 +3839,7 @@ void VulkanRenderer::updatePostDescriptors() {
     write_texture(upscaler_motion_sets_[0], 0, upscaler_motion_pass_.sampler(), gbuffer_.depth(),
                   compat::depthReadOnlyLayout());
     write_texture(upscaler_motion_sets_[0], 1, upscaler_motion_pass_.sampler(), gbuffer_.velocity(), kRead);
+    write_texture(upscaler_reactive_sets_[0], 0, upscaler_reactive_pass_.sampler(), scene_color_, kRead);
     write_texture(easu_sets_[0], 0, easu_pass_.sampler(), scene_color_, kRead);
     write_texture(rcas_sets_[0], 0, rcas_pass_.sampler(), upscale_target_, kRead);
     // Cadena corta: la composicion lee la imagen HDR interna (no la escalada).
@@ -3969,6 +4018,22 @@ void VulkanRenderer::applyTextureFiltering() {
     foliage_pass_.setTextureFiltering(wanted);
     water_pass_.setTextureFiltering(wanted);
     voxel_pass_.setTextureFiltering(wanted);
+    // Los efectos del VFX Graph y los decals: antes sin anisotropico ni la
+    // compensacion del escalado (al 58 %, un mip mas bajo: blandos).
+    vfx_pass_.setTextureFiltering(wanted);
+    if (*decal_sampler_) {
+        vk::SamplerCreateInfo sampler_info{};
+        sampler_info.magFilter = vk::Filter::eLinear;
+        sampler_info.minFilter = vk::Filter::eLinear;
+        sampler_info.mipmapMode = vk::SamplerMipmapMode::eLinear;
+        sampler_info.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+        sampler_info.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+        sampler_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+        sampler_info.maxLod = VK_LOD_CLAMP_NONE;
+        gfx::applyTextureFiltering(sampler_info, device_.physicalDevice(), wanted);
+        decal_sampler_ = vk::raii::Sampler(device_.handle(), sampler_info);
+        writeDecalTextureDescriptors();
+    }
     std::cout << "[Vulkan] Filtrado de texturas: anisotropico " << wanted.anisotropy << "x (maximo de la GPU "
               << maxTextureAnisotropy() << "x), sesgo de mips " << wanted.lod_bias << "\n";
 }
@@ -4356,6 +4421,9 @@ void VulkanRenderer::createRenderTargets() {
     upscaler_motion_.create(device_, render_extent_, GBuffer::kVelocityFormat,
                             vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
                             vk::ImageAspectFlagBits::eColor);
+    upscaler_reactive_.create(device_, render_extent_, kReactiveFormat,
+                              vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+                              vk::ImageAspectFlagBits::eColor);
     // Origen de copia: el motion blur y la profundidad de campo la copian.
     upscaled_color_.create(device_, output, kHdrFormat, target_usage | vk::ImageUsageFlagBits::eTransferSrc,
                            vk::ImageAspectFlagBits::eColor);
@@ -4430,6 +4498,7 @@ void VulkanRenderer::createRenderTargets() {
             {&probe_capture_, "ProbeCapture"},
             {&upscale_target_, "UpscaleTarget"},
             {&upscaler_motion_, "UpscalerMotion"},
+            {&upscaler_reactive_, "UpscalerReactive"},
             {&upscaled_color_, "UpscaledColor"},
             {&early_ldr_, "EarlyLdr"},
             {&early_upscaled_, "EarlyUpscaled"},
@@ -4838,6 +4907,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // Con la que se dibuja la imagen HDR de este frame: si llega a la historia
     // del SSR (recordFilterHistoryCopies), con esta se reproyecta en ella.
     current_jittered_view_projection_ = camera_data.view_projection;
+    jittered_projection_ = camera_data.projection;
     // Vectores de movimiento: sin jitter, este frame y el anterior (las caras
     // de la sonda no cuentan).
     camera_data.unjittered_view_projection = unjittered;
@@ -4850,6 +4920,11 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // se evalua vertex() en el frame anterior. 0 en las vistas aisladas (su
     // vista anterior es la misma: sin movimiento).
     camera_data.motion[1] = std::bit_cast<std::uint32_t>(isolated() ? 0.0f : frame_delta_seconds_);
+    // z = 1: vista principal. lighting.frag deja ahi el alfa de la imagen HDR
+    // a 0 (no la distancia: solo la leen las capturas de la sonda) y los
+    // transparentes acumulan en el su opacidad: la mascara reactiva del TAA y
+    // de FSR 3 (taa.frag, recordVendorUpscale).
+    camera_data.motion[2] = isolated() ? 0u : 1u;
     if (!isolated()) {
         jitter_ndc_ = jitter_ndc;
         taa_reproject_ = motion_view_projection_ * core::inverse(unjittered);
@@ -5172,7 +5247,11 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
             // la camara dentro o al lado de la caja, todas).
             float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
             bool everywhere = false;
-            for (const Vec3& corner : corners) {
+            // Tambien la caja subida 1 m: la hierba tine sus briznas con el
+            // decal de su raiz (gbuffer_surface.glsl, surface_decal_root) y
+            // las puntas caen en teselas por encima de la caja.
+            for (int k = 0; k < 16 && !everywhere; ++k) {
+                const Vec3 corner = corners[static_cast<std::size_t>(k & 7)] + Vec3{0.0f, k >= 8 ? 1.0f : 0.0f, 0.0f};
                 const Vec4 clip = unjittered * Vec4{corner.x, corner.y, corner.z, 1.0f};
                 if (clip.w < 0.01f) {
                     everywhere = true;
@@ -7456,8 +7535,8 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
     // Modo compatible: tambien el escenario (sin culling en GPU).
     const bool scenery = device_.compatMode();
     for (const ActorDraw& draw : actor_draws_) {
-        if ((draw.per_submesh && !scenery) || draw.shadows_only) {
-            continue;  // Escenario (lo dibuja drawGpuClusters) o solo sombras.
+        if ((draw.per_submesh && !scenery) || draw.shadows_only || draw.smooth_fade) {
+            continue;  // Escenario (lo dibuja drawGpuClusters), solo sombras o fundido suave (recordGlassPass).
         }
         if (!bound) {
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *meshGeometryPipeline());
@@ -8505,6 +8584,7 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
     struct GlassDraw {
         const ActorDraw* actor;
         std::uint32_t submesh;
+        bool fade = false;  // submalla opaca de un fundido suave: mezcla alfa
     };
     std::vector<GlassDraw> visible;
     // Que modelos tienen algo transparente (una vez por modelo y frame, no
@@ -8520,19 +8600,27 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
         }
     }
     for (const ActorDraw& draw : actor_draws_) {
-        if (draw.shadows_only || draw.model >= glass_models_.size() || glass_models_[draw.model] == 0) {
+        if (draw.shadows_only || draw.model >= glass_models_.size() ||
+            (glass_models_[draw.model] == 0 && !draw.smooth_fade)) {
+            continue;
+        }
+        if (draw.smooth_fade && !frustum.intersects(core::Aabb{draw.bounds_center - Vec3{draw.bounds_radius, draw.bounds_radius, draw.bounds_radius},
+                                                               draw.bounds_center + Vec3{draw.bounds_radius, draw.bounds_radius, draw.bounds_radius}})) {
             continue;
         }
         const SkinnedModel& model = skinned_models_[draw.model];
         const auto& submeshes = model.submeshes();
         for (std::uint32_t i = 0; i < submeshes.size(); ++i) {
-            if (!model.materials()[submeshes[i].material].transparent) {
+            // Fundido suave: tambien sus submallas opacas, mezcladas (sin
+            // .crshader opaco: su codigo es del G-buffer).
+            const bool fade = draw.smooth_fade && !model.materials()[submeshes[i].material].transparent;
+            if (!fade && !model.materials()[submeshes[i].material].transparent) {
                 continue;
             }
             if (draw.per_submesh && !frustum.intersects(lod0Box(draw, i))) {
                 continue;
             }
-            visible.push_back(GlassDraw{&draw, i});
+            visible.push_back(GlassDraw{&draw, i, fade});
         }
     }
     if (visible.empty()) {
@@ -8644,7 +8732,7 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
                                    1, *model.materialSet(submesh.material), nullptr);
             // .crshader con domain transparent: su pipeline (surface_forward.frag).
             const std::int32_t shader =
-                surfaceTransparent(material.surface_shader) && !wire_gbuffer_ &&
+                !glass.fade && surfaceTransparent(material.surface_shader) && !wire_gbuffer_ &&
                         *surface_pipelines_[static_cast<std::size_t>(material.surface_shader)]
                     ? material.surface_shader
                     : -1;
@@ -8664,6 +8752,14 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
             // Transmision de Disney (glass.frag) o, con un .crshader, su
             // bloque de propiedades.
             push.pick_id = shader >= 0 ? pushSurfaceParams(frame_index, material.surface_params) : material.shading;
+            if (glass.fade) {
+                // Opaco en fundido suave: mezcla alfa (bits 4-5 = 1) con la
+                // opacidad de la instancia (glass.frag, shadeTransparent);
+                // modelo estandar, o sin luz si lo era.
+                const bool unlit = (material.shading & 0xFu) == static_cast<std::uint32_t>(SkinnedModel::kShadingUnlit);
+                push.pick_id = (material.shading & ~0x7Fu) | (1u << SkinnedModel::kBlendShift) |
+                               (unlit ? SkinnedModel::kShadingUnlitBit : 0u);
+            }
             cmd.pushConstants<GpuSkinnedPush>(
                 *skinned_pass_.glassLayout(),
                 vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
@@ -9697,7 +9793,7 @@ bool VulkanRenderer::updateSurfaceShader(std::int32_t id, const std::vector<std:
     return true;
 }
 
-std::uint32_t VulkanRenderer::pushSurfaceParams(std::uint32_t frame_index, const std::array<core::Vec4, 8>& params) {
+std::uint32_t VulkanRenderer::pushSurfaceParams(std::uint32_t frame_index, const std::array<core::Vec4, asset::kSurfaceParamCount>& params) {
     if (frame_index >= surface_param_buffers_.size()) return 0;
     std::uint32_t& used = surface_param_used_[frame_index];
     // Lleno (mas de 2048 materiales con shader propio en un frame): se
@@ -9956,8 +10052,9 @@ void VulkanRenderer::recordDistortionPass(const vk::raii::CommandBuffer& cmd, st
 void VulkanRenderer::recordParticlePass(const vk::raii::CommandBuffer& cmd,
                                         std::uint32_t frame_index) {
     const vk::Extent2D extent = scene_color_.extent();
+    // Con el jitter del TAA, como lo opaco (jittered_projection_).
     if (!particle_pass_.prepare(device_, frame_index, particles_, camera_view_,
-                                camera_view_projection_)) {
+                                current_jittered_view_projection_)) {
         return;
     }
 
@@ -10011,8 +10108,9 @@ void VulkanRenderer::recordParticlePass(const vk::raii::CommandBuffer& cmd,
 void VulkanRenderer::recordPrecipitationPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
     const vk::Extent2D extent = scene_color_.extent();
     PrecipitationFrame view;
-    view.view_projection = camera_view_projection_;
-    view.inverse_view_projection = core::inverse(camera_view_projection_);
+    // Con el jitter del TAA, como lo opaco y su depth (jittered_projection_).
+    view.view_projection = current_jittered_view_projection_;
+    view.inverse_view_projection = core::inverse(current_jittered_view_projection_);
     view.rain_view_projection = rain_view_projection_;
     view.camera_position = camera_position_;
     view.camera_right = core::normalize(Vec3{camera_view_.m[0][0], camera_view_.m[1][0], camera_view_.m[2][0]});
@@ -10425,6 +10523,16 @@ void VulkanRenderer::recordVendorUpscale(const vk::raii::CommandBuffer& cmd) {
     pipelineBarrier(cmd, discardToAttachment(*upscaler_motion_.handle()));
     const core::Mat4 reproject = taa_reproject_;
     drawFullscreen(cmd, upscaler_motion_pass_, &upscaler_motion_sets_[0], upscaler_motion_, &reproject);
+    // 1b) Mascara reactiva (FSR 3; DLSS no la usa): la opacidad de los
+    // transparentes, del alfa de la imagen HDR (ya es textura).
+    const bool reactive = graphics_.upscaler == Upscaler::Fsr3 && taa_reactive_strength_ > 0.0f &&
+                          upscaler_reactive_.isValid();
+    if (reactive) {
+        pipelineBarrier(cmd, discardToAttachment(*upscaler_reactive_.handle()));
+        // Tope 0,9 (como recomienda AMD: con 1 FSR no acumula nada alli).
+        const Vec4 reactive_push{taa_reactive_strength_, 0.9f, 0.0f, 0.0f};
+        drawFullscreen(cmd, upscaler_reactive_pass_, &upscaler_reactive_sets_[0], upscaler_reactive_, &reactive_push);
+    }
 
     // 2) Entradas para leer (SHADER_READ_ONLY) y la salida para escribir (GENERAL).
     const vk::ImageSubresourceRange depth_range{gbuffer_.depth().aspect(), 0, 1, 0, 1};
@@ -10442,7 +10550,13 @@ void VulkanRenderer::recordVendorUpscale(const vk::raii::CommandBuffer& cmd) {
                                                   Stage::eAllCommands, Access::eMemoryRead | Access::eMemoryWrite);
     vk::ImageMemoryBarrier2 motion_read = writtenToSampled(*upscaler_motion_.handle());
     motion_read.dstStageMask = Stage::eAllCommands;
-    pipelineBarrier(cmd, {depth_in, out_in, motion_read});
+    if (reactive) {
+        vk::ImageMemoryBarrier2 reactive_read = writtenToSampled(*upscaler_reactive_.handle());
+        reactive_read.dstStageMask = Stage::eAllCommands;
+        pipelineBarrier(cmd, {depth_in, out_in, motion_read, reactive_read});
+    } else {
+        pipelineBarrier(cmd, {depth_in, out_in, motion_read});
+    }
 
     UpscaleDispatch d{};
     d.command_buffer = static_cast<VkCommandBuffer>(*cmd);
@@ -10453,6 +10567,7 @@ void VulkanRenderer::recordVendorUpscale(const vk::raii::CommandBuffer& cmd) {
     d.color = image(scene_color_, false);
     d.depth = image(gbuffer_.depth(), true);
     d.motion = image(upscaler_motion_, false);
+    if (reactive) d.reactive = image(upscaler_reactive_, false);
     d.output = image(upscale_target_, false);
     d.render_width = render.width;
     d.render_height = render.height;
@@ -10610,6 +10725,9 @@ void VulkanRenderer::recordUpscalePass(const vk::raii::CommandBuffer& cmd) {
                                 1.0f / static_cast<float>(output.width), 1.0f / static_cast<float>(output.height)};
         push.jitter = isolated() ? Vec4{} : Vec4{jitter_ndc_.x * 0.5f, jitter_ndc_.y * 0.5f, taa_history_valid_ ? 1.0f : 0.0f, 0.0f};
         push.reproject = taa_reproject_;
+        // Pesos del frame nuevo y mascara reactiva (render.taa.*). Fuera de la
+        // vista principal el alfa no es la mascara (es una distancia).
+        push.params = Vec4{taa_frame_weight_, taa_reactive_weight_, isolated() ? 0.0f : taa_reactive_strength_, 0.0f};
         drawFullscreen(cmd, taa_pass_, &taa_sets_[eyeSet()], upscale_target_, &push);
         if (isolated()) {
             pipelineBarrier(cmd, writtenToSampled(*upscale_target_.handle()));

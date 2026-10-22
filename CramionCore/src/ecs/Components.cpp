@@ -50,6 +50,10 @@ void MeshRenderer::reflect(PropertyVisitor& v) {
             emission_scale, FloatRange{0.0f, 64.0f, 0.05f, "%.2f"});
     v.field({"receive_decals", "Recibe decals", "Si los decals (estampas, charcos, indicadores) lo pintan"},
             receive_decals);
+    v.field({"smooth_fade", "Fundido suave",
+             "Con opacidad < 1: se mezcla como un transparente (suave) en vez de disolverse con tramado "
+             "(ajedrezado). Cuesta mas mientras se funde"},
+            smooth_fade);
     // INSTANCE_DATA(i) de su .crshader: xyz y w por separado (el visitante no
     // tiene Vec4). Cero = sin datos.
     static constexpr Meta kDataXyz[kInstanceDataCount] = {

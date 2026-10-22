@@ -23,6 +23,7 @@
     <tr><td><code>Value getActiveDevice(...)</code></td><td>ultimo dispositivo usado: keyboard, gamepad o touch Devuelve: texto</td></tr>
     <tr><td><code>Value getAxis(texto)</code></td><td>-1..1: Horizontal (A/D), Vertical (W/S), Mouse X, Mouse Y Devuelve: numero</td></tr>
     <tr><td><code>Value getBindings(texto)</code></td><td>lista {context, key} de las teclas de una accion Devuelve: lista de {context, key}</td></tr>
+    <tr><td><code>Value getCursorLockMode(...)</code></td><td>el modo que pidio el juego: &quot;none&quot;, &quot;locked&quot; o &quot;confined&quot; Devuelve: texto</td></tr>
     <tr><td><code>Value getGamepadAxis(texto, valor)</code></td><td>eje del mando: leftx, lefty, rightx, righty, lt, rt (con zona muerta) Devuelve: numero</td></tr>
     <tr><td><code>Value getGamepadButton(texto, valor)</code></td><td>boton del mando mantenido: a, b, x, y, lb, rb, ls, rs, start, back, up, down, left, right; mando 1..4 (opcional) Devuelve: bool</td></tr>
     <tr><td><code>Value getGamepadButtonDown(texto, valor)</code></td><td>pulsado este frame Devuelve: bool</td></tr>
@@ -40,7 +41,8 @@
     <tr><td><code>Value hasMappingContext(texto)</code></td><td>esta activo? Devuelve: bool</td></tr>
     <tr><td><code>Value isActionOngoing(texto)</code></td><td>en curso (Hold todavia sin completar...) Devuelve: bool</td></tr>
     <tr><td><code>Value isActionTriggered(texto)</code></td><td>disparada este frame (segun sus triggers) Devuelve: bool</td></tr>
-    <tr><td><code>Value isCursorLocked(...)</code></td><td>esta capturado? Devuelve: bool</td></tr>
+    <tr><td><code>Value isCursorLocked(...)</code></td><td>esta capturado ahora? (false tras Escape en el editor o sin foco) Devuelve: bool</td></tr>
+    <tr><td><code>Value isCursorVisible(...)</code></td><td>el juego pidio el cursor visible? Devuelve: bool</td></tr>
     <tr><td><code>Value isGamepadConnected(valor)</code></td><td>hay un mando? (o ese mando, 1..4) Devuelve: bool</td></tr>
     <tr><td><code>Value isMobile(...)</code></td><td>movil o pantalla tactil Devuelve: bool</td></tr>
     <tr><td><code>Value lockCursor(activar)</code></td><td>captura el raton (primera persona); false lo suelta</td></tr>
@@ -50,6 +52,8 @@
     <tr><td><code>Value removeMappingContext(texto)</code></td><td>desactiva un contexto</td></tr>
     <tr><td><code>Value resetBindings(...)</code></td><td>vuelve a las teclas del proyecto</td></tr>
     <tr><td><code>Value saveBindings(...)</code></td><td>guarda las teclas cambiadas (entre partidas)</td></tr>
+    <tr><td><code>Value setCursorLockMode(texto)</code></td><td>modo del cursor: &quot;none&quot; (libre), &quot;locked&quot; (oculto, en el centro) o &quot;confined&quot; (sin salir de la ventana)</td></tr>
+    <tr><td><code>Value setCursorVisible(activar)</code></td><td>muestra u oculta el cursor sobre el juego (Locked siempre lo oculta)</td></tr>
     <tr><td><code>Value setGamepadVibration(valor, valor2, valor3, valor4)</code></td><td>vibra el mando: motor grave y agudo (0..1), segundos (0 = hasta pararla con 0, 0) y mando 1..4 (sin el, todos) Devuelve: bool</td></tr>
     <tr><td><code>Value setTouchButton(texto, activar)</code></td><td>muestra u oculta un boton tactil por su texto Devuelve: bool</td></tr>
     <tr><td><code>Value setTouchControls(activar)</code></td><td>muestra u oculta los controles tactiles</td></tr>

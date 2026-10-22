@@ -193,6 +193,29 @@ void registerVfx(Runtime& rt) {
         const vfx::VfxSystem* s = vfx::activeSystem();
         return api::Value(s != nullptr ? static_cast<int>(s->aliveCount(e)) : 0);
     }, {}, {"", "particulas vivas de su VisualEffect", "numero"}, true);
+    // Presupuesto: en su VisualEffect, o en su VfxGroup (lo crea si no tiene
+    // ninguno de los dos: la raiz de una habilidad agrupa todos sus efectos).
+    const auto budgetTarget = [&rt](api::Call& c, const auto& apply) {
+        ecs::Entity e = rt.selfEntity(c);
+        if (!e.valid()) return;
+        if (vfx::VisualEffect* v = e.tryGet<vfx::VisualEffect>()) apply(v->local_player, v->priority);
+        if (vfx::VfxGroup* g = e.tryGet<vfx::VfxGroup>()) {
+            apply(g->local_player, g->priority);
+        } else if (!e.has<vfx::VisualEffect>()) {
+            vfx::VfxGroup& added = e.add<vfx::VfxGroup>();
+            apply(added.local_player, added.priority);
+        }
+    };
+    api.method("Entity", "setEffectLocalPlayer", [budgetTarget](api::Call& c) {
+        const bool on = c.boolean(0, true);
+        budgetTarget(c, [on](bool& local, int&) { local = on; });
+        return api::Value{};
+    }, {"true", "presupuesto de VFX: del jugador local (nunca se descarta); en la raiz de una habilidad vale para todo el grupo"});
+    api.method("Entity", "setEffectPriority", [budgetTarget](api::Call& c) {
+        const int value = static_cast<int>(std::clamp<long long>(c.integer(0, 0), -100, 100));
+        budgetTarget(c, [value](bool&, int& priority) { priority = value; });
+        return api::Value{};
+    }, {"2", "presupuesto de VFX: con el tope lleno se quedan antes los de mas prioridad (-100..100)"});
 
     // Canal de datos: el juego apunta eventos (impactos que confirma el
     // servidor...) y un solo efecto con "Al recibir un evento de la GPU" en

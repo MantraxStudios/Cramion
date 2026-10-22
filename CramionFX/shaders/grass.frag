@@ -88,6 +88,10 @@ void main() {
     strand = dot(strand, strand) > 1e-8 ? normalize(strand) : normalize(cross(across, n) + vec3(0.0, 1e-4, 0.0));
     float translucency = mix(0.4, 0.7, v_height) * mix(0.35, 1.0, sun_t);
     surface_shading = vec4(7.0 / 255.0, translucency, shadingEncodeAngle(n, cross(strand, n)), mix(0.3, 0.7, v_height));
+    // Decals: los de la raiz de la brizna (la caja del suelo), mirando hacia
+    // arriba: un circulo o una marca en el suelo tine la hierba que lo cubre
+    // en vez de quedar tapado por ella.
+    surface_decal_root = vec4(v_world_position - vec3(0.0, max(v_above, 0.0), 0.0), 1.0);
     // aa_normal = la cara sin redondear: el redondeo por pixel no debe subir
     // la rugosidad del antialiasing especular.
     writeSurface(vec4(clamp(color, 0.0, 1.0), 1.0), n, n, vec3(0.0, 0.0, 1.0), face, 0.0, 0.5, occlusion, vec3(0.0),

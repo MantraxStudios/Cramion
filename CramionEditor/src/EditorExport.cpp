@@ -301,7 +301,11 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
         if (cpp_scripts_.hasSources()) {
             if (!cpp_scripts_.upToDate()) {
                 while (cpp_scripts_.compiling()) Sleep(20);
-                cpp_scripts_.takeCompileResult();
+                // (La que estaba en marcha cuenta como terminada para cpp_compile_status.)
+                if (std::optional<scripting::CppCompileResult> taken = cpp_scripts_.takeCompileResult()) {
+                    cpp_last_result_ = std::move(*taken);
+                    cpp_compile_done_job_ = cpp_compile_job_;
+                }
                 const scripting::CppCompileResult built = cpp_scripts_.compile();
                 cpp_compile_errors_ = built.errors;
                 if (!built.ok) {

@@ -118,6 +118,11 @@ struct MeshRenderer {
     float emission_scale = 1.0f;
     // false: los decals no lo pintan (el indicador de un area sobre un heroe).
     bool receive_decals = true;
+    // Con alpha < 1, fundido suave (se mezcla en la pasada de los
+    // transparentes, como un material alfa) en vez del tramado: sin
+    // "ajedrezado" en alas, capas o al aparecer. Cuesta como un transparente
+    // mientras se funde y puede verse por dentro (caras de atras).
+    bool smooth_fade = false;
     // Datos propios del objeto para su .crshader: INSTANCE_DATA(0) e
     // INSTANCE_DATA(1) (entity().setMaterialParam(0, x, y, z, w)). Cero = nada.
     static constexpr int kInstanceDataCount = 2;

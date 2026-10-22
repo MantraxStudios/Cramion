@@ -885,20 +885,34 @@ inline bool hitFromValue(const Value& r, RaycastHit* hit) {
     }
     return true;
 }
-/// Rayo solo contra las capas de layer_mask (bit i = capa i; Physics::layerMask("Default", "Terreno")).
+/// Si una consulta toca los triggers: UseGlobal = Project Settings > Physics (queries_hit_triggers).
+enum class QueryTriggers { UseGlobal = 0, Collide = 1, Ignore = 2 };
+/// (interno) QueryTriggers al argumento de la API (nil, true o false).
+inline Value triggersValue(QueryTriggers triggers) {
+    return triggers == QueryTriggers::UseGlobal ? Value() : Value(triggers == QueryTriggers::Collide);
+}
+/// Rayo solo contra las capas de layer_mask (bit i = capa i; Physics::layerMask("Default", "Terreno")); triggers: si los toca.
 inline bool raycast(const Vec3& origin, const Vec3& direction, float max_distance, RaycastHit* hit, std::uint32_t layer_mask,
-                    Entity ignore = {}) {
+                    Entity ignore = {}, QueryTriggers triggers = QueryTriggers::UseGlobal) {
     const Value r = cramion::detail::api("Physics.raycast", Values{Value(origin), Value(direction), Value(max_distance),
                                                                     Value(static_cast<double>(layer_mask)),
-                                                                    ignore.id() != 0 ? Value(ignore) : Value()});
+                                                                    ignore.id() != 0 ? Value(ignore) : Value(),
+                                                                    triggersValue(triggers)});
     return hitFromValue(r, hit);
+}
+/// Rayo con las capas por defecto que toca o ignora los triggers (QueryTriggers::Ignore: solo colliders solidos).
+inline bool raycast(const Vec3& origin, const Vec3& direction, float max_distance, RaycastHit* hit, QueryTriggers triggers,
+                    Entity ignore = {}) {
+    return raycast(origin, direction, max_distance, hit, kDefaultLayers, ignore, triggers);
 }
 /// Esfera de `radius` que avanza desde origin (colision de camara con grosor, ataques); true si choca.
 inline bool sphereCast(const Vec3& origin, float radius, const Vec3& direction, float max_distance, RaycastHit* hit,
-                       std::uint32_t layer_mask = kDefaultLayers, Entity ignore = {}) {
+                       std::uint32_t layer_mask = kDefaultLayers, Entity ignore = {},
+                       QueryTriggers triggers = QueryTriggers::UseGlobal) {
     const Value r = cramion::detail::api("Physics.sphereCast", Values{Value(origin), Value(radius), Value(direction), Value(max_distance),
                                                                        Value(static_cast<double>(layer_mask)),
-                                                                       ignore.id() != 0 ? Value(ignore) : Value()});
+                                                                       ignore.id() != 0 ? Value(ignore) : Value(),
+                                                                       triggersValue(triggers)});
     return hitFromValue(r, hit);
 }
 }  // namespace Physics

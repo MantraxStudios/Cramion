@@ -332,7 +332,12 @@ void EditorApp::applyAssetScan() {
                 break;
             case assets::AssetType::Material:
                 if (sync_) sync_->reloadMaterial(uuid, /*from_disk=*/true);
+                effectsAssetChanged(uuid);  // el de la salida Malla de un efecto
                 if (!added) ++materials;
+                break;
+            case assets::AssetType::VisualEffect:
+                effectsAssetChanged(uuid);
+                if (!added) ++others;
                 break;
             case assets::AssetType::AnimationClip:
                 if (sync_ && !added) sync_->reloadAnimationClip(uuid);
@@ -363,7 +368,9 @@ void EditorApp::applyAssetScan() {
         if (change.kind == assets::FileWatcher::Kind::Removed) continue;
         const std::string extension = lower(dialogs::utf8(change.path.extension()));
         if (isTextureFile(extension)) {
-            if (sync_ && sync_->reloadTextureFile(assetRelative(change.path)) > 0) ++textures;
+            const std::string relative = assetRelative(change.path);
+            if (sync_ && sync_->reloadTextureFile(relative) > 0) ++textures;
+            textures += effectsTextureChanged(relative);  // las de los efectos (VFX Graph)
         } else if (extension == assets::kSurfaceShaderExtension) {
             shaders = true;
         } else if (video::isVideoFile(change.path)) {

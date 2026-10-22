@@ -164,6 +164,8 @@ public:
     static constexpr vk::Format kHdrFormat = vk::Format::eR16G16B16A16Sfloat;
     static constexpr vk::Format kLdrFormat = vk::Format::eR8G8B8A8Unorm;
     static constexpr vk::Format kSsaoFormat = vk::Format::eR16G16Sfloat;
+    // Mascara reactiva de FSR 3 (upscaler_reactive.frag).
+    static constexpr vk::Format kReactiveFormat = vk::Format::eR8Unorm;
     static constexpr vk::Extent2D kSkyLutExtent{256, 128};
 
     VulkanRenderer() = default;
@@ -877,6 +879,16 @@ public:
     // Malla y color del terreno de la escena de rayos calculados en segundo
     // plano (la escena se rehace cuando estan). CVar render.rt.AsyncTerrain.
     void setRayTracingAsyncTerrain(bool async) { rt_async_terrain_ = async; }
+    // TAA (CVars render.taa.*): peso maximo del frame nuevo (0,12 = como
+    // siempre; mas = mas nitido y menos suave), el que toma donde la mascara
+    // reactiva esta llena (transparentes encima: VFX, particulas, sprites,
+    // lluvia, .crshader transparentes) y la fuerza de esa mascara (0 = sin
+    // ella; tambien la de FSR 3). Cada frame, sin coste.
+    void setTaaTuning(float frame_weight, float reactive_weight, float reactive_strength) {
+        taa_frame_weight_ = std::clamp(frame_weight, 0.02f, 0.5f);
+        taa_reactive_weight_ = std::clamp(reactive_weight, 0.0f, 1.0f);
+        taa_reactive_strength_ = std::clamp(reactive_strength, 0.0f, 4.0f);
+    }
     // Quien ejecuta las tareas en segundo plano de CramionFX (el sistema de
     // jobs de CramionCore). Sin el, un hilo propio. Al arrancar.
     void setTaskScheduler(TaskScheduler scheduler) { device_.setTaskScheduler(std::move(scheduler)); }
@@ -1275,7 +1287,7 @@ private:
     void bindMaterialPipeline(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                               const SkinnedModel::Material& material, std::int32_t& bound_shader,
                               GpuSkinnedPush& push, bool dissolve = false);
-    std::uint32_t pushSurfaceParams(std::uint32_t frame_index, const std::array<core::Vec4, 8>& params);
+    std::uint32_t pushSurfaceParams(std::uint32_t frame_index, const std::array<core::Vec4, asset::kSurfaceParamCount>& params);
     void drawGpuClusters(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                          std::uint32_t phase);
     void recordSsaoPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
@@ -1392,6 +1404,12 @@ private:
     // (recordFilterHistoryCopies), y la de este frame (updateUniforms).
     core::Mat4 scene_history_view_projection_ = core::Mat4::identity();
     core::Mat4 current_jittered_view_projection_ = core::Mat4::identity();
+    // La proyeccion con el jitter del TAA de este frame (sin escalado
+    // temporal, la misma que camera_projection_). Con ella (y con
+    // current_jittered_view_projection_) se dibujan los VFX, las particulas,
+    // la lluvia y los sprites: lo mismo que lo opaco y que su depth. Sin
+    // jitter, la historia del TAA los emborronaba (~1 px interno).
+    core::Mat4 jittered_projection_ = core::Mat4::identity();
     // Sombras por rayos de las luces locales (rt_shadows.comp): por pixel, las
     // 4 luces que mas aportan, cada canal = (luz + 1) * 32 + visibilidad (0..31).
     VulkanImage rt_shadow_mask_{};
@@ -1509,8 +1527,13 @@ private:
         std::vector<std::uint8_t> pixels;  // RGBA8
         std::uint32_t width = 0;
         std::uint32_t height = 0;
+        bool reload = false;  // la imagen cambio en disco: encima de su capa
     };
     std::array<std::shared_ptr<DecalTextureLoad>, kMaxDecalTextures> decal_loads_{};
+    // Fecha del archivo de cada ranura: si cambia (misma ruta, imagen nueva),
+    // loadDecalTexture la relee en su capa.
+    std::array<std::filesystem::file_time_type, kMaxDecalTextures> decal_texture_stamps_{};
+    void startDecalTextureLoad(std::uint32_t slot, const std::filesystem::path& file, bool reload);
     void adoptDecalTextures();
     float wetness_ = 0.0f;
     float puddles_ = 0.0f;
@@ -1790,6 +1813,10 @@ private:
         // Opacidad por instancia < 1 (scene::Actor::tint.w): se disuelve, con
         // la pipeline con recorte (bindMaterialPipeline).
         bool dissolve = false;
+        // Fundido suave (scene::Actor::smooth_fade) con opacidad < 1: no va al
+        // G-buffer; se dibuja mezclado en la pasada de los transparentes
+        // (recordGlassPass, glass.frag con mezcla alfa). Su sombra, igual.
+        bool smooth_fade = false;
         // Esa opacidad (0..1): la sombra se disuelve igual (recordActorShadows).
         float opacity = 1.0f;
         // Matrices en el buffer de huesos (huesos + la instancia, si hay).
@@ -2050,6 +2077,14 @@ private:
     VulkanImage upscaler_motion_{};
     FullscreenPass upscaler_motion_pass_{};
     std::vector<vk::raii::DescriptorSet> upscaler_motion_sets_;
+    // Mascara reactiva de FSR 3 (resolucion interna, R8): el alfa de la
+    // imagen HDR (la opacidad de los transparentes). El TAA lo lee directo.
+    VulkanImage upscaler_reactive_{};
+    FullscreenPass upscaler_reactive_pass_{};
+    std::vector<vk::raii::DescriptorSet> upscaler_reactive_sets_;
+    float taa_frame_weight_ = 0.12f;
+    float taa_reactive_weight_ = 0.5f;
+    float taa_reactive_strength_ = 1.0f;
     float camera_near_ = 0.1f;
     float camera_far_ = 1000.0f;
     float camera_fov_ = 1.2f;

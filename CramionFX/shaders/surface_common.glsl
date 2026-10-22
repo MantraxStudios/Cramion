@@ -2,13 +2,13 @@
 // stages (surface.vert y surface.frag lo incluyen tras declarar su push
 // constant y la camara).
 //
-// Propiedades del material: 8 vec4 por material en un storage buffer del
+// Propiedades del material: 16 vec4 por material en un storage buffer del
 // frame. En el pase de geometria push.pick_id no se usa para el picking: dice
-// en que bloque de 8 empiezan las de este material.
+// en que bloque de 16 empiezan las de este material.
 layout(std430, set = 0, binding = 5) readonly buffer SurfaceParams {
     vec4 surface_params[];
 };
-#define CRAMION_PARAM(i) surface_params[push.pick_id * 8u + uint(i)]
+#define CRAMION_PARAM(i) surface_params[push.pick_id * 16u + uint(i)]  // 16 = asset::kSurfaceParamCount
 
 // Color de vertice del modelo (COLOR_0, RGBA 0..1; blanco si no lo trae).
 // Lo definen surface.vert y surface.frag; en las demas plantillas, blanco.

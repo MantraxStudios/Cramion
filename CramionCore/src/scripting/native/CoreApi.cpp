@@ -329,10 +329,29 @@ std::uint32_t layerMaskArg(Runtime& rt, const api::Call& c, std::size_t i) {
     throw api::Error("mascara de capas: numero, nombre de capa o lista de nombres");
 }
 
+// Triggers en una consulta: nil = lo de Project Settings > Physics
+// (queries_hit_triggers); true / "collide" / "include" = tambien los toca;
+// false / "ignore" = solo colliders solidos.
+physics::QueryTriggers triggersArg(const api::Call& c, std::size_t i) {
+    const api::Value& v = c.arg(i);
+    if (v.isNil()) return physics::QueryTriggers::UseGlobal;
+    if (v.isBool()) return v.truthy() ? physics::QueryTriggers::Collide : physics::QueryTriggers::Ignore;
+    if (v.isString()) {
+        const std::string name = lowerText(v.asString());
+        if (name == "ignore" || name == "ignorar" || name == "no") return physics::QueryTriggers::Ignore;
+        if (name == "collide" || name == "include" || name == "incluir" || name == "si") return physics::QueryTriggers::Collide;
+        if (name == "global" || name.empty()) return physics::QueryTriggers::UseGlobal;
+    }
+    throw api::Error("triggers: true/\"collide\" (los toca), false/\"ignore\" (no) o nil (Project Settings)");
+}
+
 physics::QueryFilter queryFilter(Runtime& rt, const api::Call& c, std::size_t mask_arg, std::size_t ignore_arg) {
     physics::QueryFilter filter;
     filter.layer_mask = layerMaskArg(rt, c, mask_arg);
     if (c.has(ignore_arg)) filter.ignore = rt.entityArg(c, ignore_arg);
+    // Tras `ignorar`: si toca los triggers (las esferas trigger de los efectos
+    // desviaban la punteria).
+    filter.triggers = triggersArg(c, ignore_arg + 1);
     return filter;
 }
 
@@ -357,8 +376,9 @@ void registerPhysicsAndAudio(Runtime& rt) {
         physics::RaycastHit hit;
         if (!rt.physics->raycast(origin, direction, distance, hit, filter)) return api::Value{};
         return hitValue(rt, hit);
-    }, {"origen, direccion, distancia, mascara, ignorar",
-        "nil o {entity, point, normal, distance, layer, trigger}; mascara: numero, capa o lista de capas", "objeto"});
+    }, {"origen, direccion, distancia, mascara, ignorar, triggers",
+        "nil o {entity, point, normal, distance, layer, trigger}; mascara: numero, capa o lista de capas; "
+        "triggers: true (los toca), false (no) o nil (Project Settings > Physics)", "objeto"});
     // Una esfera que avanza (colision de camara, ataques con grosor).
     rt.native.function("Physics.sphereCast", [&rt](api::Call& c) {
         const Vec3 origin = c.vec3(0);
@@ -370,8 +390,8 @@ void registerPhysicsAndAudio(Runtime& rt) {
         physics::RaycastHit hit;
         if (!rt.physics->sphereCast(origin, radius, direction, distance, hit, filter)) return api::Value{};
         return hitValue(rt, hit);
-    }, {"origen, radio, direccion, distancia, mascara, ignorar",
-        "esfera que avanza: nil o {entity, point, normal, distance, layer, trigger}", "objeto"});
+    }, {"origen, radio, direccion, distancia, mascara, ignorar, triggers",
+        "esfera que avanza: nil o {entity, point, normal, distance, layer, trigger}; triggers como en raycast", "objeto"});
     rt.native.function("Physics.overlapSphere", [&rt](api::Call& c) {
         const Vec3 center = c.vec3(0);
         const float radius = static_cast<float>(c.number(1));
@@ -380,7 +400,8 @@ void registerPhysicsAndAudio(Runtime& rt) {
         const physics::QueryFilter filter = queryFilter(rt, c, 2, 3);
         for (const ecs::Entity& e : rt.physics->overlapSphere(center, radius, filter)) out.push_back(rt.entityValue(e));
         return api::Value(std::move(out));
-    }, {"centro, radio, mascara, ignorar", "los objetos que tocan la esfera", "lista de Entity"});
+    }, {"centro, radio, mascara, ignorar, triggers", "los objetos que tocan la esfera (triggers como en raycast)",
+        "lista de Entity"});
     // Mascara de capas por nombre: Physics.layerMask("Default", "Terreno").
     rt.native.function("Physics.layerMask", [&rt](api::Call& c) {
         std::uint32_t mask = 0;

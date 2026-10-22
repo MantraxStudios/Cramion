@@ -11,7 +11,8 @@ namespace cramion::gfx {
 void VulkanRenderer::recordSpritePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
     const vk::Extent2D extent = scene_color_.extent();
     if (extent.width == 0 || extent.height == 0) return;
-    if (!sprite_pass_.prepare(device_, frame_index, sprites_, camera_view_projection_)) return;
+    // Con el jitter del TAA, como lo opaco (jittered_projection_).
+    if (!sprite_pass_.prepare(device_, frame_index, sprites_, current_jittered_view_projection_)) return;
 
     // Como las particulas: la imagen HDR sigue como destino de color (solo hay
     // que ordenar las escrituras) y el depth de la escena en solo lectura.

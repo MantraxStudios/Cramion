@@ -241,8 +241,12 @@ struct OutputSettings {
     core::Vec2 ribbon_uv_scale{1.0f, 1.0f};
     core::Vec2 ribbon_uv_offset{0.0f, 0.0f};
     // Malla: el modelo (todas sus piezas juntas), como gira y su escala (por
-    // el tamano de la particula). Usa la textura de arriba con su UV.
+    // el tamano de la particula). Sin .crmat usa el color y la textura base
+    // del propio modelo; con mesh_output_texture, la textura de arriba con la
+    // UV de la malla (lo de antes: una textura de sprite con alfa casi 0 en
+    // la mayor parte hacia invisibles las hojas y astillas).
     assets::AssetRef mesh{{}, assets::AssetType::Model};
+    bool mesh_output_texture = false;
     gfx::VfxMeshOrient mesh_orient = gfx::VfxMeshOrient::Random;
     core::Vec3 mesh_scale{1.0f, 1.0f, 1.0f};
     // Hasta 3 modelos mas (variantes o niveles de LOD): cada particula usa el
@@ -346,13 +350,33 @@ struct BudgetCandidate {
     float distance = 0.0f;      // a la camara
     bool in_view = true;        // dentro de la vista (con caja fija) o sin caja
     bool running = false;       // ya estaba vivo el frame anterior
-    // Salida: la decision.
-    enum class Decision : int { Run = 0, Hidden = 1, Paused = 2, Removed = 3 };
+    bool essential = false;     // del jugador local: siempre corre (ni distancia ni tope)
+    int priority = 0;           // con el tope lleno se quedan antes los de mas prioridad
+    // Salida: la decision. Finished: el efecto ya termino (sin emision
+    // pendiente ni particulas vivas): no cuenta ni se simula (VfxSystem;
+    // applyBudget no la da).
+    enum class Decision : int { Run = 0, Hidden = 1, Paused = 2, Removed = 3, Finished = 4 };
     Decision decision = Decision::Run;
 };
 // Aplica distancias, cuantos a la vez y la politica de cada tipo. Hidden:
 // fuera de la vista (se simula sin dibujar si no tiene bucle; si no, en pausa).
+// Los esenciales corren siempre y ocupan sitio los primeros; despues, por
+// prioridad, (DontCreate) los que ya corrian, los que se ven y los cercanos.
 void applyBudget(std::vector<BudgetCandidate>& candidates, const VfxScalability& scalability);
+
+// Un efecto sin emision pendiente (no emite, sin eventos ni rafagas
+// repartidas, sin canales de la GPU) cuya ultima particula ya murio: la
+// lectura de la GPU dice 0 (llega un par de frames tarde: hace falta
+// `quiet_seconds` >= 0,25 s sin nacer nada) o pasaron mas de su vida maxima.
+struct FinishedState {
+    bool emitting = false;         // emite o espera su start_delay (con bucle, siempre)
+    bool pending = false;          // eventos, rafagas repartidas o canales de la GPU
+    float quiet_seconds = 0.0f;    // s de juego sin nacer nada
+    float max_lifetime = 5.0f;     // la vida mas larga de sus particulas
+    bool alive_known = false;      // hay lectura de la GPU
+    std::uint32_t alive = 0;       // particulas vivas (con los subemisores)
+};
+bool effectFinished(const FinishedState& state);
 
 // Rafagas repartidas. takeSpread: cuantas nacen este frame. Con frames > 1,
 // `added` va a lo pendiente y sale en `frames` frames (a `rate` por frame,
@@ -492,7 +516,29 @@ struct VisualEffect {
     int seed = 0;                   // 0 = al azar cada vez
     float simulation_speed = 1.0f;
     bool preview_in_editor = true;  // simular en la escena si esta seleccionado
+    // Aparta la hierba en este radio (m) alrededor del efecto, sin fisica:
+    // circulos de suelo y efectos a ras de suelo sin briznas encima. 0 = no.
+    float grass_radius = 0.0f;
     std::vector<ParamOverride> params;
+    // Presupuesto (escalabilidad): del jugador local = nunca se descarta (ni
+    // por distancia ni por tope) y usa los limites del tipo Heroe; prioridad:
+    // con el tope lleno se quedan antes los de mas prioridad. Un VfxGroup en
+    // un padre manda sobre los dos (se suma: basta con que uno lo pida).
+    bool local_player = false;
+    int priority = 0;
+
+    void reflect(ecs::PropertyVisitor& v);
+};
+
+// Grupo de efectos (una habilidad: el prefab con sus 20-50 VisualEffect). El
+// presupuesto lo cuenta como UNA instancia del tipo mas importante de sus
+// efectos y lo crea o lo quita entero, nunca a medias. Va en el padre comun
+// (la raiz del prefab de la habilidad). Sin VfxGroup, con vfx.groupPrefabs
+// (por defecto 1) hace de grupo la raiz del prefab mas cercano (solo para los
+// efectos Heroe, Combate e Impacto: los de Ambiente de una celda no).
+struct VfxGroup {
+    bool local_player = false;  // del jugador local: el grupo entero nunca se descarta
+    int priority = 0;           // con el tope lleno se quedan antes los de mas prioridad
 
     void reflect(ecs::PropertyVisitor& v);
 };
@@ -539,6 +585,15 @@ public:
     void clearGraphOverride(const Uuid& uuid);
     // Vuelve a leer los .crvfx (se guardo uno, o se refresco el proyecto).
     void reloadGraphs();
+    // Recarga en caliente: un .crvfx (o un .crmat de la salida Malla) cambio
+    // en disco. Los efectos que lo usan empiezan de nuevo con el nuevo.
+    void reloadAsset(const Uuid& uuid);
+    // Una imagen (ruta dentro de Assets/) cambio en disco: si la usa algun
+    // efecto, se relee en su ranura. Devuelve cuantas se releyeron (0 o 1).
+    int reloadTextureFile(const std::string& relative);
+    // Lo que le falta a un efecto para dibujarse entero (textura o malla que
+    // no cabe o no se pudo leer); vacio si nada. Lo muestra su editor.
+    std::string resourceWarning(const Uuid& graph) const;
     // El asset de un efecto (cargado si hace falta); nullptr si no hay.
     const VfxGraph* graph(const Uuid& uuid);
 
@@ -570,6 +625,10 @@ public:
     // La camara de este frame (antes de update): distancia y vista de cada
     // efecto con tipo o caja fija. Sin ella, ni distancia ni vista.
     void setCamera(const core::Vec3& position, const core::Mat4& view_projection);
+    // Altura del suelo (terreno) en (x, z) del mundo: los bloques CollidePlane
+    // "Sobre el terreno" y CollideDepth "Suelo sin la vista" (una consulta por
+    // efecto y frame bajo su emisor). Sin ella, esos bloques no chocan.
+    void setGroundQuery(std::function<bool(float x, float z, float& height)> query) { ground_query_ = std::move(query); }
     // Tabla propia (en lugar de defaultScalability de vfx.quality); reset vuelve a la de serie.
     void setScalability(const VfxScalability& table);
     void resetScalability();
@@ -622,6 +681,7 @@ private:
         std::uint32_t spread_rate = 0;
         float scale_carry = 0.0f;
         bool budget_running = false;
+        float quiet = 0.0f;  // s de juego sin nacer nada (effectFinished)
         // Cintas: lo del ultimo frame, para dejar la cola apagandose (Ghost)
         // si la entidad desaparece.
         bool ribbon = false;
@@ -671,6 +731,22 @@ private:
     // por clave) y las que no caben (no se reintenta cada frame).
     std::unordered_map<Uuid, std::shared_ptr<const gfx::VfxMeshData>> output_meshes_;
     std::unordered_map<Uuid, bool> output_mesh_failed_;
+    // Salida Malla sin .crmat: el color y la textura base del modelo (la
+    // ranura en el pase, -2 sin cargar aun, -1 ninguna).
+    struct ModelLook {
+        bool ready = false;
+        core::Vec4 tint{1.0f, 1.0f, 1.0f, 1.0f};
+        std::filesystem::path file;  // textura base en disco (vacia = solo el color)
+        bool embedded = false;       // la trae dentro el archivo: no se puede leer aparte
+        int texture = -2;
+    };
+    ModelLook& modelLook(const Uuid& model);
+    std::unordered_map<Uuid, ModelLook> model_looks_;
+    // Ranuras de textura y malla del pase: si se soltaron (resourceEpoch
+    // cambio), lo guardado se vuelve a pedir.
+    void syncResourceEpoch(gfx::VulkanRenderer& renderer);
+    std::uint64_t resource_epoch_ = ~std::uint64_t{0};
+    std::unordered_map<Uuid, std::string> resource_warnings_;
     // Materiales (.crmat) de la salida Malla, leidos una vez (reloadGraphs los
     // vuelve a leer).
     VfxMaterial& vfxMaterial(const Uuid& uuid);
@@ -693,11 +769,18 @@ private:
     // Presupuesto de este frame (planFrame) por entidad; las que no estan, Run.
     void planFrame(ecs::World& world, bool simulate, const std::vector<entt::entity>& preview);
     BudgetCandidate::Decision decisionFor(entt::entity handle) const;
+    // El tipo con el que cuenta un efecto: el del .crvfx, o Heroe si es del
+    // jugador local (planFrame).
+    EffectType effectiveType(entt::entity handle, const VfxGraph& graph) const;
+    // Ya termino (effectFinished): no cuenta en el presupuesto ni se simula.
+    bool instanceFinished(const Instance& inst, const VfxGraph& graph) const;
     // Lo que la calidad cambia en un efecto ya compilado (orden, salidas,
-    // capacidad, visible).
-    void applyTypeLimits(const VfxGraph& graph, BudgetCandidate::Decision decision, gfx::VfxInstanceDesc& desc) const;
-    // Cuantas nacen con la escala de particulas de su tipo (y lo repartido).
-    std::uint32_t scaledSpawn(const VfxGraph& graph, Instance& inst, std::uint32_t spawn, bool first, std::uint32_t warm) const;
+    // capacidad, visible), con los limites de `type`.
+    void applyTypeLimits(const VfxGraph& graph, EffectType type, BudgetCandidate::Decision decision,
+                         gfx::VfxInstanceDesc& desc) const;
+    // Cuantas nacen con la escala de particulas de `type` (y lo repartido).
+    std::uint32_t scaledSpawn(const VfxGraph& graph, EffectType type, Instance& inst, std::uint32_t spawn, bool first,
+                              std::uint32_t warm) const;
     // Los playAt de este frame (se suman a `descs`).
     void updateOneShots(float delta_seconds, std::vector<gfx::VfxInstanceDesc>& descs, VfxSystemStats& stats,
                         gfx::VulkanRenderer& renderer);
@@ -709,13 +792,24 @@ private:
     bool has_custom_scalability_ = false;
     VfxScalability frame_scalability_{};
     bool any_scalable_ = false;  // algun .crvfx cargado con tipo o caja fija (si no, planFrame no hace nada)
+    std::function<bool(float, float, float&)> ground_query_;
     bool has_camera_ = false;
     core::Vec3 camera_position_{};
     core::Mat4 camera_view_projection_ = core::Mat4::identity();
     float time_scale_ = 1.0f;
     std::unordered_map<entt::entity, BudgetCandidate::Decision> decisions_;
+    // Grupos (VfxGroup o la raiz del prefab): un candidato por grupo y, por
+    // efecto, su grupo (-1 = terminado: no cuenta).
     std::vector<BudgetCandidate> plan_scratch_;
     std::vector<entt::entity> plan_entities_;
+    std::vector<int> plan_member_group_;
+    std::vector<BudgetCandidate> plan_members_;  // cada efecto (vista y tipo propios)
+    std::unordered_map<entt::entity, int> plan_group_index_;
+    // Efectos del jugador local (cuentan como Heroe).
+    std::unordered_map<entt::entity, EffectType> type_overrides_;
+    // Grupos corriendo por tipo tras el ultimo planFrame (-1 = sin plan): el
+    // DontCreate de playAt cuenta grupos, no efectos sueltos.
+    std::array<int, kEffectTypes> planned_groups_{-1, -1, -1, -1};
     // id de cada instancia de este frame -> su tipo (estadisticas).
     std::vector<std::pair<std::uint64_t, int>> type_ids_;
     struct OneShot {

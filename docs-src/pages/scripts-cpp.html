@@ -163,7 +163,7 @@ CRAMION_SCRIPT(Jugador)</code></pre>
   <li><em>Ventana &gt; Variables (CVars) y memoria</em>: todas, con filtro, para editarlas o volver al valor por defecto, y la memoria del editor, del equipo, de la VRAM y del proceso de scripts.</li>
   <li>Consola (la línea de comandos de Scripts): <code>nombre</code> muestra el valor, <code>nombre valor</code> lo cambia, <code>reset nombre</code>, <code>cvars filtro</code> lista.</li>
   <li>Scripts de C++: <code>CVar&lt;T&gt; nombre("juego.Algo", defecto, "descripción", CVarSaved)</code> para declarar una y <code>CVars::get(nombre)</code>, <code>CVars::set(nombre, valor)</code> para leer o cambiar cualquiera (también las del motor).</li>
-  <li>MCP: <code>cvar_list</code>, <code>cvar_set</code> y <code>cpp_compile</code> (compila y devuelve errores; también crea scripts).</li>
+  <li>MCP: <code>cvar_list</code>, <code>cvar_set</code> y <code>cpp_compile</code> (compila en segundo plano; también crea scripts) y <code>cpp_compile_status</code> (estado y errores).</li>
 </ul>
 <p>Desde C++ en el motor:</p>
 <pre><code>static cvar::CVar&lt;int&gt; g_pool("mem.PoolMB", 256, "Tamano del pool", cvar::Saved, 16, 4096);

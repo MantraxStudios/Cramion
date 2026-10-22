@@ -507,16 +507,25 @@ void registerUi(Runtime& rt) {
                  const ecs::Entity x = rt.selfEntity(c);
                  if (const auto* s = x.tryGet<ui::Slider>()) return s->value;
                  if (const auto* t = x.tryGet<ui::Toggle>()) return t->on ? 1.0f : 0.0f;
+                 // Desplegable: la opcion elegida desde 1 (como su on_change).
+                 if (const auto* d = x.tryGet<ui::Dropdown>()) return static_cast<float>(d->value + 1);
                  return 0.0f;
              },
              [&rt](api::Call& c) -> api::Value {
                  const ecs::Entity x = rt.selfEntity(c);
                  const auto value = static_cast<float>(c.number(0));
-                 if (auto* s = x.tryGet<ui::Slider>()) s->value = std::clamp(value, std::min(s->min, s->max), std::max(s->min, s->max));
+                 if (auto* s = x.tryGet<ui::Slider>()) {
+                     float v = std::clamp(value, std::min(s->min, s->max), std::max(s->min, s->max));
+                     if (s->whole_numbers) v = std::round(v);
+                     s->value = v;
+                 }
                  if (auto* t = x.tryGet<ui::Toggle>()) t->on = value != 0.0f;
+                 if (auto* d = x.tryGet<ui::Dropdown>(); d != nullptr && !d->options.empty()) {
+                     d->value = std::clamp(static_cast<int>(std::lround(value)) - 1, 0, static_cast<int>(d->options.size()) - 1);
+                 }
                  return {};
              },
-             {"", "valor de su Slider o Casilla", "numero"});
+             {"", "valor de su Slider o Casilla (Desplegable: la opcion elegida, desde 1)", "numero"});
     property(rt, "interactable",
              [&rt](api::Call& c) -> api::Value {
                  const ecs::Entity x = rt.selfEntity(c);
@@ -524,6 +533,7 @@ void registerUi(Runtime& rt) {
                  if (const auto* s = x.tryGet<ui::Slider>()) return s->interactable;
                  if (const auto* f = x.tryGet<ui::InputField>()) return f->interactable;
                  if (const auto* t = x.tryGet<ui::Toggle>()) return t->interactable;
+                 if (const auto* d = x.tryGet<ui::Dropdown>()) return d->interactable;
                  return false;
              },
              [&rt](api::Call& c) -> api::Value {
@@ -533,9 +543,13 @@ void registerUi(Runtime& rt) {
                  if (auto* s = x.tryGet<ui::Slider>()) s->interactable = on;
                  if (auto* f = x.tryGet<ui::InputField>()) f->interactable = on;
                  if (auto* t = x.tryGet<ui::Toggle>()) t->interactable = on;
+                 if (auto* d = x.tryGet<ui::Dropdown>()) {
+                     d->interactable = on;
+                     if (!on) d->open = false;  // su lista abierta se cierra
+                 }
                  return {};
              },
-             {"", "su boton/slider/campo responde", "bool"});
+             {"", "su boton/slider/campo/casilla/desplegable responde", "bool"});
     property(rt, "color",
              [&rt](api::Call& c) -> api::Value {
                  const ecs::Entity x = rt.selfEntity(c);
@@ -639,6 +653,18 @@ void registerUi(Runtime& rt) {
                return out;
            },
            {"", "rectangulo en pantalla (pixeles de la vista, ultimo frame): {x, y, width, height} o nil si no se ve", "objeto"});
+    // Escala del Canvas (pixeles de la vista por unidad del Canvas): para
+    // colocar en la interfaz algo medido en pixeles (Input.mouse, un punto
+    // del mundo en pantalla): unidades = pixeles / UI.scale().
+    rt.native.function(
+        "UI.scale",
+        [&rt](api::Call& c) -> api::Value {
+            if (rt.ui == nullptr || rt.world == nullptr) return 1.0f;
+            const ecs::Entity e = c.has(0) ? rt.entityArg(c, 0) : ecs::Entity{};
+            return rt.ui->scaleFor(*rt.world, e.valid() ? e.handle() : entt::entity{entt::null});
+        },
+        {"elemento", "pixeles de la vista por unidad de su Canvas (sin elemento: el primer Canvas de pantalla); unidades = pixeles / escala",
+         "numero"});
 }
 
 // --- Malla, material y sombras del MeshRenderer ---
@@ -692,7 +718,7 @@ void registerRendering(Runtime& rt) {
            {"0, \"Materials/Brillo.crmat\"", "material .crmat de un hueco de su MeshRenderer", "bool"});
     // Parametros por instancia (como el MaterialPropertyBlock de Unity o el
     // Custom Primitive Data de Unreal): sin otro .crmat ni romper el lote.
-    //   "tint" (Vec3 o r, g, b), "alpha", "emission", "receiveDecals": los del
+    //   "tint" (Vec3 o r, g, b), "alpha", "emission", "receiveDecals", "smoothFade": los del
     //     MeshRenderer; "tint" y "alpha" tambien los de su ParticleSystem.
     //   0 o 1: INSTANCE_DATA(i) de su .crshader (x, y, z, w; un Vec3 con w
     //     aparte, un Quat o una lista de hasta 4 numeros).
@@ -738,9 +764,13 @@ void registerRendering(Runtime& rt) {
                        r->receive_decals = c.boolean(1, true);
                        return true;
                    }
+                   if (name == "smoothFade") {
+                       r->smooth_fade = c.boolean(1, true);
+                       return true;
+                   }
                    if (name != "data0" && name != "data1") {
                        rt.write(2, "setMaterialParam: parametro desconocido \"" + name +
-                                       "\" (tint, alpha, emission, receiveDecals, 0 o 1)");
+                                       "\" (tint, alpha, emission, receiveDecals, smoothFade, 0 o 1)");
                        return false;
                    }
                }
@@ -764,7 +794,8 @@ void registerRendering(Runtime& rt) {
                return true;
            },
            {"parametro, valor, y, z, w",
-            "por instancia, sin otro .crmat: \"tint\" (Vec3), \"alpha\", \"emission\", \"receiveDecals\" o 0/1 = "
+            "por instancia, sin otro .crmat: \"tint\" (Vec3), \"alpha\", \"emission\", \"receiveDecals\", "
+            "\"smoothFade\" (alpha con fundido suave en vez de tramado) o 0/1 = "
             "INSTANCE_DATA(i) de su .crshader (x, y, z, w); tint y alpha tambien en su ParticleSystem",
             "bool"});
     property(rt, "castShadows",

@@ -26,7 +26,7 @@
   <header class="site-header">
     <div class="header-inner">
       <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.6.2</span></a>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt="" width="24" height="24"><span>Cramion</span><span class="tag">Docs</span><span class="ver">v2.6.3</span></a>
       <nav class="main-nav" aria-label="Secciones">
         <a href="index.html" data-nav="index">Documentación</a>
         <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
@@ -158,7 +158,7 @@
     <tr><td><code>list_entities</code>, <code>get_entity</code></td><td>Ver la escena y cada objeto con todos sus componentes.</td></tr>
     <tr><td><code>create_entity</code>, <code>modify_entity</code>, <code>delete_entity</code>, <code>duplicate_entity</code></td><td>Crear primitivas, luces, cámaras, terreno, agua, vehículos, mundos de bloques; mover, girar, emparentar.</td></tr>
     <tr><td><code>list_component_types</code>, <code>set_component</code>, <code>remove_component</code></td><td>Cualquier componente del motor y cualquiera de sus campos.</td></tr>
-    <tr><td><code>create_script</code>, <code>cpp_compile</code>, <code>create_shader</code>, <code>read_file</code>, <code>write_file</code></td><td>Escribir scripts de C++ (<code>create_script</code> crea el <code>.h</code> y el <code>.cpp</code> desde la plantilla, o el <code>.cpp</code> con el código dado, y lo engancha a un objeto) y shaders, con los errores de compilación de vuelta (<code>cpp_compile</code> para el C++).</td></tr>
+    <tr><td><code>create_script</code>, <code>cpp_compile</code>, <code>create_shader</code>, <code>read_file</code>, <code>write_file</code></td><td>Escribir scripts de C++ (<code>create_script</code> crea el <code>.h</code> y el <code>.cpp</code> desde la plantilla, o el <code>.cpp</code> con el código dado, y lo engancha a un objeto) y shaders, con los errores de compilación de vuelta. <code>cpp_compile</code> compila el C++ en segundo plano y responde al momento con un número de compilación; los errores llegan con <code>cpp_compile_status</code> (el editor no se para y no hay 504 en compilaciones largas). <code>play</code> tampoco espera: con C++ por compilar responde <code>mode: "starting"</code> y entra solo al terminar.</td></tr>
     <tr><td><code>paint_prefabs</code></td><td>Pinta prefabs (árboles, rocas…) alrededor de un punto con densidad, separación y pendiente máxima, o los borra.</td></tr>
     <tr><td><code>create_material</code>, <code>assign_material</code></td><td>Materiales PBR o con shader propio. Con <code>from_image</code> (la imagen de color de un pack de escaneos) encuentra sola las demás: normal, rugosidad o gloss, AO, displacement (parallax, <code>height_scale</code> en metros), cavidad, specular y bump.</td></tr>
     <tr><td><code>create_model</code>, <code>import_file</code>, <code>instantiate</code>, <code>create_prefab</code></td><td>Modelos desde OBJ o archivos, ponerlos en la escena, prefabs.</td></tr>
@@ -204,7 +204,7 @@
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.6.2. Gratis para hacer y vender tus juegos.</span>
+      <span class="foot-brand"><img src="../img/icon.png" alt="" width="20" height="20">Cramion Engine · manual de la 2.6.3. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="../store/index.html">Assets</a>

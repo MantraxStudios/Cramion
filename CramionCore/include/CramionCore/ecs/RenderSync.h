@@ -286,6 +286,9 @@ public:
     const std::vector<physbone::Chain>* physBoneChains(World& world, Entity e);
     // El esqueleto (nodos y huesos) de `e` o de su pieza animada, y su escala.
     const asset::ModelData* skeletonData(World& world, Entity e, float* scale = nullptr);
+    // Altura del terreno (los de este frame) en (x, z) del mundo; false sin
+    // terreno debajo. Para los efectos (VfxSystem::setGroundQuery).
+    bool terrainHeight(float x, float z, float& height) const { return groundHeight(x, z, height); }
 
 private:
     struct PartKey {

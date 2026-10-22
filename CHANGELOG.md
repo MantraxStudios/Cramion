@@ -1,5 +1,47 @@
 # Cambios
 
+## 2.6.3 (sin publicar)
+
+Efectos nítidos y que no desaparecen en combate: respuesta a la petición de Keryan del 21-10-2026 (VFX, imagen y nitidez), apartados 1 a 5.
+
+### Nitidez de los efectos con TAA y escalado (apartado 1)
+- **Jitter del TAA en todo lo que se dibuja encima** (`VulkanRendererVfx.cpp`, `VulkanRendererSprites.cpp`, `recordParticlePass`, `recordPrecipitationPass`): el VFX Graph, las partículas, la lluvia y los sprites se dibujan con la misma proyección con jitter que lo opaco y su profundidad (`jittered_projection_`, `current_jittered_view_projection_`). Antes iban sin él y la historia los emborronaba (~1 px interno, ~1,7 px de salida al 58 %), mientras las mallas `.crshader` transparentes salían nítidas. Las matrices sin jitter siguen para el culling, las luces y los vectores de movimiento.
+- **Máscara reactiva**: los transparentes (VFX Graph, partículas, sprites, lluvia y `.crshader` transparentes) acumulan su opacidad en el alfa de la imagen HDR, que en la vista principal empieza a 0 (`lighting.frag` y el path tracing ya no escriben ahí la distancia; las capturas de la sonda sí). Los efectos aditivos marcan cuánto aportan. Sin attachments ni pases nuevos para el TAA del motor: `taa.frag` lee la máscara (dilatada 1 px con los vecinos que ya leía), sube el peso del frame nuevo hacia `render.taa.ReactiveWeight` y estrecha el recorte (de 1,25σ a 0,75σ) donde la hay. Sin estela en proyectiles, chispas y humo.
+- **FSR 3 recibe la máscara** como `reactive` y `transparencyAndComposition` (`upscaler_reactive.frag`: un R8 a la resolución interna, solo con FSR 3; `UpscaleDispatch::reactive`).
+- **CVars del TAA**: `render.taa.FrameWeight` (0,12, el peso de antes), `render.taa.ReactiveWeight` (0,5) y `render.taa.ReactiveStrength` (1; 0 apaga la máscara en el TAA y en FSR 3).
+- **Samplers de VFX y Decals** con anisotropía y el sesgo de mips de la compensación del escalado (`upscaleMipBias`), como los modelos y el terreno. Antes, al 58 %, un mip más bajo y sin anisotropía. Se rehacen al cambiar la calidad (`VfxPass::setTextureFiltering`, `applyTextureFiltering`).
+- **Halos aditivos** (`vfx.frag`, E6): en la mezcla premultiplicada, alfa 0 con color ya no se descarta ni sale negro (salvo con recorte de alfa propio).
+
+### Las habilidades ya no desaparecen en combate (apartado 2)
+- **Los efectos terminados no cuentan** (`VfxSystem::planFrame`, E21): un VisualEffect que no emite, sin eventos ni ráfagas pendientes y sin partículas vivas (lectura de la GPU, o pasada la vida máxima del bloque Lifetime, con al menos 0,25 s sin nacer nada) sale del presupuesto y deja de simularse (suelta su ranura de la GPU). `playEffect()`, un evento o un ciclo nuevo lo vuelven a empezar. Antes contaba hasta borrar la entidad: tres habilidades de 20-50 efectos llenaban el tope de Combate y, con DontCreate, las siguientes no salían.
+- **Presupuesto por grupo** (E5; componente nuevo `VfxGroup`; sin él, la raíz del prefab con `vfx.groupPrefabs`, solo Héroe, Combate e Impacto): un grupo ocupa una instancia del tipo más importante de sus efectos y se crea o se quita entero. Una habilidad de 23 emisores ya no llena el tope de Baja ni sale a trozos. `playAt` con DontCreate cuenta grupos.
+- **Efectos del jugador local** (`local_player` en el VisualEffect o en el VfxGroup, `entity().setEffectLocalPlayer(true)`): nunca se descartan, ni por distancia ni por tope; usan los límites de Héroe y entran los primeros. `priority` (`setEffectPriority(n)`, -100..100) ordena el resto: con el tope lleno salen antes los de otros jugadores y los de ambiente.
+- **`Physics.raycast` / `sphereCast` / `overlapSphere` con `triggers`** (argumento tras `ignorar`: `true` los toca, `false` no, `nil` = Project Settings > Physics); en el SDK de C++, `Physics::QueryTriggers`. Las esferas trigger de los efectos desviaban la puntería.
+
+### Topes de los efectos (apartado 3)
+- **Ranuras de textura del VFX Graph que se sueltan** (E17): hasta 256 (antes 64; según `maxPerStageResources` del dispositivo). Sin sitio se suelta la que lleva más tiempo sin usarse (nunca una del frame en curso ni del anterior); al salir de Play o cambiar de escena se sueltan las que nadie usa. La imagen vieja vive hasta que la GPU acaba (`retireAfterGpu`, sin esperas). Si de verdad no caben, aviso en la consola («[VFX] AVISO: …») y en el editor del efecto.
+- **Mallas de partículas sin el tope de 16** (E12): 128 ranuras y un pool de vértices e índices que crece ×2 sin `waitIdle` (hasta 2 M vértices). El tope cuenta las mallas vivas, no las cargadas en la sesión: las que ningún efecto usa se sueltan y su sitio se reutiliza tras los frames en vuelo. Aviso en la consola y en el editor del efecto.
+
+### Fallos de dibujo de efectos (apartado 4)
+- **Partícula de malla con su material** (E10): una salida Malla sin `.crmat` usa el color y la textura base de su modelo, con su UV. Antes usaba la textura de la salida y las hojas y astillas no se veían. «Textura de la salida en la malla» (`mesh_output_texture`) vuelve a lo de antes.
+- **Hierba, decals y efectos a ras de suelo** (E16): los decals tiñen la hierba (cada brizna toma el decal de su raíz) y `VisualEffect.grass_radius` («Apartar hierba») aparta la hierba sin física, con los interactores de siempre.
+- **Fundido suave en lo opaco** (E20): `MeshRenderer.smooth_fade` («Fundido suave», o `setMaterialParam("smoothFade", true)`): con opacidad < 1 el objeto se dibuja mezclado en la pasada de los transparentes, sin el ajedrezado del tramado. Por defecto, como antes.
+- **Una cinta por proyectil** (E4): «Atributos de cinta» tiene «Id del evento» (una cinta por valor del evento, hasta 256 por efecto) y los bloques «Emitir…» tienen «Valor = id de la partícula». Antes el id salía de `gl_GlobalInvocationID.x % tiras`.
+- **Colisiones sin la vista** (E3): «Colisión con la escena» tiene «Suelo sin la vista» (el terreno bajo el emisor hace de suelo aunque quede fuera de pantalla; `EmitOnCollision` y `TriggerOnCollide` se disparan igual). «Colisión con plano» tiene «En el mundo» y «Sobre el terreno».
+- **KillBox** (E7): documentado que va en el espacio del emisor; opción nueva «En el mundo».
+
+### Herramientas de efectos (apartado 5)
+- **Recarga en caliente de `.crvfx`** (E1), y del `.crmat` de una salida Malla: los efectos que lo usan empiezan de nuevo con el del disco; el abierto en su editor también, si no tiene cambios sin guardar.
+- **Texturas de efectos y de decals cambiadas con la misma ruta** (E2): se releen en su misma ranura o capa del atlas (recarga en caliente y al volver a pedirlas tras reabrir el proyecto). Ya no hace falta renombrarlas.
+- **`.crmat`: número suelto en `shader_values`** (E19): `"brillo": 0.5` vale como `[0.5]`; lo que no es número ni lista se ignora con un aviso `[Material]` que nombra el archivo y la propiedad.
+- **`.crshader`: 16 propiedades de números** (E11, antes 8) y error claro al pasarse. Antes la compilación síncrona compilaba el shader que no se había podido leer y el error de glslang tapaba el mensaje. Los juegos exportados con `.crshader` precompilados hay que volver a exportarlos.
+- **Scripts de C++ sin parar el editor** (E14): Play con scripts por compilar compila en segundo plano («Compilando… N s») y entra solo al terminar; Stop lo cancela.
+- **MCP asíncrono** (E9/E15): `cpp_compile` responde al momento con `{status:"compiling", job}` y el resultado llega con `cpp_compile_status`; `play` responde `mode:"starting"` mientras espera a la compilación. `sync:true` mantiene el modo anterior.
+- **`force` descarta de verdad** (E8): `open_scene`, `new_scene`, `open_project` y `create_project` con `force=true` borran el autoguardado y no muestran el diálogo de recuperar.
+
+### Cursor de los juegos
+- `Input.setCursorLockMode("none" | "locked" | "confined")`, `setCursorVisible`, `getCursorLockMode` e `isCursorVisible`, como `Cursor.lockState` de Unity. Escape en el editor o perder el foco lo sueltan sin cambiar el modo del juego; un clic en la vista lo vuelve a aplicar.
+
 ## 2.6.2 (sin publicar)
 
 ### Render

@@ -305,7 +305,7 @@ Value hasComponent(const T0& texto = {}) const {
 }
 /// entity.health: vida de su Destructible (numero)
 Value health() const { return get("health"); }
-/// entity.interactable: su boton/slider/campo responde (bool)
+/// entity.interactable: su boton/slider/campo/casilla/desplegable responde (bool)
 Value interactable() const { return get("interactable"); }
 void setInteractable(const Value& v) const { set("interactable", v); }
 /// entity.isBroken: su Destructible ya se rompio (bool)
@@ -530,6 +530,18 @@ template <typename T0 = Value, typename T1 = Value>
 Value setEffectFloat(const T0& texto = {}, const T1& valor = {}) const {
     return call("setEffectFloat", Values{Value(texto), Value(valor)});
 }
+/// entity().setEffectLocalPlayer(true)
+/// presupuesto de VFX: del jugador local (nunca se descarta); en la raiz de una habilidad vale para todo el grupo
+template <typename T0 = Value>
+Value setEffectLocalPlayer(const T0& activar = {}) const {
+    return call("setEffectLocalPlayer", Values{Value(activar)});
+}
+/// entity().setEffectPriority(2)
+/// presupuesto de VFX: con el tope lleno se quedan antes los de mas prioridad (-100..100)
+template <typename T0 = Value>
+Value setEffectPriority(const T0& valor = {}) const {
+    return call("setEffectPriority", Values{Value(valor)});
+}
 /// entity().setEffectVector("Viento", Vec3(1, 0, 0))
 /// parametro expuesto (Vector3)
 template <typename T0 = Value, typename T1 = Value>
@@ -580,7 +592,7 @@ Value setMaterial(const T0& valor = {}, const T1& texto = {}) const {
     return call("setMaterial", Values{Value(valor), Value(texto)});
 }
 /// entity().setMaterialParam(parametro, valor, y, z, w)
-/// por instancia, sin otro .crmat: "tint" (Vec3), "alpha", "emission", "receiveDecals" o 0/1 = INSTANCE_DATA(i) de su .crshader (x, y, z, w); tint y alpha tambien en su ParticleSystem
+/// por instancia, sin otro .crmat: "tint" (Vec3), "alpha", "emission", "receiveDecals", "smoothFade" (alpha con fundido suave en vez de tramado) o 0/1 = INSTANCE_DATA(i) de su .crshader (x, y, z, w); tint y alpha tambien en su ParticleSystem
 /// Devuelve: bool
 template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value, typename T4 = Value>
 Value setMaterialParam(const T0& parametro = {}, const T1& valor = {}, const T2& y = {}, const T3& z = {}, const T4& w = {}) const {
@@ -799,7 +811,7 @@ template <typename... Mas>
 Value uvRect(Mas&&... mas) const {
     return call("uvRect", Values{Value(std::forward<Mas>(mas))...});
 }
-/// entity.value: valor de su Slider o Casilla (numero)
+/// entity.value: valor de su Slider o Casilla (Desplegable: la opcion elegida, desde 1) (numero)
 Value value() const { return get("value"); }
 void setValue(const Value& v) const { set("value", v); }
 /// entity().vehicleState()

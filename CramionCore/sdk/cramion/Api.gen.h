@@ -1062,6 +1062,13 @@ template <typename T0 = Value>
 inline Value getBindings(const T0& texto = {}) {
     return detail::api("Input.getBindings", Values{Value(texto)});
 }
+/// Input.getCursorLockMode()
+/// el modo que pidio el juego: "none", "locked" o "confined"
+/// Devuelve: texto
+template <typename... Mas>
+inline Value getCursorLockMode(Mas&&... mas) {
+    return detail::api("Input.getCursorLockMode", Values{Value(std::forward<Mas>(mas))...});
+}
 /// Input.getGamepadAxis("leftx", 1)
 /// eje del mando: leftx, lefty, rightx, righty, lt, rt (con zona muerta)
 /// Devuelve: numero
@@ -1182,11 +1189,18 @@ inline Value isActionTriggered(const T0& texto = {}) {
     return detail::api("Input.isActionTriggered", Values{Value(texto)});
 }
 /// Input.isCursorLocked()
-/// esta capturado?
+/// esta capturado ahora? (false tras Escape en el editor o sin foco)
 /// Devuelve: bool
 template <typename... Mas>
 inline Value isCursorLocked(Mas&&... mas) {
     return detail::api("Input.isCursorLocked", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Input.isCursorVisible()
+/// el juego pidio el cursor visible?
+/// Devuelve: bool
+template <typename... Mas>
+inline Value isCursorVisible(Mas&&... mas) {
+    return detail::api("Input.isCursorVisible", Values{Value(std::forward<Mas>(mas))...});
 }
 /// Input.isGamepadConnected(1)
 /// hay un mando? (o ese mando, 1..4)
@@ -1246,6 +1260,18 @@ inline Value resetBindings(Mas&&... mas) {
 template <typename... Mas>
 inline Value saveBindings(Mas&&... mas) {
     return detail::api("Input.saveBindings", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Input.setCursorLockMode("confined")
+/// modo del cursor: "none" (libre), "locked" (oculto, en el centro) o "confined" (sin salir de la ventana)
+template <typename T0 = Value>
+inline Value setCursorLockMode(const T0& texto = {}) {
+    return detail::api("Input.setCursorLockMode", Values{Value(texto)});
+}
+/// Input.setCursorVisible(false)
+/// muestra u oculta el cursor sobre el juego (Locked siempre lo oculta)
+template <typename T0 = Value>
+inline Value setCursorVisible(const T0& activar = {}) {
+    return detail::api("Input.setCursorVisible", Values{Value(activar)});
 }
 /// Input.setGamepadVibration(0.5, 0.5, 0.2, 1)
 /// vibra el mando: motor grave y agudo (0..1), segundos (0 = hasta pararla con 0, 0) y mando 1..4 (sin el, todos)
@@ -1646,12 +1672,12 @@ template <typename T0 = Value, typename T1 = Value, typename... Mas>
 inline Value layerMask(const T0& texto = {}, const T1& texto2 = {}, Mas&&... mas) {
     return detail::api("Physics.layerMask", Values{Value(texto), Value(texto2), Value(std::forward<Mas>(mas))...});
 }
-/// Physics.overlapSphere(centro, radio, mascara, ignorar)
-/// los objetos que tocan la esfera
+/// Physics.overlapSphere(centro, radio, mascara, ignorar, triggers)
+/// los objetos que tocan la esfera (triggers como en raycast)
 /// Devuelve: lista de Entity
-template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
-inline Value overlapSphere(const T0& centro = {}, const T1& radio = {}, const T2& mascara = {}, const T3& ignorar = {}) {
-    return detail::api("Physics.overlapSphere", Values{Value(centro), Value(radio), Value(mascara), Value(ignorar)});
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value, typename T4 = Value>
+inline Value overlapSphere(const T0& centro = {}, const T1& radio = {}, const T2& mascara = {}, const T3& ignorar = {}, const T4& triggers = {}) {
+    return detail::api("Physics.overlapSphere", Values{Value(centro), Value(radio), Value(mascara), Value(ignorar), Value(triggers)});
 }
 /// Physics.simulatedTime()
 /// Segundos de fisica simulados desde el Play (pasos fijos dados)
@@ -2781,6 +2807,13 @@ inline Value isTyping(Mas&&... mas) {
 template <typename... Mas>
 inline Value pointerOverUi(Mas&&... mas) {
     return detail::api("UI.pointerOverUi", Values{Value(std::forward<Mas>(mas))...});
+}
+/// UI.scale(elemento)
+/// pixeles de la vista por unidad de su Canvas (sin elemento: el primer Canvas de pantalla); unidades = pixeles / escala
+/// Devuelve: numero
+template <typename T0 = Value>
+inline Value scale(const T0& elemento = {}) {
+    return detail::api("UI.scale", Values{Value(elemento)});
 }
 }  // namespace UI
 

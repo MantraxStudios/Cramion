@@ -154,6 +154,10 @@ void main() {
     // tint: el color base del material de la malla (1 sin material).
     vec4 color = v_color * instances[slot].tint;
     bool mesh = v_mode == 3u;
+    uint blend = uint(instances[slot].output0.y + 0.5);
+    // Opacidad sin la de la textura (particula, disco suave, suaves): la que
+    // se aplica al color en la mezcla premultiplicada.
+    float rest_alpha = color.a;
     // Alfa de la textura aparte: en la mezcla premultiplicada su color ya la
     // lleva y no se vuelve a multiplicar.
     float texture_alpha = 1.0;
@@ -199,8 +203,15 @@ void main() {
         if (r2 >= 1.0) discard;
         float falloff = 1.0 - r2;
         color.a *= falloff * falloff;
+        rest_alpha *= falloff * falloff;
     }
-    if (color.a <= max(instances[slot].speed_range.z, 0.002)) discard;
+    // Recorte por alfa. En la premultiplicada, alfa 0 con color es luz que
+    // solo se suma (halos, destellos): no se descarta salvo con un recorte
+    // propio del efecto (speed_range.z). Antes desaparecian.
+    float alpha_clip = instances[slot].speed_range.z;
+    bool glow_only = blend == 2u && alpha_clip <= 0.002 &&
+                     max(color.r, max(color.g, color.b)) * rest_alpha > 1e-4;
+    if (color.a <= max(alpha_clip, 0.002) && !glow_only) discard;
 
     // Particulas suaves: contra la profundidad lineal de la escena (las mallas
     // no: son solidas y se cortan contra la escena como cualquier objeto).
@@ -211,7 +222,9 @@ void main() {
             vec2 ndc = gl_FragCoord.xy * frame.viewport.zw * 2.0 - 1.0;
             vec4 v = frame.inverse_projection * vec4(ndc, depth, 1.0);
             float scene_depth_linear = abs(v.z / v.w);
-            color.a *= clamp((scene_depth_linear - v_view_depth) / soft, 0.0, 1.0);
+            float fade = clamp((scene_depth_linear - v_view_depth) / soft, 0.0, 1.0);
+            color.a *= fade;
+            rest_alpha *= fade;
         }
     }
 
@@ -248,19 +261,24 @@ void main() {
     }
     // Emision del material (no la toca la luz; 0 sin material).
     rgb += instances[slot].emissive.rgb;
-    uint blend = uint(instances[slot].output0.y + 0.5);
+    // El alfa de salida tambien se acumula en el de la imagen HDR (mascara
+    // reactiva del TAA y de FSR 3; ver VfxPass::createDrawPipeline).
     if (blend == 4u) {
         // Opaca (material opaco): sin mezcla.
         out_color = vec4(rgb, 1.0);
     } else if (blend == 0u) {
-        // Aditiva: suma color * opacidad.
-        out_color = vec4(rgb * color.a, 0.0);
+        // Aditiva: suma color * opacidad. El alfa no entra en la mezcla del
+        // color: va la mascara reactiva (cuanto aporta, hasta 1).
+        vec3 added = rgb * color.a;
+        out_color = vec4(added, clamp(max(added.r, max(added.g, added.b)), 0.0, 1.0));
     } else if (blend == 2u) {
         // Premultiplicada: el color de la textura ya lleva su opacidad; solo
         // se aplica el resto (la de la particula y la de las suaves). Antes
         // salia igual que la de alfa, con el alfa de la textura dos veces
         // (bordes oscuros).
-        out_color = vec4(rgb * (color.a / max(texture_alpha, 1e-4)), color.a);
+        // (rest_alpha: con textura de alfa 0 la division daba 0 y la luz
+        // que solo se suma no salia.)
+        out_color = vec4(rgb * rest_alpha, color.a);
     } else {
         out_color = vec4(rgb, color.a);
     }

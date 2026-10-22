@@ -282,6 +282,10 @@ private:
     void checkAutosaveRecovery(const std::filesystem::path& scene);
     void applyAutosaveRecovery();
     void discardSceneAutosave();  // escena guardada o cambios descartados
+    // force=true (MCP): los cambios sin guardar se tiran como con "No guardar":
+    // fuera el autoguardado de la escena abierta, el aviso pendiente y el de
+    // `next_scene` al abrirla (si no, un dialogo modal bloqueaba al usuario).
+    void forceDiscardUnsaved(const std::filesystem::path& next_scene);
     void drawAutosaveRecovery();
     void drawAutosaveMenu();
 
@@ -1475,6 +1479,9 @@ private:
         bool pending = false;
     };
     AutosaveRecovery autosave_recovery_;
+    // Autoguardados descartados con force: checkAutosaveRecovery no los
+    // ofrece (se borran en el hilo del autoguardado y aun pueden estar).
+    std::vector<std::filesystem::path> autosave_skip_recovery_;
 
     // Vista de escena.
     float view_x_ = 0.0f;
@@ -1630,6 +1637,23 @@ private:
     struct CppSourceCheck;
     std::shared_ptr<CppSourceCheck> cpp_check_;
     void waitCppSourceCheck();  // antes de cambiar o soltar cpp_scripts_ (la tarea lo lee)
+    // Compilacion en segundo plano (el editor sigue respondiendo; antes el
+    // MCP y Play esperaban en el hilo principal, ~127 s con un proyecto grande).
+    // Cada compilacion lanzada tiene un numero (cpp_compile_status por MCP).
+    std::uint64_t cpp_compile_job_ = 0;        // la ultima lanzada
+    std::uint64_t cpp_compile_done_job_ = 0;   // la ultima terminada (su resultado en cpp_last_result_)
+    double cpp_compile_started_ = -1.0;        // ImGui::GetTime() al lanzarla
+    std::string cpp_compile_reason_;
+    std::optional<scripting::CppCompileResult> cpp_last_result_;
+    // Play pedido con scripts de C++ sin compilar: se compila en segundo plano
+    // y Play entra al terminar (updateCppScripts). Compiled: ya se compilo
+    // para este Play (startCppScripts no vuelve a compilar aunque haya errores).
+    enum class CppPlayWait { None, Waiting, Compiled };
+    CppPlayWait cpp_play_wait_ = CppPlayWait::None;
+    // Lanza la compilacion (si no hay otra) y devuelve su numero.
+    std::uint64_t startCppCompile(const std::string& reason);
+    // true: Play espera a la compilacion (enterPlay vuelve a entrar al acabar).
+    bool waitCppCompileBeforePlay();
     bool show_cvars_window_ = false;
     std::string cvar_filter_;
     std::uint64_t cvar_saved_generation_ = 0;
@@ -2239,6 +2263,11 @@ private:
     void updateEffects(float delta_seconds);  // cada frame, tras la fisica
     void effectsEnterPlay();
     void effectsExitPlay();
+    // Recarga en caliente: un .crvfx o un .crmat cambio en disco (el efecto
+    // abierto en su editor, si no tiene cambios sin guardar, tambien), o una
+    // imagen (las texturas de los efectos). Devuelve las texturas releidas.
+    void effectsAssetChanged(const Uuid& uuid);
+    int effectsTextureChanged(const std::string& relative);
     Uuid createVfxAsset(const std::filesystem::path& folder, int preset);
     void openVfxEditor(const Uuid& uuid);
     void saveVfxEditor();

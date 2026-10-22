@@ -1,6 +1,7 @@
 #ifndef CRAMION_VK_SKINNED_PASS_H
 #define CRAMION_VK_SKINNED_PASS_H
 
+#include "CramionFX/asset/Model.h"
 #include "CramionFX/core/Math.h"
 #include "CramionFX/vk/TextureFiltering.h"
 #include "CramionFX/vk/VulkanBuffer.h"
@@ -94,7 +95,7 @@ public:
     // luz volumetrica (0..6).
     static std::uint32_t glassBindingCount();
     // Propiedades (vec4) de un material con shader propio.
-    static constexpr std::uint32_t kSurfaceParamCount = 8;
+    static constexpr std::uint32_t kSurfaceParamCount = static_cast<std::uint32_t>(asset::kSurfaceParamCount);
     // Set 0: 0..6 de siempre, 7 = atlas de lightmaps, 8 = sus registros, 9 =
     // los decals (GpuDecalBuffer; el 4 es su atlas).
     static constexpr std::uint32_t kFrameBindingCount = 10;

@@ -52,7 +52,8 @@ const uint B_COLOR = 14u;
 const uint B_ROTATION = 15u;
 const uint B_FLIPBOOK_FRAME = 16u;
 const uint B_INHERIT_VELOCITY = 17u;
-// a.x id, a.y tiras, a.z ancho (m), a.w giro min (grados); b.x giro max, b.yzw separacion
+// a.x id, a.y tiras, a.z ancho (m), a.w giro min (grados); b.x giro max, b.yzw separacion;
+// flags 1 = id del evento
 const uint B_RIBBON_ATTRIBUTES = 48u;
 const uint B_GRAVITY = 20u;
 const uint B_WIND = 21u;
@@ -60,10 +61,10 @@ const uint B_DRAG = 22u;
 const uint B_TURBULENCE = 23u;
 const uint B_ATTRACTOR = 24u;
 const uint B_VORTEX = 25u;
-const uint B_COLLIDE_DEPTH = 26u;
-const uint B_COLLIDE_PLANE = 27u;
+const uint B_COLLIDE_DEPTH = 26u;   // c.x altura del suelo, c.y 1 = suelo sin la vista
+const uint B_COLLIDE_PLANE = 27u;   // flags 1 = en el mundo
 const uint B_COLLIDE_SPHERE = 28u;
-const uint B_KILL_BOX = 29u;
+const uint B_KILL_BOX = 29u;        // flags 1 = matar fuera, 2 = en el mundo
 const uint B_SPEED_LIMIT = 30u;
 const uint B_CONFORM_SPHERE = 31u;
 // Eventos: al morir / al chocar se apunta un evento en la lista de otro
@@ -73,7 +74,8 @@ const uint B_TRIGGER_COLLIDE = 33u;  // igual; a.z rapidez minima del choque (m/
 // Canales de datos (eventos con nombre): los Emit* apuntan {tipo, posicion,
 // velocidad, color, valor} en el canal info.z y los que escuchan
 // (B_ON_GPU_EVENT, tras sus Update) nacen alli en EMIT_CHANNEL.
-const uint B_EMIT_ON_DEATH = 60u;      // a color; b.x tipo, b.y valor, b.z probabilidad; flags 1 = por el color de la particula
+const uint B_EMIT_ON_DEATH = 60u;      // a color; b.x tipo, b.y valor, b.z probabilidad; flags 1 = por el color de la particula,
+                                       // 2 = valor = id de la particula
 const uint B_EMIT_ON_COLLISION = 61u;  // igual; b.w rapidez minima del choque (m/s)
 const uint B_EMIT_EVERY = 62u;         // igual; b.w periodo (s)
 const uint B_ON_GPU_EVENT = 63u;       // a.x tipo (< 0 todos), a.y por evento, a.z maximo por frame (0 = sin limite),
@@ -196,7 +198,7 @@ layout(std430, set = 0, binding = 6) readonly buffer Blocks { VfxBlock blocks[];
 // Superficie de mallas: pares (posicion, normal).
 layout(std430, set = 0, binding = 7) readonly buffer Points { vec4 points[]; };
 layout(set = 0, binding = 8) uniform sampler2D scene_depth;
-// Ranuras de textura: las pone VfxPass (VfxPass::textureLimit(), 16..64) por
+// Ranuras de textura: las pone VfxPass (VfxPass::textureLimit(), 16..256) por
 // esta constante de especializacion.
 layout(constant_id = 0) const uint VFX_TEXTURE_COUNT = 16u;
 layout(set = 0, binding = 9) uniform sampler2D vfx_textures[VFX_TEXTURE_COUNT];

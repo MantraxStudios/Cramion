@@ -43,6 +43,9 @@ struct UpscaleDispatch {
     UpscaleImage depth;   // [0 cerca, 1 lejos]
     UpscaleImage motion;  // UV actual - UV anterior (sin jitter), resolucion interna
     UpscaleImage output;  // pantalla (con uso STORAGE)
+    // Opcional (image nula = sin ella): opacidad de los transparentes, R8 a la
+    // resolucion interna. FSR 3 la usa como reactive y transparencyAndComposition.
+    UpscaleImage reactive;
     std::uint32_t render_width = 0;
     std::uint32_t render_height = 0;
     float jitter_x = 0.0f;  // desplazamiento de la imagen este frame, en pixeles internos (+x derecha, +y abajo)

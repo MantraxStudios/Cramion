@@ -6,6 +6,7 @@
 #include "CramionFX/vk/VulkanShader.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -238,12 +239,16 @@ void VfxPass::create(const VulkanDevice& device, vk::Format color_format, vk::Fo
     const auto& dev = device.handle();
     const std::uint32_t binding_count = full_lighting_ ? kLightBindings : kCompatLightBindings;
     // Ranuras de textura: las que admite el dispositivo por etapa (con sitio
-    // para el depth, las sombras y algo mas), entre 16 y kMaxTextures.
+    // para el depth, las sombras y algo mas), entre 16 y kMaxTextures. Los
+    // recursos por etapa (maxPerStageResources) cuentan tambien los buffers
+    // del set: se dejan 32 para ellos (en moviles el tope es bajo).
     {
         const vk::PhysicalDeviceLimits& limits = device.limits();
+        const std::uint32_t resources = limits.maxPerStageResources > 32u ? limits.maxPerStageResources - 24u : 8u;
         const std::uint32_t per_stage = std::min({limits.maxPerStageDescriptorSamplers,
                                                   limits.maxPerStageDescriptorSampledImages,
-                                                  limits.maxDescriptorSetSamplers, limits.maxDescriptorSetSampledImages});
+                                                  limits.maxDescriptorSetSamplers, limits.maxDescriptorSetSampledImages,
+                                                  resources});
         texture_limit_ = std::clamp(per_stage > 8u ? per_stage - 8u : 0u, kMinTextures, kMaxTextures);
     }
 
@@ -340,6 +345,9 @@ void VfxPass::create(const VulkanDevice& device, vk::Format color_format, vk::Fo
         info.addressModeV = vk::SamplerAddressMode::eClampToEdge;
         info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
         info.maxLod = VK_LOD_CLAMP_NONE;
+        // Anisotropico y sesgo de mips de los modelos (con la compensacion del
+        // escalado: al 58 % elegia mips un nivel mas bajos y salia blando).
+        applyTextureFiltering(info, device.physicalDevice(), texture_filtering_);
         texture_sampler_ = vk::raii::Sampler(dev, info);
     }
 
@@ -388,11 +396,16 @@ void VfxPass::create(const VulkanDevice& device, vk::Format color_format, vk::Fo
                      vk::MemoryPropertyFlagBits::eDeviceLocal);
     // Mallas: visibles desde la CPU (se escriben una vez, en una parte que
     // ningun frame en vuelo lee: sin copias ni esperas).
-    mesh_vertices_.create(device, sizeof(core::Vec4) * 2 * kMaxMeshVertices, vk::BufferUsageFlagBits::eStorageBuffer,
-                          host);
-    mesh_indices_.create(device, sizeof(std::uint32_t) * kMaxMeshIndices, vk::BufferUsageFlagBits::eStorageBuffer, host);
+    mesh_vertices_.create(device, sizeof(core::Vec4) * 2 * kMeshPoolStartVertices,
+                          vk::BufferUsageFlagBits::eStorageBuffer, host);
+    mesh_indices_.create(device, sizeof(std::uint32_t) * kMeshPoolStartIndices, vk::BufferUsageFlagBits::eStorageBuffer,
+                         host);
+    mesh_vertex_capacity_ = kMeshPoolStartVertices;
+    mesh_index_capacity_ = kMeshPoolStartIndices;
     mesh_vertex_count_ = 0;
     mesh_index_count_ = 0;
+    mesh_free_vertices_.clear();
+    mesh_free_indices_.clear();
     meshes_ = {};
     mesh_slots_used_ = 0;
     // Eventos: solo la GPU (1 MB).
@@ -479,7 +492,10 @@ vk::raii::Pipeline VfxPass::createDrawPipeline(vk::Format color_format, vk::Form
     depth.depthWriteEnable = VK_FALSE;
     depth.depthCompareOp = vk::CompareOp::eLessOrEqual;
 
-    // El alfa de la imagen HDR guarda la distancia de lo que se ve: no se toca.
+    // El alfa de la imagen HDR: la opacidad acumulada ("sobre": a + destino *
+    // (1 - a)), la mascara reactiva del TAA y de FSR 3 (en la vista principal
+    // empieza a 0). La aditiva no usa el alfa en el color: vfx.frag pone ahi
+    // cuanto aporta.
     vk::PipelineColorBlendAttachmentState blend{};
     blend.blendEnable = VK_TRUE;
     switch (mode) {
@@ -496,7 +512,8 @@ vk::raii::Pipeline VfxPass::createDrawPipeline(vk::Format color_format, vk::Form
             blend.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
             break;
         case VfxBlend::Opaque:
-            // Sin mezcla en el color (el alfa, la distancia, sigue igual).
+            // Sin mezcla en el color (alfa 1: reactiva llena, no lleva
+            // vectores de movimiento propios).
             blend.srcColorBlendFactor = vk::BlendFactor::eOne;
             blend.dstColorBlendFactor = vk::BlendFactor::eZero;
             break;
@@ -507,8 +524,8 @@ vk::raii::Pipeline VfxPass::createDrawPipeline(vk::Format color_format, vk::Form
             break;
     }
     blend.colorBlendOp = vk::BlendOp::eAdd;
-    blend.srcAlphaBlendFactor = vk::BlendFactor::eZero;
-    blend.dstAlphaBlendFactor = vk::BlendFactor::eOne;
+    blend.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+    blend.dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
     blend.alphaBlendOp = vk::BlendOp::eAdd;
     blend.colorWriteMask = mode == VfxBlend::Distortion
                                ? vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG
@@ -536,6 +553,23 @@ vk::raii::Pipeline VfxPass::createDrawPipeline(vk::Format color_format, vk::Form
     info.pDynamicState = &dynamic;
     info.layout = *layout_;
     return compat::makeGraphicsPipeline(device, info);
+}
+
+bool VfxPass::setTextureFiltering(const TextureFiltering& filtering) {
+    if (filtering == texture_filtering_) return false;
+    texture_filtering_ = filtering;
+    if (device_ == nullptr || !*texture_sampler_) return true;  // se aplica al crear
+    vk::SamplerCreateInfo info{};
+    info.magFilter = vk::Filter::eLinear;
+    info.minFilter = vk::Filter::eLinear;
+    info.mipmapMode = vk::SamplerMipmapMode::eLinear;
+    info.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+    info.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+    info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+    info.maxLod = VK_LOD_CLAMP_NONE;
+    applyTextureFiltering(info, device_->physicalDevice(), texture_filtering_);
+    texture_sampler_ = vk::raii::Sampler(device_->handle(), info);
+    return true;
 }
 
 bool VfxPass::ensurePipelines(VfxBlend blend) {
@@ -580,10 +614,16 @@ void VfxPass::destroy() {
     curl_volume_.destroy();
     curl_ready_ = false;
     recycler_.clear();
+    mesh_vertex_capacity_ = 0;
+    mesh_index_capacity_ = 0;
     mesh_vertex_count_ = 0;
     mesh_index_count_ = 0;
+    mesh_free_vertices_.clear();
+    mesh_free_indices_.clear();
     meshes_ = {};
     mesh_slots_used_ = 0;
+    release_at_ = 0;
+    warned_.clear();
     event_list_used_.clear();
     channels_ready_ = false;
     channels_active_ = false;
@@ -606,7 +646,8 @@ void VfxPass::destroy() {
     counters_.destroy();
     white_.destroy();
     for (VulkanTexture& t : textures_) t.destroy();
-    texture_paths_ = {};
+    texture_entries_ = {};
+    texture_failed_.clear();
     sim_pipeline_ = nullptr;
     for (vk::raii::Pipeline& p : draw_pipelines_) p = nullptr;
     for (vk::raii::Pipeline& p : opaque_pipelines_) p = nullptr;
@@ -746,6 +787,32 @@ bool VfxPass::placeSlot(Slot& slot, std::uint32_t capacity) {
 // Datos de la CPU
 // -----------------------------------------------------------------------------
 
+namespace {
+
+// Frames sin que ningun efecto use una textura o una malla para poder
+// soltarla con releaseUnused, y los que espera un tramo soltado del pool de
+// mallas antes de reutilizarse (los frames en vuelo, con margen: el reloj
+// avanza en cada setInstances).
+constexpr std::uint64_t kReleaseIdleFrames = 3;
+constexpr std::uint64_t kMeshRangeQuarantine = 8;
+
+double cpuSeconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+std::filesystem::file_time_type fileStamp(const std::filesystem::path& file) {
+    std::error_code error;
+    const std::filesystem::file_time_type stamp = std::filesystem::last_write_time(file, error);
+    return error ? std::filesystem::file_time_type{} : stamp;
+}
+
+std::string pathText(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
+
+}  // namespace
+
 void VfxPass::setInstances(std::vector<VfxInstanceDesc> instances) {
     if (device_ == nullptr) return;
     if (instances.size() > kMaxInstances) instances.resize(kMaxInstances);
@@ -839,6 +906,21 @@ void VfxPass::setInstances(std::vector<VfxInstanceDesc> instances) {
         if ((d.disabled_outputs & kVfxOutLight) != 0u || lightBudget() == 0) d.light = false;
         any_light_ = any_light_ || d.light;
     }
+    // Texturas y mallas: en uso este frame (las demas pueden soltarse cuando
+    // hace falta sitio o tras releaseUnused).
+    for (const VfxInstanceDesc& d : instances_) {
+        touchTexture(d.texture);
+        const auto touch_mesh = [&](int s) {
+            if (s >= 0 && static_cast<std::uint32_t>(s) < mesh_slots_used_) meshes_[static_cast<std::size_t>(s)].last_used = resource_clock_;
+        };
+        touch_mesh(d.mesh);
+        for (const int v : d.mesh_variants) touch_mesh(v);
+    }
+    if (release_at_ != 0 && resource_clock_ >= release_at_) {
+        release_at_ = 0;
+        releaseIdle(kReleaseIdleFrames);
+    }
+    ++resource_clock_;
     sim_pending_ = true;
 }
 
@@ -867,60 +949,317 @@ void VfxPass::ensureChannels() {
     channels_were_active_ = false;  // sus contadores, a cero al grabar
 }
 
+void VfxPass::warnOnce(const std::string& key, const std::string& message) {
+    // Un aviso por causa cada 30 s (cada frame lo volveria a pedir). Por
+    // std::cout con "AVISO": la consola del editor lo muestra como aviso.
+    const double now = cpuSeconds();
+    const auto it = warned_.find(key);
+    if (it != warned_.end() && now - it->second < 30.0) return;
+    warned_[key] = now;
+    std::cout << "[VFX] AVISO: " << message << "\n";
+}
+
+int VfxPass::freeTextureSlot() {
+    for (std::uint32_t slot = 0; slot < texture_limit_; ++slot) {
+        if (texture_entries_[slot].key.empty()) return static_cast<int>(slot);
+    }
+    // Todas ocupadas: fuera la que hace mas tiempo que no usa ningun efecto
+    // (nunca una de este frame ni del anterior).
+    int oldest = -1;
+    std::uint64_t oldest_used = ~std::uint64_t{0};
+    for (std::uint32_t slot = 0; slot < texture_limit_; ++slot) {
+        const TextureEntry& entry = texture_entries_[slot];
+        if (entry.last_used + 2 <= resource_clock_ && entry.last_used < oldest_used) {
+            oldest = static_cast<int>(slot);
+            oldest_used = entry.last_used;
+        }
+    }
+    if (oldest >= 0) releaseTexture(static_cast<std::uint32_t>(oldest));
+    return oldest;
+}
+
+void VfxPass::releaseTexture(std::uint32_t slot) {
+    if (slot >= kMaxTextures || texture_entries_[slot].key.empty()) return;
+    // Los sets de los frames en vuelo aun la tienen: vive hasta que acaban.
+    if (*textures_[slot].view() != VK_NULL_HANDLE) device_->retireAfterGpu({VulkanDevice::keepAlive(std::move(textures_[slot]))});
+    textures_[slot] = VulkanTexture{};
+    texture_entries_[slot] = TextureEntry{};
+    ++resource_epoch_;
+}
+
 int VfxPass::loadTexture(const std::filesystem::path& file) {
     if (device_ == nullptr || file.empty()) return -1;
     std::error_code error;
     const std::filesystem::path key = std::filesystem::weakly_canonical(file, error);
+    const double now = cpuSeconds();
     for (std::uint32_t slot = 0; slot < texture_limit_; ++slot) {
-        if (!texture_paths_[slot].empty() && texture_paths_[slot] == key) return static_cast<int>(slot);
+        TextureEntry& entry = texture_entries_[slot];
+        if (entry.key.empty() || entry.key != key) continue;
+        entry.last_used = resource_clock_;
+        // Cambiada en disco con la misma ruta: se relee en su ranura (como
+        // mucho una mirada a la fecha por segundo).
+        if (now - entry.checked >= 1.0) {
+            entry.checked = now;
+            if (fileStamp(file) != entry.stamp) reloadTexture(file);
+        }
+        return static_cast<int>(slot);
     }
-    std::uint32_t slot = 0;
-    while (slot < texture_limit_ && !texture_paths_[slot].empty()) ++slot;
-    if (slot >= texture_limit_) {
-        std::cerr << "[VFX] Sin ranuras para mas texturas (maximo " << texture_limit_ << " en este dispositivo)\n";
+    const std::string text = pathText(key);
+    if (const auto failed = texture_failed_.find(text); failed != texture_failed_.end() && now - failed->second < 2.0) {
         return -1;
     }
     asset::ImageRgba8 image;
     if (!asset::loadImageRgba8(file, image, 2048) || image.width == 0 || image.height == 0) {
-        std::cerr << "[VFX] No se pudo leer la textura " << file.string() << "\n";
+        warnOnce("leer|" + text, "No se pudo leer la textura de efectos " + pathText(file));
+        texture_failed_[text] = now;
         return -1;
     }
-    // La ranura es nueva (no la usa ningun frame en vuelo), pero el set de
-    // descriptores se reescribe en cada prepare: no hace falta esperar.
-    textures_[slot].create(*device_, image.width, image.height, image.pixels.data());
-    texture_paths_[slot] = key;
-    return static_cast<int>(slot);
+    const int slot = freeTextureSlot();
+    if (slot < 0) {
+        warnOnce("ranuras", "Sin ranuras para mas texturas de efectos: las " + std::to_string(texture_limit_) +
+                                " de este dispositivo estan en uso a la vez (" + pathText(file.filename()) +
+                                " sale sin textura)");
+        texture_failed_[text] = now;
+        return -1;
+    }
+    // Ranura libre (o soltada: su textura vieja la retiro releaseTexture). El
+    // set de descriptores se reescribe en cada prepare: no hace falta esperar.
+    textures_[static_cast<std::size_t>(slot)].create(*device_, image.width, image.height, image.pixels.data());
+    TextureEntry& entry = texture_entries_[static_cast<std::size_t>(slot)];
+    entry.key = key;
+    entry.stamp = fileStamp(file);
+    entry.last_used = resource_clock_;
+    entry.checked = now;
+    texture_failed_.erase(text);
+    return slot;
+}
+
+bool VfxPass::reloadTexture(const std::filesystem::path& file) {
+    if (device_ == nullptr || file.empty()) return false;
+    std::error_code error;
+    const std::filesystem::path key = std::filesystem::weakly_canonical(file, error);
+    texture_failed_.erase(pathText(key));  // si fallaba, que vuelva a probar ya
+    for (std::uint32_t slot = 0; slot < texture_limit_; ++slot) {
+        TextureEntry& entry = texture_entries_[slot];
+        if (entry.key.empty() || entry.key != key) continue;
+        entry.stamp = fileStamp(file);
+        entry.checked = cpuSeconds();
+        asset::ImageRgba8 image;
+        if (!asset::loadImageRgba8(file, image, 2048) || image.width == 0 || image.height == 0) {
+            warnOnce("leer|" + pathText(key), "No se pudo releer la textura de efectos " + pathText(file) +
+                                                  " (se queda la anterior)");
+            return true;
+        }
+        // La de antes, a la cola de retirada (la leen los frames en vuelo);
+        // la nueva en la misma ranura: quien la guardaba no tiene que hacer nada.
+        if (*textures_[slot].view() != VK_NULL_HANDLE) device_->retireAfterGpu({VulkanDevice::keepAlive(std::move(textures_[slot]))});
+        textures_[slot] = VulkanTexture{};
+        textures_[slot].create(*device_, image.width, image.height, image.pixels.data());
+        std::cout << "[VFX] Textura recargada: " << pathText(file.filename()) << "\n";
+        return true;
+    }
+    return false;
+}
+
+void VfxPass::touchTexture(int slot) {
+    if (slot >= 0 && static_cast<std::uint32_t>(slot) < texture_limit_) {
+        texture_entries_[static_cast<std::size_t>(slot)].last_used = resource_clock_;
+    }
+}
+
+std::uint32_t VfxPass::texturesInUse() const {
+    std::uint32_t count = 0;
+    for (std::uint32_t slot = 0; slot < texture_limit_; ++slot) count += texture_entries_[slot].key.empty() ? 0u : 1u;
+    return count;
+}
+
+std::uint32_t VfxPass::meshesInUse() const {
+    std::uint32_t count = 0;
+    for (std::uint32_t slot = 0; slot < mesh_slots_used_; ++slot) count += meshes_[slot].used ? 1u : 0u;
+    return count;
+}
+
+bool VfxPass::growMeshPool(bool vertices, std::uint32_t needed) {
+    VulkanBuffer& buffer = vertices ? mesh_vertices_ : mesh_indices_;
+    std::uint32_t& capacity = vertices ? mesh_vertex_capacity_ : mesh_index_capacity_;
+    const std::uint32_t limit = vertices ? kMeshPoolMaxVertices : kMeshPoolMaxIndices;
+    const std::uint32_t written = vertices ? mesh_vertex_count_ : mesh_index_count_;
+    if (needed > limit) return false;
+    std::uint32_t size = std::max(capacity, 1024u);
+    while (size < needed) size = size > limit / 2 ? limit : size * 2;
+    const vk::DeviceSize stride = vertices ? sizeof(core::Vec4) * 2 : sizeof(std::uint32_t);
+    VulkanBuffer grown;
+    try {
+        grown.create(*device_, stride * size, vk::BufferUsageFlagBits::eStorageBuffer,
+                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+    } catch (const std::exception& e) {
+        warnOnce("crecer", std::string("No se pudo agrandar el pool de mallas de las particulas: ") + e.what());
+        return false;
+    }
+    // Lo ya escrito, al nuevo; el anterior lo leen los frames en vuelo: a la
+    // cola de retirada (sin waitIdle). prepare reescribe los sets cada frame.
+    if (written > 0 && buffer.mapped() != nullptr) grown.write(buffer.mapped(), stride * written, 0);
+    device_->retireAfterGpu({VulkanDevice::keepAlive(std::move(buffer))});
+    buffer = std::move(grown);
+    capacity = size;
+    if (VulkanDevice::debugLog()) {
+        std::cout << "[VFX] Pool de mallas de las particulas: " << size << (vertices ? " vertices\n" : " indices\n");
+    }
+    return true;
+}
+
+bool VfxPass::allocateMeshRange(bool vertices, std::uint32_t size, std::uint32_t& offset) {
+    std::vector<MeshRange>& free_list = vertices ? mesh_free_vertices_ : mesh_free_indices_;
+    std::uint32_t& written = vertices ? mesh_vertex_count_ : mesh_index_count_;
+    // Un tramo soltado que ya no lee ningun frame en vuelo (el primero que cabe).
+    for (auto it = free_list.begin(); it != free_list.end(); ++it) {
+        if (it->free_at > resource_clock_ || it->size < size) continue;
+        offset = it->offset;
+        it->offset += size;
+        it->size -= size;
+        if (it->size == 0) free_list.erase(it);
+        return true;
+    }
+    // Detras de lo escrito, creciendo si no cabe.
+    const std::uint32_t capacity = vertices ? mesh_vertex_capacity_ : mesh_index_capacity_;
+    if (written + size > capacity && !growMeshPool(vertices, written + size)) return false;
+    offset = written;
+    written += size;
+    return true;
+}
+
+void VfxPass::releaseMesh(std::uint32_t slot) {
+    if (slot >= kMaxMeshes || !meshes_[slot].used) return;
+    const MeshSlot mesh = meshes_[slot];
+    // Sus tramos, libres cuando ningun frame en vuelo pueda leerlos (en orden
+    // y juntando los vecinos: el pool no se trocea con el uso).
+    const auto give_back = [&](std::vector<MeshRange>& free_list, std::uint32_t offset, std::uint32_t size) {
+        if (size == 0) return;
+        const MeshRange range{offset, size, resource_clock_ + kMeshRangeQuarantine};
+        auto it = std::lower_bound(free_list.begin(), free_list.end(), range,
+                                   [](const MeshRange& a, const MeshRange& b) { return a.offset < b.offset; });
+        it = free_list.insert(it, range);
+        if (it + 1 != free_list.end() && it->offset + it->size == (it + 1)->offset) {
+            it->size += (it + 1)->size;
+            it->free_at = std::max(it->free_at, (it + 1)->free_at);
+            free_list.erase(it + 1);
+        }
+        if (it != free_list.begin() && (it - 1)->offset + (it - 1)->size == it->offset) {
+            (it - 1)->size += it->size;
+            (it - 1)->free_at = std::max((it - 1)->free_at, it->free_at);
+            free_list.erase(it);
+        }
+    };
+    give_back(mesh_free_vertices_, mesh.first_vertex, mesh.vertex_count);
+    give_back(mesh_free_indices_, mesh.first_index, mesh.index_count);
+    meshes_[slot] = MeshSlot{};
+    while (mesh_slots_used_ > 0 && !meshes_[mesh_slots_used_ - 1].used) --mesh_slots_used_;
+    ++resource_epoch_;
 }
 
 int VfxPass::loadMesh(std::uint64_t key, const VfxMeshData& mesh) {
     if (device_ == nullptr || mesh.vertices.empty() || mesh.indices.empty()) return -1;
     for (std::uint32_t slot = 0; slot < mesh_slots_used_; ++slot) {
-        if (meshes_[slot].key == key) return static_cast<int>(slot);
+        if (meshes_[slot].used && meshes_[slot].key == key) {
+            meshes_[slot].last_used = resource_clock_;
+            return static_cast<int>(slot);
+        }
     }
     const auto vertex_count = static_cast<std::uint32_t>(mesh.vertices.size() / 2);
     const auto index_count = static_cast<std::uint32_t>(mesh.indices.size() - mesh.indices.size() % 3);
-    if (mesh_slots_used_ >= kMaxMeshes || mesh_vertex_count_ + vertex_count > kMaxMeshVertices ||
-        mesh_index_count_ + index_count > kMaxMeshIndices || index_count == 0) {
-        std::cerr << "[VFX] Sin sitio para la malla de las particulas (" << vertex_count << " vertices; maximo "
-                  << kMaxMeshVertices << " entre " << kMaxMeshes << " mallas)\n";
+    if (index_count == 0) return -1;
+    if (vertex_count > kMaxMeshVertices) {
+        warnOnce("malla|" + std::to_string(key), "Malla de particulas demasiado grande (" + std::to_string(vertex_count) +
+                                                     " vertices; maximo " + std::to_string(kMaxMeshVertices) +
+                                                     " por malla): no se dibuja");
+        return -1;
+    }
+    // Una ranura libre o, si no quedan, la que hace mas tiempo que no usa
+    // ningun efecto (nunca una de este frame ni del anterior).
+    int slot = -1;
+    for (std::uint32_t s = 0; s < kMaxMeshes; ++s) {
+        if (!meshes_[s].used) {
+            slot = static_cast<int>(s);
+            break;
+        }
+    }
+    if (slot < 0) {
+        std::uint64_t oldest_used = ~std::uint64_t{0};
+        for (std::uint32_t s = 0; s < kMaxMeshes; ++s) {
+            if (meshes_[s].last_used + 2 <= resource_clock_ && meshes_[s].last_used < oldest_used) {
+                slot = static_cast<int>(s);
+                oldest_used = meshes_[s].last_used;
+            }
+        }
+        if (slot < 0) {
+            warnOnce("mallas", "Sin sitio para la malla de las particulas: las " + std::to_string(kMaxMeshes) +
+                                   " mallas estan en uso a la vez (esas particulas no se dibujan)");
+            return -1;
+        }
+        releaseMesh(static_cast<std::uint32_t>(slot));
+    }
+    std::uint32_t first_vertex = 0;
+    std::uint32_t first_index = 0;
+    if (!allocateMeshRange(true, vertex_count, first_vertex)) {
+        warnOnce("pool", "Sin sitio para la malla de las particulas (" + std::to_string(vertex_count) +
+                             " vertices; el pool admite " + std::to_string(kMeshPoolMaxVertices) +
+                             " entre todas las mallas en uso): no se dibuja");
+        return -1;
+    }
+    if (!allocateMeshRange(false, index_count, first_index)) {
+        // El tramo de vertices vuelve libre al momento (nadie lo ha leido).
+        const MeshRange back{first_vertex, vertex_count, 0};
+        mesh_free_vertices_.insert(std::lower_bound(mesh_free_vertices_.begin(), mesh_free_vertices_.end(), back,
+                                                    [](const MeshRange& a, const MeshRange& b) { return a.offset < b.offset; }),
+                                   back);
+        warnOnce("pool", "Sin sitio para los indices de la malla de las particulas (" + std::to_string(index_count) +
+                             "; el pool admite " + std::to_string(kMeshPoolMaxIndices) + "): no se dibuja");
         return -1;
     }
     // Los vertices, tal cual; los indices con el primer vertice sumado y
     // acotados (un indice fuera leeria otra malla).
-    mesh_vertices_.write(mesh.vertices.data(), sizeof(core::Vec4) * 2 * vertex_count,
-                         sizeof(core::Vec4) * 2 * mesh_vertex_count_);
+    mesh_vertices_.write(mesh.vertices.data(), sizeof(core::Vec4) * 2 * vertex_count, sizeof(core::Vec4) * 2 * first_vertex);
     std::vector<std::uint32_t> indices(index_count);
     for (std::uint32_t i = 0; i < index_count; ++i) {
-        indices[i] = mesh_vertex_count_ + std::min(mesh.indices[i], vertex_count - 1);
+        indices[i] = first_vertex + std::min(mesh.indices[i], vertex_count - 1);
     }
-    mesh_indices_.write(indices.data(), sizeof(std::uint32_t) * index_count, sizeof(std::uint32_t) * mesh_index_count_);
-    MeshSlot& slot = meshes_[mesh_slots_used_];
-    slot.key = key;
-    slot.first_index = mesh_index_count_;
-    slot.index_count = index_count;
-    mesh_vertex_count_ += vertex_count;
-    mesh_index_count_ += index_count;
-    return static_cast<int>(mesh_slots_used_++);
+    mesh_indices_.write(indices.data(), sizeof(std::uint32_t) * index_count, sizeof(std::uint32_t) * first_index);
+    MeshSlot& out = meshes_[static_cast<std::size_t>(slot)];
+    out.used = true;
+    out.key = key;
+    out.first_index = first_index;
+    out.index_count = index_count;
+    out.first_vertex = first_vertex;
+    out.vertex_count = vertex_count;
+    out.last_used = resource_clock_;
+    mesh_slots_used_ = std::max(mesh_slots_used_, static_cast<std::uint32_t>(slot) + 1u);
+    return slot;
+}
+
+void VfxPass::releaseIdle(std::uint64_t idle_frames) {
+    std::uint32_t textures = 0;
+    std::uint32_t meshes = 0;
+    for (std::uint32_t slot = 0; slot < texture_limit_; ++slot) {
+        const TextureEntry& entry = texture_entries_[slot];
+        if (entry.key.empty() || entry.last_used + idle_frames > resource_clock_) continue;
+        releaseTexture(slot);
+        ++textures;
+    }
+    for (std::uint32_t slot = 0; slot < mesh_slots_used_; ++slot) {
+        if (!meshes_[slot].used || meshes_[slot].last_used + idle_frames > resource_clock_) continue;
+        releaseMesh(slot);
+        ++meshes;
+    }
+    if (textures + meshes > 0 && VulkanDevice::debugLog()) {
+        std::cout << "[VFX] Sueltas " << textures << " textura(s) y " << meshes << " malla(s) sin uso\n";
+    }
+}
+
+void VfxPass::releaseUnused() {
+    // Dentro de unos frames: lo que vuelva a usarse entretanto (los efectos
+    // de la escena nueva o los que siguen) se queda.
+    if (release_at_ == 0) release_at_ = resource_clock_ + kReleaseIdleFrames;
+    texture_failed_.clear();
 }
 
 // -----------------------------------------------------------------------------
@@ -1083,7 +1422,7 @@ bool VfxPass::prepare(std::uint32_t frame, const VfxView& view, bool simulate) {
         g.flags[0] = d.seed;
         g.flags[1] = frame_counter_;
         g.flags[2] = bits;
-        g.flags[3] = d.texture >= 0 && d.texture < static_cast<int>(texture_limit_) && !texture_paths_[static_cast<std::size_t>(d.texture)].empty()
+        g.flags[3] = d.texture >= 0 && d.texture < static_cast<int>(texture_limit_) && !texture_entries_[static_cast<std::size_t>(d.texture)].key.empty()
                          ? static_cast<std::uint32_t>(d.texture)
                          : 0xFFFFFFFFu;
         g.output0 = core::Vec4{static_cast<float>(d.orient), static_cast<float>(d.blend), std::max(d.soft_distance, 0.0f),
@@ -1100,7 +1439,8 @@ bool VfxPass::prepare(std::uint32_t frame, const VfxView& view, bool simulate) {
             g.size_lut[i] = core::Vec4{d.size_lut[i * 4], d.size_lut[i * 4 + 1], d.size_lut[i * 4 + 2], d.size_lut[i * 4 + 3]};
         }
         // Salida: cinta o malla (sin malla cargada, la malla no dibuja nada).
-        const bool has_mesh = d.mesh >= 0 && static_cast<std::uint32_t>(d.mesh) < mesh_slots_used_;
+        const bool has_mesh = d.mesh >= 0 && static_cast<std::uint32_t>(d.mesh) < mesh_slots_used_ &&
+                              meshes_[static_cast<std::size_t>(d.mesh)].used;
         g.extra[0] = static_cast<std::uint32_t>(d.output);
         g.extra[1] = has_mesh ? meshes_[static_cast<std::size_t>(d.mesh)].first_index : 0u;
         g.extra[2] = has_mesh ? meshes_[static_cast<std::size_t>(d.mesh)].index_count : 0u;
@@ -1132,7 +1472,8 @@ bool VfxPass::prepare(std::uint32_t frame, const VfxView& view, bool simulate) {
             std::uint32_t vertices = 0;
             for (std::uint32_t v = 0; v < kVfxMeshVariants; ++v) {
                 const int s = v == 0 ? d.mesh : d.mesh_variants[v - 1];
-                const bool loaded = v < variants && s >= 0 && static_cast<std::uint32_t>(s) < mesh_slots_used_;
+                const bool loaded = v < variants && s >= 0 && static_cast<std::uint32_t>(s) < mesh_slots_used_ &&
+                                    meshes_[static_cast<std::size_t>(s)].used;
                 const MeshSlot& m = loaded ? meshes_[static_cast<std::size_t>(s)] : main_mesh;
                 g.variant_first[v] = m.first_index;
                 g.variant_count[v] = m.index_count;
@@ -1216,7 +1557,7 @@ bool VfxPass::prepare(std::uint32_t frame, const VfxView& view, bool simulate) {
                   : vk::DescriptorImageInfo{*depth_sampler_, *white_.view(), vk::ImageLayout::eShaderReadOnlyOptimal};
     std::array<vk::DescriptorImageInfo, kMaxTextures> textures{};
     for (std::uint32_t i = 0; i < texture_limit_; ++i) {
-        const bool loaded = !texture_paths_[i].empty();
+        const bool loaded = !texture_entries_[i].key.empty();
         textures[i] = vk::DescriptorImageInfo{*texture_sampler_, loaded ? *textures_[i].view() : *white_.view(),
                                               vk::ImageLayout::eShaderReadOnlyOptimal};
     }

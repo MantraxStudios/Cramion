@@ -43,6 +43,7 @@
 //   todos los impactos de una zona. Sin nadie que escuche, no cuesta nada.
 
 #include "CramionFX/core/Math.h"
+#include "CramionFX/vk/TextureFiltering.h"
 #include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
 #include "CramionFX/vk/VulkanTexture.h"
@@ -52,6 +53,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -80,7 +82,8 @@ enum class VfxBlockType : std::uint32_t {
     InheritVelocity = 17,  // a.x factor de la velocidad del emisor
     // Cinta: a.x id de la cinta (0..255), a.y tiras (id + orden de nacimiento
     // % tiras), a.z ancho (m; 0 = el tamano), a.w giro min (grados); b.x giro
-    // max (grados), b.yzw separacion entre tiras (espacio del emisor)
+    // max (grados), b.yzw separacion entre tiras (espacio del emisor); flags 1
+    // = id del evento (id + valor del evento * tiras + tira)
     RibbonAttributes = 48,
     // --- Update ---
     Gravity = 20,          // a.xyz aceleracion (m/s2)
@@ -89,10 +92,11 @@ enum class VfxBlockType : std::uint32_t {
     Turbulence = 23,       // a.x intensidad, a.y frecuencia, a.z octavas, a.w velocidad del ruido
     Attractor = 24,        // a.xyz posicion, a.w fuerza; b.x radio (0 = sin limite), b.y radio que mata
     Vortex = 25,           // a.xyz centro, a.w giro; b.xyz eje, b.w atraccion al eje
-    CollideDepth = 26,     // a.x rebote, a.y friccion, a.z vida perdida, a.w escala del radio; b.x grosor, b.y matar al chocar
-    CollidePlane = 27,     // a.xyz normal, a.w distancia; b.x rebote, b.y friccion, b.z vida perdida
+    CollideDepth = 26,     // a.x rebote, a.y friccion, a.z vida perdida, a.w escala del radio; b.x grosor, b.y matar al chocar;
+                           // c.x altura del suelo bajo el emisor (mundo), c.y 1 = hay suelo (suelo sin la vista)
+    CollidePlane = 27,     // a.xyz normal, a.w distancia; b.x rebote, b.y friccion, b.z vida perdida; flags 1 = en el mundo
     CollideSphere = 28,    // a.xyz centro, a.w radio; b.x rebote, b.y friccion, b.z dentro (0/1)
-    KillBox = 29,          // a.xyz centro; b.xyz tamano; flags 1 = matar fuera (si no, dentro)
+    KillBox = 29,          // a.xyz centro; b.xyz tamano; flags 1 = matar fuera (si no, dentro), 2 = en el mundo
     SpeedLimit = 30,       // a.x velocidad maxima, a.y amortiguacion
     ConformSphere = 31,    // a.xyz centro, a.w radio; b.x velocidad de atraccion, b.y pegajosidad
     // --- Eventos (Update): pad0 = indice en VfxInstanceDesc::event_targets
@@ -103,7 +107,8 @@ enum class VfxBlockType : std::uint32_t {
     // lo pone VfxSystem). Los Emit* (Update) apuntan {tipo, posicion,
     // velocidad, color, valor} y OnGpuEvent (escucha, va tras los Update) nace
     // alli el frame siguiente con un dispatch indirecto ---
-    EmitOnDeath = 60,      // a rgba color; b.x tipo, b.y valor, b.z probabilidad; flags 1 = por el color de la particula
+    EmitOnDeath = 60,      // a rgba color; b.x tipo, b.y valor, b.z probabilidad; flags 1 = por el color de la particula,
+                           // 2 = valor = id de la particula
     EmitOnCollision = 61,  // igual; b.w rapidez minima del choque (m/s)
     EmitEvery = 62,        // igual; b.w periodo (s)
     OnGpuEvent = 63,       // a.x tipo (< 0 = todos), a.y nacen por evento, a.z maximo por frame (0 = sin limite),
@@ -448,18 +453,24 @@ public:
     static constexpr std::uint32_t kMaxInstances = 256;
     static constexpr std::uint32_t kMaxBlocks = 4096;       // por frame (todos los efectos)
     static constexpr std::uint32_t kMaxPoints = 32768;      // pares por frame (todos los efectos)
-    // Texturas de las particulas: hasta 64 si el dispositivo lo permite
-    // (textureLimit(); como poco 16, lo de antes). vfx_common.glsl recibe el
-    // numero por una constante de especializacion.
-    static constexpr std::uint32_t kMaxTextures = 64;
+    // Texturas de las particulas: hasta 256 si el dispositivo lo permite
+    // (textureLimit(); como poco 16). vfx_common.glsl recibe el numero por
+    // una constante de especializacion. Las que ningun efecto usa se sueltan
+    // al hacer falta sitio y con releaseUnused (salir de Play, otra escena).
+    static constexpr std::uint32_t kMaxTextures = 256;
     static constexpr std::uint32_t kMinTextures = 16;
     static constexpr std::uint32_t kMaxPool = 1u << 21;     // particulas en total
     static constexpr std::uint32_t kMaxCapacity = 1u << 20; // por efecto
-    // Mallas de la salida Malla (todas juntas; se quedan hasta destroy, como
-    // las texturas).
-    static constexpr std::uint32_t kMaxMeshes = 16;
-    static constexpr std::uint32_t kMaxMeshVertices = 65536;
-    static constexpr std::uint32_t kMaxMeshIndices = 196608;
+    // Mallas de la salida Malla: ranuras y un pool de vertices e indices que
+    // empieza en kMeshPoolStart* y crece (x2, sin esperas: el buffer anterior
+    // se retira tras los frames en vuelo) hasta kMeshPoolMax*. Las que ningun
+    // efecto usa se sueltan igual que las texturas.
+    static constexpr std::uint32_t kMaxMeshes = 128;
+    static constexpr std::uint32_t kMaxMeshVertices = 65536;  // por malla
+    static constexpr std::uint32_t kMeshPoolStartVertices = 65536;
+    static constexpr std::uint32_t kMeshPoolStartIndices = 196608;
+    static constexpr std::uint32_t kMeshPoolMaxVertices = 1u << 21;  // 64 MB (2 vec4 por vertice)
+    static constexpr std::uint32_t kMeshPoolMaxIndices = 3u << 21;   // 24 MB
     // Eventos: efectos que los reciben a la vez y eventos por efecto y frame
     // (los de mas se pierden). MISMO numero que VFX_MAX_EVENTS.
     static constexpr std::uint32_t kMaxEventLists = 32;
@@ -475,6 +486,11 @@ public:
     void create(const VulkanDevice& device, vk::Format color_format, vk::Format depth_format,
                 std::uint32_t frames_in_flight);
     void destroy();
+    // Anisotropico y sesgo de mips de las texturas de los efectos: los de los
+    // modelos (VulkanRenderer::applyTextureFiltering, con la compensacion del
+    // escalado). Rehace el sampler; los descriptor sets se reescriben en cada
+    // prepare. Con la GPU parada. Devuelve si cambio.
+    bool setTextureFiltering(const TextureFiltering& filtering);
 
     // Los efectos de este frame (los que no estan se borran).
     void setInstances(std::vector<VfxInstanceDesc> instances);
@@ -489,12 +505,31 @@ public:
     void pushEvents(std::uint32_t channel, const VfxEventRecord* records, std::size_t count);
 
     // Carga una imagen para las particulas y devuelve su ranura (la misma
-    // ruta, la misma ranura). -1 si no se pudo o no quedan ranuras.
+    // ruta, la misma ranura; si el archivo cambio en disco, se relee en la
+    // misma ranura). -1 si no se pudo o no quedan ranuras (aviso en la
+    // consola). Sin sitio, suelta la que hace mas tiempo que no se usa.
     int loadTexture(const std::filesystem::path& file);
+    // La imagen de esta ruta cambio en disco (recarga en caliente): se relee
+    // en su misma ranura. false si no estaba cargada.
+    bool reloadTexture(const std::filesystem::path& file);
+    // Quien guarda una ranura de loadTexture sin volver a pedirla la marca
+    // en uso cada frame (si no, puede soltarse).
+    void touchTexture(int slot);
     // Sube una malla para la salida Malla y devuelve su ranura (la misma
-    // `key`, la misma ranura). -1 si no cabe o no quedan ranuras. Sin esperas:
-    // se escribe en una parte del buffer que ningun frame en vuelo lee.
+    // `key`, la misma ranura). -1 si no cabe (aviso en la consola). Sin
+    // esperas: se escribe en una parte del buffer que ningun frame en vuelo
+    // lee (o el pool crece en un buffer nuevo).
     int loadMesh(std::uint64_t key, const VfxMeshData& mesh);
+    // Cambia cada vez que se suelta una ranura de textura o de malla (puede
+    // pasar a otra): quien guarde ranuras debe volver a pedirlas. Releer una
+    // imagen cambiada en disco no la cambia (va en la misma ranura).
+    std::uint64_t resourceEpoch() const { return resource_epoch_; }
+    // Suelta las texturas y mallas que ningun efecto use dentro de un par de
+    // frames (al salir de Play, al cambiar de escena). Lo que lee un frame en
+    // vuelo vive hasta que la GPU acaba.
+    void releaseUnused();
+    std::uint32_t texturesInUse() const;
+    std::uint32_t meshesInUse() const;
 
     // --- Grabacion (VulkanRenderer) ---
     // Prepara este hueco de frame: camara, depth, efectos y bloques. Cada
@@ -563,10 +598,36 @@ private:
         std::uint32_t event_list = 0xFFFFFFFFu;  // recibe eventos (kMaxEventLists)
     };
     struct MeshSlot {
+        bool used = false;
         std::uint64_t key = 0;
         std::uint32_t first_index = 0;
         std::uint32_t index_count = 0;
+        std::uint32_t first_vertex = 0;
+        std::uint32_t vertex_count = 0;
+        std::uint64_t last_used = 0;  // resource_clock_
     };
+    // Tramo libre del pool de mallas (vertices o indices). Lo soltado espera
+    // a que ningun frame en vuelo lo lea (`free_at`) antes de reutilizarse.
+    struct MeshRange {
+        std::uint32_t offset = 0;
+        std::uint32_t size = 0;
+        std::uint64_t free_at = 0;
+    };
+    struct TextureEntry {
+        std::filesystem::path key;  // vacia = ranura libre
+        std::filesystem::file_time_type stamp{};
+        std::uint64_t last_used = 0;  // resource_clock_
+        double checked = 0.0;         // s (reloj de la CPU) de la ultima mirada a la fecha
+    };
+    // Ranura de textura nueva (soltando la menos usada si no quedan); -1 si todas estan en uso.
+    int freeTextureSlot();
+    void releaseTexture(std::uint32_t slot);
+    void releaseMesh(std::uint32_t slot);
+    // Tramo de `size` en el pool (de vertices o de indices), creciendo si hace falta.
+    bool allocateMeshRange(bool vertices, std::uint32_t size, std::uint32_t& offset);
+    bool growMeshPool(bool vertices, std::uint32_t needed);
+    void releaseIdle(std::uint64_t idle_frames);
+    void warnOnce(const std::string& key, const std::string& message);
     struct Range {
         std::uint32_t offset = 0;
         std::uint32_t size = 0;
@@ -633,6 +694,7 @@ private:
     std::array<vk::raii::Pipeline, 6> draw_pipelines_{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     vk::raii::Sampler depth_sampler_{nullptr};
     vk::raii::Sampler texture_sampler_{nullptr};
+    TextureFiltering texture_filtering_{};  // el de texture_sampler_ (sobrevive a destroy)
     // Luz real: sombras y clusteres solo fuera del modo compatible (13..17;
     // en el compatible solo 13, las luces principales).
     bool full_lighting_ = true;
@@ -666,10 +728,20 @@ private:
     // Mallas (CPU -> GPU, una vez) y eventos (solo GPU).
     VulkanBuffer mesh_vertices_;  // 2 vec4 por vertice
     VulkanBuffer mesh_indices_;
-    std::uint32_t mesh_vertex_count_ = 0;
+    std::uint32_t mesh_vertex_capacity_ = 0;
+    std::uint32_t mesh_index_capacity_ = 0;
+    std::uint32_t mesh_vertex_count_ = 0;  // hasta donde se ha escrito (lo de detras, sin usar)
     std::uint32_t mesh_index_count_ = 0;
+    std::vector<MeshRange> mesh_free_vertices_;
+    std::vector<MeshRange> mesh_free_indices_;
     std::array<MeshSlot, kMaxMeshes> meshes_{};
-    std::uint32_t mesh_slots_used_ = 0;
+    std::uint32_t mesh_slots_used_ = 0;  // ranuras por debajo de las que puede haber alguna en uso
+    // Recursos de los efectos: reloj (un paso por setInstances), cambios de
+    // ranura y la limpieza pedida por releaseUnused.
+    std::uint64_t resource_clock_ = 1;
+    std::uint64_t resource_epoch_ = 0;
+    std::uint64_t release_at_ = 0;  // 0 = ninguna pendiente
+    std::unordered_map<std::string, double> warned_;  // avisos ya dados (y cuando)
     VulkanBuffer events_;  // kMaxEventLists x 2 frames x kMaxEvents x 2 vec4 (y los canales detras)
     std::vector<bool> event_list_used_;
     // Canales de datos: su sitio en events_ se reserva al primer uso; sin
@@ -701,8 +773,11 @@ private:
 
     VulkanTexture white_;
     std::array<VulkanTexture, kMaxTextures> textures_;
-    std::array<std::filesystem::path, kMaxTextures> texture_paths_;
+    std::array<TextureEntry, kMaxTextures> texture_entries_;
     std::uint32_t texture_limit_ = kMinTextures;
+    // Rutas que no se pudieron leer: no se reintentan cada frame (la fecha
+    // del intento, en s del reloj de la CPU).
+    std::unordered_map<std::string, double> texture_failed_;
 
     // Pool de instancias: ranuras de los que desaparecen, para los nuevos.
     VfxSlotRecycler<ParkedSlot> recycler_{32};

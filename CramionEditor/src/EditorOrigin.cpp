@@ -78,6 +78,9 @@ void EditorApp::resetSceneSystems(bool keep_terrain_edits) {
     // Lo que dependia de entidades de la escena anterior.
     nav_.resetAgents();
     renderer_.invalidateHistory();
+    // VFX: sin los efectos de la escena que se va; sus texturas y mallas se
+    // sueltan de la GPU si la nueva no las usa.
+    vfx_.clear();
 }
 
 void EditorApp::updateFloatingOrigin() {

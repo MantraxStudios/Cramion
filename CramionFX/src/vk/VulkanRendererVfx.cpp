@@ -18,8 +18,10 @@ void VulkanRenderer::recordVfxPass(const vk::raii::CommandBuffer& cmd, std::uint
 
     VfxView view;
     view.view = camera_view_;
-    view.projection = camera_projection_;
-    view.view_projection = camera_view_projection_;
+    // Con el jitter del TAA, como lo opaco y su depth (jittered_projection_):
+    // sin el, la historia emborronaba cada efecto (~1 px interno).
+    view.projection = jittered_projection_;
+    view.view_projection = current_jittered_view_projection_;
     view.camera_position = camera_position_;
     view.light = precipitation_light_;
     view.to_sun = ibl_to_light_;  // (las mallas iluminadas)

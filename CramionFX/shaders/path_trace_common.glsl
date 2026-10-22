@@ -281,7 +281,6 @@ void pathTracePixel(ivec2 pixel, ivec2 size) {
 
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
     vec3 position = worldFromDepth(uv, depth);
-    float distance_to_camera = length(position - camera.position.xyz);
 
     vec4 accumulated = push.params.y > 0.5 ? imageLoad(accumulation, pixel) : vec4(0.0);
 
@@ -378,6 +377,7 @@ void pathTracePixel(ivec2 pixel, ivec2 size) {
     }
 
     vec3 average = accumulated.w > 0.0 ? accumulated.rgb / accumulated.w : vec3(0.0);
-    // a: distancia a la camara, como lighting.frag (la captura de la sonda).
-    imageStore(output_image, pixel, vec4(average, distance_to_camera));
+    // a: 0, como lighting.frag en la vista principal (el path tracing solo
+    // dibuja en ella): ahi empieza la mascara reactiva de los transparentes.
+    imageStore(output_image, pixel, vec4(average, 0.0));
 }

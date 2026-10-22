@@ -394,18 +394,20 @@ vk::raii::Pipeline SkinnedPass::createSurfacePipeline(const VulkanDevice& device
     depth_stencil.depthTestEnable = VK_TRUE;
     depth_stencil.depthWriteEnable = VK_FALSE;
     depth_stencil.depthCompareOp = vk::CompareOp::eLessOrEqual;
-    // Premultiplicada: color + destino * (1 - alfa). El alfa del destino (la
-    // distancia, para la sonda) no se toca.
+    // Premultiplicada: color + destino * (1 - alfa). El alfa del destino, la
+    // opacidad acumulada ("sobre"): la mascara reactiva del TAA y de FSR 3
+    // (en la vista principal empieza a 0; la distancia de las capturas de la
+    // sonda no la toca: en ellas no se dibujan los transparentes).
     vk::PipelineColorBlendAttachmentState blend_attachment{};
     blend_attachment.blendEnable = VK_TRUE;
     blend_attachment.srcColorBlendFactor = vk::BlendFactor::eOne;
     blend_attachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
     blend_attachment.colorBlendOp = vk::BlendOp::eAdd;
-    blend_attachment.srcAlphaBlendFactor = vk::BlendFactor::eZero;
-    blend_attachment.dstAlphaBlendFactor = vk::BlendFactor::eOne;
+    blend_attachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+    blend_attachment.dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
     blend_attachment.alphaBlendOp = vk::BlendOp::eAdd;
-    blend_attachment.colorWriteMask =
-        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB;
+    blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                      vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
     vk::PipelineColorBlendStateCreateInfo color_blend{};
     color_blend.setAttachments(blend_attachment);
     const std::array<vk::DynamicState, 2> dynamic_states = {vk::DynamicState::eViewport,

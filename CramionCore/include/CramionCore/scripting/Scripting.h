@@ -14,6 +14,7 @@
 
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/scripting/CursorLock.h"
 
 #include <filesystem>
 #include <functional>
@@ -163,9 +164,16 @@ public:
     // post-procesado, Graphics.post, funciona siempre: es de la escena).
     void setGraphics(GraphicsHost* graphics);
     // Input.lockCursor(on): quien tiene la ventana captura o suelta el raton.
-    // Al parar los scripts se suelta solo.
+    // Al parar los scripts se suelta solo. (Solo el modo Locked; para los
+    // tres modos, setCursorMode.)
     using CursorLockCallback = std::function<void(bool locked)>;
     void setCursorLock(CursorLockCallback callback);
+    // Modo del cursor (Input.setCursorLockMode / setCursorVisible, como
+    // Cursor.lockState / Cursor.visible de Unity): se llama cuando cambia lo
+    // que hay que aplicar (el modo efectivo y si el cursor va oculto sobre el
+    // juego). Lo que pide el juego y lo que se aplica: CursorLock.h.
+    using CursorModeCallback = std::function<void(CursorLockMode effective, bool hidden)>;
+    void setCursorMode(CursorModeCallback callback);
     // Input.vibrate(ms): vibracion del movil (quien tiene la ventana).
     using VibrateCallback = std::function<void(int milliseconds)>;
     void setVibrate(VibrateCallback callback);
@@ -187,9 +195,28 @@ public:
     // La interfaz del juego en pantalla (tabla UI: UI.pointerOverUi,
     // UI.isTyping, UI.focus...; Entity:uiScreenRect). nullptr: dan false / nil.
     void setUi(ui::UiSystem* ui);
+    // El raton esta capturado ahora (modo Locked aplicado).
     bool cursorLocked() const;
-    // El programa solto el raton por su cuenta (Escape en el editor, perder el foco).
+    // El programa solto el raton por su cuenta (Escape en el editor, pasar a
+    // otra vista): el juego sigue pidiendo su modo y un clic en la vista lo
+    // vuelve a aplicar (cursorClick).
     void releaseCursor();
+    // Lo que pide el juego y lo que se aplica ahora.
+    CursorLockMode cursorLockMode() const;
+    CursorLockMode effectiveCursorLockMode() const;
+    bool cursorHidden() const;
+    // La ventana gana o pierde el foco. resume_on_focus (por defecto true,
+    // el juego exportado): al volver el foco se aplica solo; el editor lo pone
+    // a false (como Unity, hace falta un clic en la vista Juego).
+    void cursorFocus(bool focused);
+    void setCursorResumeOnFocus(bool on);
+    // La vista del juego tiene el foco (editor: la pestana Juego).
+    void cursorViewActive(bool active);
+    // Clic en la vista del juego: vuelve el modo que pide el juego.
+    void cursorClick();
+    // Antes del stop() de Scene.load: el proximo start() sigue con el modo
+    // que pedia el juego en vez del del proyecto (input.CursorLockMode).
+    void carryCursorToNextStart();
     // Mensajes de Debug.log / print (por defecto std::cout y std::cerr).
     using LogCallback = std::function<void(int level, const std::string& message)>;  // 0 info, 1 aviso, 2 error
     void setLog(LogCallback log);

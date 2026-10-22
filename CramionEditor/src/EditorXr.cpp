@@ -269,7 +269,7 @@ void EditorApp::enterPlayVr() {
     }
     play_vr_ = true;
     enterPlay();
-    if (!playing() && !pending_play_) play_vr_ = false;  // no se pudo (sin proyecto...)
+    if (!playing() && !pending_play_ && cpp_play_wait_ != CppPlayWait::Waiting) play_vr_ = false;  // no se pudo (sin proyecto...)
 }
 
 // Busca el casco en otro hilo con el runtime elegido (crear la instancia
@@ -295,7 +295,7 @@ void EditorApp::finishXrConnect() {
         if (xr_connect_then_play_ && !playing()) {
             play_vr_ = true;
             enterPlay();
-            if (!playing() && !pending_play_) play_vr_ = false;
+            if (!playing() && !pending_play_ && cpp_play_wait_ != CppPlayWait::Waiting) play_vr_ = false;
         }
     } else {
         xr_status_ = found ? error : renderer_.xr().error();

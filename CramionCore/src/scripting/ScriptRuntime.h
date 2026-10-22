@@ -98,13 +98,22 @@ struct ScriptSystem::Impl {
     GraphicsHost* graphics = nullptr;
     SkeletonHost skeleton_host;
     CursorLockCallback cursor_lock;
+    CursorModeCallback cursor_mode;
     VibrateCallback vibrate;
     dm::TouchControls* touch_controls = nullptr;
     ScreenHost screen;
     xr::XrSystem* xr_system = nullptr;
     const xr::XrRig* xr_rig = nullptr;
     ui::UiSystem* ui = nullptr;  // tabla UI (InputApi.cpp) y Entity:uiScreenRect
-    bool cursor_locked = false;
+    // Modo del cursor: lo que pide el juego y lo que se aplica (CursorLock.h).
+    CursorLockState cursor;
+    bool cursor_locked = false;  // lo ultimo que se aviso a cursor_lock
+    CursorLockMode cursor_applied = CursorLockMode::None;  // y a cursor_mode
+    bool cursor_applied_hidden = false;
+    // Scene.load: el modo pasa a la escena nueva (ScriptSystem::carryCursorToNextStart).
+    bool cursor_carry = false;
+    CursorLockMode cursor_carry_mode = CursorLockMode::None;
+    bool cursor_carry_visible = true;
     LogCallback log;
     std::vector<ScriptError> errors;
     // Para los scripts de C++ del objeto: mensajes (Send Message, eventos de
@@ -224,8 +233,10 @@ struct ScriptSystem::Impl {
     bool keyDown(const std::string& name) const;
     float axis(const std::string& name) const;
     static bool gamepadButton(const std::string& name, dm::GamepadButton& out);
-    // Input.lockCursor.
+    // Input.lockCursor (Locked o None).
     void lockCursor(bool on);
+    // Avisa a quien tiene la ventana si cambio lo que hay que aplicar.
+    void refreshCursor();
     // Entity:destroy: al final del frame (con sus hijos).
     void destroyLater(entt::entity handle) { pending_destroy.push_back(handle); }
     void flushDestroys();

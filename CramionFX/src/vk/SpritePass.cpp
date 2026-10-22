@@ -179,8 +179,10 @@ vk::raii::Pipeline SpritePass::createPipeline(const VulkanDevice& device, vk::Fo
     blend.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
     blend.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
     blend.colorBlendOp = vk::BlendOp::eAdd;
-    blend.srcAlphaBlendFactor = vk::BlendFactor::eZero;
-    blend.dstAlphaBlendFactor = vk::BlendFactor::eOne;
+    // Alfa: la opacidad acumulada ("sobre"), la mascara reactiva del TAA y de
+    // FSR 3 (en la vista principal empieza a 0).
+    blend.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+    blend.dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
     blend.alphaBlendOp = vk::BlendOp::eAdd;
     blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;

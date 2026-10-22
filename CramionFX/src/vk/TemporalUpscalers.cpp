@@ -189,6 +189,12 @@ bool Fsr3Upscaler::dispatch(const UpscaleDispatch& in) {
     desc.depth = ffxImage(in.depth, FFX_API_RESOURCE_STATE_COMPUTE_READ, false);
     desc.motionVectors = ffxImage(in.motion, FFX_API_RESOURCE_STATE_COMPUTE_READ, false);
     desc.output = ffxImage(in.output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, true);
+    // Transparentes (VFX, particulas...): sin vectores de movimiento propios.
+    // Con la mascara FSR 3 confia menos en la historia alli (sin estela).
+    if (in.reactive.image != VK_NULL_HANDLE) {
+        desc.reactive = ffxImage(in.reactive, FFX_API_RESOURCE_STATE_COMPUTE_READ, false);
+        desc.transparencyAndComposition = ffxImage(in.reactive, FFX_API_RESOURCE_STATE_COMPUTE_READ, false);
+    }
     const float sign = jitterSign();
     desc.jitterOffset = FfxApiFloatCoords2D{in.jitter_x * sign, in.jitter_y * sign};
     // Del pixel actual al del frame anterior, en pixeles internos.

@@ -61,6 +61,17 @@ void testAsset() {
     check(assets::loadMaterial(file, loaded) && loaded.uuid == m.uuid && loaded.roughness == 0.3f &&
               loaded.tiling.x == 4.0f && loaded.albedo == m.albedo && loaded.mode == assets::MaterialMode::Transparent,
           "leerlo igual");
+    {
+        // E19: un numero suelto en shader_values vale como [x] (antes se
+        // ignoraba sin avisar); lo que no es numero ni lista se ignora con aviso.
+        const std::filesystem::path loose = root / "Materials" / "Suelto.crmat";
+        std::ofstream(loose, std::ios::binary)
+            << R"({"uuid":"","shader":"S.crshader","shader_values":{"brillo":0.5,"tinte":[1,0.5,0.25],"malo":"x"}})";
+        assets::MaterialAsset s;
+        check(assets::loadMaterial(loose, s) && s.shader_values.count("brillo") && s.shader_values["brillo"].x == 0.5f &&
+                  s.shader_values["tinte"].y == 0.5f && !s.shader_values.count("malo"),
+              "shader_values: un numero suelto es [x]");
+    }
 
     assets::AssetDatabase database;
     database.open(root);

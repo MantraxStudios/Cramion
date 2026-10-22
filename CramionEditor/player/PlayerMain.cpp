@@ -1992,6 +1992,7 @@ int runPlayer() {
                 renderer.setParticles(particles.drawList(scene.camera().position()));
                 // La camara (tras sync): distancia y vista de los efectos con tipo.
                 vfx_system.setCamera(scene.camera().position(), scene.camera().projection() * scene.camera().view());
+                vfx_system.setGroundQuery([&sync](float x, float z, float& h) { return sync.terrainHeight(x, z, h); });
                 vfx_system.update(world, running ? dt : 0.0f, true, {}, renderer);
                 renderer.setSprites(twod_system.drawList(world, scene.camera().position(), scene.camera().forward()));
                 voxels.syncRenderer(renderer);

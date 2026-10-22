@@ -210,8 +210,12 @@ struct GpuTaaPush {
     core::Vec4 output_size{};  // igual, en pantalla
     core::Vec4 jitter{};       // xy = jitter en UV, z = historia valida
     core::Mat4 reproject = core::Mat4::identity();  // NDC actual -> recorte anterior
+    // x = peso maximo del frame nuevo (render.taa.FrameWeight; 0,12), y = peso
+    // con la mascara reactiva llena (render.taa.ReactiveWeight), z = fuerza de
+    // la mascara (render.taa.ReactiveStrength; 0 = sin mascara), w = libre.
+    core::Vec4 params{0.12f, 0.5f, 1.0f, 0.0f};
 };
-static_assert(sizeof(GpuTaaPush) == 112, "GpuTaaPush debe coincidir con taa.frag");
+static_assert(sizeof(GpuTaaPush) == 128, "GpuTaaPush debe coincidir con taa.frag");
 
 // FSR 1 (fsr_easu.frag y fsr_rcas.frag): constantes de FsrEasuCon/FsrRcasCon.
 struct GpuEasuPush {

@@ -556,6 +556,221 @@ int main() {
         world.destroy(old);
         world.destroy(icon);
     }
+
+    std::printf("P8: escalado del Canvas (ajuste a la pantalla) y anclas dentro de la pantalla\n");
+    {
+        // Escala por modo (referencia 1920x1080).
+        ui::Canvas cv;
+        check(cv.match_mode == ui::ScreenMatchMode::Expand, "por defecto: Expandir (la referencia cabe entera)");
+        check(near(ui::canvasScale(cv, 1920, 1080), 1.0f) && near(ui::canvasScale(cv, 960, 540), 0.5f) &&
+                  near(ui::canvasScale(cv, 3840, 2160), 2.0f),
+              "16:9: igual en todos los modos");
+        check(near(ui::canvasScale(cv, 1280, 1024), 1280.0f / 1920.0f) && near(ui::canvasScale(cv, 2560, 1080), 1.0f) &&
+                  near(ui::canvasScale(cv, 1080, 1920), 1080.0f / 1920.0f),
+              "Expandir: el lado que menos cabe (5:4, 21:9, vertical)");
+        cv.match_mode = ui::ScreenMatchMode::Shrink;
+        check(near(ui::canvasScale(cv, 2560, 1080), 2560.0f / 1920.0f) && near(ui::canvasScale(cv, 1280, 1024), 1024.0f / 1080.0f),
+              "Encoger: el lado que mas cabe");
+        cv.match_mode = ui::ScreenMatchMode::MatchWidthOrHeight;
+        cv.match = 0.0f;
+        check(near(ui::canvasScale(cv, 1280, 1024), 1280.0f / 1920.0f), "Ajustar a ancho (match 0)");
+        cv.match = 1.0f;
+        check(near(ui::canvasScale(cv, 1280, 1024), 1024.0f / 1080.0f), "Ajustar a alto (match 1)");
+        cv.match = 0.5f;
+        check(near(ui::canvasScale(cv, 1280, 1024), std::sqrt((1280.0f / 1920.0f) * (1024.0f / 1080.0f))),
+              "Ajustar a ancho o alto (match 0,5): media logaritmica");
+        cv.scale_mode = ui::ScaleMode::ConstantPixelSize;
+        check(near(ui::canvasScale(cv, 1280, 1024), 1.0f), "Pixeles constantes: escala 1");
+        ui::Canvas bad;
+        bad.reference = core::Vec2{0, 0};
+        check(near(ui::canvasScale(bad, 1280, 720), 1.0f) && near(ui::canvasScale(ui::Canvas{}, 0, 0), 1.0f),
+              "referencia o vista vacia: escala 1 (sin dividir por cero)");
+
+        // Pivote y anclas estiradas.
+        const ui::UiRect view{0, 0, 1000, 600};
+        ui::RectTransform pv;
+        pv.size = core::Vec2{100, 50};
+        pv.pivot = core::Vec2{0, 1};  // abajo a la izquierda en el centro
+        ui::UiRect pr = ui::layoutRect(pv, view);
+        check(near(pr.x, 500) && near(pr.y, 250), "pivote (0, 1): la esquina de abajo a la izquierda en el ancla");
+        ui::RectTransform top;
+        top.anchor_min = core::Vec2{0, 0};
+        top.anchor_max = core::Vec2{1, 0};
+        top.pivot = core::Vec2{0.5f, 1};
+        top.position = core::Vec2{0, 50};
+        top.size = core::Vec2{-20, 40};
+        pr = ui::layoutRect(top, view);
+        check(near(pr.x, 10) && near(pr.w, 980) && near(pr.y, 10) && near(pr.h, 40), "barra estirada arriba con margen y pivote");
+        ui::RectTransform br4;
+        br4.anchor_min = br4.anchor_max = br4.pivot = core::Vec2{1, 1};
+        br4.position = core::Vec2{-12, -12};
+        br4.size = core::Vec2{62, 32};
+        pr = ui::layoutRect(br4, view);
+        check(near(pr.x + pr.w, 988) && near(pr.y + pr.h, 588), "anclado abajo a la derecha (pivote = ancla)");
+
+        // La interfaz de un juego hecho a 1920x1080 (como Overthrow Arena):
+        // esquinas, panel lateral alto, caja 1920x1080 centrada y una barra
+        // estirada; nada se sale de la vista a ninguna resolucion.
+        ecs::World w3;
+        ui::UiSystem ui3;
+        ecs::Entity c3 = w3.create("UI");
+        c3.add<ui::Canvas>();
+        const auto anchored = [&](ecs::Entity parent, float ax, float ay, float x, float y, float wd, float ht) {
+            ecs::Entity e = w3.create("E", parent);
+            ui::RectTransform& rt = e.add<ui::RectTransform>();
+            rt.anchor_min = rt.anchor_max = rt.pivot = core::Vec2{ax, ay};
+            rt.position = core::Vec2{x, y};
+            rt.size = core::Vec2{wd, ht};
+            e.add<ui::Image>();
+            return e;
+        };
+        std::vector<ecs::Entity> items;
+        items.push_back(anchored(c3, 0, 0, 20, 20, 300, 80));      // arriba a la izquierda
+        items.push_back(anchored(c3, 1, 0, -40, 26, 560, 60));     // arriba a la derecha
+        items.push_back(anchored(c3, 1, 0, -40, 126, 560, 900));   // panel lateral (baja hasta 1026)
+        items.push_back(anchored(c3, 0, 1, 16, -16, 256, 256));    // minimapa
+        items.push_back(anchored(c3, 1, 1, -14, -130, 600, 700));  // tienda
+        items.push_back(anchored(c3, 0.5f, 1, 0, 0, 497, 110));    // consola abajo en el centro
+        ecs::Entity screen = anchored(c3, 0.5f, 0.5f, 0, 0, 1920, 1080);
+        items.push_back(screen);
+        // Hijos de la caja 1920x1080 colocados por su esquina (ui::node).
+        const auto node = [&](float x, float y, float wd, float ht) {
+            ecs::Entity e = w3.create("N", screen);
+            ui::RectTransform& rt = e.add<ui::RectTransform>();
+            rt.anchor_min = rt.anchor_max = rt.pivot = core::Vec2{0, 0};
+            rt.position = core::Vec2{x, y};
+            rt.size = core::Vec2{wd, ht};
+            e.add<ui::Image>();
+            return e;
+        };
+        items.push_back(node(0, 0, 40, 40));
+        items.push_back(node(1880, 1040, 40, 40));
+        items.push_back(node(1500, 20, 400, 60));
+        ecs::Entity bar = w3.create("Barra", c3);
+        ui::RectTransform& brt = bar.add<ui::RectTransform>();
+        brt.anchor_min = core::Vec2{0, 1};
+        brt.anchor_max = core::Vec2{1, 1};
+        brt.pivot = core::Vec2{0.5f, 1};
+        brt.size = core::Vec2{-40, 30};
+        brt.position = core::Vec2{0, -10};
+        bar.add<ui::Image>();
+        items.push_back(bar);
+        struct Res {
+            float w, h;
+        };
+        // 16:9, 16:10, 4:3, 5:4, 21:9, 32:9, vertical y vistas Juego del editor acopladas.
+        const Res sizes[] = {{1920, 1080}, {1280, 720}, {1920, 1200}, {1024, 768}, {1280, 1024}, {2560, 1080}, {3440, 1440},
+                             {5120, 1440}, {1080, 1920}, {800, 600},   {937, 611},   {1366, 768},  {612, 937},   {320, 180}};
+        bool all_inside = true;
+        for (const Res& rs : sizes) {
+            ui3.update(w3, rs.w, rs.h, ui::UiInput{}, false, 0.0f);
+            for (const ecs::Entity& e : items) {
+                ui::UiRect q;
+                const bool ok = ui3.rectOf(e.handle(), q) && q.x >= -0.01f && q.y >= -0.01f && q.x + q.w <= rs.w + 0.01f &&
+                                q.y + q.h <= rs.h + 0.01f;
+                if (!ok) {
+                    std::printf("    se sale a %.0fx%.0f: (%.1f, %.1f, %.1f, %.1f)\n", rs.w, rs.h, q.x, q.y, q.w, q.h);
+                    all_inside = false;
+                }
+            }
+        }
+        check(all_inside, "Expandir: nada anclado se sale a 14 resoluciones y proporciones");
+        // La barra estirada ocupa todo el ancho menos el margen (escalado).
+        ui3.update(w3, 2560, 1080, ui::UiInput{}, false, 0.0f);
+        ui::UiRect bq;
+        check(ui3.rectOf(bar.handle(), bq) && near(bq.x, 20) && near(bq.w, 2520) && near(bq.y + bq.h, 1070),
+              "barra estirada a 21:9: todo el ancho de la vista");
+        // Con el modo de antes, a 5:4 la caja de 1920x1080 se salia por los lados.
+        c3.get<ui::Canvas>().match_mode = ui::ScreenMatchMode::MatchWidthOrHeight;
+        ui3.update(w3, 1280, 1024, ui::UiInput{}, false, 0.0f);
+        ui::UiRect sq;
+        check(ui3.rectOf(screen.handle(), sq) && sq.x < -1.0f, "Ajustar a ancho o alto (match 0,5): la caja de 1920 se sale a 5:4");
+        // Guardar y leer el modo; una escena sin el campo usa Expandir.
+        c3.get<ui::Canvas>().match_mode = ui::ScreenMatchMode::Shrink;
+        const std::string saved = ecs::serializeWorld(w3);
+        ecs::World w4;
+        check(ecs::deserializeWorld(w4, saved) && w4.find(c3.uuid()).get<ui::Canvas>().match_mode == ui::ScreenMatchMode::Shrink,
+              "match_mode se guarda y se lee");
+        ecs::Entity oldc = w4.create("Viejo");
+        check(ecs::componentFromJson(w4, oldc, "UICanvas", R"({"match": 0.5, "sort_order": 3})") &&
+                  oldc.get<ui::Canvas>().match_mode == ui::ScreenMatchMode::Expand && oldc.get<ui::Canvas>().sort_order == 3,
+              "UICanvas sin match_mode (escena vieja, setComponent del juego): Expandir");
+    }
+
+    std::printf("P9: raycast como uGUI, foco, UI.scale y desplegable por la API\n");
+    {
+        // Un panel opaco encima tapa al boton; el icono hijo de un boton cuenta como el boton.
+        b.interactable = true;
+        system.update(world, 960, 540, ui::UiInput{}, true, 0.0f);
+        system.rectOf(button.handle(), br);
+        ecs::Entity panel = world.create("Panel", canvas);
+        panel.add<ui::RectTransform>().size = core::Vec2{1920, 1080};
+        panel.add<ui::Image>();  // raycast_target por defecto
+        const auto click = [&](float x, float y) {
+            ui::UiInput k;
+            k.mouse_x = x; k.mouse_y = y; k.mouse_pressed = true; k.mouse_down = true;
+            system.update(world, 960, 540, k, true, 0.0f);
+            k.mouse_pressed = false; k.mouse_down = false; k.mouse_released = true;
+            system.update(world, 960, 540, k, true, 0.0f);
+            messages.clear();
+            dispatch();
+        };
+        click(br.x + br.w * 0.5f, br.y + br.h * 0.5f);
+        check(last(menu, "OnJugar") == nullptr && system.pointerOverUi(), "un panel opaco encima tapa el boton de debajo");
+        panel.get<ui::Image>().raycast_target = false;
+        click(br.x + br.w * 0.5f, br.y + br.h * 0.5f);
+        check(last(menu, "OnJugar") != nullptr, "panel sin raycast_target: el clic llega al boton");
+        world.destroy(panel);
+        ecs::Entity icon = world.create("Icono", button);
+        icon.add<ui::RectTransform>().size = core::Vec2{40, 40};
+        icon.add<ui::Image>();
+        click(br.x + br.w * 0.5f, br.y + br.h * 0.5f);
+        check(last(menu, "OnJugar") != nullptr, "el icono (hijo) de un boton cuenta como el boton");
+        world.destroy(icon);
+
+        // El campo con el foco se oculta: deja de escribir y UI.isTyping vuelve a false.
+        check(system.focus(world, field.handle()) && system.typing(), "(foco en el campo)");
+        field.setActive(false);
+        ui::UiInput k;
+        k.typed = "zz";
+        const std::string before_text = f.text;
+        system.update(world, 960, 540, k, true, 0.0f);
+        check(!system.typing() && f.text == before_text && apiCall("UI.isTyping")["result"] == false,
+              "campo oculto: pierde el foco y no recibe lo que se escribe");
+        field.setActive(true);
+        check(system.focus(world, field.handle()), "(foco otra vez)");
+        f.interactable = false;
+        system.update(world, 960, 540, ui::UiInput{}, true, 0.0f);
+        check(!system.typing(), "campo que deja de responder: pierde el foco");
+        f.interactable = true;
+
+        // UI.scale: pixeles de la vista por unidad del Canvas (960x540 con referencia 1920x1080).
+        const nlohmann::json button_ref = {{"$e", button_id}};
+        check(near(apiCall("UI.scale")["result"].get<float>(), 0.5f) &&
+                  near(apiCall("UI.scale", nlohmann::json::array({button_ref}))["result"].get<float>(), 0.5f),
+              "UI.scale() y UI.scale(elemento)");
+
+        // Desplegable: value (desde 1, como on_change) e interactable por la API.
+        ecs::Entity dd = world.create("Calidad", canvas);
+        dd.add<ui::RectTransform>();
+        ui::Dropdown& d = dd.add<ui::Dropdown>();
+        const Value vdd = Value::entity(dd.handle());
+        api.set("value", Value(3), vdd);
+        check(d.value == 2 && near(static_cast<float>(api.get("value", vdd).asNumber()), 3.0f), "Entity:value del desplegable (desde 1)");
+        api.set("value", Value(99), vdd);
+        check(d.value == 2, "Entity:value del desplegable: fuera de rango se queda en la ultima");
+        d.open = true;
+        api.set("interactable", Value(false), vdd);
+        check(!d.interactable && !d.open && !api.get("interactable", vdd).truthy(), "Entity:interactable del desplegable (cierra la lista)");
+        world.destroy(dd);
+        // Slider con enteros: value redondea.
+        s.whole_numbers = true;
+        s.max = 10.0f;
+        api.set("value", Value(3.6), vslider);
+        check(near(s.value, 4.0f), "Entity:value de un slider con enteros redondea");
+        s.whole_numbers = false;
+        s.max = 1.0f;
+    }
     scripts.stop();
     std::printf("\n%d fallos\n", failures);
     return failures == 0 ? 0 : 1;

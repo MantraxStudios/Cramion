@@ -3,6 +3,7 @@
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/asset/MaterialAsset.h"
 #include "CramionCore/cvar/CVar.h"
+#include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/profiling/Profiler.h"
 
@@ -58,6 +59,12 @@ cvar::CVar<bool> g_vfx_distortion("render.vfx.Distortion", true,
 cvar::CVar<int> g_vfx_particle_lights("render.vfx.MaxParticleLights", 32,
                                       "Luces de particula (bloque Luz por particula) por frame como mucho; 0 = ninguna",
                                       cvar::Saved, 0, 256);
+// Presupuesto por grupo: sin VfxGroup, los efectos de Heroe/Combate/Impacto
+// dentro de un prefab cuentan como uno con la raiz del prefab.
+cvar::CVar<bool> g_vfx_group_prefabs("vfx.groupPrefabs", true,
+                                     "Sin VfxGroup, los efectos (no de Ambiente) de un prefab cuentan como un grupo: se crean "
+                                     "o se quitan enteros",
+                                     cvar::Saved);
 std::atomic<int> g_quality_preset{2};
 
 const char* kEffectTypeKeys[] = {"Hero", "Combat", "Impact", "Ambient", "None"};
@@ -185,7 +192,11 @@ std::vector<BlockInfo> buildCatalog() {
          f1("width", "Ancho (m)", 2, 0.1f, 0.0f, 100.0f, "0 = el tamano de la particula"),
          fAngle("twist_min", "Giro mín.", 3, 0.0f, -360.0f, 360.0f, "Gira el ancho alrededor de la cinta"),
          fAngle("twist_max", "Giro máx.", 4, 0.0f, -360.0f, 360.0f),
-         fVec("spacing", "Separación", 5, Vec3{}, "Entre tiras (espacio del emisor): tiras paralelas")});
+         fVec("spacing", "Separación", 5, Vec3{}, "Entre tiras (espacio del emisor): tiras paralelas"),
+         fBool("id_from_event", "Id del evento", 8, false,
+               "Con 'Al recibir un evento de la GPU': una cinta por cada valor del evento (Id + valor). Un proyectil "
+               "con 'Cada t segundos: evento al canal' y 'Valor = id de la particula' deja su propia cinta; desde "
+               "un script, Effects.pushEvent con el id del proyectil como valor")});
     // Update
     add(BlockKind::Gravity, Context::Update, "Gravity", "Gravedad", "Aceleracion constante",
         {fVec("acceleration", "Aceleración", 0, Vec3{0.0f, -9.81f, 0.0f})});
@@ -207,18 +218,31 @@ std::vector<BlockInfo> buildCatalog() {
         "Rebota contra lo que ve la camara (buffer de profundidad)",
         {f1("bounce", "Rebote", 0, 0.4f, 0.0f, 1.0f), f1("friction", "Fricción", 1, 0.2f, 0.0f, 1.0f),
          f1("life_loss", "Vida perdida", 2, 0.0f, 0.0f, 1.0f), f1("radius_scale", "Escala del radio", 3, 1.0f, 0.0f, 10.0f),
-         f1("thickness", "Grosor", 4, 0.5f, 0.01f, 100.0f), fBool("kill", "Morir al chocar", 5, false)});
+         f1("thickness", "Grosor", 4, 0.5f, 0.01f, 100.0f), fBool("kill", "Morir al chocar", 5, false),
+         fBool("ground_fallback", "Suelo sin la vista", 6, false,
+               "Ademas, el terreno bajo el emisor como suelo (plano a su altura): lo que cae fuera de la pantalla "
+               "o tapado tambien choca y apunta sus eventos")});
     add(BlockKind::CollidePlane, Context::Update, "CollidePlane", "Colisión con plano", "Un plano infinito",
         {fVec("normal", "Normal", 0, Vec3{0.0f, 1.0f, 0.0f}), f1("distance", "Distancia", 3, 0.0f, -10000.0f, 10000.0f),
          f1("bounce", "Rebote", 4, 0.4f, 0.0f, 1.0f), f1("friction", "Fricción", 5, 0.2f, 0.0f, 1.0f),
-         f1("life_loss", "Vida perdida", 6, 0.0f, 0.0f, 1.0f)});
+         f1("life_loss", "Vida perdida", 6, 0.0f, 0.0f, 1.0f),
+         fBool("world_space", "En el mundo", 7, false,
+               "Normal y distancia en el mundo (el plano no se mueve con el emisor). Si no, en el espacio del emisor"),
+         fBool("follow_ground", "Sobre el terreno", 8, false,
+               "Plano horizontal a la altura del terreno bajo el emisor + Distancia (en el mundo, sin depender de la "
+               "vista). Sin terreno debajo no choca")});
     add(BlockKind::CollideSphere, Context::Update, "CollideSphere", "Colisión con esfera", "Una esfera solida o hueca",
         {fVec("center", "Centro", 0, Vec3{}), f1("radius", "Radio", 3, 1.0f, 0.0f, 10000.0f),
          f1("bounce", "Rebote", 4, 0.4f, 0.0f, 1.0f), f1("friction", "Fricción", 5, 0.2f, 0.0f, 1.0f),
          fBool("inside", "Por dentro", 6, false)});
-    add(BlockKind::KillBox, Context::Update, "KillBox", "Matar en caja", "Mueren dentro (o fuera) de una caja",
+    add(BlockKind::KillBox, Context::Update, "KillBox", "Matar en caja",
+        "Mueren dentro (o fuera) de una caja. La caja va en el espacio del emisor (se mueve y gira con el) salvo "
+        "con 'En el mundo'",
         {fVec("center", "Centro", 0, Vec3{}), fVec("size", "Tamaño", 3, Vec3{10.0f, 10.0f, 10.0f}),
-         fBool("outside", "Matar fuera", 6, true)});
+         fBool("outside", "Matar fuera", 6, true),
+         fBool("world_space", "En el mundo", 7, false,
+               "Centro y tamano en el mundo (caja fija alineada con los ejes). Si no, en el espacio del emisor: con "
+               "'Matar fuera' y un emisor que se mueve, la caja va con el")});
     add(BlockKind::SpeedLimit, Context::Update, "SpeedLimit", "Velocidad máxima", "Limita la rapidez",
         {f1("max", "Máxima", 0, 10.0f, 0.0f, 10000.0f), f1("damping", "Amortiguación", 1, 1.0f, 0.0f, 1.0f)});
     add(BlockKind::ConformSphere, Context::Update, "ConformSphere", "Conformar a esfera", "Se pegan a una esfera",
@@ -247,7 +271,10 @@ std::vector<BlockInfo> buildCatalog() {
             f1("value", "Valor", 1, 1.0f, -1000000.0f, 1000000.0f, "Dato libre (fuerza, dano...); quien escucha puede usarlo como tamano"),
             f1("probability", "Probabilidad", 2, 1.0f, 0.0f, 1.0f),
             fColor("color", "Color", 3, Vec4{1.0f, 1.0f, 1.0f, 1.0f}),
-            fBool("particle_color", "Por el color de la particula", 7, true, "Multiplica el color por el de la particula")};
+            fBool("particle_color", "Por el color de la particula", 7, true, "Multiplica el color por el de la particula"),
+            fBool("particle_id_value", "Valor = id de la partícula", 9, false,
+                  "El valor del evento es el id de la particula que lo apunta (igual toda su vida): las cintas con "
+                  "'Id del evento' hacen una por particula")};
         for (FieldInfo& f : extra) fields.push_back(f);
         return fields;
     };
@@ -258,7 +285,9 @@ std::vector<BlockInfo> buildCatalog() {
     emit_death.has_text = true;
     emit_death.text_label = "Canal";
     BlockInfo& emit_collision = add(BlockKind::EmitOnCollision, Context::Update, "EmitOnCollision", "Al chocar: evento al canal",
-                                    "Cada choque (CollideDepth, CollidePlane o CollideSphere de antes) apunta un evento en el canal",
+                                    "Cada choque (CollideDepth, CollidePlane o CollideSphere de antes) apunta un evento en el canal. "
+                                    "Para que choque tambien fuera de la vista: CollideDepth con 'Suelo sin la vista' o "
+                                    "CollidePlane con 'Sobre el terreno' / 'En el mundo'",
                                     emit_fields({f1("min_speed", "Rapidez mínima (m/s)", 8, 1.0f, 0.0f, 1000.0f,
                                                     "Los roces mas lentos no cuentan (las que ruedan)")}));
     emit_collision.has_text = true;
@@ -323,6 +352,34 @@ gfx::VfxBlock gpuBlock(gfx::VfxBlockType type) {
     gfx::VfxBlock b;
     b.type = static_cast<std::uint32_t>(type);
     return b;
+}
+
+// Bloques que necesitan la altura del suelo bajo el emisor (CollidePlane
+// "Sobre el terreno", CollideDepth "Suelo sin la vista"). El shader no mira
+// este bit; lo usa applyGround.
+constexpr std::uint32_t kGroundFlag = 0x100u;
+
+// Rellena la altura del terreno bajo el emisor en los bloques con
+// kGroundFlag: una consulta por efecto y frame, en la CPU. El plano queda en
+// el mundo (independiente de la vista); sin terreno debajo no chocan.
+void applyGround(gfx::VfxInstanceDesc& desc, const std::function<bool(float, float, float&)>& query) {
+    bool asked = false;
+    bool found = false;
+    float height = 0.0f;
+    for (gfx::VfxBlock& b : desc.update) {
+        if ((b.flags & kGroundFlag) == 0u) continue;
+        if (!asked) {
+            asked = true;
+            // Columna 3 de la matriz: la posicion del emisor.
+            found = query && query(desc.transform.m[3][0], desc.transform.m[3][2], height);
+        }
+        if (b.type == static_cast<std::uint32_t>(gfx::VfxBlockType::CollideDepth)) {
+            b.c = Vec4{height, found ? 1.0f : 0.0f, 0.0f, 0.0f};
+        } else if (b.type == static_cast<std::uint32_t>(gfx::VfxBlockType::CollidePlane)) {
+            // a.w = distancia sobre el suelo -> distancia del plano en el mundo.
+            b.a.w = found ? height + b.a.w : -1.0e30f;
+        }
+    }
 }
 
 bool writeText(const std::filesystem::path& path, const std::string& text, std::string* error) {
@@ -583,6 +640,7 @@ std::string vfxGraphToText(const VfxGraph& graph) {
         const Vec3& jt = o.mesh_scale_jitter;
         if (jt.x != 0.0f || jt.y != 0.0f || jt.z != 0.0f) jm["mesh_scale_jitter"] = {jt.x, jt.y, jt.z};
         if (o.material.valid()) jm["material"] = o.material.uuid.toString();
+        if (o.mesh_output_texture) jm["mesh_output_texture"] = true;
         if (o.distortion != 3.0f) jm["distortion"] = o.distortion;
         if (o.distortion_height) jm["distortion_height"] = true;
     }
@@ -731,6 +789,7 @@ bool vfxGraphFromText(const std::string& text, VfxGraph& out, std::string* error
         }
         g.output.distortion = std::clamp(o.value("distortion", 3.0f), 0.0f, gfx::kVfxMaxDistortionPixels);
         g.output.distortion_height = o.value("distortion_height", false);
+        g.output.mesh_output_texture = o.value("mesh_output_texture", false);
     }
     out = std::move(g);
     return true;
@@ -1171,8 +1230,9 @@ void compileGraph(const VfxGraph& graph, const ParamValues& params, gfx::VfxInst
                     const Vec3 spacing = v3(b, 5);
                     g.b = Vec4{std::max(v(b, 4), v(b, 3)), spacing.x, spacing.y, spacing.z};
                 }
+                g.flags = v(b, 8) > 0.5f ? 1u : 0u;  // id del evento
                 // Varias cintas: orden por (id, edad). Con un solo id basta la edad.
-                out.ribbon_ids = out.ribbon_ids || g.a.x > 0.0f || g.a.y > 1.0f;
+                out.ribbon_ids = out.ribbon_ids || g.a.x > 0.0f || g.a.y > 1.0f || g.flags != 0u;
                 break;
             case BlockKind::InheritVelocity:
                 g = gpuBlock(T::InheritVelocity);
@@ -1227,13 +1287,21 @@ void compileGraph(const VfxGraph& graph, const ParamValues& params, gfx::VfxInst
                 g = gpuBlock(T::CollideDepth);
                 g.a = Vec4{v(b, 0), v(b, 1), v(b, 2), v(b, 3)};
                 g.b = Vec4{v(b, 4), v(b, 5) > 0.5f ? 1.0f : 0.0f, 0.0f, 0.0f};
+                // Suelo sin la vista: c.x la altura y c.y si hay suelo, los
+                // pone applyGround con la posicion del emisor de cada frame.
+                g.flags = v(b, 6) > 0.5f ? kGroundFlag : 0u;
                 break;
             case BlockKind::CollidePlane: {
                 g = gpuBlock(T::CollidePlane);
                 Vec3 n = v3(b, 0);
                 n = core::length(n) > 1e-5f ? core::normalize(n) : Vec3{0.0f, 1.0f, 0.0f};
+                // Sobre el terreno: horizontal y en el mundo; applyGround le
+                // suma la altura del suelo bajo el emisor a la distancia.
+                const bool follow_ground = v(b, 8) > 0.5f;
+                if (follow_ground) n = Vec3{0.0f, 1.0f, 0.0f};
                 g.a = Vec4{n, v(b, 3)};
                 g.b = Vec4{v(b, 4), v(b, 5), v(b, 6), 0.0f};
+                g.flags = (v(b, 7) > 0.5f || follow_ground ? 1u : 0u) | (follow_ground ? kGroundFlag : 0u);
                 break;
             }
             case BlockKind::CollideSphere:
@@ -1245,7 +1313,7 @@ void compileGraph(const VfxGraph& graph, const ParamValues& params, gfx::VfxInst
                 g = gpuBlock(T::KillBox);
                 g.a = Vec4{v3(b, 0), 0.0f};
                 g.b = Vec4{v3(b, 3), 0.0f};
-                g.flags = v(b, 6) > 0.5f ? 1u : 0u;
+                g.flags = (v(b, 6) > 0.5f ? 1u : 0u) | (v(b, 7) > 0.5f ? 2u : 0u);  // 2: en el mundo
                 break;
             case BlockKind::SpeedLimit:
                 g = gpuBlock(T::SpeedLimit);
@@ -1286,7 +1354,7 @@ void compileGraph(const VfxGraph& graph, const ParamValues& params, gfx::VfxInst
                                     : b.kind == BlockKind::EmitOnCollision ? std::max(v(b, 8), 0.0f)
                                                                            : std::max(v(b, 8), 0.01f);
                 g.b = Vec4{std::max(std::round(v(b, 0)), 0.0f), v(b, 1), std::clamp(v(b, 2), 0.0f, 1.0f), extra};
-                g.flags = v(b, 7) > 0.5f ? 1u : 0u;
+                g.flags = (v(b, 7) > 0.5f ? 1u : 0u) | (v(b, 9) > 0.5f ? 2u : 0u);  // 2: valor = id de la particula
                 // pad1: indice en eventChannels; pad0: el canal, que pone
                 // VfxSystem (sin resolver no apunta nada).
                 g.pad0 = gfx::VfxPass::kNoChannel;
@@ -1606,6 +1674,14 @@ void VisualEffect::reflect(ecs::PropertyVisitor& v) {
     v.field({"simulation_speed", "Velocidad", "Multiplica el tiempo de la simulacion"}, simulation_speed,
             ecs::FloatRange{0.0f, 10.0f, 0.01f, "%.2fx"});
     v.field({"preview_in_editor", "Vista previa en el editor", "Simular en la escena si esta seleccionado"}, preview_in_editor);
+    v.field({"grass_radius", "Apartar hierba (m)",
+             "Aparta la hierba del terreno en este radio alrededor del efecto, sin fisica (circulos de suelo, "
+             "impactos a ras de suelo). 0 = no"},
+            grass_radius, ecs::FloatRange{0.0f, 20.0f, 0.05f, "%.2f m"});
+    v.field({"local_player", "Del jugador local",
+             "Nunca se descarta por el presupuesto (ni por distancia ni por tope) y usa los limites de Heroe"},
+            local_player);
+    v.field({"priority", "Prioridad", "Con el tope lleno se quedan antes los de mas prioridad"}, priority, -100, 100);
     ecs::listField(v, {"params", "Parámetros", "Valores de los parametros expuestos del efecto para este objeto"}, params,
                    [](ParamOverride& p, ecs::PropertyVisitor& pv) {
                        pv.field({"name", "Nombre"}, p.name);
@@ -1614,10 +1690,21 @@ void VisualEffect::reflect(ecs::PropertyVisitor& v) {
                    });
 }
 
+void VfxGroup::reflect(ecs::PropertyVisitor& v) {
+    v.field({"local_player", "Del jugador local",
+             "El grupo entero nunca se descarta por el presupuesto (ni por distancia ni por tope)"},
+            local_player);
+    v.field({"priority", "Prioridad", "Con el tope lleno se quedan antes los grupos de mas prioridad"}, priority, -100,
+            100);
+}
+
 void registerVfxComponents() {
     ecs::ComponentRegistry& registry = ecs::ComponentRegistry::instance();
     if (registry.find("VisualEffect") == nullptr) {
         registry.registerComponent<VisualEffect>("VisualEffect", "Visual Effect (VFX Graph)", "Efectos");
+    }
+    if (registry.find("VfxGroup") == nullptr) {
+        registry.registerComponent<VfxGroup>("VfxGroup", "VFX Group (presupuesto)", "Efectos");
     }
 }
 
@@ -1709,31 +1796,38 @@ void applyBudget(std::vector<BudgetCandidate>& candidates, const VfxScalability&
         const EffectTypeBudget* budget = typed ? &scalability.types[static_cast<std::size_t>(t)] : nullptr;
         const Decision over = budget != nullptr && budget->policy == OverBudget::Pause ? Decision::Paused : Decision::Removed;
         order.clear();
+        std::size_t essentials = 0;
         for (std::size_t i = 0; i < candidates.size(); ++i) {
             BudgetCandidate& c = candidates[i];
             if (typeSlot(c.type) != t) continue;
             c.decision = Decision::Run;
-            if (budget != nullptr && budget->max_distance > 0.0f && c.distance > budget->max_distance) {
+            // Los del jugador local no se recortan por distancia.
+            if (!c.essential && budget != nullptr && budget->max_distance > 0.0f && c.distance > budget->max_distance) {
                 c.decision = over;
                 continue;
             }
+            if (c.essential) ++essentials;
             order.push_back(i);
         }
         if (budget != nullptr && budget->max_instances > 0 && order.size() > static_cast<std::size_t>(budget->max_instances)) {
-            // Quienes se quedan: con DontCreate primero los que ya corrian;
-            // despues los que se ven y los mas cercanos.
+            // Quienes se quedan: primero los del jugador local (siempre, aunque
+            // se pasen del tope); despues, con DontCreate, los que ya corrian;
+            // despues los de mas prioridad, los que se ven y los mas cercanos.
             const bool keep_running = budget->policy == OverBudget::DontCreate;
             std::stable_sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) {
                 const BudgetCandidate& a = candidates[x];
                 const BudgetCandidate& b = candidates[y];
+                if (a.essential != b.essential) return a.essential;
                 if (keep_running && a.running != b.running) return a.running;
+                if (a.priority != b.priority) return a.priority > b.priority;
                 if (a.in_view != b.in_view) return a.in_view;
                 return a.distance < b.distance;
             });
-            for (std::size_t k = static_cast<std::size_t>(budget->max_instances); k < order.size(); ++k) {
+            const std::size_t keep = std::max(static_cast<std::size_t>(budget->max_instances), essentials);
+            for (std::size_t k = keep; k < order.size(); ++k) {
                 candidates[order[k]].decision = over;
             }
-            order.resize(static_cast<std::size_t>(budget->max_instances));
+            order.resize(keep);
         }
         for (const std::size_t i : order) {
             if (!candidates[i].in_view) candidates[i].decision = Decision::Hidden;
@@ -1804,15 +1898,82 @@ void VfxSystem::noteScalable(const VfxGraph& g) {
     if (g.effect_type != EffectType::None || g.fixed_bounds) any_scalable_ = true;
 }
 
+namespace {
+
+// Bloques que leen o escriben canales de datos de la GPU: el efecto espera
+// eventos que la CPU no ve (nunca se da por terminado).
+bool usesGpuChannels(const VfxGraph& g) {
+    for (const Block& b : g.spawn) {
+        if (b.enabled && isChannelBlock(b.kind)) return true;
+    }
+    for (const Block& b : g.update) {
+        if (b.enabled && isChannelBlock(b.kind)) return true;
+    }
+    return false;
+}
+
+float maxParticleLifetime(const VfxGraph& g) {
+    float longest = 0.0f;
+    for (const Block& b : g.initialize) {
+        if (b.enabled && b.kind == BlockKind::Lifetime) longest = std::max({longest, b.values[0], b.values[1]});
+    }
+    return longest > 0.0f ? longest : 5.0f;
+}
+
+}  // namespace
+
+bool effectFinished(const FinishedState& s) {
+    if (s.emitting || s.pending) return false;
+    // La lectura de las vivas llega un par de frames tarde: lo recien nacido
+    // aun no sale en ella.
+    constexpr float kReadbackDelay = 0.25f;
+    if (s.quiet_seconds < kReadbackDelay) return false;
+    if (s.quiet_seconds > s.max_lifetime + kReadbackDelay) return true;  // ya no puede quedar ninguna
+    return s.alive_known && s.alive == 0;
+}
+
+bool VfxSystem::instanceFinished(const Instance& inst, const VfxGraph& g) const {
+    // Sin emision pendiente: no emite (o su ciclo sin bucle acabo), sin
+    // eventos ni rafagas repartidas, sin pausa y sin canales de la GPU.
+    FinishedState s;
+    s.emitting = inst.playing && !inst.spawn.finished;
+    s.pending = inst.paused || !inst.spawn.pending_events.empty() || inst.spawn_backlog > 0;
+    s.quiet_seconds = inst.quiet;
+    if (s.emitting || s.pending || s.quiet_seconds < 0.25f) return false;
+    if (usesGpuChannels(g)) return false;
+    s.max_lifetime = maxParticleLifetime(g);
+    if (renderer_ != nullptr) {
+        s.alive_known = true;
+        s.alive = renderer_->vfx().aliveCount(inst.id);
+        for (const Instance::SubEmitter& child : inst.children) s.alive += renderer_->vfx().aliveCount(child.id);
+    }
+    return effectFinished(s);
+}
+
+EffectType VfxSystem::effectiveType(entt::entity handle, const VfxGraph& g) const {
+    if (!type_overrides_.empty()) {
+        const auto it = type_overrides_.find(handle);
+        if (it != type_overrides_.end()) return it->second;
+    }
+    return g.effect_type;
+}
+
 void VfxSystem::planFrame(ecs::World& world, bool simulate, const std::vector<entt::entity>& preview) {
     decisions_.clear();
+    type_overrides_.clear();
+    planned_groups_.fill(-1);
     frame_scalability_ = has_custom_scalability_ ? custom_scalability_ : defaultScalability(qualityLevel(), currentPlatform());
     // Sin efectos con tipo ni caja (lo de antes) o fuera de Play (la vista
     // previa del editor se ve entera): nada que decidir.
     if (!any_scalable_ || !simulate || !g_vfx_scalability.get()) return;
     (void)preview;
+    using Decision = BudgetCandidate::Decision;
     plan_scratch_.clear();
     plan_entities_.clear();
+    plan_member_group_.clear();
+    plan_members_.clear();
+    plan_group_index_.clear();
+    const bool group_prefabs = g_vfx_group_prefabs.get();
     for (const entt::entity handle : world.registry().view<VisualEffect>()) {
         const ecs::Entity e = world.wrap(handle);
         if (!e.activeInHierarchy()) continue;
@@ -1820,8 +1981,32 @@ void VfxSystem::planFrame(ecs::World& world, bool simulate, const std::vector<en
         if (!component.graph.valid()) continue;
         const VfxGraph* g = graph(component.graph.uuid);
         if (g == nullptr || (g->effect_type == EffectType::None && !g->fixed_bounds)) continue;
+
+        // Su grupo: el VfxGroup mas cercano hacia arriba; si no hay, la raiz
+        // del prefab mas cercano (no para los de Ambiente: una celda entera
+        // no es un grupo); si no, el efecto solo.
+        entt::entity group_root = handle;
+        const VfxGroup* group = nullptr;
+        {
+            entt::entity prefab_root = entt::null;
+            const bool by_prefab = group_prefabs && g->effect_type != EffectType::Ambient && g->effect_type != EffectType::None;
+            for (ecs::Entity p = e; p.valid(); p = p.parent()) {
+                if (const VfxGroup* vg = p.tryGet<VfxGroup>()) {
+                    group = vg;
+                    group_root = p.handle();
+                    break;
+                }
+                if (by_prefab && prefab_root == entt::null && p.has<ecs::PrefabInstance>()) prefab_root = p.handle();
+            }
+            if (group == nullptr && prefab_root != entt::null) group_root = prefab_root;
+        }
+
         BudgetCandidate c;
-        c.type = g->effect_type;
+        c.essential = component.local_player || (group != nullptr && group->local_player);
+        c.priority = group != nullptr ? std::max(component.priority, group->priority) : component.priority;
+        // Del jugador local: cuenta y se limita como Heroe.
+        c.type = c.essential && g->effect_type != EffectType::None ? EffectType::Hero : g->effect_type;
+        if (c.type != g->effect_type) type_overrides_[handle] = c.type;
         if (has_camera_) {
             const core::Mat4 m = e.worldMatrix();
             const Vec3 position{m.m[3][0], m.m[3][1], m.m[3][2]};
@@ -1838,12 +2023,46 @@ void VfxSystem::planFrame(ecs::World& world, bool simulate, const std::vector<en
         }
         const auto it = instances_.find(handle);
         c.running = it != instances_.end() && it->second.budget_running;
-        plan_scratch_.push_back(c);
         plan_entities_.push_back(handle);
+        plan_members_.push_back(c);
+        // Terminado (sin emision pendiente ni particulas vivas): no cuenta.
+        if (it != instances_.end() && instanceFinished(it->second, *g)) {
+            plan_member_group_.push_back(-1);
+            continue;
+        }
+        // Al candidato del grupo: el tipo mas importante (Heroe, Combate,
+        // Impacto, Ambiente; "sin tipo" no manda), la distancia menor, se ve
+        // si se ve alguno, corria si corria alguno.
+        const auto [slot, fresh] = plan_group_index_.try_emplace(group_root, static_cast<int>(plan_scratch_.size()));
+        if (fresh) {
+            plan_scratch_.push_back(c);
+        } else {
+            BudgetCandidate& gc = plan_scratch_[static_cast<std::size_t>(slot->second)];
+            if (gc.type == EffectType::None || (c.type != EffectType::None && c.type < gc.type)) gc.type = c.type;
+            gc.distance = std::min(gc.distance, c.distance);
+            gc.in_view = gc.in_view || c.in_view;
+            gc.running = gc.running || c.running;
+            gc.essential = gc.essential || c.essential;
+            gc.priority = std::max(gc.priority, c.priority);
+        }
+        plan_member_group_.push_back(slot->second);
     }
     applyBudget(plan_scratch_, frame_scalability_);
-    for (std::size_t i = 0; i < plan_scratch_.size(); ++i) {
-        if (plan_scratch_[i].decision != BudgetCandidate::Decision::Run) decisions_[plan_entities_[i]] = plan_scratch_[i].decision;
+    // La decision del grupo, a cada efecto: entero o nada. Si el grupo corre,
+    // un efecto con caja fija fuera de la vista se oculta (sin dibujar).
+    planned_groups_.fill(0);
+    for (const BudgetCandidate& gc : plan_scratch_) {
+        const bool runs = gc.decision == Decision::Run || gc.decision == Decision::Hidden;
+        if (runs && gc.type != EffectType::None) ++planned_groups_[static_cast<std::size_t>(typeSlot(gc.type))];
+    }
+    for (std::size_t i = 0; i < plan_entities_.size(); ++i) {
+        const int group_index = plan_member_group_[i];
+        Decision d = Decision::Finished;
+        if (group_index >= 0) {
+            d = plan_scratch_[static_cast<std::size_t>(group_index)].decision;
+            if (d == Decision::Run && !plan_members_[i].in_view) d = Decision::Hidden;
+        }
+        if (d != Decision::Run) decisions_[plan_entities_[i]] = d;
     }
 }
 
@@ -1853,11 +2072,12 @@ BudgetCandidate::Decision VfxSystem::decisionFor(entt::entity handle) const {
     return it == decisions_.end() ? BudgetCandidate::Decision::Run : it->second;
 }
 
-void VfxSystem::applyTypeLimits(const VfxGraph& g, BudgetCandidate::Decision decision, gfx::VfxInstanceDesc& desc) const {
+void VfxSystem::applyTypeLimits(const VfxGraph& g, EffectType type, BudgetCandidate::Decision decision,
+                                gfx::VfxInstanceDesc& desc) const {
     desc.sort_order = g.sort_order;
     if (decision == BudgetCandidate::Decision::Hidden || decision == BudgetCandidate::Decision::Paused) desc.visible = false;
-    if (g.effect_type == EffectType::None || !g_vfx_scalability.get()) return;
-    const EffectTypeBudget& b = frame_scalability_.types[static_cast<std::size_t>(typeSlot(g.effect_type))];
+    if (type == EffectType::None || !g_vfx_scalability.get()) return;
+    const EffectTypeBudget& b = frame_scalability_.types[static_cast<std::size_t>(typeSlot(type))];
     desc.disabled_outputs = b.disabled_outputs;
     if (b.particle_scale < 0.999f) {
         const float scale = std::clamp(b.particle_scale, 0.05f, 1.0f);
@@ -1867,14 +2087,14 @@ void VfxSystem::applyTypeLimits(const VfxGraph& g, BudgetCandidate::Decision dec
     }
 }
 
-std::uint32_t VfxSystem::scaledSpawn(const VfxGraph& g, Instance& inst, std::uint32_t spawn, bool first,
+std::uint32_t VfxSystem::scaledSpawn(const VfxGraph& g, EffectType type, Instance& inst, std::uint32_t spawn, bool first,
                                      std::uint32_t warm) const {
     if (first) {
         inst.spawn_backlog = 0;
         inst.spread_rate = 0;
     }
-    if (g.effect_type != EffectType::None && g_vfx_scalability.get()) {
-        const float scale = frame_scalability_.types[static_cast<std::size_t>(typeSlot(g.effect_type))].particle_scale;
+    if (type != EffectType::None && g_vfx_scalability.get()) {
+        const float scale = frame_scalability_.types[static_cast<std::size_t>(typeSlot(type))].particle_scale;
         spawn = scaleCount(spawn, scale, inst.scale_carry);
         warm = scaleCount(warm, scale, inst.scale_carry);
     }
@@ -1905,7 +2125,11 @@ bool VfxSystem::playAt(const Uuid& graph_uuid, const Vec3& position, const Vec3&
                 const VfxGraph* sg = graph(s.inst.graph);
                 if (sg != nullptr && sg->effect_type == g->effect_type) ++same;
             }
-            const int entities = static_cast<int>(stats_.types[static_cast<std::size_t>(slot)].instances);
+            // Los de las entidades: los grupos que corrian en el ultimo
+            // planFrame (una habilidad de 23 efectos cuenta 1); sin plan, los
+            // efectos sueltos.
+            const int planned = planned_groups_[static_cast<std::size_t>(slot)];
+            const int entities = planned >= 0 ? planned : static_cast<int>(stats_.types[static_cast<std::size_t>(slot)].instances);
             if (same >= b.max_instances || (b.policy == OverBudget::DontCreate && same + entities >= b.max_instances)) {
                 return false;
             }
@@ -1960,7 +2184,7 @@ void VfxSystem::updateOneShots(float delta_seconds, std::vector<gfx::VfxInstance
         const bool emitting = s.inst.time < g->start_delay + g->duration;
         const bool first = s.inst.reset;
         std::uint32_t spawn = advanceSpawn(*g, params, s.inst.spawn, dt, 0.0f, emitting, s.inst.random);
-        spawn = scaledSpawn(*g, s.inst, spawn, first, 0);
+        spawn = scaledSpawn(*g, g->effect_type, s.inst, spawn, first, 0);
         s.inst.time += dt;
         gfx::VfxInstanceDesc desc;
         compileGraph(*g, params, desc);
@@ -1973,7 +2197,7 @@ void VfxSystem::updateOneShots(float delta_seconds, std::vector<gfx::VfxInstance
         desc.seed = s.inst.seed;
         desc.interpolate_spawn = false;
         desc.event_targets.clear();  // sin subemisores: sus Trigger no apuntan nada
-        applyTypeLimits(*g, BudgetCandidate::Decision::Run, desc);
+        applyTypeLimits(*g, g->effect_type, BudgetCandidate::Decision::Run, desc);
         resolveResources(s.inst.graph, *g, s.inst.points, s.inst.points_model, desc, renderer);
         s.inst.reset = false;
         type_ids_.emplace_back(desc.id, slot);
@@ -2088,7 +2312,83 @@ void VfxSystem::reloadGraphs() {
     graphs_.clear();
     materials_.clear();
     mesh_points_.clear();
+    model_looks_.clear();
+    output_mesh_failed_.clear();
+    resource_warnings_.clear();
     for (auto& [handle, inst] : instances_) inst.points.reset();
+}
+
+void VfxSystem::reloadAsset(const Uuid& uuid) {
+    if (!uuid.valid()) return;
+    const bool graph_changed = graphs_.erase(uuid) > 0;
+    materials_.erase(uuid);
+    resource_warnings_.erase(uuid);
+    if (!graph_changed) return;
+    // Los que lo usan empiezan de nuevo con el nuevo (sus bloques pueden
+    // ser otros: las particulas de antes no sirven).
+    for (auto& [handle, inst] : instances_) {
+        if (inst.graph != uuid) continue;
+        inst.reset = true;
+        inst.spawn = SpawnState{};
+        inst.points.reset();
+        inst.has_last_position = false;
+    }
+    std::cout << "[VFX] Efecto recargado: " << uuid.toString() << "\n";
+}
+
+int VfxSystem::reloadTextureFile(const std::string& relative) {
+    if (renderer_ == nullptr || relative.empty()) return 0;
+    const std::filesystem::path file = assets_root_ / std::filesystem::path(std::u8string(relative.begin(), relative.end()));
+    // Se relee en su misma ranura: lo guardado sigue valiendo.
+    return renderer_->vfx().reloadTexture(file) ? 1 : 0;
+}
+
+std::string VfxSystem::resourceWarning(const Uuid& graph) const {
+    const auto it = resource_warnings_.find(graph);
+    return it == resource_warnings_.end() ? std::string{} : it->second;
+}
+
+void VfxSystem::syncResourceEpoch(gfx::VulkanRenderer& renderer) {
+    const std::uint64_t epoch = renderer.vfx().resourceEpoch();
+    if (epoch == resource_epoch_) return;
+    resource_epoch_ = epoch;
+    // El pase solto (o dio a otra) alguna ranura: lo guardado se pide otra vez.
+    for (auto& [uuid, cg] : graphs_) {
+        cg.texture = -1;
+        cg.texture_path.clear();
+    }
+    for (auto& [uuid, material] : materials_) material.texture = -2;
+    for (auto& [uuid, look] : model_looks_) look.texture = -2;
+    output_mesh_failed_.clear();
+}
+
+VfxSystem::ModelLook& VfxSystem::modelLook(const Uuid& model) {
+    ModelLook& look = model_looks_[model];
+    if (look.ready || !model_provider_) return look;
+    const std::shared_ptr<const assets::ModelAsset> asset = model_provider_(model);
+    if (!asset) return look;  // aun cargando: se vuelve a mirar
+    look.ready = true;
+    // El material de la primera pieza que tenga alguno (el de su primera submalla).
+    for (const auto& part : asset->parts) {
+        if (!part || part->materials.empty()) continue;
+        const std::size_t index = part->submeshes.empty() ? 0u : std::min<std::size_t>(part->submeshes.front().material,
+                                                                                         part->materials.size() - 1);
+        const asset::MaterialData& m = part->materials[index];
+        look.tint = m.base_color;
+        if (m.albedo_texture >= 0 && static_cast<std::size_t>(m.albedo_texture) < part->textures.size()) {
+            const asset::TextureData& t = part->textures[static_cast<std::size_t>(m.albedo_texture)];
+            // (source_path sale de path::string() al importar: se vuelve igual.)
+            const std::filesystem::path file = t.source_path.empty() ? std::filesystem::path{} : std::filesystem::path(t.source_path);
+            std::error_code ec;
+            if (!file.empty() && std::filesystem::is_regular_file(file, ec)) {
+                look.file = file;
+            } else {
+                look.embedded = true;
+            }
+        }
+        break;
+    }
+    return look;
 }
 
 VfxSystem::CachedGraph* VfxSystem::cached(const Uuid& uuid) {
@@ -2220,7 +2520,15 @@ void VfxSystem::clear() {
     one_shots_.clear();
     decisions_.clear();
     for (std::vector<gfx::VfxEventRecord>& list : channel_events_) list.clear();
-    if (renderer_ != nullptr) renderer_->vfx().clear();
+    // (Entrar o salir de Play, otra escena u otro proyecto.) Las texturas y
+    // mallas que ya no use nadie salen de la GPU, y lo que no cabia o no se
+    // pudo leer vuelve a probarse.
+    output_mesh_failed_.clear();
+    resource_warnings_.clear();
+    if (renderer_ != nullptr) {
+        renderer_->vfx().clear();
+        renderer_->vfx().releaseUnused();
+    }
 }
 
 void VfxSystem::shiftOrigin(const Vec3& offset) {
@@ -2295,12 +2603,19 @@ int VfxSystem::outputMesh(const Uuid& model, gfx::VulkanRenderer& renderer) {
 void VfxSystem::resolveResources(const Uuid& graph_uuid, const VfxGraph& graph,
                                  std::shared_ptr<const std::vector<Vec4>>& points, Uuid& points_model,
                                  gfx::VfxInstanceDesc& desc, gfx::VulkanRenderer& renderer) {
-    // Textura (la carga el pase una vez por ruta).
+    // Ranuras que el pase solto o dio a otra: se vuelven a pedir.
+    syncResourceEpoch(renderer);
+    std::string warning;
+    // Textura (la carga el pase una vez por ruta). La guardada se marca en
+    // uso: si no, el pase podria soltarla para otra.
     CachedGraph* cg = overrides_.count(graph_uuid) ? nullptr : cached(graph_uuid);
-    if (!graph.output.texture.empty()) {
+    const bool mesh_output = graph.output.type == gfx::VfxOutput::Mesh;
+    const bool model_look = mesh_output && !graph.output.material.valid() && !graph.output.mesh_output_texture;
+    if (!graph.output.texture.empty() && !model_look) {
         const std::filesystem::path file = assets_root_ / graph.output.texture;
         if (cg != nullptr && cg->texture_path == graph.output.texture && cg->texture >= 0) {
             desc.texture = cg->texture;
+            renderer.vfx().touchTexture(desc.texture);
         } else {
             desc.texture = renderer.vfx().loadTexture(file);
             if (cg != nullptr) {
@@ -2308,10 +2623,14 @@ void VfxSystem::resolveResources(const Uuid& graph_uuid, const VfxGraph& graph,
                 cg->texture_path = graph.output.texture;
             }
         }
+        if (desc.texture < 0) warning = "Sin textura: " + graph.output.texture + " (ver la consola)";
     }
     // Malla de la salida Malla, sus variantes y su material (.crmat).
-    if (graph.output.type == gfx::VfxOutput::Mesh) {
+    if (mesh_output) {
         desc.mesh = outputMesh(graph.output.mesh.uuid, renderer);
+        if (desc.mesh < 0 && output_mesh_failed_.count(graph.output.mesh.uuid) != 0) {
+            warning = "La malla no cabe en el pase: esas partículas no se dibujan (ver la consola)";
+        }
         const std::size_t variants = std::min<std::size_t>(graph.output.mesh_variants.size(), desc.mesh_variants.size());
         for (std::size_t i = 0; i < variants; ++i) {
             const assets::AssetRef& v = graph.output.mesh_variants[i];
@@ -2322,10 +2641,39 @@ void VfxSystem::resolveResources(const Uuid& graph_uuid, const VfxGraph& graph,
             applyVfxMaterial(material, desc);
             // Su textura base (una vez; sin ella, la de la salida).
             if (material.valid && !material.albedo.empty()) {
-                if (material.texture == -2) material.texture = renderer.vfx().loadTexture(assets_root_ / material.albedo);
+                if (material.texture == -2) {
+                    material.texture = renderer.vfx().loadTexture(assets_root_ / material.albedo);
+                } else {
+                    renderer.vfx().touchTexture(material.texture);
+                }
                 if (material.texture >= 0) desc.texture = material.texture;
+                else warning = "Sin la textura del material: " + material.albedo + " (ver la consola)";
+            }
+        } else if (model_look) {
+            // Sin .crmat: el color y la textura base del propio modelo, con su
+            // UV (antes, la textura de la salida: la de un sprite, con alfa ~0
+            // en casi toda la hoja, y las mallas no se veian). Sin textura en
+            // disco, solo su color (sin recorte por alfa).
+            desc.texture = -1;
+            ModelLook& look = modelLook(graph.output.mesh.uuid);
+            if (look.ready) {
+                desc.tint = look.tint;
+                if (look.texture == -2) {
+                    look.texture = look.file.empty() ? -1 : renderer.vfx().loadTexture(look.file);
+                } else {
+                    renderer.vfx().touchTexture(look.texture);
+                }
+                desc.texture = look.texture;
+                if (look.embedded && warning.empty()) {
+                    warning = "La textura del modelo va dentro del archivo: la malla usa solo su color (pon un .crmat)";
+                }
             }
         }
+    }
+    if (warning.empty()) {
+        if (!resource_warnings_.empty()) resource_warnings_.erase(graph_uuid);
+    } else {
+        resource_warnings_[graph_uuid] = std::move(warning);
     }
     // Superficie de malla.
     for (const Block& b : graph.initialize) {
@@ -2386,9 +2734,18 @@ void VfxSystem::update(ecs::World& world, float delta_seconds, bool simulate, co
         }
         // Escalabilidad: lo que decidio planFrame (Run si no hay nada que decidir).
         const BudgetCandidate::Decision decision = decisionFor(handle);
-        const auto type_index = static_cast<std::size_t>(typeSlot(g->effect_type));
+        const EffectType type = effectiveType(handle, *g);  // Heroe si es del jugador local
+        const auto type_index = static_cast<std::size_t>(typeSlot(type));
         TypeTimer type_timer(stats.types[type_index].cpu_ms);
         inst.budget_running = decision == BudgetCandidate::Decision::Run || decision == BudgetCandidate::Decision::Hidden;
+        if (decision == BudgetCandidate::Decision::Finished) {
+            // Ya termino (sin emision pendiente ni particulas vivas): ni
+            // cuenta ni se simula; su ranura de la GPU queda libre. play(),
+            // un evento o un ciclo nuevo lo vuelven a empezar limpio.
+            inst.reset = true;
+            inst.has_last_position = false;
+            continue;
+        }
         if (decision != BudgetCandidate::Decision::Run) ++stats.types[type_index].culled;
         if (decision == BudgetCandidate::Decision::Removed) {
             // Fuera (distancia o presupuesto): sin ranura en la GPU; si vuelve,
@@ -2437,9 +2794,11 @@ void VfxSystem::update(ecs::World& world, float delta_seconds, bool simulate, co
                 warm = advanceSpawn(*g, params, warm_state, g->prewarm, 0.0f, true, inst.random);
             }
             // Escala de particulas del tipo y rafagas repartidas.
-            spawn = scaledSpawn(*g, inst, spawn, first, warm);
+            spawn = scaledSpawn(*g, type, inst, spawn, first, warm);
         }
         inst.time += dt;
+        // Tiempo sin nacer nada (para saber si ya termino: planFrame).
+        inst.quiet = first || spawn > 0 ? 0.0f : inst.quiet + dt;
 
         gfx::VfxInstanceDesc desc;
         compileGraph(*g, params, desc);
@@ -2457,7 +2816,7 @@ void VfxSystem::update(ecs::World& world, float delta_seconds, bool simulate, co
         desc.emitter_distance =
             static_cast<float>(std::fmod(inst.distance, static_cast<double>(desc.ribbon_tile) * 1024.0));
         // Orden de dibujo, salidas apagadas, capacidad y visible (tipo y calidad).
-        applyTypeLimits(*g, decision, desc);
+        applyTypeLimits(*g, type, decision, desc);
         type_ids_.emplace_back(inst.id, static_cast<int>(type_index));
         resolveResources(component.graph.uuid, *g, inst.points, inst.points_model, desc, renderer);
         // Cintas: lo justo para dejar la cola apagandose si la entidad
@@ -2598,6 +2957,8 @@ void VfxSystem::update(ecs::World& world, float delta_seconds, bool simulate, co
         renderer.vfx().setLightQualityCap(kLightCaps[std::clamp(qualityLevel(), 0, 3)]);
         renderer.vfx().setLightBudget(static_cast<std::uint32_t>(std::max(g_vfx_particle_lights.get(), 0)));
     }
+    // Suelo bajo cada emisor para los bloques que lo piden (sin la vista).
+    for (gfx::VfxInstanceDesc& d : descs) applyGround(d, ground_query_);
     renderer.vfx().setInstances(std::move(descs));
     const gfx::VfxStats gpu = renderer.vfx().stats();
     stats.alive = gpu.alive;

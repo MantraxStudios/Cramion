@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 
 namespace cramion::assets {
 
@@ -99,12 +100,31 @@ bool loadMaterial(const std::filesystem::path& path, MaterialAsset& out, std::st
     m.normal = text(j, "normal");
     m.shader = text(j, "shader");
     if (const auto values = j.find("shader_values"); values != j.end() && values->is_object()) {
+        // Cada valor es [x], [x, y], [x, y, z] o [x, y, z, w]. Un numero
+        // suelto (0.5) vale como [0.5]; antes se ignoraba sin avisar y el
+        // material salia con el valor por defecto del .crshader.
         for (const auto& [name, v] : values->items()) {
-            if (!v.is_array()) continue;
             core::Vec4 value{};
             float* out = &value.x;
-            for (std::size_t i = 0; i < v.size() && i < 4; ++i) {
-                if (v[i].is_number()) out[i] = v[i].get<float>();
+            if (v.is_number()) {
+                out[0] = v.get<float>();
+            } else if (v.is_array()) {
+                if (v.size() > 4) {
+                    std::cerr << "[Material] " << crdata::utf8(path) << ": shader_values." << name << " tiene "
+                              << v.size() << " numeros; se usan los 4 primeros\n";
+                }
+                for (std::size_t i = 0; i < v.size() && i < 4; ++i) {
+                    if (v[i].is_number()) {
+                        out[i] = v[i].get<float>();
+                    } else {
+                        std::cerr << "[Material] " << crdata::utf8(path) << ": shader_values." << name << "[" << i
+                                  << "] no es un numero (" << v[i].dump() << "); se usa 0\n";
+                    }
+                }
+            } else {
+                std::cerr << "[Material] " << crdata::utf8(path) << ": shader_values." << name
+                          << " no es un numero ni una lista de numeros (" << v.dump() << "); se ignora\n";
+                continue;
             }
             m.shader_values[name] = value;
         }

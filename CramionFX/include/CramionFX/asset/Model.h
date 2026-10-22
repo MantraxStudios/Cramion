@@ -19,6 +19,11 @@ namespace cramion::asset {
 // solo cuantos afectan a cada vertice.
 inline constexpr std::uint32_t kMaxBoneInfluences = 4;
 
+// Propiedades de numeros (vec4) de un shader de superficie (.crshader): el
+// tope de assets::kMaxShaderValues y el paso de CRAMION_PARAM en
+// surface_common.glsl (los tres deben coincidir).
+inline constexpr std::size_t kSurfaceParamCount = 16;
+
 // Vertice de un modelo con esqueleto. 80 bytes, dato puro: la descripcion para
 // Vulkan vive en gfx::SkinnedPass.
 struct SkinnedVertex {
@@ -160,11 +165,11 @@ struct MaterialData {
 
     // Shader de superficie del usuario (.crshader), ya registrado en el
     // renderizador (VulkanRenderer::createSurfaceShader); -1 = el estandar. Sus
-    // propiedades (8 vec4) y hasta 4 texturas propias (indices en
+    // propiedades (kSurfaceParamCount vec4) y hasta 4 texturas propias (indices en
     // ModelData::textures; -1 = blanca). No se guardan en la cache del modelo:
     // los pone RenderSync al aplicar un .crmat.
     std::int32_t surface_shader = -1;
-    std::array<core::Vec4, 8> surface_params{};
+    std::array<core::Vec4, kSurfaceParamCount> surface_params{};
     std::array<std::int32_t, 4> surface_textures{-1, -1, -1, -1};
 
     // Render Textures (lo que ve una camara con Target Texture): id del

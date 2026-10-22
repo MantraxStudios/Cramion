@@ -751,6 +751,55 @@ void testVfxScalability() {
             std::count_if(crowd.begin(), crowd.end(), [](const BudgetCandidate& b) { return b.decision == Decision::Run; });
         check(running == low.types[static_cast<std::size_t>(vfx::EffectType::Impact)].max_instances,
               "300 impactos a la vez en Baja: solo corren los de la tabla");
+
+        // Jugador local y prioridad (Keryan E21): con el tope lleno (DontCreate)
+        // el esencial entra aunque sea nuevo y este lejos, y echa a los demas.
+        c = {make(vfx::EffectType::Combat, 5.0f, true), make(vfx::EffectType::Combat, 6.0f, true),
+             make(vfx::EffectType::Combat, 500.0f, false)};
+        c[2].essential = true;
+        vfx::applyBudget(c, s);
+        check(c[2].decision == Decision::Run && c[0].decision == Decision::Run && c[1].decision == Decision::Removed,
+              "jugador local: entra con el tope lleno (sin limite de distancia) y sale el de otro");
+        c = {make(vfx::EffectType::Combat, 1.0f, true), make(vfx::EffectType::Combat, 2.0f, true),
+             make(vfx::EffectType::Combat, 3.0f, true)};
+        for (auto& x : c) x.essential = true;
+        vfx::applyBudget(c, s);
+        check(std::all_of(c.begin(), c.end(), [](const BudgetCandidate& b) { return b.decision == Decision::Run; }),
+              "jugador local: nunca se descarta aunque se pase del tope");
+        c = {make(vfx::EffectType::Impact, 1.0f), make(vfx::EffectType::Impact, 2.0f), make(vfx::EffectType::Impact, 30.0f)};
+        c[2].priority = 5;
+        vfx::applyBudget(c, s);
+        check(c[2].decision == Decision::Run && c[0].decision == Decision::Run && c[1].decision == Decision::Removed,
+              "prioridad: con el tope lleno se queda antes el de mas prioridad");
+        c = {make(vfx::EffectType::Ambient, 45.0f)};
+        c[0].essential = true;
+        vfx::applyBudget(c, s);
+        check(c[0].decision == Decision::Run, "jugador local: sin limite de distancia");
+    }
+
+    // Efectos terminados: no cuentan en el presupuesto.
+    {
+        vfx::FinishedState f;
+        f.emitting = true;
+        f.quiet_seconds = 100.0f;
+        f.alive_known = true;
+        check(!vfx::effectFinished(f), "emitiendo (o con bucle) no termina");
+        f.emitting = false;
+        f.pending = true;
+        check(!vfx::effectFinished(f), "con eventos o rafagas pendientes no termina");
+        f.pending = false;
+        f.quiet_seconds = 0.1f;
+        check(!vfx::effectFinished(f), "recien nacidas: la lectura de la GPU aun no las ve");
+        f.quiet_seconds = 1.0f;
+        f.max_lifetime = 3.0f;
+        f.alive = 12;
+        check(!vfx::effectFinished(f), "con particulas vivas no termina");
+        f.alive = 0;
+        check(vfx::effectFinished(f), "sin emision y sin vivas: terminado");
+        f.alive = 12;
+        f.alive_known = false;
+        f.quiet_seconds = 3.5f;
+        check(vfx::effectFinished(f), "pasada su vida maxima ya no puede quedar ninguna");
     }
 
     // Rafagas repartidas y precalentado en varios frames.
@@ -839,7 +888,7 @@ void testVfxScalability() {
     }
 
     // Texturas: mas de 16 ranuras si el dispositivo puede.
-    check(gfx::VfxPass::kMaxTextures >= 64 && gfx::VfxPass::kMinTextures == 16, "hasta 64 texturas (16 como poco)");
+    check(gfx::VfxPass::kMaxTextures >= 256 && gfx::VfxPass::kMinTextures == 16, "hasta 256 texturas (16 como poco)");
 
     // Tiempo del juego y calidad.
     {

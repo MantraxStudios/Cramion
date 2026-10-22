@@ -136,6 +136,8 @@ void Window::destroy() {
     destroyGamepads();
     if (hwnd_) {
         if (cursor_captured_) setCursorCaptured(false);
+        if (cursor_confined_) setCursorConfined(false);
+        if (!cursor_visible_) setCursorVisible(true);
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
@@ -212,6 +214,13 @@ void Window::pumpEvents() {
     }
     // Despues de los mensajes (los informes HID ya llegaron por WM_INPUT).
     pollGamepads();
+    // Confinado: Windows quita el ClipCursor por su cuenta a veces (Ctrl+Alt+Supr,
+    // UAC, otra aplicacion): se vuelve a poner.
+    if (cursor_confined_ && !cursor_captured_ && has_focus_) {
+        RECT want{};
+        RECT now{};
+        if (confineScreenRect(want) && GetClipCursor(&now) != FALSE && EqualRect(&want, &now) == FALSE) ClipCursor(&want);
+    }
 }
 
 void Window::dispatch(Event& event) {
@@ -242,24 +251,81 @@ void Window::setCursorCaptured(bool captured, const RECT* client_region) {
         // Recuerda donde estaba el cursor para devolverlo ahi al soltarlo.
         if (!was_captured) has_cursor_before_capture_ = GetCursorPos(&cursor_before_capture_) != FALSE;
         applyCursorClip();
-        if (!cursor_hidden_) {
-            while (ShowCursor(FALSE) >= 0) {
-            }
-            cursor_hidden_ = true;
-        }
     } else {
         ClipCursor(nullptr);
         if (was_captured && has_cursor_before_capture_) SetCursorPos(cursor_before_capture_.x, cursor_before_capture_.y);
         has_cursor_before_capture_ = false;
-        if (cursor_hidden_) {
-            while (ShowCursor(TRUE) < 0) {
-            }
-            cursor_hidden_ = false;
-        }
+        if (cursor_confined_) applyCursorClip();  // vuelve a quedar confinado
+    }
+    updateCursorShown();
+}
+
+void Window::setCursorConfined(bool confined, const RECT* client_region) {
+    if (hwnd_ == nullptr) return;
+    const bool has_rect = confined && client_region != nullptr;
+    // Cada frame con lo mismo: nada (ClipCursor solo cuando cambia).
+    if (confined == cursor_confined_ && has_rect == has_confine_rect_ &&
+        (!has_rect || EqualRect(client_region, &confine_rect_) != FALSE)) {
+        return;
+    }
+    cursor_confined_ = confined;
+    has_confine_rect_ = has_rect;
+    if (has_rect) confine_rect_ = *client_region;
+    if (cursor_captured_) return;  // la captura manda; al soltarla se confina
+    if (confined) {
+        applyCursorClip();
+    } else {
+        ClipCursor(nullptr);
     }
 }
 
+void Window::setCursorVisible(bool visible) {
+    cursor_visible_ = visible;
+    updateCursorShown();
+}
+
+void Window::updateCursorShown() {
+    // Capturado: siempre oculto. Invisible (Cursor.visible = false): solo con
+    // el foco (en otra ventana el raton es del sistema).
+    const bool hide = cursor_captured_ || (!cursor_visible_ && has_focus_);
+    if (hide && !cursor_hidden_) {
+        while (ShowCursor(FALSE) >= 0) {
+        }
+        cursor_hidden_ = true;
+    } else if (!hide && cursor_hidden_) {
+        while (ShowCursor(TRUE) < 0) {
+        }
+        cursor_hidden_ = false;
+    }
+}
+
+bool Window::confineScreenRect(RECT& out) const {
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    RECT area = client;
+    if (has_confine_rect_) IntersectRect(&area, &confine_rect_, &client);
+    if (area.right <= area.left || area.bottom <= area.top) return false;  // minimizada o vista vacia
+    POINT corners[2] = {{area.left, area.top}, {area.right, area.bottom}};
+    ClientToScreen(hwnd_, &corners[0]);
+    ClientToScreen(hwnd_, &corners[1]);
+    out = RECT{corners[0].x, corners[0].y, corners[1].x, corners[1].y};
+    return true;
+}
+
 void Window::applyCursorClip() {
+    if (hwnd_ == nullptr) return;
+    if (!cursor_captured_) {
+        // Confinado: el cursor visible no sale del rectangulo. Sin foco, nada
+        // (WM_SETFOCUS lo vuelve a poner).
+        if (!cursor_confined_) return;
+        RECT clip{};
+        if ((has_focus_ || GetForegroundWindow() == hwnd_) && confineScreenRect(clip)) {
+            ClipCursor(&clip);
+        } else {
+            ClipCursor(nullptr);
+        }
+        return;
+    }
     RECT client{};
     GetClientRect(hwnd_, &client);
     RECT area = has_capture_rect_ ? capture_rect_ : client;
@@ -866,6 +932,7 @@ LRESULT Window::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
 
             width_ = LOWORD(lParam);
             height_ = HIWORD(lParam);
+            if (cursor_captured_ || cursor_confined_) applyCursorClip();  // el rectangulo cambio
             Event e;
             e.type = EventType::WindowResize;
             e.category = EventCategory::Window;
@@ -875,6 +942,7 @@ LRESULT Window::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_MOVE: {
+            if (cursor_confined_ && !cursor_captured_) applyCursorClip();  // el rectangulo se movio
             Event e;
             e.type = EventType::WindowMoved;
             e.category = EventCategory::Window;
@@ -884,8 +952,9 @@ LRESULT Window::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_SETFOCUS: {
-            if (cursor_captured_) applyCursorClip();
             has_focus_ = true;
+            if (cursor_captured_ || cursor_confined_) applyCursorClip();
+            updateCursorShown();
             refreshRumble();
             Event e;
             e.type = EventType::WindowFocus;
@@ -895,8 +964,9 @@ LRESULT Window::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_KILLFOCUS: {
-            if (cursor_captured_) ClipCursor(nullptr);  // sin foco, el raton es del sistema
+            if (cursor_captured_ || cursor_confined_) ClipCursor(nullptr);  // sin foco, el raton es del sistema
             has_focus_ = false;
+            updateCursorShown();
             refreshRumble();
             Event e;
             e.type = EventType::WindowLostFocus;

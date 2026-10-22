@@ -226,7 +226,11 @@ bool parseSurfaceShader(const std::string& text, const std::string& name, Surfac
 
         if (type_word == "texture") {
             p.type = ShaderPropertyType::Texture;
-            if (textures >= kMaxShaderTextures) return fail("como mucho 4 propiedades texture");
+            if (textures >= kMaxShaderTextures) {
+                return fail("demasiadas texturas en " + name + ": '" + prop_name + "' seria la " +
+                            std::to_string(textures + 1) + ".a y el limite es " + std::to_string(kMaxShaderTextures) +
+                            " propiedades texture por shader");
+            }
             p.slot = textures++;
             out.properties.push_back(p);
             continue;
@@ -236,7 +240,11 @@ bool parseSurfaceShader(const std::string& text, const std::string& name, Surfac
         else if (type_word == "color") p.type = ShaderPropertyType::Color;
         else if (type_word == "vector") p.type = ShaderPropertyType::Vector;
         else return fail("tipo de propiedad desconocido '" + type_word + "' (float, range, color, vector, texture)");
-        if (values >= kMaxShaderValues) return fail("como mucho 8 propiedades float/range/color/vector");
+        if (values >= kMaxShaderValues) {
+            return fail("demasiadas propiedades de numeros en " + name + ": '" + prop_name + "' seria la " +
+                        std::to_string(values + 1) + ".a y el limite es " + std::to_string(kMaxShaderValues) +
+                        " float/range/color/vector por shader (junta varias en un vector o color)");
+        }
         p.slot = values++;
 
         // "= valor [ (min, max) ]"
