@@ -5,6 +5,7 @@
 #include "EditorApp.h"
 
 #include "Dialogs.h"
+#include "SystemUtil.h"
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
@@ -141,9 +142,7 @@ void EditorApp::drawBuildConfigsWindow() {
     ImVec2 size{};
     std::filesystem::path shown = icon;
     if (shown.empty()) {  // el del motor (editor_icons/logo.png junto al editor)
-        wchar_t exe[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        shown = std::filesystem::path(exe).parent_path() / "editor_icons" / "logo.png";
+        shown = sys::executableDir() / "editor_icons" / "logo.png";
     }
     const ImTextureID texture = imgui_.image(shown, &size);
     if (texture != 0 && size.x > 0.0f && size.y > 0.0f) {
@@ -304,7 +303,15 @@ void EditorApp::drawBuildConfigsWindow() {
         ImGui::TextDisabled("Sale como %s%s%s (%s)", game.c_str(), a.make_apk || !a.make_aab ? ".apk" : "",
                             a.make_aab ? (a.make_apk ? " + .aab" : ".aab") : "", package.c_str());
     } else {
+#if defined(_WIN32)
         ImGui::TextDisabled("Sale como %s.exe", game.c_str());
+#else
+        if (c.platform == BuildPlatform::Linux) {
+            ImGui::TextDisabled("Sale como %s (Linux x64, con %s.desktop)", game.c_str(), game.c_str());
+        } else {
+            ImGui::TextDisabled("Desde Linux no se puede exportar para Windows: elige Linux (x64)");
+        }
+#endif
     }
     ImGui::EndChild();
     ImGui::End();

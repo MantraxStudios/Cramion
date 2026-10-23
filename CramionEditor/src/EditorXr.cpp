@@ -5,6 +5,7 @@
 
 #include "EditorApp.h"
 #include "LoadingScreen.h"
+#include "SystemUtil.h"
 
 #include <CramionCore/asset/XrControllerModels.h>
 #include <CramionCore/ecs/ModelInstantiation.h>
@@ -14,7 +15,9 @@
 
 #include <imgui.h>
 
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -64,12 +67,22 @@ std::string runtimeChoiceHelp(xr::RuntimeChoice choice) {
                    "se espera al casco.";
         case xr::RuntimeChoice::Meta:
             return "El runtime de Meta: el Quest por Quest Link (cable) o Air Link.";
+#if defined(_WIN32)
         case xr::RuntimeChoice::System:
             return "El runtime activo de Windows (el ultimo que lo pidio: SteamVR, Meta...).\n"
                    "Lo que haria cualquier juego de OpenXR.";
         default:
             return "SteamVR si esta abierto; si no, el runtime activo de Windows; si ese no ve el casco, Meta.\n"
                    "Un Quest por Steam Link o Virtual Desktop esta en SteamVR aunque el activo sea el de Meta.";
+#else
+        case xr::RuntimeChoice::System:
+            return "El runtime activo del sistema: ~/.config/openxr/1/active_runtime.json o, si no esta,\n"
+                   "/etc/xdg/openxr/1/active_runtime.json (SteamVR, Monado, WiVRn...).\n"
+                   "Lo que haria cualquier juego de OpenXR.";
+        default:
+            return "SteamVR si esta abierto; si no, el runtime activo del sistema (active_runtime.json de\n"
+                   "~/.config/openxr/1 o /etc/xdg/openxr/1). Meta no tiene runtime en Linux.";
+#endif
     }
 }
 
@@ -321,6 +334,7 @@ bool EditorApp::restartForVr() {
         std::cerr << "[VR] No se pudo guardar todo: " << error << ". No se reabre." << std::endl;
         return false;
     }
+#if defined(_WIN32)
     wchar_t exe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring args = L"--play-vr";
@@ -328,6 +342,17 @@ bool EditorApp::restartForVr() {
     const bool was_on = xr_play_preference_;
     setXrPlayPreference(true);
     if (update::launch(std::filesystem::path(exe), args) == 0) {
+#else
+    std::vector<std::string> args;
+    if (has_project_) {
+        const std::u8string project = project_.file.u8string();
+        args.emplace_back(project.begin(), project.end());
+    }
+    args.emplace_back("--play-vr");
+    const bool was_on = xr_play_preference_;
+    setXrPlayPreference(true);
+    if (sys::spawnDetached(sys::executablePath(), args) == 0) {
+#endif
         setXrPlayPreference(was_on);
         std::cerr << "[VR] No se pudo reabrir el editor" << std::endl;
         return false;

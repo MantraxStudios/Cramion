@@ -7,14 +7,17 @@
 // el juego con Vulkan (una sola intro, sin saltos). Se pinta con GDI+ porque
 // se muestra mientras Vulkan todavia se esta creando; ademas atiende los
 // mensajes de la ventana para que Windows no la marque "No responde".
+// En Linux se pinta con Xlib (XPutImage) en la ventana de X.
 
 #include "PlatformWindow.h"
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace Gdiplus {
 class Bitmap;
@@ -47,12 +50,24 @@ private:
 #if defined(_WIN32)
     ULONG_PTR gdiplus_token_ = 0;
     std::unique_ptr<Gdiplus::Bitmap> image_;
+#elif !defined(__ANDROID__)
+    // Linux: la imagen en RGBA8 y el fondo ya compuesto (fondo + imagen
+    // escalada) para el tamano de la ventana; se recompone si cambia.
+    std::vector<unsigned char> image_rgba_;
+    unsigned image_width_ = 0;
+    unsigned image_height_ = 0;
+    std::vector<std::uint32_t> background_;
+    void* gc_ = nullptr;    // GC de Xlib
+    void* font_ = nullptr;  // XFontStruct*
+    float image_bottom_ = 0.0f;
 #endif
     std::chrono::steady_clock::time_point last_paint_{};
     bool painted_ = false;
 };
 
 // Crashes: guarda un minidump y un informe en %LOCALAPPDATA%/Cramion/Crashes
+// (Linux: senales SIGSEGV/SIGABRT/... con la pila de backtrace() en
+// ~/.local/share/Cramion/Crashes, sin minidump)
 // y avisa con un mensaje (donde fallo y donde quedo el informe).
 // Tambien std::terminate, abort(), virtuales puras y parametros no validos.
 // El informe lleva la pila con funciones y lineas (si esta el .pdb), el
@@ -73,10 +88,11 @@ std::string readCrashReport(const std::filesystem::path& report);
 void testCrash(int kind);
 
 // Carpeta %LOCALAPPDATA%/Cramion/<sub> (creada). En Android, dentro de los
-// datos internos de la app.
+// datos internos de la app; en Linux, $XDG_DATA_HOME/Cramion/<sub>
+// (~/.local/share/Cramion).
 std::filesystem::path localDataFolder(const std::filesystem::path& sub);
 
-#if !defined(_WIN32)
+#if defined(__ANDROID__)
 // Android: la pantalla de carga se pinta con el renderizador y ImGui en
 // cuanto existen (antes, show() no hace nada).
 void setLoadingPainter(std::function<void(float fraction, const char* status)> painter);

@@ -1,2 +1,5 @@
 cramion-data/
 __pycache__/
+cramion.env
+nginx-backup-*/
+logs/

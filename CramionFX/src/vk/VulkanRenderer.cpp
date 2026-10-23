@@ -481,15 +481,6 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         report(0.05f + 0.93f * done, "Compilando shaders");
     });
     report(0.05f, "Compilando shaders");
-    swapchain_.initialize(device_, surface_, width, height);
-    computeRenderExtent();
-    gbuffer_.create(device_, render_extent_);
-    // Modo compatible (moviles): el escenario se recorta en la CPU
-    // (drawCpuActors); cull.comp pide 5 storage buffers y los comandos
-    // indirectos con firstInstance fallan en varios drivers de movil.
-    if (!device_.compatMode()) gpu_culling_.create(device_);
-    gpu_profiler_.create(device_, kMaxFramesInFlight);
-    createRenderTargets();
     // Perfil de hardware: VRAM (el heap local mas grande) y tipo de GPU.
     {
         const vk::PhysicalDeviceProperties properties = device_.physicalDevice().getProperties();
@@ -526,6 +517,19 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
                   << ", " << hardware_.vram_mb << " MB de VRAM" << (hardware_.integrated ? ", integrada" : "")
                   << ")\n";
     }
+    swapchain_.initialize(device_, surface_, width, height);
+    // El tope de VRAM (applyEffectiveGraphics) antes del primer G-buffer: a
+    // tamano completo en una ventana enorme ya no cabia lo que viene detras.
+    applyEffectiveGraphics();
+    targets_dirty_ = false;
+    computeRenderExtent();
+    gbuffer_.create(device_, render_extent_);
+    // Modo compatible (moviles): el escenario se recorta en la CPU
+    // (drawCpuActors); cull.comp pide 5 storage buffers y los comandos
+    // indirectos con firstInstance fallan en varios drivers de movil.
+    if (!device_.compatMode()) gpu_culling_.create(device_);
+    gpu_profiler_.create(device_, kMaxFramesInFlight);
+    createRenderTargets();
     shadow_map_.create(device_, desiredShadowResolution());
     shadow_cache_valid_ = {};
     shadow_cache_layout_ready_ = false;
@@ -3888,6 +3892,8 @@ void VulkanRenderer::recreateRenderTargets() {
     targets_dirty_ = false;
     if (!swapchain_.isValid()) return;
     device_.waitIdle();
+    applyEffectiveGraphics();  // otro tamano: otro tope de VRAM
+    targets_dirty_ = false;    // (se rehacen ahora)
     computeRenderExtent();
     gbuffer_.create(device_, render_extent_);
     createRenderTargets();
@@ -4103,6 +4109,20 @@ void VulkanRenderer::applyEffectiveGraphics() {
             mip_scale = std::clamp(vram_cap, 0.25f, 1.0f);
             if (mip_upscaler == Upscaler::Off) mip_upscaler = Upscaler::Taa;
         }
+    } else if (mobile_level_ < 0) {
+        // Escritorio: tope por la VRAM con ventanas enormes (desktopVramScaleCap),
+        // escalado con FSR 1 como el presupuesto.
+        const vk::Extent2D output = outputExtent();
+        vram_cap = desktopVramScaleCap(hardware_.vram_mb, output.width, output.height);
+        if (renderScale(settings) > vram_cap + 0.001f) {
+            if (settings.upscaler == Upscaler::Off) settings.upscaler = Upscaler::Fsr1;
+            settings.quality = UpscaleQuality::Custom;
+            settings.custom_scale = std::clamp(vram_cap, 0.25f, 1.0f);
+        }
+        if (mip_scale > vram_cap + 0.001f) {
+            mip_scale = std::clamp(vram_cap, 0.25f, 1.0f);
+            if (mip_upscaler == Upscaler::Off) mip_upscaler = Upscaler::Fsr1;
+        }
     }
     // Solo cambia con los ajustes, la VR o la VRAM, no con cada paso del
     // presupuesto (desiredTextureFiltering): ahi no se rehacen los samplers.
@@ -4119,6 +4139,10 @@ void VulkanRenderer::applyEffectiveGraphics() {
                   << xr_output_extent_.height << " (escala " << s << ": VR " << base_scale << ", presupuesto "
                   << budget_scale << ", tope VRAM " << vram_cap << "), "
                   << (settings.upscaler == Upscaler::Fsr1 ? "FSR 1" : "TAA por ojo") << "\n";
+    } else if (vram_cap < 0.999f) {
+        const vk::Extent2D output = outputExtent();
+        std::cout << "[Vulkan] Tope de VRAM: " << output.width << "x" << output.height << " se dibuja como mucho al "
+                  << std::lround(vram_cap * 100.0f) << " % (" << hardware_.vram_mb << " MB de VRAM)\n";
     }
     const bool vsync_changed = settings.vsync != graphics_.vsync;
     const bool rebuild = renderScale(settings) != renderScale(graphics_) || settings.upscaler != graphics_.upscaler ||
@@ -4837,6 +4861,8 @@ void VulkanRenderer::recreateSwapchain() {
 
     // El G-buffer tiene el tamano de la swapchain: se rehace con ella, y los
     // descriptores de la pasada de iluminacion apuntan a las nuevas vistas.
+    applyEffectiveGraphics();  // otro tamano: otro tope de VRAM
+    targets_dirty_ = false;    // (se rehacen ahora)
     computeRenderExtent();
     if (shadow_map_dirty_) {
         device_.waitIdle();

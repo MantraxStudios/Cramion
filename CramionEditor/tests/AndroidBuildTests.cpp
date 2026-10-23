@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -28,6 +29,18 @@ namespace {
 
 int checks = 0;
 int failures = 0;
+
+#if !defined(_WIN32)
+// Una ruta entre comillas simples para sh.
+std::string shQuote(const std::string& text) {
+    std::string out = "'";
+    for (const char c : text) {
+        if (c == '\'') out += "'\\''";
+        else out += c;
+    }
+    return out + "'";
+}
+#endif
 
 void check(bool ok, const char* what) {
     ++checks;
@@ -288,7 +301,11 @@ void testManifest() {
     check(has("--target=armv7a-linux-androideabi26") && has("-shared") && has("-static-libstdc++") && has("-DCRAMION_CPP_SCRIPT") &&
               has("C:/Juego/Assets/Scripts/Jugador.cpp") && has("C:/Cramion/sdk/cramion/ScriptMain.cpp") && args.back() == "C:/out/libgame_scripts.so",
           "argumentos de clang++ para los scripts de C++");
+#if defined(_WIN32)
     check(androidNdkClang("C:/ndk").generic_string() == "C:/ndk/toolchains/llvm/prebuilt/windows-x86_64/bin/clang++.exe", "clang++ del NDK");
+#else
+    check(androidNdkClang("/ndk").generic_string() == "/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++", "clang++ del NDK");
+#endif
 }
 
 void testRealApk(const std::filesystem::path& so, const std::filesystem::path& icon) {
@@ -336,8 +353,13 @@ void testRealApk(const std::filesystem::path& so, const std::filesystem::path& i
 
     // aapt2 dump: paquete, version, nombre y la actividad nativa.
     const std::filesystem::path dump = dir / "dump.txt";
+#if defined(_WIN32)
     const std::string command = "\"\"" + (tools.build_tools / "aapt2.exe").string() + "\" dump badging \"" + result.apk.string() +
                                 "\" > \"" + dump.string() + "\" 2>&1\"";
+#else
+    const std::string command = shQuote((tools.build_tools / "aapt2").string()) + " dump badging " + shQuote(result.apk.string()) +
+                                " > " + shQuote(dump.string()) + " 2>&1";
+#endif
     std::system(command.c_str());
     std::ifstream d(dump);
     const std::string text((std::istreambuf_iterator<char>(d)), std::istreambuf_iterator<char>());
@@ -351,9 +373,15 @@ void testRealApk(const std::filesystem::path& so, const std::filesystem::path& i
 
     // apksigner verify.
     const std::filesystem::path verify = dir / "verify.txt";
+#if defined(_WIN32)
     _putenv_s("JAVA_HOME", tools.java_bin.parent_path().string().c_str());
     const std::string vcommand = "\"\"" + (tools.build_tools / "apksigner.bat").string() + "\" verify --verbose \"" +
                                  result.apk.string() + "\" > \"" + verify.string() + "\" 2>&1\"";
+#else
+    setenv("JAVA_HOME", tools.java_bin.parent_path().string().c_str(), 1);
+    const std::string vcommand = shQuote((tools.build_tools / "apksigner").string()) + " verify --verbose " +
+                                 shQuote(result.apk.string()) + " > " + shQuote(verify.string()) + " 2>&1";
+#endif
     std::system(vcommand.c_str());
     std::ifstream v(verify);
     const std::string vtext((std::istreambuf_iterator<char>(v)), std::istreambuf_iterator<char>());
@@ -364,7 +392,11 @@ void testRealApk(const std::filesystem::path& so, const std::filesystem::path& i
     if (vtext.find("Verifies") == std::string::npos) std::printf("%s\n", vtext.c_str());
 
     // zipalign -c: alineado (las .so a 16 KB).
+#if defined(_WIN32)
     const std::string zcommand = "\"\"" + (tools.build_tools / "zipalign.exe").string() + "\" -c -P 16 4 \"" + result.apk.string() + "\"\"";
+#else
+    const std::string zcommand = shQuote((tools.build_tools / "zipalign").string()) + " -c -P 16 4 " + shQuote(result.apk.string());
+#endif
     check(std::system(zcommand.c_str()) == 0, "zipalign -c -P 16");
 
     // Con OBB: el paquete fuera del APK.

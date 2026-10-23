@@ -23,6 +23,7 @@
 #include "EditorApp.h"
 
 #include "Dialogs.h"
+#include "SystemUtil.h"
 
 #include <CramionCore/platform/Steam.h>
 
@@ -30,7 +31,9 @@
 #include <imgui_stdlib.h>
 #include <nlohmann/json.hpp>
 
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -50,6 +53,14 @@ using nlohmann::json;
 
 namespace {
 
+// La libreria de Steamworks: steam_api64.dll en Windows, libsteam_api.so en Linux.
+#if defined(_WIN32)
+constexpr const char* kSteamLibrary = "steam_api64.dll";
+#else
+constexpr const char* kSteamLibrary = "libsteam_api.so";
+#endif
+
+#if defined(_WIN32)
 std::wstring widen(const std::string& text) {
     if (text.empty()) return {};
     const int size = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
@@ -109,6 +120,22 @@ int runProcess(const std::string& program, const std::vector<std::string>& args,
     CloseHandle(read_pipe);
     return static_cast<int>(code);
 }
+#else
+// Ejecuta un programa (buscado en el PATH) y devuelve su codigo de salida (o -1).
+int runProcess(const std::string& program, const std::vector<std::string>& args, const std::filesystem::path& folder,
+               std::string& output) {
+    std::vector<std::string> argv = {program};
+    argv.insert(argv.end(), args.begin(), args.end());
+    std::string got;
+    const int code = sys::runCapture(argv, got, true, folder);
+    output += got;
+    if (code < 0 || (code == 127 && sys::findInPath(program).empty())) {
+        output += "No se pudo ejecutar " + program + " (¿está instalado y en el PATH?)\n";
+        return -1;
+    }
+    return code;
+}
+#endif
 
 std::vector<std::string> splitLines(const std::string& text) {
     std::vector<std::string> out;
@@ -320,9 +347,14 @@ void EditorApp::drawPlatformBuildSettings(BuildConfig& c, bool& changed) {
     if (c.platform == BuildPlatform::Linux) {
         ImGui::Separator();
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Linux (x64)");
+#if defined(_WIN32)
         ImGui::TextWrapped("El reproductor nativo de Linux aun no esta disponible: estos ajustes se guardan para cuando llegue. "
                            "Mientras tanto, el juego exportado para Windows funciona en Linux y Steam Deck con Proton. "
                            "Ver Manual > Linux.");
+#else
+        ImGui::TextWrapped("Sale el reproductor nativo de Linux (Vulkan, X11) con las .so de junto al editor, y un "
+                           "<Juego>.desktop con el icono para el escritorio y el menu de aplicaciones.");
+#endif
     }
     if (c.platform == BuildPlatform::Android) return;
     ImGui::Separator();
@@ -345,14 +377,23 @@ void EditorApp::drawPlatformBuildSettings(BuildConfig& c, bool& changed) {
     ImGui::SameLine();
     ImGui::TextDisabled("480 = Spacewar (pruebas)");
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("steam_api64.dll");
+    ImGui::TextUnformatted(kSteamLibrary);
     ImGui::SameLine(label_w);
     ImGui::SetNextItemWidth(-90.0f);
+#if defined(_WIN32)
     changed |= ImGui::InputTextWithHint("##steam_dll", "Steamworks SDK/redistributable_bin/win64/steam_api64.dll", &c.steam.dll);
+#else
+    changed |= ImGui::InputTextWithHint("##steam_dll", "Steamworks SDK/redistributable_bin/linux64/libsteam_api.so", &c.steam.dll);
+#endif
     ImGui::SameLine();
     if (ImGui::Button("Examinar##steam")) {
+#if defined(_WIN32)
         const std::filesystem::path file =
             dialogs::openFile(window_.handle(), L"steam_api64.dll\0steam_api64.dll\0DLL (*.dll)\0*.dll\0", project_.folder);
+#else
+        const std::filesystem::path file =
+            dialogs::openFile(window_.handle(), L"libsteam_api.so\0libsteam_api.so\0Librerias (*.so)\0*.so\0", project_.folder);
+#endif
         if (!file.empty()) {
             c.steam.dll = dialogs::utf8(file);
             changed = true;
@@ -378,12 +419,16 @@ std::vector<std::pair<std::filesystem::path, std::filesystem::path>> EditorApp::
     if (!config.steam.enabled || config.platform == BuildPlatform::Android) return files;
     std::filesystem::path dll = config.steam.dll.empty() ? std::filesystem::path() : dialogs::fromUtf8(config.steam.dll);
     if (!dll.empty() && dll.is_relative()) dll = project_.folder / dll;
-    if (!dll.empty() && std::filesystem::is_directory(dll)) dll /= "steam_api64.dll";
+    if (!dll.empty() && std::filesystem::is_directory(dll)) dll /= kSteamLibrary;
     if (!dll.empty() && std::filesystem::exists(dll)) {
-        files.emplace_back(dll, target / "steam_api64.dll");
+        files.emplace_back(dll, target / kSteamLibrary);
     } else {
-        std::cerr << "[Exportar] Steam: no se encontro steam_api64.dll (" << config.steam.dll
+        std::cerr << "[Exportar] Steam: no se encontro " << kSteamLibrary << " (" << config.steam.dll
+#if defined(_WIN32)
                   << "); el juego funcionara sin Steam hasta que la copies junto al .exe\n";
+#else
+                  << "); el juego funcionara sin Steam hasta que la copies junto al ejecutable\n";
+#endif
     }
     if (config.steam.ship_appid_file) {
         const std::filesystem::path cache = project_.libraryFolder() / "ExportCache" / "steam_appid.txt";

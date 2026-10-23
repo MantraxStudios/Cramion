@@ -357,7 +357,11 @@ int main(int argc, char** argv) {
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
     std::filesystem::create_directories(root / "AppData");
+#if defined(_WIN32)
     _putenv_s("LOCALAPPDATA", (root / "AppData").string().c_str());
+#else
+    setenv("LOCALAPPDATA", (root / "AppData").string().c_str(), 1);
+#endif
 
     std::string kind;
     scripting::CppScriptSystem::setToolchainRoot(std::filesystem::path(CRAMION_BIN_DIR) / "toolchain");
@@ -1086,11 +1090,16 @@ int main(int argc, char** argv) {
             host.start();
             guest.start();
             check(host.compiled && guest.compiled, "los scripts de C++ compilan");
+            // Un frame cada 1/60 s de reloj: el bufer de interpolacion de la red
+            // va con el reloj real y frame() avanza 1/60. (En Windows un
+            // sleep_for de 2 ms ya duraba ~15 ms; en Linux dura 2 ms.)
+            auto next_frame = std::chrono::steady_clock::now();
             const auto frames = [&](int n) {
                 for (int i = 0; i < n; ++i) {
                     host.frame();
                     guest.frame();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    next_frame = std::max(next_frame + std::chrono::microseconds(16667), std::chrono::steady_clock::now());
+                    std::this_thread::sleep_until(next_frame);
                 }
             };
             const auto count = [](Game& g, const std::string& name) {

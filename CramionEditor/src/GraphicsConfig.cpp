@@ -16,6 +16,21 @@
 #include <fstream>
 #include <set>
 #include <utility>
+#include <vector>
+
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <dlfcn.h>
+
+// Xlib al final (sus macros chocan con nombres del motor).
+#include <X11/Xatom.h>
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#undef None
+#undef Bool
+#undef Status
+#undef Success
+#undef Always
+#endif
 
 namespace cramion::editor {
 
@@ -332,8 +347,200 @@ void showBorderless(HWND hwnd, const RECT& monitor, int width, int height) {
 }  // namespace
 #endif
 
+#if defined(__linux__) && !defined(__ANDROID__)
+namespace {
+
+// Linux (X11): los monitores con XRandR 1.5 (XRRGetMonitors, cargado con
+// dlopen para no enlazar libXrandr); sin el, la pantalla entera de X.
+struct XrrMonitorInfo {  // XRRMonitorInfo de <X11/extensions/Xrandr.h>
+    Atom name;
+    int primary;
+    int automatic;
+    int noutput;
+    int x;
+    int y;
+    int width;
+    int height;
+    int mwidth;
+    int mheight;
+    unsigned long* outputs;
+};
+using GetMonitorsFn = XrrMonitorInfo* (*)(Display*, ::Window, int, int*);
+using FreeMonitorsFn = void (*)(XrrMonitorInfo*);
+
+struct XRect {
+    long left = 0;
+    long top = 0;
+    long right = 0;
+    long bottom = 0;
+    long width() const { return right - left; }
+    long height() const { return bottom - top; }
+};
+
+Display* displayOf(HWND hwnd) { return hwnd != nullptr ? static_cast<Display*>(hwnd->display) : nullptr; }
+::Window windowOf(HWND hwnd) { return hwnd != nullptr ? static_cast<::Window>(hwnd->window) : 0; }
+
+std::vector<long> longProperty(Display* display, ::Window window, const char* name, Atom type) {
+    std::vector<long> out;
+    const Atom property = XInternAtom(display, name, True);
+    if (property == 0L) return out;
+    Atom actual = 0;
+    int format = 0;
+    unsigned long count = 0;
+    unsigned long remaining = 0;
+    unsigned char* data = nullptr;
+    if (XGetWindowProperty(display, window, property, 0, 64, False, type, &actual, &format, &count, &remaining, &data) == 0 &&
+        data != nullptr && format == 32) {
+        const auto* values = reinterpret_cast<const long*>(data);  // formato 32 = long en Xlib
+        out.assign(values, values + count);
+    }
+    if (data != nullptr) XFree(data);
+    return out;
+}
+
+// Rectangulo del area de dentro de la ventana en la pantalla.
+bool clientRect(Display* display, ::Window window, XRect& rect) {
+    XWindowAttributes attributes{};
+    if (XGetWindowAttributes(display, window, &attributes) == 0) return false;
+    int x = 0;
+    int y = 0;
+    ::Window child = 0;
+    XTranslateCoordinates(display, window, attributes.root, 0, 0, &x, &y, &child);
+    rect = {x, y, x + attributes.width, y + attributes.height};
+    return true;
+}
+
+// El monitor con el centro de la ventana (sin ventana, el principal).
+bool monitorRect(Display* display, ::Window window, XRect& out) {
+    const ::Window root = DefaultRootWindow(display);
+    XRect client{};
+    const bool has_window = window != 0 && clientRect(display, window, client);
+    const long cx = (client.left + client.right) / 2;
+    const long cy = (client.top + client.bottom) / 2;
+    static void* xrandr = dlopen("libXrandr.so.2", RTLD_LAZY | RTLD_LOCAL);
+    static const auto get_monitors = xrandr != nullptr ? reinterpret_cast<GetMonitorsFn>(dlsym(xrandr, "XRRGetMonitors")) : nullptr;
+    static const auto free_monitors =
+        xrandr != nullptr ? reinterpret_cast<FreeMonitorsFn>(dlsym(xrandr, "XRRFreeMonitors")) : nullptr;
+    if (get_monitors != nullptr && free_monitors != nullptr) {
+        int count = 0;
+        if (XrrMonitorInfo* monitors = get_monitors(display, root, True, &count)) {
+            int best = -1;
+            for (int i = 0; i < count; ++i) {
+                const XrrMonitorInfo& m = monitors[i];
+                const bool inside = cx >= m.x && cx < m.x + m.width && cy >= m.y && cy < m.y + m.height;
+                if ((has_window && inside) || (!has_window && m.primary != 0)) {
+                    best = i;
+                    break;
+                }
+                if (best < 0 && (m.primary != 0 || i == 0)) best = i;
+            }
+            if (best >= 0) out = {monitors[best].x, monitors[best].y, monitors[best].x + monitors[best].width,
+                                  monitors[best].y + monitors[best].height};
+            free_monitors(monitors);
+            if (best >= 0) return true;
+        }
+    }
+    const int screen = DefaultScreen(display);
+    out = {0, 0, DisplayWidth(display, screen), DisplayHeight(display, screen)};
+    return out.width() > 0 && out.height() > 0;
+}
+
+// Area de trabajo (sin paneles: _NET_WORKAREA) dentro del monitor.
+XRect workArea(Display* display, const XRect& monitor) {
+    XRect work = monitor;
+    const std::vector<long> area = longProperty(display, DefaultRootWindow(display), "_NET_WORKAREA", XA_CARDINAL);
+    if (area.size() >= 4) {
+        work.left = std::max(monitor.left, area[0]);
+        work.top = std::max(monitor.top, area[1]);
+        work.right = std::min(monitor.right, area[0] + area[2]);
+        work.bottom = std::min(monitor.bottom, area[1] + area[3]);
+        if (work.width() <= 0 || work.height() <= 0) work = monitor;
+    }
+    return work;
+}
+
+// Lo que anade el marco del gestor de ventanas (_NET_FRAME_EXTENTS:
+// izquierda, derecha, arriba, abajo). Sin saberlo, un marco tipico.
+void frameExtents(Display* display, ::Window window, long& horizontal, long& vertical) {
+    const std::vector<long> extents =
+        window != 0 ? longProperty(display, window, "_NET_FRAME_EXTENTS", XA_CARDINAL) : std::vector<long>{};
+    if (extents.size() >= 4 && extents[0] + extents[1] + extents[2] + extents[3] > 0) {
+        horizontal = extents[0] + extents[1];
+        vertical = extents[2] + extents[3];
+    } else {
+        horizontal = 2;
+        vertical = 37;
+    }
+}
+
+// _NET_WM_STATE: anade (1) o quita (0) hasta dos estados (mensaje al gestor).
+void setWmState(Display* display, ::Window window, bool add, const char* first, const char* second = nullptr) {
+    XEvent event{};
+    event.xclient.type = ClientMessage;
+    event.xclient.window = window;
+    event.xclient.message_type = XInternAtom(display, "_NET_WM_STATE", False);
+    event.xclient.format = 32;
+    event.xclient.data.l[0] = add ? 1 : 0;
+    event.xclient.data.l[1] = static_cast<long>(XInternAtom(display, first, False));
+    event.xclient.data.l[2] = second != nullptr ? static_cast<long>(XInternAtom(display, second, False)) : 0;
+    event.xclient.data.l[3] = 1;  // aplicacion normal
+    XSendEvent(display, DefaultRootWindow(display), False, SubstructureRedirectMask | SubstructureNotifyMask, &event);
+}
+
+// Con o sin la decoracion del gestor (_MOTIF_WM_HINTS).
+void setDecorated(Display* display, ::Window window, bool decorated) {
+    const Atom hints = XInternAtom(display, "_MOTIF_WM_HINTS", False);
+    const long value[5] = {2 /* MWM_HINTS_DECORATIONS */, 0, decorated ? 1 : 0, 0, 0};
+    XChangeProperty(display, window, hints, hints, 32, PropModeReplace, reinterpret_cast<const unsigned char*>(value), 5);
+}
+
+bool decorated(Display* display, ::Window window) {
+    const Atom hints = XInternAtom(display, "_MOTIF_WM_HINTS", True);
+    if (hints == 0L) return true;
+    const std::vector<long> value = longProperty(display, window, "_MOTIF_WM_HINTS", hints);
+    return value.size() < 3 || (value[0] & 2) == 0 || value[2] != 0;
+}
+
+bool hasWmState(Display* display, ::Window window, const char* state) {
+    const Atom wanted = XInternAtom(display, state, True);
+    if (wanted == 0L) return false;
+    for (const long atom : longProperty(display, window, "_NET_WM_STATE", XA_ATOM)) {
+        if (static_cast<Atom>(atom) == wanted) return true;
+    }
+    return false;
+}
+
+// Sin marco, w x h (como mucho el monitor), centrada en el monitor.
+void showBorderless(Display* display, ::Window window, const XRect& monitor, long width, long height) {
+    setWmState(display, window, false, "_NET_WM_STATE_FULLSCREEN");
+    setWmState(display, window, false, "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ");
+    setDecorated(display, window, false);
+    const long w = std::min(width, monitor.width());
+    const long h = std::min(height, monitor.height());
+    XMoveResizeWindow(display, window, static_cast<int>(monitor.left + (monitor.width() - w) / 2),
+                      static_cast<int>(monitor.top + (monitor.height() - h) / 2), static_cast<unsigned>(w),
+                      static_cast<unsigned>(h));
+}
+
+}  // namespace
+#endif
+
 bool monitorSize(HWND hwnd, MonitorSize& out) {
-#if !defined(_WIN32)
+#if defined(__linux__) && !defined(__ANDROID__)
+    out = MonitorSize{};
+    Display* display = displayOf(hwnd);
+    XRect monitor{};
+    if (display == nullptr || !monitorRect(display, windowOf(hwnd), monitor)) return false;
+    const XRect work = workArea(display, monitor);
+    long frame_w = 0;
+    long frame_h = 0;
+    frameExtents(display, windowOf(hwnd), frame_w, frame_h);
+    out.width = static_cast<int>(monitor.width());
+    out.height = static_cast<int>(monitor.height());
+    out.windowed_max_width = std::max(0, static_cast<int>(work.width() - frame_w));
+    out.windowed_max_height = std::max(0, static_cast<int>(work.height() - frame_h));
+    return true;
+#elif !defined(_WIN32)
     (void)hwnd;
     out = MonitorSize{};
     return false;
@@ -350,7 +557,63 @@ bool monitorSize(HWND hwnd, MonitorSize& out) {
 }
 
 void applyWindowMode(HWND hwnd, WindowMode mode, int width, int height) {
-#if !defined(_WIN32)
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Linux: lo mismo con las peticiones de EWMH al gestor de ventanas
+    // (_NET_WM_STATE) y _MOTIF_WM_HINTS para quitar el marco. El tamano nuevo
+    // llega luego como WindowResize (ConfigureNotify).
+    Display* display = displayOf(hwnd);
+    const ::Window window = windowOf(hwnd);
+    if (display == nullptr || window == 0) return;
+    XRect screen{};
+    if (!monitorRect(display, window, screen)) return;
+    if (mode == WindowMode::Fullscreen) {
+        // Pantalla completa del gestor (sin bordes, del tamano del monitor).
+        setWmState(display, window, false, "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ");
+        setDecorated(display, window, false);
+        XMoveResizeWindow(display, window, static_cast<int>(screen.left), static_cast<int>(screen.top),
+                          static_cast<unsigned>(screen.width()), static_cast<unsigned>(screen.height()));
+        setWmState(display, window, true, "_NET_WM_STATE_FULLSCREEN");
+        XFlush(display);
+        return;
+    }
+    width = std::max(width, 320);
+    height = std::max(height, 240);
+    if (mode == WindowMode::Borderless) {
+        showBorderless(display, window, screen, width, height);
+        XFlush(display);
+        return;
+    }
+    const XRect work = workArea(display, screen);
+    long frame_w = 0;
+    long frame_h = 0;
+    frameExtents(display, window, frame_w, frame_h);
+    const long framed_w = width + frame_w;
+    const long framed_h = height + frame_h;
+    const bool fits_framed = framed_w <= work.width() && framed_h <= work.height();
+    const bool fits_monitor = width <= screen.width() && height <= screen.height();
+    if (mode == WindowMode::Windowed && !fits_framed && fits_monitor) {
+        // Con el marco no cabe: sin marco, el tamano pedido.
+        showBorderless(display, window, screen, width, height);
+        XFlush(display);
+        return;
+    }
+    setWmState(display, window, false, "_NET_WM_STATE_FULLSCREEN");
+    setDecorated(display, window, true);
+    if (mode == WindowMode::Maximized) {
+        setWmState(display, window, true, "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ");
+        XFlush(display);
+        return;
+    }
+    // Ventana con ese tamano de dentro, centrada en el area de trabajo.
+    setWmState(display, window, false, "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ");
+    const long w = std::min(framed_w, work.width());
+    const long h = std::min(framed_h, work.height());
+    XMoveResizeWindow(display, window, static_cast<int>(work.left + (work.width() - w) / 2),
+                      static_cast<int>(work.top + (work.height() - h) / 2), static_cast<unsigned>(w - frame_w),
+                      static_cast<unsigned>(h - frame_h));
+    XFlush(display);
+}
+#elif !defined(_WIN32)
     // Android: siempre a pantalla completa.
     (void)hwnd;
     (void)mode;
@@ -508,6 +771,9 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
             "Mayor alto de dentro que cabe con el marco de Windows en el area de trabajo", {}, false);
 #if defined(_WIN32)
         const bool framed = window_ != nullptr && (GetWindowLongPtrW(window_, GWL_STYLE) & WS_CAPTION) == WS_CAPTION;
+#elif defined(__linux__) && !defined(__ANDROID__)
+        const bool framed = displayOf(window_) != nullptr && decorated(displayOf(window_), windowOf(window_)) &&
+                            !hasWmState(displayOf(window_), windowOf(window_), "_NET_WM_STATE_FULLSCREEN");
 #else
         const bool framed = false;
 #endif
@@ -774,6 +1040,22 @@ std::vector<std::pair<int, int>> RendererGraphicsHost::resolutions() const {
         if (mode.dmPelsWidth >= 640 && mode.dmPelsHeight >= 480) {
             sizes.insert({static_cast<int>(mode.dmPelsWidth), static_cast<int>(mode.dmPelsHeight)});
         }
+    }
+#elif defined(__linux__) && !defined(__ANDROID__)
+    // Linux: el tamano del monitor y los habituales que caben en el (sin
+    // XRandR enlazado no hay lista de modos; la ventana no cambia el modo).
+    MonitorSize monitor;
+    if (monitorSize(window_, monitor) && monitor.width > 0) {
+        sizes.insert({monitor.width, monitor.height});
+        static constexpr std::pair<int, int> kCommon[] = {{640, 480},   {800, 600},   {1024, 768},  {1280, 720},
+                                                           {1280, 800},  {1366, 768},  {1440, 900},  {1600, 900},
+                                                           {1680, 1050}, {1920, 1080}, {1920, 1200}, {2560, 1440},
+                                                           {2560, 1600}, {3440, 1440}, {3840, 2160}};
+        for (const auto& [w, h] : kCommon) {
+            if (w <= monitor.width && h <= monitor.height) sizes.insert({w, h});
+        }
+    } else {
+        sizes.insert({window_width_, window_height_});
     }
 #else
     // Android: la pantalla (la resolucion de dibujo se baja con resolution_scale).

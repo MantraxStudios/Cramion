@@ -96,6 +96,13 @@ public:
     }
     void shutdown();
 
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Linux (sin backend de plataforma de ImGui): la ventana (portapapeles,
+    // forma del cursor y tamano) y sus eventos (raton, teclado, texto, foco).
+    void setWindow(dm::Window* window);
+    void onEvent(const dm::Event& event);
+#endif
+
     // Entre beginFrame() y endFrame() se construye la interfaz; endFrame()
     // la deja lista para que el renderizador la dibuje en drawFrame().
     void beginFrame();
@@ -201,6 +208,10 @@ private:
     std::string ini_path_;
     bool initialized_ = false;
     float content_scale_ = 0.0f;
+#if defined(__linux__) && !defined(__ANDROID__)
+    dm::Window* window_ = nullptr;
+    std::string clipboard_;  // el texto devuelto a ImGui debe seguir vivo
+#endif
     std::uint32_t display_width_ = 1;
     std::uint32_t display_height_ = 1;
     std::chrono::steady_clock::time_point last_frame_{};

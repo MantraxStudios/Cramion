@@ -33,8 +33,8 @@ void saveBackgroundPreferences();
 // Estado de la ventana principal respecto al usuario.
 enum class WindowPresence { Foreground, Background, Hidden };
 // `main_window` es el HWND de la ventana principal (void* para no meter
-// windows.h aqui).
-WindowPresence windowPresence(void* main_window);
+// windows.h aqui); en Linux, el dm::NativeHandle (Display + ventana de X).
+WindowPresence windowPresence(const void* main_window);
 
 // Lo que hace este frame con el modo y la presencia: si puede dibujar la
 // escena y cuanto debe durar el frame (0 = sin esperar).

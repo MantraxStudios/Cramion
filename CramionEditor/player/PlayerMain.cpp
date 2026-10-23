@@ -15,6 +15,9 @@
 // (o va aparte en un .obb). Se copian a los datos internos de la app la
 // primera vez (o cuando cambia la compilacion) y el tactil se convierte en
 // raton, teclas y ejes con los controles en pantalla (dm::TouchControls).
+//
+// Linux: el mismo juego que en Windows (ventana de X de CramionDM, sin
+// backend de plataforma de ImGui: le llegan los eventos de la ventana).
 
 #include <CramionCore/spline/Spline.h>
 #include <CramionCore/terrain/TerrainGrid.h>
@@ -60,6 +63,11 @@
 #include <nlohmann/json.hpp>
 #if defined(_WIN32)
 #include <imgui_impl_win32.h>
+#elif !defined(__ANDROID__)
+#include <cstdio>
+#include <cstring>
+#include <sys/wait.h>
+#include <unistd.h>
 #else
 #include "AndroidSupport.h"
 
@@ -174,6 +182,14 @@ std::filesystem::path exeFolder() {
     GetModuleFileNameW(nullptr, buffer, MAX_PATH);
     return std::filesystem::path(buffer).parent_path();
 }
+#elif !defined(__ANDROID__)
+// Linux: este ejecutable (/proc/self/exe) y su carpeta.
+std::filesystem::path exePath() {
+    std::error_code error;
+    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", error);
+    return error ? std::filesystem::path("CramionPlayer") : self;
+}
+std::filesystem::path exeFolder() { return exePath().parent_path(); }
 #endif
 
 std::string readIniValue(const std::filesystem::path& file, const std::string& key) {
@@ -233,6 +249,62 @@ void testPrint(const std::string& line) {
     const std::string text = line + "\r\n";
     DWORD written = 0;
     WriteFile(out, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
+}
+#elif !defined(__ANDROID__)
+// Linux: UTF-8 a UTF-32 (wchar_t), para el titulo de la ventana.
+std::wstring widen(const std::string& text) {
+    std::wstring out;
+    for (std::size_t i = 0; i < text.size();) {
+        char32_t c = static_cast<unsigned char>(text[i++]);
+        int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+        if (extra > 0) c &= (0x3F >> extra);
+        for (; extra > 0 && i < text.size() && (static_cast<unsigned char>(text[i]) & 0xC0) == 0x80; --extra) {
+            c = (c << 6) | (static_cast<unsigned char>(text[i++]) & 0x3F);
+        }
+        out.push_back(static_cast<wchar_t>(c));
+    }
+    return out;
+}
+
+// <Juego> --run-tests [--junit resultados.xml] (como en Windows).
+struct TestCli {
+    bool enabled = false;
+    std::filesystem::path junit;
+};
+TestCli g_test_cli;
+std::atomic<int> g_test_exit{-1};
+// La salida estandar original (la de quien lanzo el juego): cout va al log.
+int g_console = -1;
+
+void showError(const std::string& message) {
+    std::cerr << "[Juego] Error: " << message << std::endl;
+    if (g_console >= 0) {
+        const std::string text = "[Juego] Error: " + message + "\n";
+        (void)!::write(g_console, text.data(), text.size());
+    }
+    if (g_test_cli.enabled) return;
+    // Cuadro de error del escritorio si hay alguno (zenity, kdialog o xmessage).
+    if (std::getenv("DISPLAY") == nullptr && std::getenv("WAYLAND_DISPLAY") == nullptr) return;
+    const pid_t child = fork();
+    if (child == 0) {
+        execlp("zenity", "zenity", "--error", "--title=Cramion", "--no-markup", "--text", message.c_str(),
+               static_cast<char*>(nullptr));
+        execlp("kdialog", "kdialog", "--title", "Cramion", "--error", message.c_str(), static_cast<char*>(nullptr));
+        execlp("xmessage", "xmessage", "-center", message.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    if (child > 0) {
+        int status = 0;
+        waitpid(child, &status, 0);
+    }
+}
+
+// Una linea de las pruebas: al log y a la consola de quien lanzo el juego.
+void testPrint(const std::string& line) {
+    std::cout << line << std::endl;
+    if (g_console < 0) return;
+    const std::string text = line + "\n";
+    (void)!::write(g_console, text.data(), text.size());
 }
 #else
 std::wstring widen(const std::string& text) { return std::wstring(text.begin(), text.end()); }
@@ -310,6 +382,10 @@ float displayRefreshRate(HWND hwnd) {
     if (!EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode)) return 0.0f;
     return mode.dmDisplayFrequency > 1 ? static_cast<float>(mode.dmDisplayFrequency) : 0.0f;
 }
+#elif !defined(__ANDROID__)
+// Linux: sin XRandR enlazado no se saben los Hz (0: shippedGraphics usa los
+// de siempre).
+float displayRefreshRate(HWND) { return 0.0f; }
 #endif
 
 std::string xmlEscape(const std::string& text) {
@@ -358,6 +434,23 @@ int runPlayer() {
         static std::ofstream log_file(editor::localDataFolder("Logs") / std::filesystem::path(exe_stem).concat(".log"));
         editor::setCrashLogFile(editor::localDataFolder("Logs") / std::filesystem::path(exe_stem).concat(".log"));
         if (log_file) {
+            std::cout.rdbuf(log_file.rdbuf());
+            std::cerr.rdbuf(log_file.rdbuf());
+        }
+#elif !defined(__ANDROID__)
+        // Linux: como en Windows; la salida va al log de
+        // ~/.local/share/Cramion/Logs (la consola, si la hay, sigue en g_console).
+        const std::filesystem::path root = exeFolder();
+        const std::filesystem::path game = root / "Game";
+        const std::filesystem::path exe_stem = exePath().stem();
+        const std::u8string stem_u8 = exe_stem.u8string();
+        const std::string game_name(stem_u8.begin(), stem_u8.end());
+
+        editor::installCrashHandler(game_name);
+        static std::ofstream log_file(editor::localDataFolder("Logs") / std::filesystem::path(exe_stem).concat(".log"));
+        editor::setCrashLogFile(editor::localDataFolder("Logs") / std::filesystem::path(exe_stem).concat(".log"));
+        if (log_file) {
+            g_console = ::dup(STDOUT_FILENO);
             std::cout.rdbuf(log_file.rdbuf());
             std::cerr.rdbuf(log_file.rdbuf());
         }
@@ -420,7 +513,7 @@ int runPlayer() {
             showError("No se pudo crear la ventana.");
             return EXIT_FAILURE;
         }
-#if !defined(_WIN32)
+#if defined(__ANDROID__)
         // Resolucion de la imagen del juego (antes del renderizador y la
         // interfaz, que la toman de la ventana): el lado corto como mucho el
         // de la configuracion; 0 = segun la calidad. La pantalla la escala.
@@ -434,7 +527,7 @@ int runPlayer() {
                                                     : kAutomatic[level]);
         }
 #endif
-#if defined(_WIN32)
+#if !defined(__ANDROID__)
         if (window_mode != static_cast<int>(editor::WindowMode::Maximized)) {
             // Pantalla completa, sin bordes o ventana: lo mismo que al cambiarlo
             // desde el juego (Graphics.set): la ventana centrada en el monitor y
@@ -467,7 +560,7 @@ int runPlayer() {
                 if (it->path().extension() == ".crpack") pack = it->path();
             }
             std::string apk_pack;  // ruta dentro del APK
-#if !defined(_WIN32)
+#if defined(__ANDROID__)
             if (const std::string obb = window.obbPath(); !obb.empty()) {
                 std::error_code oe;
                 for (std::filesystem::directory_iterator it(obb, oe); !oe && it != std::filesystem::directory_iterator(); it.increment(oe)) {
@@ -487,7 +580,7 @@ int runPlayer() {
                 // la compilacion (build= de game.ini) y el tamano.
                 const std::string id = apk_pack.empty() ? project::packId(pack)
                                                         : "apk-" + readIniValue(ini, "build") + "-" +
-#if defined(_WIN32)
+#if !defined(__ANDROID__)
                                                               std::string();
 #else
                                                               std::to_string(android::assetSize(apk_pack));
@@ -501,7 +594,7 @@ int runPlayer() {
                     std::uint64_t pack_base = 0;
                     std::uint64_t pack_length = 0;
                     bool pack_copied = false;
-#if !defined(_WIN32)
+#if defined(__ANDROID__)
                     android::AssetRange range;
                     if (!apk_pack.empty()) {
                         if (android::openAssetRange(apk_pack, range)) {
@@ -540,7 +633,7 @@ int runPlayer() {
                               << " s\n";
                     std::ofstream(data / ".crpack_id") << id;
                     if (pack_copied) std::filesystem::remove(pack, e);  // la copia del APK ya no hace falta
-#if !defined(_WIN32)
+#if defined(__ANDROID__)
                     android::closeAssetRange(range);
 #endif
                 }
@@ -557,6 +650,13 @@ int runPlayer() {
             return EXIT_FAILURE;
         }
         SetWindowTextW(window.handle(), widen(title).c_str());
+#elif !defined(__ANDROID__)
+        project = prepare_project();
+        if (!project) {
+            showError("No se encontro el juego (carpeta Game).");
+            return EXIT_FAILURE;
+        }
+        window.setTitle(widen(title));
 #endif
 
         dm::Input input;
@@ -572,8 +672,8 @@ int runPlayer() {
                                           .enable_xr = vr_requested,
                                           .xr_runtime = static_cast<int>(vr_runtime)};
         renderer.setLoadingCallback([&](float fraction, const char* what) { loading->show(fraction, what); });
-        renderer.initialize(engine_info, window.handle(), window.width(), window.height());
-#if defined(_WIN32)
+        renderer.initialize(engine_info, editor::renderWindow(window.handle()), window.width(), window.height());
+#if !defined(__ANDROID__)
         loading.reset();
         editor::loadGraphicsIni(project->settingsFolder() / "Graphics.ini", renderer);
         // Lo del proyecto es lo que el autor tenia en el visor del editor de SU
@@ -642,13 +742,16 @@ int runPlayer() {
         xr::XrRig xr_rig;
 
         editor::ImGuiLayer imgui;
-#if !defined(_WIN32)
+#if defined(__ANDROID__)
         // La interfaz a la escala de la pantalla (un poco menos que la
         // densidad: los moviles tienen mucha y la pantalla es pequena).
         imgui.setContentScale(std::max(window.density() * 0.8f, 1.0f));
         imgui.setDisplaySize(window.width(), window.height());
 #endif
         imgui.initialize(window.handle(), renderer);
+#if defined(__linux__) && !defined(__ANDROID__)
+        imgui.setWindow(&window);  // portapapeles, cursor y tamano (sin backend de plataforma)
+#endif
 
         // El banner del motor (encima de todo): ajustado a la pantalla sobre
         // su fondo, como lo pinta LoadingScreen. `progress` >= 0 dibuja una
@@ -722,7 +825,9 @@ int runPlayer() {
         std::vector<dm::Event> synthesized;
         const auto feed = [&](dm::Event& e) {
             input.onEvent(e);
-#if !defined(_WIN32)
+#if defined(__linux__) && !defined(__ANDROID__)
+            imgui.onEvent(e);
+#elif !defined(_WIN32)
             ImGuiIO& io = ImGui::GetIO();
             switch (e.type) {
                 case dm::EventType::MouseMoved:
@@ -775,7 +880,7 @@ int runPlayer() {
                 case dm::EventType::WindowResize:
                     renderer.onResize(e.width, e.height);
                     if (e.height > 0) scene.camera().setAspectRatio(static_cast<float>(e.width) / static_cast<float>(e.height));
-#if !defined(_WIN32)
+#if defined(__ANDROID__)
                     imgui.setDisplaySize(e.width, e.height);
                     touch.setScreen(static_cast<float>(e.width), static_cast<float>(e.height), window.density());
 #endif
@@ -786,7 +891,7 @@ int runPlayer() {
                 // Android: segundo plano y vuelta (la swapchain va y viene).
                 case dm::EventType::WindowSurfaceLost: renderer.releaseSurface(); break;
                 case dm::EventType::WindowSurfaceCreated:
-                    renderer.replaceWindow(window.handle(), e.width, e.height);
+                    renderer.replaceWindow(editor::renderWindow(window.handle()), e.width, e.height);
                     break;
                 case dm::EventType::WindowLostFocus:
                     synthesized.clear();
@@ -797,7 +902,7 @@ int runPlayer() {
             }
         });
 
-#if !defined(_WIN32)
+#if defined(__ANDROID__)
         // Con el renderizador listo, el banner se pinta con el mientras se
         // preparan los assets (la misma intro que despues, sin textos).
         editor::setLoadingPainter([&](float, const char*) {
@@ -958,6 +1063,15 @@ int runPlayer() {
             // contexto); script.cpp.InProcess = false vuelve al proceso aislado.
             cpp_scripts.setInProcess(true);
         }
+#elif !defined(__ANDROID__)
+        {
+            // Linux: scripts/game_scripts.so junto al ejecutable (y
+            // CramionScriptHost, el proceso aislado, al lado), como en Windows.
+            const std::filesystem::path game_dll = exeFolder() / "scripts" / "game_scripts.so";
+            std::error_code dll_error;
+            if (std::filesystem::exists(game_dll, dll_error)) cpp_scripts.usePrebuilt(game_dll);
+            cpp_scripts.setInProcess(true);
+        }
 #else
         // Android: los scripts (libgame_scripts.so) y su proceso aislado
         // (libcramion_scripthost.so) van en nativeLibraryDir, junto a esta
@@ -997,7 +1111,7 @@ int runPlayer() {
         screen_host.width = [&] { return static_cast<int>(window.width()); };
         screen_host.height = [&] { return static_cast<int>(window.height()); };
         screen_host.orientation_mode = [&] { return orientation_mode; };
-#if !defined(_WIN32)
+#if defined(__ANDROID__)
         scripts.setVibrate([&](int ms) { window.vibrate(ms); });
         screen_host.set_orientation = [&](const std::string& mode) {
             // ActivityInfo.SCREEN_ORIENTATION_*
@@ -1038,7 +1152,7 @@ int runPlayer() {
             wchar_t exe_dir[MAX_PATH] = L"";
             GetModuleFileNameW(nullptr, exe_dir, MAX_PATH);
             const std::filesystem::path game_dir = std::filesystem::path(exe_dir).parent_path();
-#else
+#else  // Linux: root es la carpeta del ejecutable; Android: los datos de la app
             const std::filesystem::path game_dir = root;
 #endif
             mods.setSearchFolders({game_dir / "Mods", editor::localDataFolder("Mods") / exe_stem});
@@ -1511,7 +1625,7 @@ int runPlayer() {
 
         // --- Controles tactiles en pantalla (joystick y botones) ---
         const bool touch_platform =
-#if defined(_WIN32)
+#if !defined(__ANDROID__)
             false;
 #else
             true;
@@ -2116,6 +2230,9 @@ int runPlayer() {
             // Con --run-tests, su codigo (un cierre colgado no tapa un fallo).
             const int code = g_test_exit.load();
             TerminateProcess(GetCurrentProcess(), static_cast<UINT>(code >= 0 ? code : g_test_cli.enabled ? 3 : 0));
+#elif !defined(__ANDROID__)
+            const int code = g_test_exit.load();
+            std::_Exit(code >= 0 ? code : g_test_cli.enabled ? 3 : 0);
 #else
             std::_Exit(0);
 #endif
@@ -2168,8 +2285,8 @@ int runPlayer() {
     return EXIT_SUCCESS;
 }
 
-#if defined(_WIN32)
-// <Juego>.exe [--run-tests [--junit resultados.xml]]
+#if !defined(__ANDROID__)
+// <Juego>.exe [--run-tests [--junit resultados.xml]] (Linux: <Juego>)
 // --run-tests: ejecuta las pruebas automaticas (CRAMION_TEST) en el juego
 // exportado, tal cual se publica (.crpack, scripts ya compilados, shaders del
 // paquete), y cierra. Codigo de salida: 0 todas bien, 1 alguna fallo, 2 no hay

@@ -30,7 +30,8 @@
 namespace cramion::editor {
 
 // Donde estan las herramientas (se buscan solas: ANDROID_HOME,
-// %LOCALAPPDATA%/Android/Sdk, el JDK de Android Studio o JAVA_HOME).
+// %LOCALAPPDATA%/Android/Sdk o ~/Android/Sdk en Linux, el JDK de Android
+// Studio o JAVA_HOME).
 struct AndroidToolchain {
     std::filesystem::path sdk;
     std::filesystem::path build_tools;   // la version mas nueva

@@ -5,7 +5,9 @@
 ## Descarga
 
 - `Cramion-win64.zip`: descomprime y abre `CramionEditor.exe`. Si ya tienes Cramion, el actualizador te avisa solo.
-- SHA-256: `c9104742bdf1ba2266c6a6ab08d12368940fde1723c17a3c4627deb22d9a5d85`
+- `Cramion-linux64.tar.gz`: Linux x64 (X11 o XWayland, Vulkan 1.3). `tar xzf Cramion-linux64.tar.gz` y abre `./CramionEditor`. En Linux se actualiza a mano.
+- SHA-256 de `Cramion-win64.zip`: `c9104742bdf1ba2266c6a6ab08d12368940fde1723c17a3c4627deb22d9a5d85`
+- SHA-256 de `Cramion-linux64.tar.gz`: `deba7801715cc436523edbb6137cc9c7d2f408c0b6c5437aa60a4cfb8e4aa616`
 
 ## Lo nuevo
 

@@ -1,5 +1,6 @@
 // Prueba de la terminal integrada (consola): el emulador VT con secuencias
-// conocidas y una pseudoconsola de verdad (cmd.exe) de principio a fin.
+// conocidas y una pseudoconsola de verdad (cmd.exe; en Linux /bin/sh en una
+// pty) de principio a fin.
 
 #include "Terminal.h"
 
@@ -91,6 +92,7 @@ bool waitFor(TerminalSession& session, const std::string& text, int seconds) {
     return false;
 }
 
+#if defined(_WIN32)
 void conpty() {
     TerminalSession session;
     std::string error;
@@ -128,6 +130,40 @@ void conpty() {
     }
     check(!session.running(), "detecta que el proceso termino");
 }
+#else
+void conpty() {
+    TerminalSession session;
+    std::string error;
+    // Un sh sin perfil: la prueba no depende del .bashrc del usuario.
+    const bool started = session.start(L"PS1='> ' exec /bin/sh", std::filesystem::temp_directory_path(), 100, 30, error);
+    check(started, ("arranca un shell en una pty " + error).c_str());
+    if (!started) return;
+    session.write("echo CRAMION_$(uname -s)\r");
+    check(waitFor(session, "CRAMION_Linux", 10), "ejecuta un comando y se ve su salida");
+    session.write("printf '\\033[32mVERDE\\033[0m\\n'\r");
+    const bool green = waitFor(session, "VERDE", 10);
+    check(green, "printf con color dentro de la terminal");
+    bool colored = false;
+    const TerminalScreen& s = session.screen();
+    for (int i = 0; i < s.totalLines() && green; ++i) {
+        const auto& line = s.line(i);
+        for (std::size_t x = 0; x + 4 < line.size(); ++x) {
+            if (line[x].ch == U'V' && line[x + 1].ch == U'E' && line[x].fg != kTermDefault) colored = true;
+        }
+    }
+    check(colored, "los colores llegan (SGR)");
+    session.resize(60, 20);
+    session.write("stty size\r");
+    check(waitFor(session, "20 60", 10), "redimensiona la pty (TIOCSWINSZ)");
+    session.write("exit\r");
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (session.running() && std::chrono::steady_clock::now() < end) {
+        session.pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    check(!session.running(), "detecta que el proceso termino");
+}
+#endif
 
 }  // namespace
 

@@ -19,7 +19,15 @@
 #include <CramionCore/jobs/JobSystem.h>
 #include <CramionCore/video/VideoFiles.h>
 
+#if defined(_WIN32)
 #include <shellapi.h>
+#else
+#include "SystemUtil.h"
+
+#include <cstdio>
+#include <ctime>
+#include <vector>
+#endif
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -183,6 +191,62 @@ std::string sourceKey(const std::filesystem::path& path) {
 #endif
     return text;
 }
+
+#if !defined(_WIN32)
+// Papelera de freedesktop (~/.local/share/Trash, la de Nautilus, Dolphin...):
+// `gio trash` si esta (sabe de otros discos); si no, se mueve a mano con su
+// .trashinfo. false si alguno no se pudo (el que llama lo borra).
+bool moveToTrash(const std::vector<std::filesystem::path>& paths) {
+    if (const std::filesystem::path gio = sys::findInPath("gio"); !gio.empty()) {
+        std::vector<std::string> argv{gio.string(), "trash", "--"};
+        for (const std::filesystem::path& p : paths) argv.push_back(std::filesystem::absolute(p).string());
+        std::string output;
+        if (sys::runCapture(argv, output, true) == 0) return true;
+    }
+    std::filesystem::path data = sys::env("XDG_DATA_HOME");
+    if (data.empty()) data = std::filesystem::path(sys::env("HOME")) / ".local" / "share";
+    const std::filesystem::path trash = data / "Trash";
+    std::error_code ec;
+    std::filesystem::create_directories(trash / "files", ec);
+    std::filesystem::create_directories(trash / "info", ec);
+    bool all = true;
+    for (const std::filesystem::path& p : paths) {
+        const std::filesystem::path absolute = std::filesystem::absolute(p, ec);
+        if (!std::filesystem::exists(absolute, ec)) continue;
+        // Nombre libre en la papelera (nombre, nombre.2, nombre.3...).
+        std::string name = absolute.filename().string();
+        for (int i = 2; std::filesystem::exists(trash / "files" / name, ec) ||
+                        std::filesystem::exists(trash / "info" / (name + ".trashinfo"), ec);
+             ++i) {
+            name = absolute.filename().string() + "." + std::to_string(i);
+        }
+        char date[32] = "";
+        const std::time_t now = std::time(nullptr);
+        std::tm local{};
+        localtime_r(&now, &local);
+        std::strftime(date, sizeof(date), "%Y-%m-%dT%H:%M:%S", &local);
+        // La ruta va codificada como URL (RFC 2396).
+        std::string encoded;
+        for (const unsigned char c : absolute.string()) {
+            if (std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~') {
+                encoded += static_cast<char>(c);
+            } else {
+                char hex[4];
+                std::snprintf(hex, sizeof(hex), "%%%02X", c);
+                encoded += hex;
+            }
+        }
+        std::ofstream(trash / "info" / (name + ".trashinfo"))
+            << "[Trash Info]\nPath=" << encoded << "\nDeletionDate=" << date << "\n";
+        std::filesystem::rename(absolute, trash / "files" / name, ec);
+        if (ec) {
+            std::filesystem::remove(trash / "info" / (name + ".trashinfo"), ec);
+            all = false;
+        }
+    }
+    return all;
+}
+#endif
 
 }  // namespace
 
@@ -1112,12 +1176,20 @@ void EditorApp::browserDropTarget(const BrowserItem& item) {
 // Menu contextual de cada cosa (el de Unreal: acciones del tipo y comunes).
 void EditorApp::browserItemMenu(const BrowserItem& item) {
     const auto show_in_explorer = [](const std::filesystem::path& path, bool select) {
+#if defined(_WIN32)
         if (select) {
             const std::wstring args = L"/select,\"" + path.wstring() + L"\"";
             ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
         } else {
             ShellExecuteW(nullptr, L"open", path.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
+#else
+        if (select) {
+            sys::revealInFileManager(path);
+        } else {
+            sys::openWithSystem(path);
+        }
+#endif
     };
     ImGui::TextDisabled("%s", item.type.c_str());
     ImGui::Separator();
@@ -1955,7 +2027,11 @@ void EditorApp::drawProject() {
             saveBrowserFavorites();
         }
         if (ImGui::MenuItem("Mostrar en el Explorador")) {
+#if defined(_WIN32)
             ShellExecuteW(nullptr, L"open", current_folder_.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+            sys::openWithSystem(current_folder_);
+#endif
         }
         ImGui::EndPopup();
     }
@@ -2076,6 +2152,7 @@ void EditorApp::deletePaths(const std::vector<std::filesystem::path>& paths) {
         }
     }
     // A la Papelera (se puede recuperar); si no se puede, se borra.
+#if defined(_WIN32)
     std::wstring list;
     for (const std::filesystem::path& p : paths) {
         list += std::filesystem::absolute(p).wstring();
@@ -2087,6 +2164,9 @@ void EditorApp::deletePaths(const std::vector<std::filesystem::path>& paths) {
     op.pFrom = list.c_str();
     op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
     const int result = SHFileOperationW(&op);
+#else
+    const int result = moveToTrash(paths) ? 0 : 1;
+#endif
     int removed = 0;
     for (const std::filesystem::path& p : paths) {
         std::error_code ec;

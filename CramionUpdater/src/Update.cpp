@@ -4,6 +4,7 @@
 
 #include "Inflate.h"
 
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -16,6 +17,18 @@
 #include <shlobj.h>
 #include <tlhelp32.h>
 #include <winhttp.h>
+#else
+// Linux: HTTP(S) con el programa curl, SHA-256 propio, procesos con /proc.
+#include <cerrno>
+#include <csignal>
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/file.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char** environ;
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -48,6 +61,7 @@ void setError(std::string* error, const std::string& text) {
 
 // Texto del error de Windows en UTF-8 (ec.message() viene en la pagina de
 // codigos del sistema y los acentos saldrian rotos en la interfaz).
+#if defined(_WIN32)
 std::string errorText(const std::error_code& ec) {
     wchar_t* buffer = nullptr;
     const DWORD n = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
@@ -57,16 +71,22 @@ std::string errorText(const std::error_code& ec) {
     while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' ' || text.back() == L'.')) text.pop_back();
     return narrow(text);
 }
+#else
+// En Linux los mensajes del sistema ya vienen en UTF-8.
+std::string errorText(const std::error_code& ec) { return ec.message(); }
+#endif
 
 std::string lowerAscii(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
 
+#if defined(_WIN32)
 std::wstring lowerWide(std::wstring s) {
     for (wchar_t& c : s) c = static_cast<wchar_t>(std::towlower(c));
     return s;
 }
+#endif
 
 bool startsWith(std::string_view text, std::string_view prefix) {
     return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
@@ -98,7 +118,11 @@ bool writeTextFile(const fs::path& path, const std::string& text) {
 fs::path localPath(const std::string& url) {
     std::string rest;
     if (startsWith(url, "file:///")) {
+#if defined(_WIN32)
         rest = url.substr(8);
+#else
+        rest = url.substr(7);  // file:///home/x: la ruta empieza en la tercera barra
+#endif
     } else if (startsWith(url, "file://")) {
         rest = url.substr(7);
     } else if (url.find("://") == std::string::npos) {
@@ -120,6 +144,7 @@ fs::path localPath(const std::string& url) {
 }
 
 // Nombre con el mutex del sistema: reopen.json lo pueden tocar varios editores.
+#if defined(_WIN32)
 class NamedLock {
 public:
     explicit NamedLock(const wchar_t* name) : mutex_(CreateMutexW(nullptr, FALSE, name)) {
@@ -137,9 +162,36 @@ public:
 private:
     HANDLE mutex_;
 };
+#else
+// Linux: flock sobre un archivo en /tmp (como el mutex: se espera hasta 3 s).
+class NamedLock {
+public:
+    explicit NamedLock(const wchar_t* name) {
+        const std::string path = "/tmp/" + narrow(name) + "-" + std::to_string(static_cast<unsigned long>(getuid())) + ".lock";
+        fd_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (fd_ < 0) return;
+        for (int i = 0; i < 300; ++i) {
+            if (flock(fd_, LOCK_EX | LOCK_NB) == 0) return;
+            usleep(10000);
+        }
+    }
+    ~NamedLock() {
+        if (fd_ >= 0) {
+            flock(fd_, LOCK_UN);
+            ::close(fd_);
+        }
+    }
+    NamedLock(const NamedLock&) = delete;
+    NamedLock& operator=(const NamedLock&) = delete;
+
+private:
+    int fd_ = -1;
+};
+#endif
 
 // --- HTTP ----------------------------------------------------------------------------
 
+#if defined(_WIN32)
 struct Handle {
     HINTERNET h = nullptr;
     Handle() = default;
@@ -165,7 +217,220 @@ std::string winError(const char* what) {
     return text;
 }
 
+#endif
+
 using Sink = std::function<bool(const char* data, std::size_t size)>;
+
+#if !defined(_WIN32)
+// Lanza un programa sin shell (argv tal cual, se busca en el PATH si no lleva
+// barra). `stdout_fd` >= 0: su salida va ahi (y la de error, a /dev/null).
+// `detach`: sesion propia (no se cierra con el editor). -1 si falla.
+pid_t spawnProgram(const std::vector<std::string>& args, int stdout_fd, const fs::path& cwd, bool detach) {
+    if (args.empty()) return -1;
+    std::vector<char*> argv;
+    for (const std::string& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+    argv.push_back(nullptr);
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+    if (stdout_fd >= 0) {
+        posix_spawn_file_actions_adddup2(&actions, stdout_fd, 1);
+        posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
+    }
+    if (!cwd.empty()) posix_spawn_file_actions_addchdir_np(&actions, cwd.c_str());
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    sigset_t none;
+    sigemptyset(&none);
+    sigset_t defaults;
+    sigemptyset(&defaults);
+    sigaddset(&defaults, SIGPIPE);
+    sigaddset(&defaults, SIGTERM);
+    sigaddset(&defaults, SIGINT);
+    posix_spawnattr_setsigmask(&attr, &none);
+    posix_spawnattr_setsigdefault(&attr, &defaults);
+    short flags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF;
+    if (detach) flags |= POSIX_SPAWN_SETSID;
+    posix_spawnattr_setflags(&attr, flags);
+    pid_t pid = -1;
+    const int rc = posix_spawnp(&pid, argv[0], &actions, &attr, argv.data(), environ);
+    posix_spawnattr_destroy(&attr);
+    posix_spawn_file_actions_destroy(&actions);
+    return rc == 0 ? pid : -1;
+}
+
+// Un proceso lanzado y que no se espera: un hilo recoge su salida para que
+// no quede zombi.
+void reapLater(pid_t pid) {
+    std::thread([pid] {
+        int status = 0;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        }
+    }).detach();
+}
+
+std::string curlError(int code) {
+    std::string text = "No se pudo descargar";
+    switch (code) {
+        case 5:
+        case 6: text += ": sin conexion a Internet (no se encuentra el servidor)"; break;
+        case 7: text += ": no se pudo conectar con el servidor"; break;
+        case 28: text += ": el servidor no responde (tiempo agotado)"; break;
+        case 18:
+        case 56: text = "Se corto la descarga"; break;
+        case 35:
+        case 51:
+        case 53:
+        case 54:
+        case 58:
+        case 59:
+        case 60:
+        case 77:
+        case 80:
+        case 83:
+        case 90:
+        case 91: text += ": fallo la conexion segura (HTTPS)"; break;
+        case 3: text = "Direccion no valida"; break;
+        default: text += " (curl, error " + std::to_string(code) + ")"; break;
+    }
+    return text;
+}
+
+// HTTP(S) con el programa curl: sin bibliotecas nuevas y con los
+// certificados y el proxy del sistema. Con -D - las cabeceras salen por
+// stdout delante del cuerpo (un bloque por redireccion); se leen a trozos para
+// el progreso y se mata curl si se cancela.
+bool curlTransfer(const std::string& url, const Sink& sink, const std::function<void(std::uint64_t)>& on_total,
+                  std::string* error) {
+    const std::string low = lowerAscii(url);
+    if (!startsWith(low, "http://") && !startsWith(low, "https://")) {
+        setError(error, "Direccion no valida: " + url);
+        return false;
+    }
+    std::string host = low.substr(low.find("://") + 3);
+    host = host.substr(0, host.find_first_of("/:?#"));
+    std::vector<std::string> args = {"curl", "-s", "-L", "--max-redirs", "10", "--proto", "=http,https",
+                                     "--connect-timeout", "10", "--speed-limit", "1", "--speed-time", "60",
+                                     "-D", "-", "-A", "CramionUpdater/" + currentVersion().str()};
+    if (host == "api.github.com") {
+        args.insert(args.end(), {"-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2022-11-28"});
+    }
+    args.insert(args.end(), {"--url", url});
+
+    int fds[2] = {-1, -1};
+    if (pipe2(fds, O_CLOEXEC) != 0) {
+        setError(error, "No se pudo descargar (pipe: " + errorText(std::error_code(errno, std::generic_category())) + ")");
+        return false;
+    }
+    const pid_t pid = spawnProgram(args, fds[1], {}, false);
+    ::close(fds[1]);
+    if (pid <= 0) {
+        ::close(fds[0]);
+        setError(error, "No se encuentra el programa curl (instalalo para buscar y descargar actualizaciones)");
+        return false;
+    }
+    bool finished = false;
+    int exit_status = 0;
+    const auto finish = [&](bool stop) {
+        if (finished) return exit_status;
+        finished = true;
+        if (stop) kill(pid, SIGTERM);
+        ::close(fds[0]);
+        while (waitpid(pid, &exit_status, 0) < 0 && errno == EINTR) {
+        }
+        return exit_status;
+    };
+
+    std::string head;  // cabeceras aun sin terminar
+    bool in_headers = true;
+    long status_code = 0;
+    std::uint64_t length = 0;
+    bool has_length = false;
+    // Cabeceras leidas: se comprueba el codigo y empieza el cuerpo.
+    const auto startBody = [&]() -> bool {
+        in_headers = false;
+        if (status_code != 200) {
+            std::string text = "El servidor respondio " + std::to_string(status_code);
+            if (status_code == 404) text += " (no encontrado)";
+            if (status_code == 403 || status_code == 429) text += ": demasiadas consultas a GitHub, prueba dentro de un rato";
+            finish(true);
+            setError(error, text);
+            return false;
+        }
+        if (on_total && has_length) on_total(length);
+        return true;
+    };
+    std::vector<char> buffer(1 << 16);
+    for (;;) {
+        const ssize_t n = ::read(fds[0], buffer.data(), buffer.size());
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        const char* data = buffer.data();
+        std::size_t size = static_cast<std::size_t>(n);
+        if (in_headers) {
+            head.append(data, size);
+            // Bloques de cabeceras (redirecciones, proxy, 100 Continue) hasta
+            // que lo siguiente ya no empieza por HTTP/.
+            bool body = false;
+            while (head.size() >= 5) {
+                if (head.compare(0, 5, "HTTP/") != 0) {
+                    body = true;
+                    break;
+                }
+                std::size_t end = head.find("\r\n\r\n");
+                std::size_t skip = 4;
+                if (end == std::string::npos) {
+                    end = head.find("\n\n");
+                    skip = 2;
+                }
+                if (end == std::string::npos) break;
+                std::istringstream lines(head.substr(0, end));
+                std::string line;
+                std::getline(lines, line);
+                const std::size_t sp = line.find(' ');
+                status_code = sp == std::string::npos ? 0 : std::strtol(line.c_str() + sp + 1, nullptr, 10);
+                has_length = false;
+                while (std::getline(lines, line)) {
+                    if (startsWith(lowerAscii(line), "content-length:")) {
+                        length = std::strtoull(line.c_str() + 15, nullptr, 10);
+                        has_length = true;
+                    }
+                }
+                head.erase(0, end + skip);
+            }
+            if (!body) continue;
+            if (!startBody()) return false;
+            data = head.data();
+            size = head.size();
+        }
+        if (size > 0 && !sink(data, size)) {
+            finish(true);
+            setError(error, "Cancelado");
+            return false;
+        }
+        head.clear();
+    }
+    const int status = finish(false);
+    const int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (code != 0) {
+        setError(error, code < 0 ? std::string("Se corto la descarga") : curlError(code));
+        return false;
+    }
+    if (in_headers) {
+        // Cuerpo corto (menos de 5 bytes) o vacio.
+        if (status_code == 0) {
+            setError(error, "El servidor no respondio");
+            return false;
+        }
+        if (!startBody()) return false;
+        if (!head.empty() && !sink(head.data(), head.size())) {
+            setError(error, "Cancelado");
+            return false;
+        }
+    }
+    return true;
+}
+#endif
 
 // Descarga `url` pasando los datos a `sink`. `total` = tamano si se conoce.
 bool transfer(const std::string& url, const Sink& sink, const std::function<void(std::uint64_t)>& on_total,
@@ -190,6 +455,7 @@ bool transfer(const std::string& url, const Sink& sink, const std::function<void
         return true;
     }
 
+#if defined(_WIN32)
     const std::wstring wide_url = widen(url);
     URL_COMPONENTS parts{};
     parts.dwStructSize = sizeof(parts);
@@ -294,6 +560,9 @@ bool transfer(const std::string& url, const Sink& sink, const std::function<void
         }
     }
     return true;
+#else
+    return curlTransfer(url, sink, on_total, error);
+#endif
 }
 
 // --- Zip -------------------------------------------------------------------------------
@@ -500,8 +769,12 @@ Version currentVersion() {
 // --- Releases --------------------------------------------------------------------------
 
 std::string feedUrl() {
+#if defined(_WIN32)
     wchar_t env[2048] = {};
     if (GetEnvironmentVariableW(L"CRAMION_UPDATE_FEED", env, 2048) > 0) return narrow(env);
+#else
+    if (const char* env = std::getenv("CRAMION_UPDATE_FEED"); env != nullptr && env[0] != '\0') return env;
+#endif
     const Settings s = loadSettings();
     if (!s.feed.empty()) return s.feed;
     return s.channel == "beta" ? std::string(kBetaFeed) : std::string(kDefaultFeed);
@@ -576,7 +849,12 @@ bool parseRelease(const std::string& text, Release& out, std::string* error, con
                 break;
             }
             const std::string low = lowerAscii(name);
+#if defined(_WIN32)
             if (pick == nullptr && low.size() > 4 && low.ends_with(".zip") && low.find("win64") != std::string::npos) pick = &a;
+#else
+            // Linux: solo el paquete de Linux (el de Windows no sirve aqui).
+            if (pick == nullptr && low.size() > 4 && low.ends_with(".zip") && low.find("linux") != std::string::npos) pick = &a;
+#endif
         }
         if (pick != nullptr) {
             r.zip_url = pick->value("browser_download_url", pick->value("url", std::string{}));
@@ -619,6 +897,7 @@ bool fetchLatest(const std::string& feed, Release& out, std::string* error, bool
 
 namespace {
 
+#if defined(_WIN32)
 class Sha256 {
 public:
     Sha256() {
@@ -658,6 +937,97 @@ private:
     BCRYPT_ALG_HANDLE algorithm_ = nullptr;
     BCRYPT_HASH_HANDLE hash_ = nullptr;
 };
+#else
+// SHA-256 propio (FIPS 180-4): en Linux no hay BCrypt y no se anade OpenSSL.
+class Sha256 {
+public:
+    bool ok() const { return true; }
+    void add(const void* data, std::size_t size) {
+        const auto* p = static_cast<const unsigned char*>(data);
+        bytes_ += size;
+        while (size > 0) {
+            const std::size_t take = std::min(size, std::size_t{64} - used_);
+            std::memcpy(block_ + used_, p, take);
+            used_ += take;
+            p += take;
+            size -= take;
+            if (used_ == 64) {
+                compress(block_);
+                used_ = 0;
+            }
+        }
+    }
+    std::string hex() {
+        const std::uint64_t bits = bytes_ * 8u;
+        block_[used_++] = 0x80;
+        if (used_ > 56) {
+            std::memset(block_ + used_, 0, 64 - used_);
+            compress(block_);
+            used_ = 0;
+        }
+        std::memset(block_ + used_, 0, 56 - used_);
+        for (int i = 0; i < 8; ++i) block_[56 + i] = static_cast<unsigned char>(bits >> (56 - 8 * i));
+        compress(block_);
+        used_ = 0;
+        static constexpr char kHex[] = "0123456789abcdef";
+        std::string out;
+        for (const std::uint32_t word : h_) {
+            for (int shift = 28; shift >= 0; shift -= 4) out += kHex[(word >> shift) & 15u];
+        }
+        return out;
+    }
+
+private:
+    static std::uint32_t rotr(std::uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
+    void compress(const unsigned char* p) {
+        static constexpr std::uint32_t k[64] = {
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+        std::uint32_t w[64];
+        for (int i = 0; i < 16; ++i) {
+            w[i] = (static_cast<std::uint32_t>(p[4 * i]) << 24) | (static_cast<std::uint32_t>(p[4 * i + 1]) << 16) |
+                   (static_cast<std::uint32_t>(p[4 * i + 2]) << 8) | static_cast<std::uint32_t>(p[4 * i + 3]);
+        }
+        for (int i = 16; i < 64; ++i) {
+            const std::uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            const std::uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        std::uint32_t a = h_[0], b = h_[1], c = h_[2], d = h_[3], e = h_[4], f = h_[5], g = h_[6], h = h_[7];
+        for (int i = 0; i < 64; ++i) {
+            const std::uint32_t t1 = h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + k[i] + w[i];
+            const std::uint32_t t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+            h = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
+        h_[0] += a;
+        h_[1] += b;
+        h_[2] += c;
+        h_[3] += d;
+        h_[4] += e;
+        h_[5] += f;
+        h_[6] += g;
+        h_[7] += h;
+    }
+
+    std::uint32_t h_[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    unsigned char block_[64] = {};
+    std::size_t used_ = 0;
+    std::uint64_t bytes_ = 0;
+};
+#endif
 
 }  // namespace
 
@@ -962,7 +1332,11 @@ bool extractZip(const fs::path& zip_path, const fs::path& destination, const Pro
 
 bool looksLikeEnginePackage(const fs::path& folder) {
     std::error_code ec;
+#if defined(_WIN32)
     return fs::exists(folder / kEditorExe, ec) && fs::exists(folder / "shaders", ec);
+#else
+    return (fs::exists(folder / "CramionEditor", ec) || fs::exists(folder / kEditorExe, ec)) && fs::exists(folder / "shaders", ec);
+#endif
 }
 
 bool installFiles(const fs::path& staged, const fs::path& install_dir, const Progress& progress, std::string* error) {
@@ -1076,6 +1450,7 @@ int cleanupOldFiles() {
 // --- Ajustes y carpetas ----------------------------------------------------------------
 
 fs::path dataFolder() {
+#if defined(_WIN32)
     wchar_t env[1024] = {};
     if (GetEnvironmentVariableW(L"CRAMION_UPDATE_DATA", env, 1024) > 0) return fs::path(env);
     PWSTR local = nullptr;
@@ -1084,11 +1459,25 @@ fs::path dataFolder() {
     CoTaskMemFree(local);
     if (folder.empty()) folder = fs::temp_directory_path() / "Cramion";
     return folder;
+#else
+    // $XDG_DATA_HOME/Cramion o ~/.local/share/Cramion.
+    if (const char* env = std::getenv("CRAMION_UPDATE_DATA"); env != nullptr && env[0] != '\0') return fs::path(env);
+    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg != nullptr && xdg[0] == '/') return fs::path(xdg) / "Cramion";
+    if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
+        return fs::path(home) / ".local" / "share" / "Cramion";
+    }
+    return fs::temp_directory_path() / "Cramion";
+#endif
 }
 
 fs::path downloadsFolder() { return dataFolder() / "Updates"; }
 
 fs::path installFolder() {
+#if !defined(_WIN32)
+    std::error_code ec;
+    const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    return ec ? fs::current_path(ec) : exe.parent_path();
+#else
     std::wstring buffer(MAX_PATH, L'\0');
     for (;;) {
         const DWORD n = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
@@ -1099,6 +1488,7 @@ fs::path installFolder() {
         buffer.resize(buffer.size() * 2);
     }
     return fs::path(buffer).parent_path();
+#endif
 }
 
 Settings loadSettings() {
@@ -1170,6 +1560,7 @@ ReopenList takeReopenList() {
 
 // --- Procesos --------------------------------------------------------------------------
 
+#if defined(_WIN32)
 std::vector<RunningApp> runningEngineApps(const fs::path& install_dir, unsigned long exclude_pid) {
     std::vector<RunningApp> apps;
     std::error_code ec;
@@ -1220,6 +1611,39 @@ int askAppsToSaveAndClose(const std::vector<RunningApp>& apps) {
         reinterpret_cast<LPARAM>(&context));
     return context.sent;
 }
+#else
+// Linux: /proc/<pid>/exe de cada proceso (solo los del usuario se pueden leer).
+std::vector<RunningApp> runningEngineApps(const fs::path& install_dir, unsigned long exclude_pid) {
+    std::vector<RunningApp> apps;
+    std::error_code ec;
+    const fs::path folder = fs::weakly_canonical(install_dir, ec);
+    static const std::set<std::string> kApps = {"cramioneditor", "cramionplayer", "cramion",
+                                                "cramioneditor.exe", "cramionplayer.exe", "cramion.exe"};
+    for (fs::directory_iterator it("/proc", ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (name.empty() || name.find_first_not_of("0123456789") != std::string::npos) continue;
+        const unsigned long pid = std::strtoul(name.c_str(), nullptr, 10);
+        if (pid == exclude_pid) continue;
+        std::error_code e;
+        const fs::path exe = fs::read_symlink(it->path() / "exe", e);
+        if (e || exe.empty()) continue;
+        const std::string file = exe.filename().string();
+        const std::string low = lowerAscii(file);
+        if (!kApps.contains(low)) continue;
+        if (fs::weakly_canonical(exe.parent_path(), e) != folder) continue;
+        apps.push_back({pid, widen(file), low.starts_with("cramioneditor")});
+    }
+    return apps;
+}
+
+// Linux: no hay un mensaje de ventana entre procesos para "guarda y
+// cierrate", y cerrar un editor con SIGTERM perderia lo que no esta guardado.
+// No se pide nada (0): quien llama debe avisar de que se cierren a mano.
+int askAppsToSaveAndClose(const std::vector<RunningApp>& apps) {
+    (void)apps;
+    return 0;
+}
+#endif
 
 std::wstring quoteArgument(const std::wstring& argument) {
     if (!argument.empty() && argument.find_first_of(L" \t\"") == std::wstring::npos) return argument;
@@ -1243,6 +1667,7 @@ std::wstring quoteArgument(const std::wstring& argument) {
     return out;
 }
 
+#if defined(_WIN32)
 unsigned long launch(const fs::path& exe, const std::wstring& arguments, const fs::path& working_dir) {
     std::wstring command = quoteArgument(exe.wstring());
     if (!arguments.empty()) command += L" " + arguments;
@@ -1277,6 +1702,134 @@ std::string narrow(const std::wstring& wide) {
 bool openUrl(const std::string& url) {
     return reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;
 }
+#else
+namespace {
+
+// Los argumentos vienen entrecomillados como en Windows (quoteArgument): se
+// separan con las mismas reglas para pasarlos como argv.
+std::vector<std::string> splitArguments(const std::wstring& line) {
+    std::vector<std::string> out;
+    std::size_t i = 0;
+    const std::size_t n = line.size();
+    while (i < n) {
+        while (i < n && (line[i] == L' ' || line[i] == L'\t')) ++i;
+        if (i >= n) break;
+        std::wstring arg;
+        bool quoted = false;
+        while (i < n && (quoted || (line[i] != L' ' && line[i] != L'\t'))) {
+            std::size_t backslashes = 0;
+            while (i < n && line[i] == L'\\') {
+                ++backslashes;
+                ++i;
+            }
+            if (i < n && line[i] == L'"') {
+                arg.append(backslashes / 2, L'\\');
+                if (backslashes % 2 == 1) {
+                    arg += L'"';
+                } else {
+                    quoted = !quoted;
+                }
+                ++i;
+            } else {
+                arg.append(backslashes, L'\\');
+                if (i < n && (quoted || (line[i] != L' ' && line[i] != L'\t'))) arg += line[i++];
+            }
+        }
+        out.push_back(narrow(arg));
+    }
+    return out;
+}
+
+}  // namespace
+
+unsigned long launch(const fs::path& exe, const std::wstring& arguments, const fs::path& working_dir) {
+    std::vector<std::string> args = {exe.string()};
+    for (std::string& a : splitArguments(arguments)) args.push_back(std::move(a));
+    const fs::path cwd = working_dir.empty() ? exe.parent_path() : working_dir;
+    const pid_t pid = spawnProgram(args, -1, cwd, true);
+    if (pid <= 0) return 0;
+    reapLater(pid);
+    return static_cast<unsigned long>(pid);
+}
+
+// UTF-8 <-> wchar_t (UTF-32 en Linux). Lo que no es UTF-8 valido sale como U+FFFD.
+std::wstring widen(const std::string& utf8) {
+    std::wstring out;
+    out.reserve(utf8.size());
+    const auto* p = reinterpret_cast<const unsigned char*>(utf8.data());
+    const std::size_t n = utf8.size();
+    for (std::size_t i = 0; i < n;) {
+        const unsigned char c = p[i];
+        std::uint32_t cp = 0;
+        int extra = 0;
+        if (c < 0x80) {
+            cp = c;
+        } else if ((c & 0xE0) == 0xC0) {
+            cp = c & 0x1Fu;
+            extra = 1;
+        } else if ((c & 0xF0) == 0xE0) {
+            cp = c & 0x0Fu;
+            extra = 2;
+        } else if ((c & 0xF8) == 0xF0) {
+            cp = c & 0x07u;
+            extra = 3;
+        } else {
+            out += static_cast<wchar_t>(0xFFFD);
+            ++i;
+            continue;
+        }
+        bool ok = i + static_cast<std::size_t>(extra) < n;
+        for (int k = 1; ok && k <= extra; ++k) {
+            if ((p[i + k] & 0xC0) != 0x80) {
+                ok = false;
+            } else {
+                cp = (cp << 6) | (p[i + k] & 0x3Fu);
+            }
+        }
+        if (!ok || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+            out += static_cast<wchar_t>(0xFFFD);
+            ++i;
+            continue;
+        }
+        out += static_cast<wchar_t>(cp);
+        i += 1u + static_cast<std::size_t>(extra);
+    }
+    return out;
+}
+
+std::string narrow(const std::wstring& wide) {
+    std::string out;
+    out.reserve(wide.size());
+    for (const wchar_t w : wide) {
+        std::uint32_t cp = static_cast<std::uint32_t>(w);
+        if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) cp = 0xFFFD;
+        if (cp < 0x80) {
+            out += static_cast<char>(cp);
+        } else if (cp < 0x800) {
+            out += static_cast<char>(0xC0 | (cp >> 6));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            out += static_cast<char>(0xE0 | (cp >> 12));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else {
+            out += static_cast<char>(0xF0 | (cp >> 18));
+            out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        }
+    }
+    return out;
+}
+
+// xdg-open (el navegador o la aplicacion del escritorio).
+bool openUrl(const std::string& url) {
+    const pid_t pid = spawnProgram({"xdg-open", url}, -1, {}, true);
+    if (pid <= 0) return false;
+    reapLater(pid);
+    return true;
+}
+#endif
 
 // --- Busqueda en segundo plano ---------------------------------------------------------
 

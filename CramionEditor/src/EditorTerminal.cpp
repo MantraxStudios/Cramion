@@ -1,5 +1,5 @@
-// Terminal integrada (Ventana > Terminal (IA)): consolas de Windows dentro del
-// editor, con pestanas, para usar una IA de linea de comandos sin salir del
+// Terminal integrada (Ventana > Terminal (IA)): consolas de Windows (en Linux,
+// el shell del usuario en una pty) dentro del editor, con pestanas, para usar una IA de linea de comandos sin salir del
 // motor. "Claude Code" la abre ya conectada al servidor MCP del editor (ve y
 // cambia la escena, crea scripts, da Play...).
 
@@ -61,6 +61,7 @@ void appendUtf8(std::string& out, unsigned int c) {
     }
 }
 
+#if defined(_WIN32)
 // El PATH del registro (usuario + sistema): lo que se instalo con el editor
 // abierto (Claude Code, Node) aparece sin reiniciarlo.
 constexpr const char* kRefreshPath =
@@ -73,13 +74,56 @@ std::wstring widen(const std::string& utf8) {
     MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), out.data(), size);
     return out;
 }
+#else
+// UTF-8 -> wchar_t (UTF-32 en Linux); TerminalSession lo vuelve a UTF-8.
+std::wstring widen(const std::string& utf8) {
+    std::wstring out;
+    for (std::size_t i = 0; i < utf8.size();) {
+        const auto c = static_cast<unsigned char>(utf8[i]);
+        const int extra = c < 0x80 ? 0 : (c >> 5) == 0x6 ? 1 : (c >> 4) == 0xE ? 2 : (c >> 3) == 0x1E ? 3 : -1;
+        if (extra < 0 || i + static_cast<std::size_t>(extra) >= utf8.size()) {
+            out += L'?';
+            ++i;
+            continue;
+        }
+        char32_t code = extra == 0 ? c : (c & (0x3F >> extra));
+        for (int k = 1; k <= extra; ++k) code = (code << 6) | (static_cast<unsigned char>(utf8[i + k]) & 0x3F);
+        out += static_cast<wchar_t>(code);
+        i += static_cast<std::size_t>(extra) + 1;
+    }
+    return out;
+}
+
+// Texto entre comillas simples para sh ('it'"'"'s').
+std::string shellQuote(const std::string& text) {
+    std::string out = "'";
+    for (const char c : text) out += c == '\'' ? std::string("'\"'\"'") : std::string(1, c);
+    return out + "'";
+}
+
+// Ejecuta `program args` si esta instalado (si no, `missing`) y deja el
+// shell del usuario abierto despues (como -NoExit en PowerShell).
+std::string shellRun(const std::string& program, const std::string& args, const std::string& missing) {
+    return "if command -v " + program + " >/dev/null 2>&1; then " + program + args + "; else printf '\\033[33m%s\\033[0m\\n' " +
+           shellQuote(missing) + "; fi; exec \"${SHELL:-/bin/bash}\"";
+}
+
+// Nombre de la pestana del shell: "bash", "zsh"...
+std::string shellName() {
+    const char* shell = std::getenv("SHELL");
+    const std::string name = shell != nullptr ? std::filesystem::path(shell).filename().string() : std::string();
+    return name.empty() ? std::string("bash") : name;
+}
+#endif
 
 }  // namespace
 
 void EditorApp::openTerminal(TerminalKind kind) {
     auto session = std::make_unique<TerminalSession>();
     std::string command;
+    // Linux: el shell del usuario (comando vacio) o un comando con `$SHELL -ic`.
     switch (kind) {
+#if defined(_WIN32)
         case TerminalKind::PowerShell:
             session->name = "PowerShell";
             command = std::string("powershell.exe -NoLogo -NoExit -Command \"") + kRefreshPath + "\"";
@@ -88,6 +132,12 @@ void EditorApp::openTerminal(TerminalKind kind) {
             session->name = "CMD";
             command = "cmd.exe";
             break;
+#else
+        case TerminalKind::PowerShell:
+        case TerminalKind::Cmd:
+            session->name = shellName();
+            break;
+#endif
         case TerminalKind::ClaudeCode: {
             session->name = "Claude Code";
             // Conectada al editor: el servidor MCP encendido y su direccion en
@@ -111,13 +161,20 @@ void EditorApp::openTerminal(TerminalKind kind) {
                 "Estas dentro del editor del motor de juegos Cramion. Usa las herramientas MCP del servidor cramion "
                 "(empieza por la herramienta help) para ver y cambiar la escena, crear objetos, scripts de C++, "
                 "materiales y shaders, dar Play y hacer capturas. Responde en el idioma del usuario.";
+#if defined(_WIN32)
             command = std::string("powershell.exe -NoLogo -NoExit -Command \"") + kRefreshPath +
                       "if (Get-Command claude -ErrorAction SilentlyContinue) { claude --mcp-config '" +
                       dialogs::utf8(config) + "' --append-system-prompt '" + prompt +
                       "' } else { Write-Host 'Claude Code no esta instalado.' -ForegroundColor Yellow; "
                       "Write-Host 'Instalalo desde el menu Mas > Instalar Claude Code (o: irm https://claude.ai/install.ps1 | iex)' }\"";
+#else
+            command = shellRun("claude", " --mcp-config " + shellQuote(dialogs::utf8(config)) + " --append-system-prompt " + shellQuote(prompt),
+                               "Claude Code no esta instalado. Instalalo desde el menu Mas > Instalar Claude Code "
+                               "(o: curl -fsSL https://claude.ai/install.sh | bash)");
+#endif
             break;
         }
+#if defined(_WIN32)
         case TerminalKind::Codex:
             session->name = "Codex";
             command = std::string("powershell.exe -NoLogo -NoExit -Command \"") + kRefreshPath +
@@ -134,6 +191,20 @@ void EditorApp::openTerminal(TerminalKind kind) {
             session->name = "Instalar Claude Code";
             command = "powershell.exe -NoLogo -NoExit -ExecutionPolicy Bypass -Command \"irm https://claude.ai/install.ps1 | iex\"";
             break;
+#else
+        case TerminalKind::Codex:
+            session->name = "Codex";
+            command = shellRun("codex", "", "Codex no esta instalado (npm install -g @openai/codex)");
+            break;
+        case TerminalKind::Gemini:
+            session->name = "Gemini";
+            command = shellRun("gemini", "", "Gemini CLI no esta instalado (npm install -g @google/gemini-cli)");
+            break;
+        case TerminalKind::InstallClaude:
+            session->name = "Instalar Claude Code";
+            command = "curl -fsSL https://claude.ai/install.sh | bash; exec \"${SHELL:-/bin/bash}\"";
+            break;
+#endif
     }
     const std::filesystem::path folder = has_project_ ? project_.folder : std::filesystem::path{};
     std::string error;
@@ -170,11 +241,18 @@ void EditorApp::drawTerminalWindow() {
     if (ImGui::Button("Claude Code")) openTerminal(TerminalKind::ClaudeCode);
     ImGui::SetItemTooltip("Claude Code conectado al editor por MCP: ve y cambia la escena, crea scripts, da Play...");
     ImGui::SameLine();
+#if defined(_WIN32)
     if (ImGui::Button("PowerShell")) openTerminal(TerminalKind::PowerShell);
+#else
+    if (ImGui::Button("Terminal")) openTerminal(TerminalKind::PowerShell);
+    ImGui::SetItemTooltip("El shell del usuario ($SHELL) en la carpeta del proyecto");
+#endif
     ImGui::SameLine();
     if (ImGui::Button("Más...")) ImGui::OpenPopup("##terminal_more");
     if (ImGui::BeginPopup("##terminal_more")) {
+#if defined(_WIN32)
         if (ImGui::MenuItem("CMD")) openTerminal(TerminalKind::Cmd);
+#endif
         if (ImGui::MenuItem("Codex (OpenAI)")) openTerminal(TerminalKind::Codex);
         if (ImGui::MenuItem("Gemini CLI (Google)")) openTerminal(TerminalKind::Gemini);
         ImGui::Separator();
@@ -311,8 +389,13 @@ void EditorApp::drawTerminalSession(TerminalSession& session) {
         if (ImGui::MenuItem("Reiniciar")) {
             // La misma pestana con una PowerShell nueva.
             std::string error;
+#if defined(_WIN32)
             session.start(L"powershell.exe -NoLogo", has_project_ ? project_.folder : std::filesystem::path{}, cols,
                           rows, error);
+#else
+            // (en Linux, el shell del usuario)
+            session.start(L"", has_project_ ? project_.folder : std::filesystem::path{}, cols, rows, error);
+#endif
         }
         ImGui::EndPopup();
     }

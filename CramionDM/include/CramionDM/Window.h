@@ -134,7 +134,11 @@ struct WindowConfig {
     uint32_t height = 720;
     bool resizable = true;
     bool maximized = false;
-    bool custom_title_bar = false;  // ignorado en Linux
+    // Sin la decoracion del gestor de ventanas (_MOTIF_WM_HINTS): la barra la
+    // dibuja la aplicacion (setCaptionHitTest). Mover, redimensionar desde
+    // los bordes y el menu de la ventana se piden al gestor (_NET_WM_MOVERESIZE,
+    // _GTK_SHOW_WINDOW_MENU), como el snap de Windows.
+    bool custom_title_bar = false;
     bool visible = true;
 };
 
@@ -145,6 +149,17 @@ struct NativeHandle {
     void* display = nullptr;    // Display*
     unsigned long window = 0;   // ::Window
 };
+
+// Rectangulo en pixeles del area cliente (el RECT de Win32).
+struct Rect {
+    long left = 0;
+    long top = 0;
+    long right = 0;
+    long bottom = 0;
+};
+
+// Forma del cursor del sistema (las de Dear ImGui).
+enum class SystemCursor : uint8_t { Arrow, TextInput, ResizeAll, ResizeNS, ResizeEW, ResizeNESW, ResizeNWSE, Hand, NotAllowed, Wait };
 
 class Window {
 public:
@@ -167,19 +182,43 @@ public:
     bool focused() const { return focused_; }
 
     void setTitle(const std::wstring& title);
+
+    // --- Barra de titulo propia (custom_title_bar) ---
+    // true si el punto (pixeles del area cliente) es zona de arrastre de la
+    // barra: mover la ventana, doble clic = maximizar.
+    using CaptionHitTest = std::function<bool(int x, int y)>;
+    void setCaptionHitTest(CaptionHitTest test) { caption_test_ = std::move(test); }
+    bool customTitleBar() const { return custom_title_bar_; }
+    // Menu de la ventana del gestor (GNOME/KDE) en ese punto de la pantalla.
+    void showSystemMenu(int screen_x, int screen_y);
+    // Area cliente -> pantalla (ClientToScreen).
+    void clientToScreen(int& x, int& y) const;
+
     void minimize();
     void toggleMaximize();
     bool isMaximized() const { return maximized_; }
     void requestClose();
 
-    void setCursorCaptured(bool captured);
+    // Cursor capturado: oculto, en el centro de `client_region` (o de la
+    // ventana) y el movimiento como MouseRawMoved. Al soltarlo vuelve a
+    // donde estaba al capturarlo (como en Windows).
+    void setCursorCaptured(bool captured, const Rect* client_region = nullptr);
     bool cursorCaptured() const { return cursor_captured_; }
     // Cursor confinado (visible, sin salir de la ventana: XGrabPointer con
     // confine_to). Sin foco se suelta y al volver se encierra otra vez.
-    void setCursorConfined(bool confined);
+    void setCursorConfined(bool confined, const Rect* client_region = nullptr);
     bool cursorConfined() const { return cursor_confined_; }
     // Ocultar el cursor sobre la ventana (sin capturarlo).
     void setCursorVisible(bool visible);
+    bool cursorVisible() const { return cursor_visible_; }
+    // Forma del cursor sobre la ventana (redimensionar, texto...).
+    void setCursorShape(SystemCursor shape);
+
+    // --- Portapapeles (CLIPBOARD de X) ---
+    // La ventana atiende las peticiones de otras aplicaciones en pumpEvents.
+    void setClipboardText(const std::string& utf8);
+    // Espera la respuesta del dueno del portapapeles (como mucho ~200 ms).
+    std::string clipboardText();
 
     // --- Mandos (evdev: /dev/input/event*, hasta 4) ---
     // Se leen en pumpEvents sin bloquear y llegan como eventos Gamepad*
@@ -197,28 +236,55 @@ private:
     void pollGamepads();
     static bool vibrationThunk(void* user, int pad, float low, float high, float seconds);
     void applyPointer();  // cursor oculto y agarre del puntero segun el estado
+    void captureCenter(int& x, int& y) const;
+    // Borde para redimensionar (custom_title_bar): direccion de
+    // _NET_WM_MOVERESIZE o -1 si el punto no esta en el borde.
+    int resizeEdge(int x, int y) const;
+    void startMoveResize(int direction, int root_x, int root_y, unsigned int button);
+    void readWindowState();  // _NET_WM_STATE: maximizada / minimizada
+    void handleSelectionRequest(const void* xevent);
+    void handleDndMessage(const void* xevent);
+    void handleDndSelection(const void* xevent);
 
     std::unique_ptr<EvdevGamepads> gamepads_;
     bool gamepads_background_ = false;
 
     EventCallback callback_;
+    CaptionHitTest caption_test_;
     NativeHandle native_{};
     unsigned long wm_delete_ = 0;   // Atom WM_DELETE_WINDOW
     void* input_method_ = nullptr;  // XIM
     void* input_context_ = nullptr; // XIC
     unsigned long blank_cursor_ = 0;
+    unsigned long shape_cursors_[10] = {};
+    unsigned long edge_cursors_[8] = {};
+    SystemCursor cursor_shape_ = SystemCursor::Arrow;
     uint32_t width_ = 0;
     uint32_t height_ = 0;
     bool open_ = false;
     bool focused_ = true;
     bool maximized_ = false;
+    bool minimized_ = false;
+    bool custom_title_bar_ = false;
+    bool resizable_ = true;
     bool cursor_captured_ = false;
     bool cursor_confined_ = false;
     bool cursor_visible_ = true;
+    bool has_capture_rect_ = false;
+    Rect capture_rect_{};
+    int restore_x_ = 0;  // donde estaba el cursor al capturarlo
+    int restore_y_ = 0;
+    bool has_restore_ = false;
     float last_x_ = 0.0f;
     float last_y_ = 0.0f;
     bool have_last_ = false;
-    bool warping_ = false;
+    bool edge_cursor_ = false;  // el cursor es el de redimensionar del borde
+    unsigned long last_click_time_ = 0;  // doble clic en la barra
+    std::string clipboard_;               // lo que esta ventana ofrece
+    unsigned long dnd_source_ = 0;        // XDnD: ventana que arrastra
+    int dnd_version_ = 0;
+    float dnd_x_ = 0.0f;
+    float dnd_y_ = 0.0f;
 };
 
 }  // namespace cramion::dm

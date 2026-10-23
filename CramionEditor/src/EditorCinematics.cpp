@@ -23,6 +23,17 @@
 #include <cmath>
 #include <cstdio>
 
+#if !defined(_WIN32)
+// Xlib al final: sus macros (None, Bool, Status...) chocan con nombres del motor.
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#undef None
+#undef Bool
+#undef Status
+#undef Always
+#undef Success
+#endif
+
 namespace cramion::editor {
 
 using core::Mat4;
@@ -1022,9 +1033,14 @@ void EditorApp::applyWindowRequests() {
     const int request = cinema_window_request_;
     if (request == 0) return;
     cinema_window_request_ = 0;
+#if !defined(_WIN32)
+    // En X el tamano que se pide es el del area cliente (el gestor de
+    // ventanas pone el marco por fuera): no hace falta compensar el borde.
+#endif
     HWND hwnd = window_.handle();
     const int width = cinema_window_width_;
     const int height = cinema_window_height_;
+#if defined(_WIN32)
     if (request == 1) {
         // Ventana del tamano exacto del video (el area cliente), arriba a la izquierda.
         if (IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE);
@@ -1039,6 +1055,31 @@ void EditorApp::applyWindowRequests() {
     } else {
         ShowWindow(hwnd, SW_MAXIMIZE);
     }
+#else
+    Display* display = static_cast<Display*>(hwnd->display);
+    if (display == nullptr || hwnd->window == 0) return;
+    if (request == 1) {
+        // Ventana del tamano exacto del video, arriba a la izquierda.
+        if (window_.isMaximized()) window_.toggleMaximize();
+        XSizeHints* hints = XAllocSizeHints();
+        if (hints != nullptr) {
+            // USPosition/USSize: el gestor de ventanas respeta la posicion y el tamano.
+            hints->flags = USPosition | USSize;
+            hints->x = 0;
+            hints->y = 0;
+            hints->width = std::max(width, 1);
+            hints->height = std::max(height, 1);
+            XSetWMNormalHints(display, static_cast<::Window>(hwnd->window), hints);
+            XFree(hints);
+        }
+        XMoveResizeWindow(display, static_cast<::Window>(hwnd->window), 0, 0,
+                          static_cast<unsigned>(std::max(width, 1)), static_cast<unsigned>(std::max(height, 1)));
+        XMapRaised(display, static_cast<::Window>(hwnd->window));
+        XFlush(display);
+    } else if (!window_.isMaximized()) {
+        window_.toggleMaximize();
+    }
+#endif
 }
 
 void EditorApp::drawCinemaView() {

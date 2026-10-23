@@ -6,6 +6,7 @@
 #include "EditorApp.h"
 
 #include "Dialogs.h"
+#include "SystemUtil.h"
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
@@ -17,9 +18,7 @@ namespace cramion::editor {
 namespace {
 
 std::filesystem::path editorFolder() {
-    wchar_t buffer[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, buffer, MAX_PATH);
-    return std::filesystem::path(buffer).parent_path();
+    return sys::executableDir();
 }
 
 }  // namespace

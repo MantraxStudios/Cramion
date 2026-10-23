@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cramion Engine</title>
-  <meta name="description" content="Cramion: motor de juegos para Windows y Android con renderizador diferido en Vulkan, editor de escenas, física, terreno, agua y scripting en C++.">
+  <meta name="description" content="Cramion: motor de juegos para Windows, Linux y Android con renderizador diferido en Vulkan, editor de escenas, física, terreno, agua y scripting en C++.">
   <meta name="theme-color" content="#232323">
   <meta property="og:title" content="Cramion Engine">
-  <meta property="og:description" content="Un motor de juegos 3D para Windows, con su editor. Render en Vulkan, física con Jolt y scripting en C++. Gratis para hacer y vender tus juegos.">
+  <meta property="og:description" content="Un motor de juegos 3D para Windows y Linux, con su editor. Render en Vulkan, física con Jolt y scripting en C++. Gratis para hacer y vender tus juegos.">
   <meta property="og:image" content="img/bg-poster.jpg">
   <link rel="icon" href="img/icon.png">
   <script>
@@ -324,6 +324,7 @@
     .dl-main h2 { margin-top: 14px; font-size: clamp(26px, 3.4vw, 34px); }
     .dl-main > p { margin: 14px 0 0; color: var(--muted-foreground); }
     .dl-main .btn { margin-top: 26px; }
+    .dl-btns { display: flex; flex-wrap: wrap; gap: 12px; }
     .dl-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
     .callout { margin-top: 22px; padding: 14px 16px; border-radius: var(--radius); font-size: 14px; color: var(--muted-foreground); background: rgb(255 175 41 / .07); border: 1px solid rgb(255 175 41 / .28); border-left: 3px solid var(--orange); }
     .support { margin-top: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card-2); }
@@ -533,7 +534,7 @@
       <div class="wrap">
         <div class="hero-copy">
           <a href="#novedades" class="pill"><b>Nuevo en la 2.6.3</b><span>Efectos nítidos con TAA y que no desaparecen en combate</span></a>
-          <h1 id="hero-title">Un motor de juegos 3D para Windows, <em>con su editor.</em></h1>
+          <h1 id="hero-title">Un motor de juegos 3D para Windows y Linux, <em>con su editor.</em></h1>
           <p class="lead">
             Montas la escena en el editor, escribes el juego en C++ y le das a Play. Render en Vulkan (1.3, o desde 1.0 en Android), física con Jolt,
             terreno, agua, navegación, animación con IK y exportación a un <code>.exe</code>.
@@ -543,9 +544,12 @@
             <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary btn-lg">
               <svg class="ic"><use href="#i-download"/></svg>Descargar para Windows
             </a>
+            <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-linux64.tar.gz" class="btn btn-primary btn-lg">
+              <svg class="ic"><use href="#i-download"/></svg>Descargar para Linux
+            </a>
             <a href="manual/index.html" class="btn btn-glass btn-lg"><svg class="ic"><use href="#i-book"/></svg>Leer la documentación</a>
           </div>
-          <p class="meta">2.6.3 · Windows 10/11 x64 · Android (64 y 32 bits) · realidad virtual · Vulkan</p>
+          <p class="meta">2.6.3 · Windows 10/11 x64 · Linux x64 · Android (64 y 32 bits) · realidad virtual · Vulkan</p>
         </div>
       </div>
       <div class="hud" aria-hidden="true">
@@ -1057,14 +1061,20 @@ CRAMION_SCRIPT(Jugador)</code></pre>
       <div class="wrap download">
         <div class="card dl-main reveal">
           <p class="eyebrow">Descargar</p>
-          <h2>Cramion 2.6.3 para Windows</h2>
-          <p>Descomprime y abre <code>CramionEditor.exe</code>. El motor avisa de las versiones nuevas y se actualiza solo.</p>
-          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary btn-lg">
-            <svg class="ic"><use href="#i-download"/></svg>Cramion-win64.zip
-          </a>
-          <div class="dl-meta"><span class="badge">Windows 10/11 x64</span><span class="badge">Vulkan 1.3</span><span class="badge">Gratis</span></div>
+          <h2>Cramion 2.6.3 para Windows y Linux</h2>
+          <p><b>Windows:</b> descomprime y abre <code>CramionEditor.exe</code>. El motor avisa de las versiones nuevas y se actualiza solo.</p>
+          <p><b>Linux:</b> <code>tar xzf Cramion-linux64.tar.gz</code> y abre <code>./CramionEditor</code>. Por ahora se actualiza a mano, descargando el paquete nuevo.</p>
+          <div class="dl-btns">
+            <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary btn-lg">
+              <svg class="ic"><use href="#i-download"/></svg>Windows · Cramion-win64.zip
+            </a>
+            <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-linux64.tar.gz" class="btn btn-primary btn-lg">
+              <svg class="ic"><use href="#i-download"/></svg>Linux · Cramion-linux64.tar.gz
+            </a>
+          </div>
+          <div class="dl-meta"><span class="badge">Windows 10/11 x64</span><span class="badge">Linux x64 (X11 / XWayland)</span><span class="badge">Vulkan 1.3</span><span class="badge">Gratis</span></div>
           <div class="callout">
-            La única descarga oficial es esta, y es gratis. Si alguien te vende Cramion, no es oficial: avisa en el
+            Las únicas descargas oficiales son estas, y son gratis. Si alguien te vende Cramion, no es oficial: avisa en el
             <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="link">Discord</a>.
           </div>
           <div class="support">
@@ -1074,7 +1084,7 @@ CRAMION_SCRIPT(Jugador)</code></pre>
           </div>
         </div>
         <div class="card zip reveal">
-          <div class="zip-head"><svg class="ic"><use href="#i-box"/></svg>Contenido del zip</div>
+          <div class="zip-head"><svg class="ic"><use href="#i-box"/></svg>Contenido del paquete</div>
           <div class="zip-scroll">
             <table>
               <tbody>
@@ -1086,7 +1096,9 @@ CRAMION_SCRIPT(Jugador)</code></pre>
                 <tr><td>shaders/</td><td>SPIR-V compilado</td></tr>
                 <tr><td>*.dll</td><td>AMD FSR 3.1 y NVIDIA DLSS 4</td></tr>
                 <tr><td>android/</td><td>runtime para exportar a Android</td></tr>
+                <tr><td>Linux</td><td>los mismos programas sin <code>.exe</code> (CramionEditor, CramionPlayer, CramionServer, crwpack), sin actualizador ni DLSS/FSR</td></tr>
                 <tr class="req"><td>Requisitos</td><td>Windows 10/11 x64 y una GPU con Vulkan 1.3. Las escenas de demostración no van incluidas.</td></tr>
+                <tr class="req"><td>Linux</td><td>x64 con X11 o XWayland, Vulkan 1.3, <code>zenity</code> y <code>curl</code>; <code>clang++</code> para los scripts de C++ y <code>libshaderc</code> para los shaders propios.</td></tr>
               </tbody>
             </table>
           </div>
@@ -1120,7 +1132,7 @@ CRAMION_SCRIPT(Jugador)</code></pre>
             <p>Hacer y vender juegos con él no cuesta nada. Si te sirve, puedes apoyar el desarrollo con una donación.</p>
           </div>
           <div class="btns">
-            <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary"><svg class="ic ic-sm"><use href="#i-download"/></svg>Descargar</a>
+            <a href="#descargar" class="btn btn-primary"><svg class="ic ic-sm"><use href="#i-download"/></svg>Descargar</a>
             <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate"><svg class="ic ic-sm"><use href="#i-heart"/></svg>Donar con PayPal</a>
           </div>
         </div>
@@ -1132,7 +1144,7 @@ CRAMION_SCRIPT(Jugador)</code></pre>
     <div class="wrap foot">
       <div>
         <span class="foot-brand"><img src="img/icon.png" alt="" width="26" height="26">Cramion Engine</span>
-        <p>Un motor de juegos 3D para Windows, con su editor. Gratis para hacer y vender tus juegos, sin regalías.</p>
+        <p>Un motor de juegos 3D para Windows y Linux, con su editor. Gratis para hacer y vender tus juegos, sin regalías.</p>
       </div>
       <div>
         <h4>Motor</h4>

@@ -12,11 +12,14 @@
 #include "EditorLog.h"
 #include "ImGuiLayer.h"
 #include "LoadingScreen.h"
+#include "SystemUtil.h"
 
 #include <CramionDM/CramionDM.h>
 #include <CramionFX/CramionFX.h>
 
+#if defined(_WIN32)
 #include <imgui_impl_win32.h>
+#endif
 
 #include <chrono>
 #include <cstdlib>
@@ -25,8 +28,10 @@
 #include <iostream>
 #include <string_view>
 
+#if defined(_WIN32)
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wparam,
                                                              LPARAM lparam);
+#endif
 
 namespace {
 
@@ -48,8 +53,10 @@ int main(int argc, char** argv) {
     int exit_code = EXIT_SUCCESS;  // --run-tests: 0 = todas las pruebas bien
 
     try {
+#if defined(_WIN32)
         // Nitidez en pantallas con escalado (antes de crear la ventana).
         ImGui_ImplWin32_EnableDpiAwareness();
+#endif
 
         dm::Window window;
         // Maximizada desde el principio (Hub y editor).
@@ -82,16 +89,16 @@ int main(int argc, char** argv) {
         };
         {
             // Logo y % de shaders compilados mientras arranca Vulkan.
-            wchar_t exe[MAX_PATH] = {};
-            GetModuleFileNameW(nullptr, exe, MAX_PATH);
-            editor::LoadingScreen loading(window.handle(),
-                                          std::filesystem::path(exe).parent_path() / "editor_icons" / "logo.png");
+            editor::LoadingScreen loading(window.handle(), editor::sys::executableDir() / "editor_icons" / "logo.png");
             renderer.setLoadingCallback([&](float fraction, const char* what) { loading.show(fraction, what); });
-            renderer.initialize(engine_info, window.handle(), window.width(), window.height());
+            renderer.initialize(engine_info, editor::renderWindow(window.handle()), window.width(), window.height());
         }
 
         editor::ImGuiLayer imgui;
         imgui.initialize(window.handle(), renderer);
+#if !defined(_WIN32)
+        imgui.setWindow(&window);  // portapapeles, cursor y tamano (sin backend de plataforma)
+#endif
         editor::EditorApp app(window, renderer, scene, imgui);
         // Barra de titulo propia: el editor dice que parte de su barra arrastra.
         window.setCaptionHitTest([&app](int x, int y) { return app.isCaptionDragArea(x, y); });
@@ -120,6 +127,7 @@ int main(int argc, char** argv) {
         // Win32 -> ImGui primero; los eventos van a la entrada de la camara,
         // al tamano del render y al editor (archivos soltados, cerrar).
         // El actualizador (CramionUpdater.exe) pide guardar todo y cerrar.
+#if defined(_WIN32)
         const UINT prepare_update = RegisterWindowMessageW(update::kPrepareMessage);
         window.setMessageHook([&app, prepare_update](HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             if (msg == prepare_update) {
@@ -128,7 +136,11 @@ int main(int argc, char** argv) {
             }
             return ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam) != 0;
         });
+#endif
         window.setEventCallback([&](dm::Event& e) {
+#if !defined(_WIN32)
+            imgui.onEvent(e);  // Linux: los eventos de X11 -> ImGui primero
+#endif
             input.onEvent(e);
             app.onRawInputEvent(e);
             switch (e.type) {

@@ -101,6 +101,10 @@ private:
     void* process_ = nullptr;
     void* stdin_write_ = nullptr;
     void* stdout_read_ = nullptr;
+#else
+    int pid_ = 0;
+    int stdin_write_ = -1;
+    int stdout_read_ = -1;
 #endif
     std::thread reader_;
     std::atomic<bool> running_{false};

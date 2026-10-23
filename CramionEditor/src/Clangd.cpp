@@ -13,6 +13,18 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <chrono>
+#include <cstdlib>
+#include <cstring>
 #endif
 
 namespace cramion::editor {
@@ -48,7 +60,11 @@ ClangdClient::~ClangdClient() { stop(); }
 std::string ClangdClient::uri(const std::filesystem::path& file) {
     std::string path = utf8(std::filesystem::absolute(file).lexically_normal());
     std::replace(path.begin(), path.end(), '\\', '/');
+#if defined(_WIN32)
     std::string out = "file:///";
+#else
+    std::string out = "file://";  // la ruta ya empieza por '/'
+#endif
     static const char* hex = "0123456789ABCDEF";
     for (const char c : path) {
         const auto u = static_cast<unsigned char>(c);
@@ -64,7 +80,11 @@ std::string ClangdClient::uri(const std::filesystem::path& file) {
 }
 
 std::filesystem::path ClangdClient::fromUri(const std::string& u) {
+#if defined(_WIN32)
     std::string s = u.rfind("file:///", 0) == 0 ? u.substr(8) : u;
+#else
+    std::string s = u.rfind("file://", 0) == 0 ? u.substr(7) : u;
+#endif
     std::string out;
     for (std::size_t i = 0; i < s.size(); ++i) {
         if (s[i] == '%' && i + 2 < s.size()) {
@@ -83,7 +103,9 @@ namespace {
 // La misma ruta escrita de otra forma (c: / C:, %3A, mayusculas): Windows no distingue.
 std::string sameFile(const std::string& u) {
     std::string k = ClangdClient::uri(ClangdClient::fromUri(u));
+#if defined(_WIN32)
     for (char& c : k) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+#endif
     return k;
 }
 }  // namespace
@@ -132,6 +154,61 @@ bool ClangdClient::start(const std::filesystem::path& clangd, const std::filesys
     process_ = pi.hProcess;
     stdin_write_ = in_write;
     stdout_read_ = out_read;
+    const int self_pid = static_cast<int>(GetCurrentProcessId());
+#else
+    std::error_code ec;
+    if (clangd.empty() || !std::filesystem::exists(clangd, ec)) {
+        status_ = "sin clangd (instala clangd del sistema, p. ej. apt install clangd)";
+        return false;
+    }
+    int in_pipe[2] = {-1, -1};
+    int out_pipe[2] = {-1, -1};
+    if (pipe2(in_pipe, O_CLOEXEC) != 0 || pipe2(out_pipe, O_CLOEXEC) != 0) {
+        for (const int fd : {in_pipe[0], in_pipe[1], out_pipe[0], out_pipe[1]}) {
+            if (fd >= 0) ::close(fd);
+        }
+        status_ = "no se pudo crear la tuberia de clangd";
+        return false;
+    }
+    // Lo del hijo se prepara antes del fork (despues solo dup2/chdir/exec).
+    std::vector<std::string> args{clangd.string(),      "--log=error",
+                                  "--header-insertion=never", "--completion-style=detailed",
+                                  "--pch-storage=memory",     "--background-index=false",
+                                  "-j=2",                     "--limit-results=400",
+                                  "--function-arg-placeholders=0", "--completion-parse=always"};
+    std::vector<char*> argv;
+    for (std::string& a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    const std::string cwd = root.string();
+    const pid_t pid = fork();
+    if (pid < 0) {
+        for (const int fd : {in_pipe[0], in_pipe[1], out_pipe[0], out_pipe[1]}) ::close(fd);
+        status_ = "no se pudo arrancar clangd";
+        return false;
+    }
+    if (pid == 0) {
+        dup2(in_pipe[0], STDIN_FILENO);
+        dup2(out_pipe[1], STDOUT_FILENO);
+        const int null_err = ::open("/dev/null", O_WRONLY);
+        if (null_err >= 0) dup2(null_err, STDERR_FILENO);
+        signal(SIGPIPE, SIG_DFL);
+        if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
+            // sigue en la carpeta del editor
+        }
+        // Prioridad baja, como BELOW_NORMAL_PRIORITY_CLASS en Windows.
+        if (nice(5) == -1) {
+        }
+        execv(argv[0], argv.data());
+        _exit(127);
+    }
+    ::close(in_pipe[0]);
+    ::close(out_pipe[1]);
+    pid_ = pid;
+    stdin_write_ = in_pipe[1];
+    stdout_read_ = out_pipe[0];
+    fcntl(stdout_read_, F_SETFL, fcntl(stdout_read_, F_GETFL) | O_NONBLOCK);
+    const int self_pid = static_cast<int>(getpid());
+#endif
     running_ = true;
     reader_ = std::thread([this] { readLoop(); });
     json caps = {
@@ -145,7 +222,7 @@ bool ClangdClient::start(const std::filesystem::path& clangd, const std::filesys
           {"publishDiagnostics", {{"relatedInformation", false}}},
           {"synchronization", {{"didSave", false}}}}}};
     request("initialize",
-            json{{"processId", static_cast<int>(GetCurrentProcessId())}, {"rootUri", uri(root)}, {"capabilities", caps},
+            json{{"processId", self_pid}, {"rootUri", uri(root)}, {"capabilities", caps},
                  {"initializationOptions", {{"clangdFileStatus", false}}}},
             [this](const json&) {
                 notify("initialized", json::object());
@@ -153,11 +230,6 @@ bool ClangdClient::start(const std::filesystem::path& clangd, const std::filesys
             });
     status_ = "clangd arrancando...";
     return true;
-#else
-    (void)clangd;
-    (void)root;
-    return false;
-#endif
 }
 
 void ClangdClient::stop() {
@@ -182,6 +254,33 @@ void ClangdClient::stop() {
         CloseHandle(stdout_read_);
         stdout_read_ = nullptr;
     }
+#else
+    if (running_) {
+        request("shutdown", nullptr, nullptr);
+        notify("exit", nullptr);
+    }
+    running_ = false;
+    if (stdin_write_ >= 0) {
+        ::close(stdin_write_);  // sin entrada, clangd termina
+        stdin_write_ = -1;
+    }
+    if (pid_ > 0) {
+        bool exited = false;
+        for (int i = 0; i < 50 && !exited; ++i) {
+            if (waitpid(pid_, nullptr, WNOHANG) != 0) exited = true;
+            else std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!exited) {
+            kill(pid_, SIGKILL);
+            waitpid(pid_, nullptr, 0);
+        }
+        pid_ = 0;
+    }
+    if (reader_.joinable()) reader_.join();
+    if (stdout_read_ >= 0) {
+        ::close(stdout_read_);
+        stdout_read_ = -1;
+    }
 #endif
     pending_.clear();
     versions_.clear();
@@ -202,7 +301,37 @@ void ClangdClient::send(const json& message) {
         status_ = "clangd se cerro";
     }
 #else
-    (void)message;
+    if (!running_ || stdin_write_ < 0) return;
+    const std::string body = message.dump();
+    const std::string data = "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+    std::lock_guard lock(send_mutex_);
+    // Si clangd murio, escribir en la tuberia manda SIGPIPE (y mataria al
+    // editor): se bloquea en este hilo y se descarta el que llegue.
+    sigset_t pipe_set, old_set;
+    sigemptyset(&pipe_set);
+    sigaddset(&pipe_set, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipe_set, &old_set);
+    std::size_t done = 0;
+    bool broken = false;
+    while (done < data.size()) {
+        const ssize_t n = ::write(stdin_write_, data.data() + done, data.size() - done);
+        if (n > 0) {
+            done += static_cast<std::size_t>(n);
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            broken = true;
+            break;
+        }
+    }
+    if (broken) {
+        const timespec zero{0, 0};
+        while (sigtimedwait(&pipe_set, nullptr, &zero) == SIGPIPE) {
+        }
+        running_ = false;
+        status_ = "clangd se cerro";
+    }
+    pthread_sigmask(SIG_SETMASK, &old_set, nullptr);
 #endif
 }
 
@@ -227,6 +356,34 @@ void ClangdClient::readLoop() {
         DWORD n = 0;
         if (!ReadFile(stdout_read_, chunk, sizeof(chunk), &n, nullptr) || n == 0) break;
         buffer.append(chunk, n);
+        while (true) {
+            const std::size_t header_end = buffer.find("\r\n\r\n");
+            if (header_end == std::string::npos) break;
+            std::size_t length = 0;
+            const std::size_t at = buffer.find("Content-Length:");
+            if (at != std::string::npos && at < header_end) length = static_cast<std::size_t>(std::strtoull(buffer.c_str() + at + 15, nullptr, 10));
+            if (buffer.size() < header_end + 4 + length) break;
+            json message = json::parse(buffer.substr(header_end + 4, length), nullptr, false);
+            buffer.erase(0, header_end + 4 + length);
+            if (!message.is_discarded()) {
+                std::lock_guard lock(queue_mutex_);
+                incoming_.push_back(std::move(message));
+            }
+        }
+    }
+    running_ = false;
+#else
+    std::string buffer;
+    char chunk[16384];
+    while (running_) {
+        pollfd p{stdout_read_, POLLIN, 0};
+        const int ready = ::poll(&p, 1, 100);
+        if (ready < 0 && errno != EINTR) break;
+        if (ready <= 0) continue;
+        const ssize_t n = ::read(stdout_read_, chunk, sizeof(chunk));
+        if (n < 0 && (errno == EAGAIN || errno == EINTR)) continue;
+        if (n <= 0) break;  // clangd cerro la salida
+        buffer.append(chunk, static_cast<std::size_t>(n));
         while (true) {
             const std::size_t header_end = buffer.find("\r\n\r\n");
             if (header_end == std::string::npos) break;

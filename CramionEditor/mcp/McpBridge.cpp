@@ -12,9 +12,23 @@
 // ("Exigir token MCP"). El puente lo lee antes de cada mensaje (el editor
 // puede haberse reiniciado con otro) y lo manda en Authorization: Bearer.
 
+#if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#else
+// Sockets BSD con los nombres de Winsock que usa este archivo.
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
+using SOCKET = int;
+constexpr SOCKET INVALID_SOCKET = -1;
+static int closesocket(SOCKET s) { return ::close(s); }
+#endif
+
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -28,10 +42,21 @@ namespace {
 // una version sin token). Misma carpeta que localDataFolder del editor.
 std::string readToken(int port) {
     std::filesystem::path base;
+#if defined(_WIN32)
     char* local = nullptr;
     std::size_t size = 0;
     if (_dupenv_s(&local, &size, "LOCALAPPDATA") == 0 && local != nullptr && *local != '\0') base = local;
     std::free(local);
+#else
+    // Como localDataFolder (LoadingScreen.cpp): LOCALAPPDATA, XDG_DATA_HOME o ~/.local/share.
+    if (const char* local = std::getenv("LOCALAPPDATA"); local != nullptr && *local != '\0') {
+        base = local;
+    } else if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg != nullptr && xdg[0] == '/') {
+        base = xdg;
+    } else if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
+        base = std::filesystem::path(home) / ".local" / "share";
+    }
+#endif
     if (base.empty()) {
         std::error_code ec;
         base = std::filesystem::temp_directory_path(ec);
@@ -53,7 +78,11 @@ int post(int port, const std::string& body, std::string& response) {
     if (s == INVALID_SOCKET) return 0;
     sockaddr_in address{};
     address.sin_family = AF_INET;
+#if defined(_WIN32)
     address.sin_port = htons(static_cast<u_short>(port));
+#else
+    address.sin_port = htons(static_cast<std::uint16_t>(port));
+#endif
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (connect(s, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
         closesocket(s);
@@ -65,7 +94,11 @@ int post(int port, const std::string& body, std::string& response) {
     request += "Content-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
     std::size_t sent = 0;
     while (sent < request.size()) {
+#if defined(_WIN32)
         const int n = send(s, request.data() + sent, static_cast<int>(request.size() - sent), 0);
+#else
+        const int n = static_cast<int>(::send(s, request.data() + sent, request.size() - sent, MSG_NOSIGNAL));
+#endif
         if (n <= 0) {
             closesocket(s);
             return 0;
@@ -74,7 +107,7 @@ int post(int port, const std::string& body, std::string& response) {
     }
     std::string data;
     char buffer[16384];
-    for (int n; (n = recv(s, buffer, sizeof(buffer), 0)) > 0;) data.append(buffer, static_cast<std::size_t>(n));
+    for (int n; (n = static_cast<int>(recv(s, buffer, sizeof(buffer), 0))) > 0;) data.append(buffer, static_cast<std::size_t>(n));
     closesocket(s);
     const std::size_t head_end = data.find("\r\n\r\n");
     if (head_end == std::string::npos) return 0;
@@ -108,8 +141,13 @@ int main(int argc, char** argv) {
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--port") port = std::atoi(argv[i + 1]);
     }
+#if defined(_WIN32)
     WSADATA wsa{};
     WSAStartup(MAKEWORD(2, 2), &wsa);
+#else
+    // Un cliente que cierra la salida no mata al puente con SIGPIPE.
+    signal(SIGPIPE, SIG_IGN);
+#endif
     std::ios::sync_with_stdio(false);
 
     std::string line;
@@ -131,7 +169,11 @@ int main(int argc, char** argv) {
             why = "Cramion Editor no esta abierto (o su servidor MCP esta apagado). Abre el editor con un proyecto y "
                   "vuelve a intentarlo.";
         } else if (status == 403) {
+#if defined(_WIN32)
             why = "el editor rechazo la peticion: no se pudo leer su token del MCP (%LOCALAPPDATA%/Cramion/mcp-token-" +
+#else
+            why = "el editor rechazo la peticion: no se pudo leer su token del MCP (/tmp/Cramion/mcp-token-" +
+#endif
                   std::to_string(port) + "). Comprueba que el editor esta abierto en el puerto " + std::to_string(port) +
                   " o desactiva Exigir token MCP en su ventana MCP (IA).";
         } else {
@@ -140,6 +182,8 @@ int main(int argc, char** argv) {
         std::cout << "{\"jsonrpc\":\"2.0\",\"id\":" << id << ",\"error\":{\"code\":-32000,\"message\":\"" << why << "\"}}\n"
                   << std::flush;
     }
+#if defined(_WIN32)
     WSACleanup();
+#endif
     return 0;
 }

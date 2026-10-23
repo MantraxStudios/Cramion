@@ -1,13 +1,11 @@
 #ifndef CRAMION_EDITOR_DIALOGS_H
 #define CRAMION_EDITOR_DIALOGS_H
 
-// Dialogos nativos de Windows (abrir, guardar, elegir carpeta). Devuelven una
-// ruta vacia (o una lista vacia) si se cancela.
+// Dialogos nativos (abrir, guardar, elegir carpeta): los de Windows; en
+// Linux los del escritorio con zenity (GNOME/GTK) o kdialog (KDE). Devuelven
+// una ruta vacia (o una lista vacia) si se cancela.
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
+#include "PlatformWindow.h"
 
 #include <atomic>
 #include <filesystem>
@@ -17,7 +15,8 @@
 
 namespace cramion::editor::dialogs {
 
-// `filter`: pares "descripcion\0patron\0" terminados en "\0" (como Win32).
+// `filter`: pares "descripcion\0patron\0" terminados en "\0" (como Win32;
+// varios patrones separados por ';').
 std::filesystem::path openFile(HWND owner, const wchar_t* filter,
                                const std::filesystem::path& initial_folder = {});
 std::vector<std::filesystem::path> openFiles(HWND owner, const wchar_t* filter,

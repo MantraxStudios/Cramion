@@ -19,7 +19,7 @@
 #include "CramionCore/net/WebSocket.h"
 #include <CramionFX/asset/TextureCompression.h>
 
-#include <shellapi.h>
+#include "SystemUtil.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -629,7 +629,11 @@ void EditorApp::checkAutosaveRecovery(const std::filesystem::path& scene) {
     if (const auto stamp = std::filesystem::last_write_time(file, ec); !ec) {
         const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::clock_cast<std::chrono::system_clock>(stamp));
         std::tm local{};
+#if defined(_WIN32)
         if (localtime_s(&local, &t) == 0) std::strftime(when, sizeof(when), "%d/%m/%Y %H:%M", &local);
+#else
+        if (localtime_r(&t, &local) != nullptr) std::strftime(when, sizeof(when), "%d/%m/%Y %H:%M", &local);
+#endif
     }
     autosave_recovery_ = AutosaveRecovery{file, scene, when, true};
     autosave_.protect(file);  // no se pisa hasta que se decida
@@ -1887,13 +1891,13 @@ void EditorApp::drawMenuBar() {
     }
     // Ayuda: el manual y la comunidad en el navegador.
     if (ImGui::BeginMenu("Ayuda")) {
-        const auto open = [](const wchar_t* url) { ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL); };
-        if (ImGui::MenuItem("Documentación", "F1")) open(L"https://cramion.mantraxtools.store/manual/index.html");
-        if (ImGui::MenuItem("Scripting en C++")) open(L"https://cramion.mantraxtools.store/manual/primer-script.html");
-        if (ImGui::MenuItem("Shaders propios")) open(L"https://cramion.mantraxtools.store/manual/shaders.html");
+        const auto open = [](const char* url) { sys::openWithSystem(std::string(url)); };
+        if (ImGui::MenuItem("Documentación", "F1")) open("https://cramion.mantraxtools.store/manual/index.html");
+        if (ImGui::MenuItem("Scripting en C++")) open("https://cramion.mantraxtools.store/manual/primer-script.html");
+        if (ImGui::MenuItem("Shaders propios")) open("https://cramion.mantraxtools.store/manual/shaders.html");
         ImGui::Separator();
-        if (ImGui::MenuItem("Web de Cramion")) open(L"https://cramion.mantraxtools.store");
-        if (ImGui::MenuItem("Discord")) open(L"https://discord.gg/zG7rSsUGEz");
+        if (ImGui::MenuItem("Web de Cramion")) open("https://cramion.mantraxtools.store");
+        if (ImGui::MenuItem("Discord")) open("https://discord.gg/zG7rSsUGEz");
         ImGui::Separator();
         if (ImGui::MenuItem(updateAvailable() ? "Actualizar Cramion..." : "Buscar actualizaciones...")) {
             show_update_dialog_ = true;
@@ -1905,7 +1909,7 @@ void EditorApp::drawMenuBar() {
         ImGui::EndMenu();
     }
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && !ImGui::GetIO().WantTextInput) {
-        ShellExecuteW(nullptr, L"open", L"https://cramion.mantraxtools.store/manual/index.html", nullptr, nullptr, SW_SHOWNORMAL);
+        sys::openWithSystem(std::string("https://cramion.mantraxtools.store/manual/index.html"));
     }
 
     // Hasta aqui (logo y menus) no se arrastra la ventana.
@@ -2151,9 +2155,16 @@ void EditorApp::drawCaptionLogo() {
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 3.0f);
     ImGui::Image(logo, ImVec2(size, size));
     if (ImGui::IsItemClicked()) {
+#if defined(_WIN32)
         POINT p{static_cast<LONG>(ImGui::GetItemRectMin().x), static_cast<LONG>(ImGui::GetItemRectMax().y)};
         ClientToScreen(window_.handle(), &p);
         window_.showSystemMenu(p.x, p.y);
+#else
+        int x = static_cast<int>(ImGui::GetItemRectMin().x);
+        int y = static_cast<int>(ImGui::GetItemRectMax().y);
+        window_.clientToScreen(x, y);
+        window_.showSystemMenu(x, y);
+#endif
     }
     ImGui::SetItemTooltip("Cramion Engine");
     caption_blockers_.push_back(ImVec4(ImGui::GetItemRectMin().x, 0.0f, ImGui::GetItemRectMax().x, caption_height_));

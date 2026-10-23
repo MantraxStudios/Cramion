@@ -35,7 +35,12 @@ inline constexpr const char* kDefaultFeed = "https://api.github.com/repos/Mantra
 // Canal beta: la lista de releases (incluye las previas; "latest" no las da).
 inline constexpr const char* kBetaFeed = "https://api.github.com/repos/MantraxStudios/Cramion/releases?per_page=30";
 inline constexpr const char* kReleasesPage = "https://cramion.mantraxtools.store/#novedades";
+#if defined(_WIN32)
 inline constexpr const char* kPackageAsset = "Cramion-win64.zip";
+#else
+// Linux: su propio paquete; el de Windows nunca se instala aqui.
+inline constexpr const char* kPackageAsset = "Cramion-linux64.zip";
+#endif
 inline constexpr const wchar_t* kUpdaterExe = L"CramionUpdater.exe";
 inline constexpr const wchar_t* kEditorExe = L"CramionEditor.exe";
 // Mensaje de ventana registrado (RegisterWindowMessageW) que el actualizador

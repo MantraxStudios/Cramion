@@ -15,11 +15,18 @@
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
+#if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
 #include <psapi.h>
+#else
+#include "SystemUtil.h"
+
+#include <chrono>
+#include <thread>
+#endif
 
 #include <algorithm>
 #include <fstream>
@@ -41,6 +48,18 @@ std::string megabytes(std::uint64_t bytes) {
     std::snprintf(text, sizeof(text), "%.1f MB", static_cast<double>(bytes) / (1024.0 * 1024.0));
     return text;
 }
+
+#if !defined(_WIN32)
+// Un campo "Nombre:  1234 kB" de /proc/self/status o /proc/meminfo, en bytes.
+std::uint64_t procKilobytes(const char* file, const std::string& field) {
+    std::ifstream in(file);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.rfind(field + ":", 0) == 0) return std::strtoull(line.c_str() + field.size() + 1, nullptr, 10) * 1024ull;
+    }
+    return 0;
+}
+#endif
 
 }  // namespace
 
@@ -225,7 +244,11 @@ void EditorApp::startCppScripts() {
     if (!compiled_for_play && cpp_scripts_.hasSources() && !cpp_scripts_.upToDate()) {
         // Al dar Play con cambios sin compilar: se espera (o se compila ya).
         if (!cpp_scripts_.compiling()) startCppCompile(" antes de Play");
+#if defined(_WIN32)
         while (cpp_scripts_.compiling()) Sleep(20);
+#else
+        while (cpp_scripts_.compiling()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+#endif
         cpp_last_check_ = -10.0;
         updateCppScripts();
     }
@@ -579,11 +602,22 @@ void EditorApp::ensureClangd() {
     static double last_try = -100.0;
     if (ImGui::GetTime() - last_try < 10.0) return;  // sin clangd: no reintentar cada frame
     last_try = ImGui::GetTime();
+#if defined(_WIN32)
     const std::filesystem::path exe = scripting::CppScriptSystem::findClangd();
     if (exe.empty()) {
         std::cerr << "[C++] No hay clangd (falta toolchain/ junto al editor): sin IntelliSense de C++" << std::endl;
         return;
     }
+#else
+    // Linux: el clangd del sistema (PATH o /usr/lib/llvm-*) o uno con
+    // version en el nombre (clangd-18 de Debian/Ubuntu).
+    std::filesystem::path exe = scripting::CppScriptSystem::findClangd();
+    for (int version = 21; exe.empty() && version >= 15; --version) exe = sys::findInPath("clangd-" + std::to_string(version));
+    if (exe.empty()) {
+        std::cerr << "[C++] No hay clangd en el sistema (instala clangd): sin IntelliSense de C++" << std::endl;
+        return;
+    }
+#endif
     cpp_scripts_.writeCompileCommands();
     if (clangd_.start(exe, project_.assetsFolder().parent_path())) {
         std::cout << "[C++] IntelliSense: " << dialogs::utf8(exe) << std::endl;
@@ -648,11 +682,26 @@ void EditorApp::drawCVarsWindow() {
     }
     // --- Memoria ---
     if (ImGui::CollapsingHeader("Memoria", ImGuiTreeNodeFlags_DefaultOpen)) {
+#if defined(_WIN32)
         PROCESS_MEMORY_COUNTERS_EX counters{};
         GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters));
         MEMORYSTATUSEX status{};
         status.dwLength = sizeof(status);
         GlobalMemoryStatusEx(&status);
+        const std::uint64_t private_bytes = counters.PrivateUsage;
+        const std::uint64_t resident_bytes = counters.WorkingSetSize;
+        const std::uint64_t total_ram = status.ullTotalPhys;
+        const std::uint64_t used_ram = status.ullTotalPhys - status.ullAvailPhys;
+        const unsigned memory_load = status.dwMemoryLoad;
+#else
+        // Linux: /proc (memoria anonima = la privada; VmRSS = en RAM).
+        const std::uint64_t private_bytes =
+            procKilobytes("/proc/self/status", "RssAnon") + procKilobytes("/proc/self/status", "VmSwap");
+        const std::uint64_t resident_bytes = procKilobytes("/proc/self/status", "VmRSS");
+        const std::uint64_t total_ram = procKilobytes("/proc/meminfo", "MemTotal");
+        const std::uint64_t used_ram = total_ram - std::min(total_ram, procKilobytes("/proc/meminfo", "MemAvailable"));
+        const unsigned memory_load = total_ram > 0 ? static_cast<unsigned>(used_ram * 100 / total_ram) : 0;
+#endif
         std::uint64_t vram_used = 0, vram_budget = 0;
         renderer_.device().videoMemory(vram_used, vram_budget);
         const scripting::CppScriptSystem::Stats s = cpp_scripts_.stats();
@@ -665,10 +714,9 @@ void EditorApp::drawCVarsWindow() {
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(value.c_str());
             };
-            row("Editor (memoria privada)", megabytes(counters.PrivateUsage));
-            row("Editor (en RAM)", megabytes(counters.WorkingSetSize));
-            row("RAM del equipo", megabytes(status.ullTotalPhys - status.ullAvailPhys) + " de " + megabytes(status.ullTotalPhys) +
-                                      " (" + std::to_string(status.dwMemoryLoad) + " %)");
+            row("Editor (memoria privada)", megabytes(private_bytes));
+            row("Editor (en RAM)", megabytes(resident_bytes));
+            row("RAM del equipo", megabytes(used_ram) + " de " + megabytes(total_ram) + " (" + std::to_string(memory_load) + " %)");
             row("Video (VRAM)", megabytes(vram_used) + " de " + megabytes(vram_budget));
             row("Scripts de C++ (proceso aparte)",
                 s.host_running ? megabytes(s.host_memory) + " de " + (limit != nullptr ? limit->toString() : std::string("?")) + " MB"
@@ -1090,7 +1138,11 @@ void EditorApp::drawEngineSettingsWindow() {
         }
         ImGui::EndDisabled();
         const std::filesystem::path exe = scripting::CppScriptSystem::findClangFormat();
+#if defined(_WIN32)
         ImGui::TextDisabled("clang-format: %s", exe.empty() ? "no encontrado (falta toolchain/)" : dialogs::utf8(exe).c_str());
+#else
+        ImGui::TextDisabled("clang-format: %s", exe.empty() ? "no encontrado (instala clang-format)" : dialogs::utf8(exe).c_str());
+#endif
 
         ImGui::Spacing();
         ImGui::SeparatorText("IntelliSense (clangd)");

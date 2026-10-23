@@ -29,9 +29,22 @@ constexpr ImU32 kAccent = theme::kAccent;  // tema: azul para la accion principa
 constexpr ImU32 kGreen = theme::kOk;
 
 bool updateCheckDisabledByEnvironment() {
+#if defined(_WIN32)
     wchar_t value[8] = {};
     return GetEnvironmentVariableW(L"CRAMION_NO_UPDATE_CHECK", value, 8) > 0 && value[0] != L'0';
+#else
+    const char* value = std::getenv("CRAMION_NO_UPDATE_CHECK");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+#endif
 }
+
+#if !defined(_WIN32)
+// Linux: aun no hay actualizador (CramionUpdater es Win32 + Direct3D 11) ni
+// paquete que se instale solo. Se avisa y se abre la pagina de descargas.
+constexpr const char* kLinuxManualUpdate =
+    "En Linux Cramion aun no se actualiza solo: descarga la nueva version desde la pagina de novedades "
+    "(se ha abierto en el navegador).";
+#endif
 
 }  // namespace
 
@@ -187,6 +200,12 @@ bool EditorApp::saveEverythingForUpdate(std::string* error) {
 }
 
 bool EditorApp::launchUpdater(UpdaterMode mode) {
+#if !defined(_WIN32)
+    (void)mode;
+    update::openUrl(update_known_ ? update_release_.page_url : std::string(update::kReleasesPage));
+    update_error_ = kLinuxManualUpdate;
+    return false;
+#else
     const std::filesystem::path exe = update::installFolder() / update::kUpdaterExe;
     if (!std::filesystem::exists(exe)) {
         update_error_ = "No se encuentra " + dialogs::utf8(exe) + ". Descarga Cramion de nuevo desde GitHub.";
@@ -202,10 +221,16 @@ bool EditorApp::launchUpdater(UpdaterMode mode) {
         return false;
     }
     return true;
+#endif
 }
 
 void EditorApp::beginUpdateInstall(bool reinstall) {
     update_error_.clear();
+#if !defined(_WIN32)
+    // Sin instalacion automatica en Linux: no se guarda ni se cierra nada.
+    launchUpdater(reinstall ? UpdaterMode::Reinstall : UpdaterMode::Install);
+    return;
+#endif
     std::string error;
     if (!saveEverythingForUpdate(&error)) {
         update_error_ = "No se pudo guardar todo: " + error + ". No se ha cerrado nada.";

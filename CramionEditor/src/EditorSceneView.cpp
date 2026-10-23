@@ -603,13 +603,18 @@ void EditorApp::syncFlyCursor() {
     const bool want = flying_ && !(playing() && window_.cursorCaptured() && !fly_cursor_captured_);
     if (want == fly_cursor_captured_) return;
     if (want) {
+#if defined(_WIN32)
         GetCursorPos(&fly_cursor_restore_);
+#endif
         const RECT area{static_cast<LONG>(view_x_), static_cast<LONG>(view_y_), static_cast<LONG>(view_x_ + view_w_),
                         static_cast<LONG>(view_y_ + view_h_)};
         window_.setCursorCaptured(true, view_w_ > 1.0f ? &area : nullptr);
     } else {
         window_.setCursorCaptured(false);
+#if defined(_WIN32)
         SetCursorPos(fly_cursor_restore_.x, fly_cursor_restore_.y);  // donde empezo, como en Unity
+#endif
+        // (En Linux la ventana devuelve el cursor a donde estaba al capturarlo.)
     }
     fly_cursor_captured_ = want;
 }

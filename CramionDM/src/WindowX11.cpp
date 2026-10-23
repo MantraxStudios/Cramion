@@ -16,11 +16,15 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/cursorfont.h>
 #include <X11/keysym.h>
 
+#include <algorithm>
+#include <chrono>
 #include <codecvt>
 #include <cstring>
 #include <locale>
+#include <thread>
 
 namespace cramion::dm {
 
@@ -122,6 +126,51 @@ std::string narrow(const std::wstring& w) {
     return out;
 }
 
+Atom atom(Display* dpy, const char* name) { return XInternAtom(dpy, name, False); }
+
+// _NET_WM_MOVERESIZE (direcciones del estandar EWMH).
+constexpr int kMoveResizeTopLeft = 0;
+constexpr int kMoveResizeTop = 1;
+constexpr int kMoveResizeTopRight = 2;
+constexpr int kMoveResizeRight = 3;
+constexpr int kMoveResizeBottomRight = 4;
+constexpr int kMoveResizeBottom = 5;
+constexpr int kMoveResizeBottomLeft = 6;
+constexpr int kMoveResizeLeft = 7;
+constexpr int kMoveResizeMove = 8;
+constexpr int kResizeBorder = 6;  // pixeles del borde para redimensionar
+
+std::wstring widen(const std::string& utf8) {
+    std::wstring out;
+    for (const char32_t cp : utf32(utf8.data(), static_cast<int>(utf8.size()))) out.push_back(static_cast<wchar_t>(cp));
+    return out;
+}
+
+// "file:///home/a%20b/x.png" -> "/home/a b/x.png"; vacio si no es un archivo local.
+std::string pathFromUri(const std::string& uri) {
+    std::string rest;
+    if (uri.rfind("file://", 0) == 0) {
+        rest = uri.substr(7);
+        const std::size_t slash = rest.find('/');
+        if (slash == std::string::npos) return {};
+        rest = rest.substr(slash);  // sin el host ("localhost" o vacio)
+    } else if (!uri.empty() && uri[0] == '/') {
+        rest = uri;
+    } else {
+        return {};
+    }
+    std::string out;
+    for (std::size_t i = 0; i < rest.size(); ++i) {
+        if (rest[i] == '%' && i + 2 < rest.size()) {
+            out += static_cast<char>(std::stoi(rest.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else {
+            out += rest[i];
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 Window::Window() = default;
@@ -135,7 +184,8 @@ bool Window::create(const WindowConfig& config) {
     const int screen = DefaultScreen(dpy);
     XSetWindowAttributes attributes{};
     attributes.event_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
-                            StructureNotifyMask | FocusChangeMask | EnterWindowMask | LeaveWindowMask | ExposureMask;
+                            StructureNotifyMask | FocusChangeMask | EnterWindowMask | LeaveWindowMask | ExposureMask |
+                            PropertyChangeMask;
     attributes.background_pixel = BlackPixel(dpy, screen);
     const ::Window win = XCreateWindow(dpy, RootWindow(dpy, screen), 0, 0, config.width, config.height, 0,
                                        CopyFromParent, InputOutput, CopyFromParent, CWEventMask | CWBackPixel, &attributes);
@@ -147,9 +197,32 @@ bool Window::create(const WindowConfig& config) {
     native_.window = win;
     width_ = config.width;
     height_ = config.height;
+    custom_title_bar_ = config.custom_title_bar;
+    resizable_ = config.resizable;
     Atom delete_atom = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(dpy, win, &delete_atom, 1);
     wm_delete_ = delete_atom;
+    // Clase de la ventana (el .desktop la asocia por StartupWMClass).
+    XClassHint class_hint{};
+    std::string res_name = "cramion";
+    std::string res_class = "Cramion";
+    class_hint.res_name = res_name.data();
+    class_hint.res_class = res_class.data();
+    XSetClassHint(dpy, win, &class_hint);
+    // Sin decoracion del gestor: la barra la dibuja la aplicacion.
+    if (custom_title_bar_) {
+        struct MotifHints {
+            unsigned long flags, functions, decorations;
+            long input_mode;
+            unsigned long status;
+        } hints{2 /* MWM_HINTS_DECORATIONS */, 0, 0, 0, 0};
+        const Atom motif = atom(dpy, "_MOTIF_WM_HINTS");
+        XChangeProperty(dpy, win, motif, motif, 32, PropModeReplace, reinterpret_cast<unsigned char*>(&hints), 5);
+    }
+    // Soltar archivos (XDnD version 5).
+    const Atom dnd_version = 5;
+    XChangeProperty(dpy, win, atom(dpy, "XdndAware"), XA_ATOM, 32, PropModeReplace,
+                    reinterpret_cast<const unsigned char*>(&dnd_version), 1);
     if (!config.resizable) {
         XSizeHints hints{};
         hints.flags = PMinSize | PMaxSize;
@@ -198,6 +271,14 @@ void Window::destroy() {
     if (input_context_ != nullptr) XDestroyIC(static_cast<XIC>(input_context_));
     if (input_method_ != nullptr) XCloseIM(static_cast<XIM>(input_method_));
     if (blank_cursor_ != 0) XFreeCursor(dpy, blank_cursor_);
+    for (unsigned long& cursor : shape_cursors_) {
+        if (cursor != 0) XFreeCursor(dpy, cursor);
+        cursor = 0;
+    }
+    for (unsigned long& cursor : edge_cursors_) {
+        if (cursor != 0) XFreeCursor(dpy, cursor);
+        cursor = 0;
+    }
     if (native_.window != 0) XDestroyWindow(dpy, native_.window);
     XCloseDisplay(dpy);
     native_ = {};
@@ -231,11 +312,26 @@ void Window::pumpEvents() {
         Event e;
         switch (xe.type) {
             case ClientMessage:
-                if (static_cast<unsigned long>(xe.xclient.data.l[0]) == wm_delete_) {
+                if (xe.xclient.message_type == atom(dpy, "WM_PROTOCOLS") &&
+                    static_cast<unsigned long>(xe.xclient.data.l[0]) == wm_delete_) {
                     e.type = EventType::WindowClose;
                     e.category = EventCategory::Window;
                     dispatch(e);
+                } else {
+                    handleDndMessage(&xe);
                 }
+                break;
+            case SelectionRequest:
+                handleSelectionRequest(&xe);
+                break;
+            case SelectionClear:
+                clipboard_.clear();
+                break;
+            case SelectionNotify:
+                if (xe.xselection.property == atom(dpy, "XdndSelection")) handleDndSelection(&xe);
+                break;
+            case PropertyNotify:
+                if (xe.xproperty.atom == atom(dpy, "_NET_WM_STATE")) readWindowState();
                 break;
             case ConfigureNotify:
                 if (static_cast<uint32_t>(xe.xconfigure.width) != width_ ||
@@ -260,8 +356,7 @@ void Window::pumpEvents() {
                 e.category = EventCategory::Window;
                 e.focused = focused_;
                 dispatch(e);
-                if (!focused_ && cursor_captured_) XUngrabPointer(dpy, CurrentTime);
-                if (focused_ && cursor_captured_) setCursorCaptured(true);
+                if (cursor_captured_ || cursor_confined_) applyPointer();  // sin foco se suelta
                 if (gamepads_) gamepads_->refreshRumble(focused_ || gamepads_background_);
                 break;
             case KeyPress:
@@ -320,6 +415,30 @@ void Window::pumpEvents() {
                     }
                     break;
                 }
+                // Barra propia: arrastrar mueve la ventana, doble clic maximiza
+                // y el borde redimensiona (lo hace el gestor de ventanas).
+                if (custom_title_bar_ && xe.type == ButtonPress && b == 1 && !cursor_captured_) {
+                    const int edge = resizeEdge(xe.xbutton.x, xe.xbutton.y);
+                    if (edge >= 0) {
+                        startMoveResize(edge, xe.xbutton.x_root, xe.xbutton.y_root, b);
+                        break;
+                    }
+                    if (caption_test_ && caption_test_(xe.xbutton.x, xe.xbutton.y)) {
+                        if (xe.xbutton.time - last_click_time_ < 400) {
+                            last_click_time_ = 0;
+                            toggleMaximize();
+                        } else {
+                            last_click_time_ = xe.xbutton.time;
+                            startMoveResize(kMoveResizeMove, xe.xbutton.x_root, xe.xbutton.y_root, b);
+                        }
+                        break;
+                    }
+                }
+                if (custom_title_bar_ && xe.type == ButtonPress && b == 3 && caption_test_ &&
+                    caption_test_(xe.xbutton.x, xe.xbutton.y)) {
+                    showSystemMenu(xe.xbutton.x_root, xe.xbutton.y_root);
+                    break;
+                }
                 e.type = xe.type == ButtonPress ? EventType::MouseButtonPressed : EventType::MouseButtonReleased;
                 e.category = EventCategory::Mouse | EventCategory::Input;
                 e.button = b == 1 ? MouseButton::Left : b == 3 ? MouseButton::Right : b == 2 ? MouseButton::Middle
@@ -334,17 +453,37 @@ void Window::pumpEvents() {
                 const float x = static_cast<float>(xe.xmotion.x);
                 const float y = static_cast<float>(xe.xmotion.y);
                 if (cursor_captured_) {
-                    const float cx = static_cast<float>(width_ / 2);
-                    const float cy = static_cast<float>(height_ / 2);
+                    int icx = 0;
+                    int icy = 0;
+                    captureCenter(icx, icy);
+                    const float cx = static_cast<float>(icx);
+                    const float cy = static_cast<float>(icy);
                     if (x == cx && y == cy) break;  // el propio warp
                     e.type = EventType::MouseRawMoved;
                     e.category = EventCategory::Mouse | EventCategory::Input;
                     e.deltaX = x - cx;
                     e.deltaY = y - cy;
                     dispatch(e);
-                    XWarpPointer(dpy, 0, native_.window, 0, 0, 0, 0, static_cast<int>(cx), static_cast<int>(cy));
+                    XWarpPointer(dpy, 0, native_.window, 0, 0, 0, 0, icx, icy);
                     XFlush(dpy);
                     break;
+                }
+                // Cursor de redimensionar sobre el borde (barra propia).
+                if (custom_title_bar_) {
+                    const int edge = resizeEdge(xe.xmotion.x, xe.xmotion.y);
+                    static constexpr unsigned int kEdgeCursors[] = {XC_top_left_corner, XC_top_side, XC_top_right_corner,
+                                                                    XC_right_side, XC_bottom_right_corner, XC_bottom_side,
+                                                                    XC_bottom_left_corner, XC_left_side};
+                    if (edge >= 0) {
+                        if (edge_cursors_[edge] == 0) edge_cursors_[edge] = XCreateFontCursor(dpy, kEdgeCursors[edge]);
+                        XDefineCursor(dpy, native_.window, edge_cursors_[edge]);
+                        edge_cursor_ = true;
+                    } else if (edge_cursor_) {
+                        edge_cursor_ = false;
+                        const SystemCursor shape = cursor_shape_;
+                        cursor_shape_ = SystemCursor::Wait;  // fuerza a volver a ponerlo
+                        setCursorShape(shape);
+                    }
                 }
                 e.type = EventType::MouseMoved;
                 e.category = EventCategory::Mouse | EventCategory::Input;
@@ -358,6 +497,15 @@ void Window::pumpEvents() {
                 dispatch(e);
                 break;
             }
+            case MapNotify:
+            case UnmapNotify:
+                if ((xe.type == UnmapNotify) != minimized_) {
+                    minimized_ = xe.type == UnmapNotify;
+                    e.type = minimized_ ? EventType::WindowMinimized : EventType::WindowRestored;
+                    e.category = EventCategory::Window;
+                    dispatch(e);
+                }
+                break;
             case EnterNotify:
             case LeaveNotify:
                 e.type = xe.type == EnterNotify ? EventType::MouseEnter : EventType::MouseLeave;
@@ -409,13 +557,122 @@ void Window::toggleMaximize() {
     XEvent ev{};
     ev.type = ClientMessage;
     ev.xclient.window = native_.window;
-    ev.xclient.message_type = XInternAtom(dpy, "_NET_WM_STATE", False);
+    ev.xclient.message_type = atom(dpy, "_NET_WM_STATE");
     ev.xclient.format = 32;
     ev.xclient.data.l[0] = maximized_ ? 0 : 1;  // quitar / poner
-    ev.xclient.data.l[1] = static_cast<long>(XInternAtom(dpy, "_NET_WM_STATE_MAXIMIZED_VERT", False));
-    ev.xclient.data.l[2] = static_cast<long>(XInternAtom(dpy, "_NET_WM_STATE_MAXIMIZED_HORZ", False));
+    ev.xclient.data.l[1] = static_cast<long>(atom(dpy, "_NET_WM_STATE_MAXIMIZED_VERT"));
+    ev.xclient.data.l[2] = static_cast<long>(atom(dpy, "_NET_WM_STATE_MAXIMIZED_HORZ"));
+    ev.xclient.data.l[3] = 1;  // la pide una aplicacion
     XSendEvent(dpy, DefaultRootWindow(dpy), False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
-    maximized_ = !maximized_;
+    XFlush(dpy);
+    maximized_ = !maximized_;  // _NET_WM_STATE lo confirma despues (readWindowState)
+}
+
+void Window::readWindowState() {
+    Display* dpy = display(native_);
+    if (dpy == nullptr) return;
+    Atom type = 0;
+    int format = 0;
+    unsigned long count = 0;
+    unsigned long after = 0;
+    unsigned char* data = nullptr;
+    if (XGetWindowProperty(dpy, native_.window, atom(dpy, "_NET_WM_STATE"), 0, 64, False, XA_ATOM, &type, &format,
+                           &count, &after, &data) != Success) {
+        return;
+    }
+    bool vert = false;
+    bool horz = false;
+    bool hidden = false;
+    const Atom max_vert = atom(dpy, "_NET_WM_STATE_MAXIMIZED_VERT");
+    const Atom max_horz = atom(dpy, "_NET_WM_STATE_MAXIMIZED_HORZ");
+    const Atom state_hidden = atom(dpy, "_NET_WM_STATE_HIDDEN");
+    const auto* atoms = reinterpret_cast<const Atom*>(data);
+    for (unsigned long i = 0; data != nullptr && i < count; ++i) {
+        vert |= atoms[i] == max_vert;
+        horz |= atoms[i] == max_horz;
+        hidden |= atoms[i] == state_hidden;
+    }
+    if (data != nullptr) XFree(data);
+    const bool maximized = vert && horz;
+    Event e;
+    e.category = EventCategory::Window;
+    if (hidden != minimized_) {
+        minimized_ = hidden;
+        e.type = hidden ? EventType::WindowMinimized : EventType::WindowRestored;
+        dispatch(e);
+    }
+    if (maximized != maximized_) {
+        maximized_ = maximized;
+        if (maximized) {
+            e.type = EventType::WindowMaximized;
+            dispatch(e);
+        }
+    }
+}
+
+int Window::resizeEdge(int x, int y) const {
+    if (!resizable_ || maximized_) return -1;
+    const int w = static_cast<int>(width_);
+    const int h = static_cast<int>(height_);
+    const bool left = x < kResizeBorder;
+    const bool right = x >= w - kResizeBorder;
+    const bool top = y < kResizeBorder;
+    const bool bottom = y >= h - kResizeBorder;
+    if (top && left) return kMoveResizeTopLeft;
+    if (top && right) return kMoveResizeTopRight;
+    if (bottom && left) return kMoveResizeBottomLeft;
+    if (bottom && right) return kMoveResizeBottomRight;
+    if (top) return kMoveResizeTop;
+    if (bottom) return kMoveResizeBottom;
+    if (left) return kMoveResizeLeft;
+    if (right) return kMoveResizeRight;
+    return -1;
+}
+
+void Window::startMoveResize(int direction, int root_x, int root_y, unsigned int button) {
+    Display* dpy = display(native_);
+    if (dpy == nullptr) return;
+    // El gestor necesita el puntero libre para llevarse el arrastre.
+    XUngrabPointer(dpy, CurrentTime);
+    XEvent ev{};
+    ev.type = ClientMessage;
+    ev.xclient.window = native_.window;
+    ev.xclient.message_type = atom(dpy, "_NET_WM_MOVERESIZE");
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = root_x;
+    ev.xclient.data.l[1] = root_y;
+    ev.xclient.data.l[2] = direction;
+    ev.xclient.data.l[3] = static_cast<long>(button);
+    ev.xclient.data.l[4] = 1;
+    XSendEvent(dpy, DefaultRootWindow(dpy), False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    XFlush(dpy);
+}
+
+void Window::showSystemMenu(int screen_x, int screen_y) {
+    Display* dpy = display(native_);
+    if (dpy == nullptr) return;
+    XUngrabPointer(dpy, CurrentTime);
+    XEvent ev{};
+    ev.type = ClientMessage;
+    ev.xclient.window = native_.window;
+    ev.xclient.message_type = atom(dpy, "_GTK_SHOW_WINDOW_MENU");
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = 0;  // dispositivo (el puntero principal)
+    ev.xclient.data.l[1] = screen_x;
+    ev.xclient.data.l[2] = screen_y;
+    XSendEvent(dpy, DefaultRootWindow(dpy), False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    XFlush(dpy);
+}
+
+void Window::clientToScreen(int& x, int& y) const {
+    Display* dpy = display(native_);
+    if (dpy == nullptr) return;
+    ::Window child = 0;
+    int sx = 0;
+    int sy = 0;
+    XTranslateCoordinates(dpy, native_.window, DefaultRootWindow(dpy), x, y, &sx, &sy, &child);
+    x = sx;
+    y = sy;
 }
 
 void Window::requestClose() {
@@ -425,20 +682,248 @@ void Window::requestClose() {
     dispatch(e);
 }
 
-void Window::setCursorCaptured(bool captured) {
-    Display* dpy = display(native_);
-    cursor_captured_ = captured;
-    if (dpy == nullptr) return;
-    if (captured) {
-        XDefineCursor(dpy, native_.window, blank_cursor_);
-        XGrabPointer(dpy, native_.window, True, ButtonPressMask | ButtonReleaseMask | PointerMotionMask, GrabModeAsync,
-                     GrabModeAsync, native_.window, blank_cursor_, CurrentTime);
-        XWarpPointer(dpy, 0, native_.window, 0, 0, 0, 0, static_cast<int>(width_ / 2), static_cast<int>(height_ / 2));
+void Window::captureCenter(int& x, int& y) const {
+    if (has_capture_rect_) {
+        x = static_cast<int>((capture_rect_.left + capture_rect_.right) / 2);
+        y = static_cast<int>((capture_rect_.top + capture_rect_.bottom) / 2);
     } else {
-        XUngrabPointer(dpy, CurrentTime);
-        XUndefineCursor(dpy, native_.window);
+        x = static_cast<int>(width_ / 2);
+        y = static_cast<int>(height_ / 2);
+    }
+}
+
+void Window::setCursorCaptured(bool captured, const Rect* client_region) {
+    Display* dpy = display(native_);
+    const bool was = cursor_captured_;
+    cursor_captured_ = captured;
+    has_capture_rect_ = captured && client_region != nullptr;
+    if (has_capture_rect_) capture_rect_ = *client_region;
+    if (dpy == nullptr) return;
+    if (captured && !was) {
+        // Donde estaba, para devolverlo al soltar.
+        ::Window root = 0;
+        ::Window child = 0;
+        int rx = 0;
+        int ry = 0;
+        unsigned int mask = 0;
+        has_restore_ = XQueryPointer(dpy, native_.window, &root, &child, &rx, &ry, &restore_x_, &restore_y_, &mask);
+    }
+    if (!captured && was && has_restore_) {
+        cursor_captured_ = false;
+        applyPointer();
+        XWarpPointer(dpy, 0, native_.window, 0, 0, 0, 0, restore_x_, restore_y_);
+        has_restore_ = false;
+        XFlush(dpy);
+        return;
+    }
+    applyPointer();
+    if (captured) {
+        int cx = 0;
+        int cy = 0;
+        captureCenter(cx, cy);
+        XWarpPointer(dpy, 0, native_.window, 0, 0, 0, 0, cx, cy);
     }
     XFlush(dpy);
+}
+
+void Window::setCursorConfined(bool confined, const Rect*) {
+    if (confined == cursor_confined_) return;
+    cursor_confined_ = confined;
+    applyPointer();
+}
+
+void Window::setCursorVisible(bool visible) {
+    if (visible == cursor_visible_) return;
+    cursor_visible_ = visible;
+    applyPointer();
+}
+
+void Window::applyPointer() {
+    Display* dpy = display(native_);
+    if (dpy == nullptr) return;
+    const bool grab = focused_ && (cursor_captured_ || cursor_confined_);
+    const bool hide = cursor_captured_ || !cursor_visible_;
+    XUngrabPointer(dpy, CurrentTime);
+    if (hide) {
+        XDefineCursor(dpy, native_.window, blank_cursor_);
+    } else {
+        const SystemCursor shape = cursor_shape_;
+        cursor_shape_ = SystemCursor::Wait;
+        setCursorShape(shape);
+    }
+    if (grab) {
+        XGrabPointer(dpy, native_.window, True, ButtonPressMask | ButtonReleaseMask | PointerMotionMask, GrabModeAsync,
+                     GrabModeAsync, native_.window, hide ? blank_cursor_ : 0, CurrentTime);
+    }
+    XFlush(dpy);
+}
+
+void Window::setCursorShape(SystemCursor shape) {
+    Display* dpy = display(native_);
+    if (dpy == nullptr || shape == cursor_shape_) return;
+    cursor_shape_ = shape;
+    if (cursor_captured_ || !cursor_visible_) return;
+    static constexpr unsigned int kShapes[] = {XC_left_ptr,  XC_xterm,       XC_fleur,         XC_sb_v_double_arrow,
+                                               XC_sb_h_double_arrow, XC_bottom_left_corner, XC_bottom_right_corner,
+                                               XC_hand2,     XC_X_cursor,    XC_watch};
+    const auto index = static_cast<std::size_t>(shape);
+    if (shape_cursors_[index] == 0) shape_cursors_[index] = XCreateFontCursor(dpy, kShapes[index]);
+    XDefineCursor(dpy, native_.window, shape_cursors_[index]);
+}
+
+// --- Portapapeles -----------------------------------------------------------
+
+void Window::setClipboardText(const std::string& utf8) {
+    Display* dpy = display(native_);
+    if (dpy == nullptr) return;
+    clipboard_ = utf8;
+    XSetSelectionOwner(dpy, atom(dpy, "CLIPBOARD"), native_.window, CurrentTime);
+    XFlush(dpy);
+}
+
+std::string Window::clipboardText() {
+    Display* dpy = display(native_);
+    if (dpy == nullptr) return {};
+    const Atom clipboard = atom(dpy, "CLIPBOARD");
+    const ::Window owner = XGetSelectionOwner(dpy, clipboard);
+    if (owner == native_.window) return clipboard_;
+    if (owner == 0) return {};
+    const Atom utf8 = atom(dpy, "UTF8_STRING");
+    const Atom property = atom(dpy, "CRAMION_CLIPBOARD");
+    XConvertSelection(dpy, clipboard, utf8, property, native_.window, CurrentTime);
+    XFlush(dpy);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+    XEvent xe;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!XCheckTypedWindowEvent(dpy, native_.window, SelectionNotify, &xe)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            continue;
+        }
+        if (xe.xselection.property == 0) return {};
+        Atom type = 0;
+        int format = 0;
+        unsigned long count = 0;
+        unsigned long after = 0;
+        unsigned char* data = nullptr;
+        std::string text;
+        if (XGetWindowProperty(dpy, native_.window, property, 0, 1 << 24, True, AnyPropertyType, &type, &format,
+                               &count, &after, &data) == Success && data != nullptr) {
+            text.assign(reinterpret_cast<const char*>(data), count);
+            XFree(data);
+        }
+        return text;
+    }
+    return {};
+}
+
+void Window::handleSelectionRequest(const void* xevent) {
+    Display* dpy = display(native_);
+    const XSelectionRequestEvent& req = static_cast<const XEvent*>(xevent)->xselectionrequest;
+    XEvent reply{};
+    reply.xselection.type = SelectionNotify;
+    reply.xselection.requestor = req.requestor;
+    reply.xselection.selection = req.selection;
+    reply.xselection.target = req.target;
+    reply.xselection.time = req.time;
+    reply.xselection.property = 0;
+    const Atom utf8 = atom(dpy, "UTF8_STRING");
+    const Atom targets = atom(dpy, "TARGETS");
+    const Atom property = req.property != 0 ? req.property : req.target;
+    if (req.target == targets) {
+        const Atom supported[] = {targets, utf8, XA_STRING};
+        XChangeProperty(dpy, req.requestor, property, XA_ATOM, 32, PropModeReplace,
+                        reinterpret_cast<const unsigned char*>(supported), 3);
+        reply.xselection.property = property;
+    } else if (req.target == utf8 || req.target == XA_STRING || req.target == atom(dpy, "TEXT")) {
+        XChangeProperty(dpy, req.requestor, property, req.target == XA_STRING ? XA_STRING : utf8, 8, PropModeReplace,
+                        reinterpret_cast<const unsigned char*>(clipboard_.data()), static_cast<int>(clipboard_.size()));
+        reply.xselection.property = property;
+    }
+    XSendEvent(dpy, req.requestor, False, 0, &reply);
+    XFlush(dpy);
+}
+
+// --- Soltar archivos (XDnD) -------------------------------------------------
+
+void Window::handleDndMessage(const void* xevent) {
+    Display* dpy = display(native_);
+    const XClientMessageEvent& msg = static_cast<const XEvent*>(xevent)->xclient;
+    if (msg.message_type == atom(dpy, "XdndEnter")) {
+        dnd_source_ = static_cast<unsigned long>(msg.data.l[0]);
+        dnd_version_ = static_cast<int>(static_cast<unsigned long>(msg.data.l[1]) >> 24);
+    } else if (msg.message_type == atom(dpy, "XdndPosition")) {
+        dnd_source_ = static_cast<unsigned long>(msg.data.l[0]);
+        int x = static_cast<int>((msg.data.l[2] >> 16) & 0xFFFF);
+        int y = static_cast<int>(msg.data.l[2] & 0xFFFF);
+        ::Window child = 0;
+        XTranslateCoordinates(dpy, DefaultRootWindow(dpy), native_.window, x, y, &x, &y, &child);
+        dnd_x_ = static_cast<float>(x);
+        dnd_y_ = static_cast<float>(y);
+        // Se acepta (bit 0) con la accion de copiar.
+        XEvent ev{};
+        ev.type = ClientMessage;
+        ev.xclient.window = dnd_source_;
+        ev.xclient.message_type = atom(dpy, "XdndStatus");
+        ev.xclient.format = 32;
+        ev.xclient.data.l[0] = static_cast<long>(native_.window);
+        ev.xclient.data.l[1] = 1;
+        ev.xclient.data.l[4] = static_cast<long>(atom(dpy, "XdndActionCopy"));
+        XSendEvent(dpy, dnd_source_, False, NoEventMask, &ev);
+        XFlush(dpy);
+    } else if (msg.message_type == atom(dpy, "XdndDrop")) {
+        dnd_source_ = static_cast<unsigned long>(msg.data.l[0]);
+        const Time time = dnd_version_ >= 1 ? static_cast<Time>(msg.data.l[2]) : CurrentTime;
+        XConvertSelection(dpy, atom(dpy, "XdndSelection"), atom(dpy, "text/uri-list"), atom(dpy, "XdndSelection"),
+                          native_.window, time);
+        XFlush(dpy);
+    } else if (msg.message_type == atom(dpy, "XdndLeave")) {
+        dnd_source_ = 0;
+    }
+}
+
+void Window::handleDndSelection(const void*) {
+    Display* dpy = display(native_);
+    Atom type = 0;
+    int format = 0;
+    unsigned long count = 0;
+    unsigned long after = 0;
+    unsigned char* data = nullptr;
+    Event e;
+    e.type = EventType::FileDropped;
+    e.category = EventCategory::File;
+    e.mouseX = dnd_x_;
+    e.mouseY = dnd_y_;
+    if (XGetWindowProperty(dpy, native_.window, atom(dpy, "XdndSelection"), 0, 1 << 24, True, AnyPropertyType, &type,
+                           &format, &count, &after, &data) == Success && data != nullptr) {
+        const std::string list(reinterpret_cast<const char*>(data), count);
+        XFree(data);
+        std::size_t begin = 0;
+        while (begin < list.size()) {
+            std::size_t end = list.find('\n', begin);
+            if (end == std::string::npos) end = list.size();
+            std::string line = list.substr(begin, end - begin);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (!line.empty() && line[0] != '#') {
+                const std::string path = pathFromUri(line);
+                if (!path.empty()) e.paths.push_back(widen(path));
+            }
+            begin = end + 1;
+        }
+    }
+    if (dnd_source_ != 0) {
+        XEvent ev{};
+        ev.type = ClientMessage;
+        ev.xclient.window = dnd_source_;
+        ev.xclient.message_type = atom(dpy, "XdndFinished");
+        ev.xclient.format = 32;
+        ev.xclient.data.l[0] = static_cast<long>(native_.window);
+        ev.xclient.data.l[1] = e.paths.empty() ? 0 : 1;
+        ev.xclient.data.l[2] = static_cast<long>(atom(dpy, "XdndActionCopy"));
+        XSendEvent(dpy, dnd_source_, False, NoEventMask, &ev);
+        XFlush(dpy);
+        dnd_source_ = 0;
+    }
+    if (!e.paths.empty()) dispatch(e);
 }
 
 }  // namespace cramion::dm

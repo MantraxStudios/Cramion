@@ -3,7 +3,7 @@
 // Cabecera principal de la librería CramionDM (DirectX 12).
 // Incluir esto da acceso a toda la API pública de la librería.
 
-#if !defined(__ANDROID__)
+#if defined(_WIN32)
 #include "CramionDM/Device.h"    // Dispositivo DX12
 #endif
 #include "CramionDM/Event.h"     // Sistema de eventos

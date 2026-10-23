@@ -15,6 +15,17 @@
 #include <fstream>
 #include <iostream>
 
+#if !defined(_WIN32)
+// Xlib al final: sus macros (None, Bool, Status...) chocan con nombres del motor.
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#undef None
+#undef Bool
+#undef Status
+#undef Always
+#undef Success
+#endif
+
 namespace cramion::editor {
 
 using core::Vec3;
@@ -28,6 +39,104 @@ void check(bool ok, const char* what, int& failures) {
     if (!ok) ++failures;
 }
 
+#if !defined(_WIN32)
+// Error de X durante la captura (ventana no visible, BadMatch...): sin esto,
+// el manejador por defecto de Xlib cierra el editor.
+int g_capture_x_error = 0;
+int onCaptureXError(Display*, XErrorEvent* event) {
+    g_capture_x_error = event->error_code;
+    return 0;
+}
+
+// Desplazamiento y ancho (bits) de una mascara de color del visual.
+void maskShift(unsigned long mask, int& shift, int& bits) {
+    shift = 0;
+    bits = 0;
+    if (mask == 0) return;
+    while ((mask & 1ul) == 0) {
+        mask >>= 1;
+        ++shift;
+    }
+    while ((mask & 1ul) != 0) {
+        mask >>= 1;
+        ++bits;
+    }
+}
+
+std::uint8_t maskChannel(unsigned long pixel, int shift, int bits) {
+    if (bits <= 0) return 0;
+    const unsigned long max = (1ul << bits) - 1ul;
+    const unsigned long value = (pixel >> shift) & max;
+    return static_cast<std::uint8_t>(bits == 8 ? value : (value * 255ul + max / 2) / max);
+}
+
+// La ventana tal como se ve (XGetImage del area cliente de X; con un
+// compositor, el contenido de Vulkan ya presentado), en RGBA8 y guardada como
+// PNG para mirarla. Vacio si no se pudo.
+std::vector<std::uint8_t> captureWindow(HWND hwnd, const std::filesystem::path& png) {
+    if (hwnd == nullptr || hwnd->display == nullptr || hwnd->window == 0) return {};
+    Display* display = static_cast<Display*>(hwnd->display);
+    const ::Window window = static_cast<::Window>(hwnd->window);
+    XSync(display, 0);
+    g_capture_x_error = 0;
+    XErrorHandler previous = XSetErrorHandler(&onCaptureXError);
+    XWindowAttributes attributes{};
+    XImage* x_image = nullptr;
+    if (XGetWindowAttributes(display, window, &attributes) != 0 && attributes.map_state == IsViewable &&
+        attributes.width > 0 && attributes.height > 0) {
+        x_image = XGetImage(display, window, 0, 0, static_cast<unsigned>(attributes.width),
+                            static_cast<unsigned>(attributes.height), AllPlanes, ZPixmap);
+    }
+    XSync(display, 0);
+    XSetErrorHandler(previous);
+    if (x_image == nullptr) return {};
+    if (g_capture_x_error != 0) {
+        XDestroyImage(x_image);
+        return {};
+    }
+    asset::ImageRgba8 image;
+    const int w = x_image->width, h = x_image->height;
+    image.width = static_cast<std::uint32_t>(w);
+    image.height = static_cast<std::uint32_t>(h);
+    image.pixels.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
+    const unsigned long red_mask = x_image->red_mask != 0 ? x_image->red_mask : attributes.visual->red_mask;
+    const unsigned long green_mask = x_image->green_mask != 0 ? x_image->green_mask : attributes.visual->green_mask;
+    const unsigned long blue_mask = x_image->blue_mask != 0 ? x_image->blue_mask : attributes.visual->blue_mask;
+    if (x_image->bits_per_pixel == 32 && x_image->byte_order == LSBFirst && red_mask == 0xFF0000ul &&
+        green_mask == 0x00FF00ul && blue_mask == 0x0000FFul) {
+        // El caso normal (TrueColor de 24/32 bits): BGRA en memoria, como el DIB de Windows.
+        for (int y = 0; y < h; ++y) {
+            const auto* bgra = reinterpret_cast<const std::uint8_t*>(x_image->data) +
+                               static_cast<std::size_t>(y) * static_cast<std::size_t>(x_image->bytes_per_line);
+            std::uint8_t* out = &image.pixels[static_cast<std::size_t>(y) * static_cast<std::size_t>(w) * 4];
+            for (int x = 0; x < w; ++x) {
+                out[x * 4] = bgra[x * 4 + 2];
+                out[x * 4 + 1] = bgra[x * 4 + 1];
+                out[x * 4 + 2] = bgra[x * 4];
+                out[x * 4 + 3] = 255;
+            }
+        }
+    } else {
+        int rs = 0, rb = 0, gs = 0, gb = 0, bs = 0, bb = 0;
+        maskShift(red_mask, rs, rb);
+        maskShift(green_mask, gs, gb);
+        maskShift(blue_mask, bs, bb);
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const unsigned long pixel = XGetPixel(x_image, x, y);
+                std::uint8_t* out = &image.pixels[(static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + x) * 4];
+                out[0] = maskChannel(pixel, rs, rb);
+                out[1] = maskChannel(pixel, gs, gb);
+                out[2] = maskChannel(pixel, bs, bb);
+                out[3] = 255;
+            }
+        }
+    }
+    XDestroyImage(x_image);
+    if (!png.empty() && !image.pixels.empty()) asset::saveImagePng(png, image);
+    return std::move(image.pixels);
+}
+#else
 // La ventana tal como se ve (PrintWindow con el contenido de Vulkan), en
 // RGBA8 y guardada como PNG para mirarla. Vacio si no se pudo.
 std::vector<std::uint8_t> captureWindow(HWND hwnd, const std::filesystem::path& png) {
@@ -68,6 +177,7 @@ std::vector<std::uint8_t> captureWindow(HWND hwnd, const std::filesystem::path& 
     if (!png.empty() && !image.pixels.empty()) asset::saveImagePng(png, image);
     return std::move(image.pixels);
 }
+#endif
 
 // Diferencia media por canal (0..255) entre dos capturas del mismo tamano.
 float captureDifference(const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b) {

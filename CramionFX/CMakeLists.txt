@@ -411,11 +411,16 @@ list(APPEND CRAMIONFX_SHADER_BINARIES "${CRAMIONFX_SURFACE_STAMP}")
 # El compilador de GLSL en tiempo de ejecucion (Vulkan SDK). Se copia junto a
 # cada ejecutable que usa cramionfx_deploy() y viaja con el paquete y los
 # juegos exportados.
-find_file(CRAMIONFX_SHADERC_DLL shaderc_shared.dll
-    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
-    DOC "shaderc_shared.dll del Vulkan SDK (shaders de superficie del usuario)")
-if(NOT CRAMIONFX_SHADERC_DLL)
-    message(WARNING "No se encontro shaderc_shared.dll: los shaders propios (.crshader) no compilaran")
+if(WIN32)
+    find_file(CRAMIONFX_SHADERC_DLL shaderc_shared.dll
+        HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
+        DOC "shaderc_shared.dll del Vulkan SDK (shaders de superficie del usuario)")
+    if(NOT CRAMIONFX_SHADERC_DLL)
+        message(WARNING "No se encontro shaderc_shared.dll: los shaders propios (.crshader) no compilaran")
+    endif()
+else()
+    # Linux/Android: libshaderc se carga del sistema al vuelo (ShaderCompiler.cpp).
+    set(CRAMIONFX_SHADERC_DLL "")
 endif()
 set_property(GLOBAL PROPERTY CRAMIONFX_SHADERC_DLL "${CRAMIONFX_SHADERC_DLL}")
 

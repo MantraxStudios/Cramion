@@ -78,8 +78,19 @@ Api& api() {
         }
 #else
         a.dll = dlopen("libshaderc_shared.so", RTLD_NOW | RTLD_LOCAL);
+#if !defined(__ANDROID__)
+        // Linux: la del Vulkan SDK (libshaderc_shared.so) o la de la distribucion
+        // (paquete libshaderc1 en Debian/Ubuntu, shaderc en Arch/Fedora).
+        for (const char* name : {"libshaderc_shared.so.1", "libshaderc.so.1", "libshaderc.so"}) {
+            if (a.dll == nullptr) a.dll = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+        }
+#endif
         if (a.dll == nullptr) {
+#if defined(__ANDROID__)
             a.failure = "sin compilador de shaders en este dispositivo (se usan los ya compilados al exportar)";
+#else
+            a.failure = "no se encontro libshaderc (instala el paquete libshaderc1 / shaderc o el Vulkan SDK)";
+#endif
             return;
         }
 #endif

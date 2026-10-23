@@ -90,6 +90,20 @@ inline float vrVramScaleCap(std::uint64_t vram_mb, std::uint32_t eye_width, std:
     return static_cast<float>(std::clamp(cap, 0.25, 1.0));
 }
 
+// Escritorio: lo mismo para la ventana. Los destinos de la escena son unos
+// 290 bytes por pixel: una ventana maximizada en un monitor de 5760x3240
+// (5559x3144, 17,5 Mpx) eran ~5 GB y con 8 GB no cabian (ErrorOutOfDeviceMemory
+// al arrancar). Pixeles internos que se dejan: 0.5 veces 1080p por GB (8 GB =
+// 4K), nunca menos de 1440p, y sin tope desde 24 GB. 1 = sin tope.
+inline float desktopVramScaleCap(std::uint64_t vram_mb, std::uint32_t width, std::uint32_t height) {
+    if (vram_mb == 0 || vram_mb >= 24 * 1024 || width == 0 || height == 0) return 1.0f;
+    const double gb = static_cast<double>(vram_mb) / 1024.0;
+    const double max_pixels = std::max(1920.0 * 1080.0 * gb * 0.5, 2560.0 * 1440.0);
+    const double pixels = static_cast<double>(width) * static_cast<double>(height);
+    const double cap = std::sqrt(std::min(1.0, max_pixels / pixels));
+    return static_cast<float>(std::clamp(cap, 0.25, 1.0));
+}
+
 // Sesgo de mips al dibujar por debajo de la resolucion de salida (lo que
 // recomiendan FSR y DLSS): log2(interna / salida), entre -1 y 0. Con FSR 1
 // (espacial, sin jitter) la mitad: el sesgo entero daba parpadeo.

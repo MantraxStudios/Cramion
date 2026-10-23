@@ -142,7 +142,11 @@ RemotePackage parsePackage(const json& j) {
 std::string isoNow() {
     const std::time_t t = std::time(nullptr);
     std::tm tm{};
+#if defined(_WIN32)
     gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
     char text[32];
     std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", &tm);
     return text;
@@ -152,7 +156,11 @@ std::string dateText(std::int64_t unix_seconds) {
     if (unix_seconds <= 0) return {};
     const std::time_t t = static_cast<std::time_t>(unix_seconds);
     std::tm tm{};
+#if defined(_WIN32)
     localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
     char text[32];
     std::strftime(text, sizeof(text), "%d/%m/%Y", &tm);
     return text;

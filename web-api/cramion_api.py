@@ -5,6 +5,12 @@ Solo usa la biblioteca estandar de Python (3.10+): http.server, sqlite3 y
 hashlib.scrypt. Sirve la API en /api/ y, con --static, tambien la web (docs/),
 asi que reemplaza al "python3 -m http.server" que servia la pagina.
 
+Base de datos: SQLite (--db sqlite, por defecto; cramion.db en --data) o
+MySQL/MariaDB (--db mysql, con DB_HOST, DB_PORT, DB_USER, DB_PASSWORD y
+DB_NAME). Con MySQL crea la base de datos y las tablas al arrancar, y si esta
+vacia y hay un cramion.db en --data, copia sus datos. El driver (PyMySQL)
+va en vendor/: no hace falta pip.
+
     python3 cramion_api.py serve --static ~/Escritorio/cramionweb --port 8000
     python3 cramion_api.py superadmin <usuario-o-email>     # dar el rol maximo
     python3 cramion_api.py users                             # listar cuentas
@@ -50,6 +56,7 @@ from __future__ import annotations
 import argparse
 import base64
 import collections
+import decimal
 import hashlib
 import hmac
 import http.server
@@ -269,9 +276,180 @@ CREATE INDEX IF NOT EXISTS idx_packages_owner ON packages(owner_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
+# Las mismas tablas en MySQL/MariaDB (los indices van dentro: MySQL no tiene
+# CREATE INDEX IF NOT EXISTS). utf8mb4_unicode_ci no distingue mayusculas,
+# como el COLLATE NOCASE de SQLite en usuarios y emails.
+MYSQL_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS users (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  username VARCHAR(32) NOT NULL UNIQUE,
+  email VARCHAR(254) NOT NULL UNIQUE,
+  pass_hash VARCHAR(255) NOT NULL,
+  display_name VARCHAR(255) NOT NULL DEFAULT '',
+  bio VARCHAR(1000) NOT NULL DEFAULT '',
+  role VARCHAR(16) NOT NULL DEFAULT 'user',
+  banned TINYINT NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL,
+  last_login BIGINT NULL
+)""",
+    """CREATE TABLE IF NOT EXISTS sessions (
+  token_hash CHAR(64) NOT NULL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  created_at BIGINT NOT NULL,
+  expires_at BIGINT NOT NULL,
+  ip VARCHAR(64) NULL, user_agent TEXT NULL,
+  INDEX idx_sessions_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+)""",
+    """CREATE TABLE IF NOT EXISTS packages (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(64) NOT NULL UNIQUE,
+  display_name VARCHAR(255) NOT NULL,
+  description TEXT NOT NULL,
+  category VARCHAR(32) NOT NULL DEFAULT 'otros',
+  tags TEXT NOT NULL,
+  license VARCHAR(128) NOT NULL DEFAULT 'CC0',
+  repo_url VARCHAR(512) NOT NULL DEFAULT '',
+  owner_id BIGINT NOT NULL,
+  hidden TINYINT NOT NULL DEFAULT 0,
+  featured TINYINT NOT NULL DEFAULT 0,
+  downloads BIGINT NOT NULL DEFAULT 0,
+  image_type VARCHAR(8) NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  INDEX idx_packages_owner (owner_id),
+  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+)""",
+    """CREATE TABLE IF NOT EXISTS versions (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  package_id BIGINT NOT NULL,
+  version VARCHAR(64) NOT NULL,
+  size BIGINT NOT NULL,
+  sha256 CHAR(64) NOT NULL,
+  raw_size BIGINT NOT NULL DEFAULT 0,
+  file_count BIGINT NOT NULL DEFAULT 0,
+  changelog TEXT NOT NULL,
+  engine VARCHAR(64) NOT NULL DEFAULT '',
+  dependencies TEXT NOT NULL,
+  yanked TINYINT NOT NULL DEFAULT 0,
+  downloads BIGINT NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL,
+  UNIQUE KEY uq_versions (package_id, version),
+  FOREIGN KEY (package_id) REFERENCES packages(id) ON DELETE CASCADE
+)""",
+    """CREATE TABLE IF NOT EXISTS uploads (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  package_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  version VARCHAR(64) NOT NULL,
+  size BIGINT NOT NULL,
+  received BIGINT NOT NULL DEFAULT 0,
+  changelog TEXT NOT NULL,
+  created_at BIGINT NOT NULL,
+  FOREIGN KEY (package_id) REFERENCES packages(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+)""",
+    """CREATE TABLE IF NOT EXISTS audit_log (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  actor_id BIGINT NULL,
+  action VARCHAR(64) NOT NULL,
+  target VARCHAR(512) NOT NULL DEFAULT '',
+  detail VARCHAR(1000) NOT NULL DEFAULT '',
+  created_at BIGINT NOT NULL
+)""",
+]
+# Orden de copia desde SQLite (las claves ajenas primero).
+TABLES = ("users", "sessions", "packages", "versions", "uploads", "audit_log")
+
+
+class Row(dict):
+    """Fila de MySQL que, como sqlite3.Row, se lee por nombre o por posicion."""
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self.values())[key]
+        return dict.__getitem__(self, key)
+
+
+class MySqlDb:
+    """Conexion a MySQL con la forma de sqlite3 que usa el resto del archivo:
+    execute() con parametros "?" y filas Row. En autocommit, como SQLite con
+    isolation_level=None."""
+
+    def __init__(self, cfg):
+        import pymysql
+        import pymysql.cursors
+
+        class Cursor(pymysql.cursors.DictCursor):
+            def _conv_row(self, row):
+                if row is None:
+                    return None
+                # SUM() devuelve DECIMAL: a int, para el JSON.
+                return Row(zip(self._fields, (int(v) if isinstance(v, decimal.Decimal) else v for v in row)))
+
+        kw = dict(user=cfg.db_user, password=cfg.db_password, charset="utf8mb4", autocommit=True,
+                  cursorclass=Cursor, connect_timeout=10)
+        # En la misma maquina, por el socket: MySQL 8 (caching_sha2_password)
+        # no pide RSA ni TLS por ahi.
+        sock = next((s for s in ("/run/mysqld/mysqld.sock", "/var/run/mysqld/mysqld.sock", "/tmp/mysql.sock")
+                     if cfg.db_host in ("localhost", "127.0.0.1") and os.path.exists(s)), None)
+        if sock:
+            kw["unix_socket"] = sock
+        else:
+            kw.update(host=cfg.db_host, port=cfg.db_port)
+        self.conn = pymysql.connect(database=cfg.db_name, **kw)
+        self.last_use = time.monotonic()
+
+    def execute(self, sql: str, args=()):
+        # Una conexion parada mucho rato la cierra el servidor (wait_timeout).
+        if time.monotonic() - self.last_use > 60:
+            self.conn.ping(reconnect=True)
+        self.last_use = time.monotonic()
+        cur = self.conn.cursor()
+        cur.execute(sql.replace("%", "%%").replace("?", "%s"), tuple(args))
+        return cur
+
+
+def mysql_bootstrap(cfg):
+    """Crea la base de datos (si no existe) y sus tablas."""
+    import pymysql
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,64}", cfg.db_name):
+        sys.exit("DB_NAME no valido: %r (solo letras, numeros y _)" % cfg.db_name)
+    name = cfg.db_name
+    cfg.db_name = None
+    try:
+        boot = MySqlDb(cfg)
+    finally:
+        cfg.db_name = name
+    boot.execute("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci" % name)
+    boot.conn.close()
+    db = MySqlDb(cfg)
+    for stmt in MYSQL_SCHEMA:
+        db.execute(stmt + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
+    return db, pymysql.err.IntegrityError
+
+
+def import_sqlite(db: MySqlDb, sqlite_path: Path):
+    """Copia un cramion.db de SQLite a la base de MySQL recien creada (vacia)."""
+    if not sqlite_path.exists() or db.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
+        return
+    src = sqlite3.connect(sqlite_path)
+    src.row_factory = sqlite3.Row
+    print("Copiando %s a MySQL..." % sqlite_path)
+    for table in TABLES:
+        rows = src.execute("SELECT * FROM " + table).fetchall()
+        if not rows:
+            continue
+        cols = rows[0].keys()
+        sql = "INSERT INTO %s(%s) VALUES (%s)" % (table, ", ".join(cols), ",".join("?" * len(cols)))
+        for r in rows:
+            db.execute(sql, tuple(r))
+        print("  %s: %d" % (table, len(rows)))
+    src.close()
+
 
 class Store:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, cfg=None):
         self.data_dir = data_dir
         self.pkg_dir = data_dir / "packages"
         self.tmp_dir = data_dir / "uploads"
@@ -281,11 +459,26 @@ class Store:
         self.db_path = data_dir / "cramion.db"
         self.local = threading.local()
         self.upload_locks: dict[str, threading.Lock] = collections.defaultdict(threading.Lock)
-        with self.db() as c:
-            c.executescript(SCHEMA)
+        self.mysql = cfg if cfg is not None and getattr(cfg, "db", "sqlite") == "mysql" else None
+        if self.mysql:
+            db, self.integrity_error = mysql_bootstrap(self.mysql)
+            import_sqlite(db, self.db_path)
+            self.pool: list[MySqlDb] = [db]
+            self.pool_lock = threading.Lock()
+        else:
+            self.integrity_error = sqlite3.IntegrityError
+            with self.db() as c:
+                c.executescript(SCHEMA)
 
-    def db(self) -> sqlite3.Connection:
+    def db(self):
         c = getattr(self.local, "conn", None)
+        if c is None and self.mysql:
+            # Cada peticion va en su hilo: la conexion se toma de la reserva y
+            # vuelve a ella al terminar (release), sin conectar cada vez.
+            with self.pool_lock:
+                c = self.pool.pop() if self.pool else None
+            self.local.conn = c or MySqlDb(self.mysql)
+            return self.local.conn
         if c is None:
             c = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
             c.row_factory = sqlite3.Row
@@ -294,6 +487,19 @@ class Store:
             c.execute("PRAGMA busy_timeout=10000")
             self.local.conn = c
         return c
+
+    def release(self):
+        c = getattr(self.local, "conn", None)
+        if c is None or not self.mysql:
+            return
+        self.local.conn = None
+        if not c.conn.open:  # se corto a media peticion: no se reutiliza
+            return
+        with self.pool_lock:
+            if len(self.pool) < 16:
+                self.pool.append(c)
+                return
+        c.conn.close()
 
     def log(self, actor_id, action: str, target: str = "", detail: str = ""):
         self.db().execute("INSERT INTO audit_log(actor_id, action, target, detail, created_at) VALUES (?,?,?,?,?)",
@@ -411,6 +617,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json(500, {"error": "Error interno del servidor", "code": "internal"})
             except Exception:
                 pass
+        finally:
+            self.store.release()
 
     # --- Respuestas ---------------------------------------------------------
     def cors(self):
@@ -664,8 +872,9 @@ def r_me_update(h: Handler):
 def list_packages(h: Handler, where: list[str], args: list, admin_view=False):
     q = (h.query.get("q") or "").strip()[:100]
     if q:
-        like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        where.append("(p.name LIKE ? ESCAPE '\\' OR p.display_name LIKE ? ESCAPE '\\' OR p.description LIKE ? ESCAPE '\\' OR p.tags LIKE ? ESCAPE '\\')")
+        # "!" como escape: "\\" no se escribe igual en SQLite y en MySQL.
+        like = "%" + q.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+        where.append("(p.name LIKE ? ESCAPE '!' OR p.display_name LIKE ? ESCAPE '!' OR p.description LIKE ? ESCAPE '!' OR p.tags LIKE ? ESCAPE '!')")
         args += [like, like, like, like]
     cat = h.query.get("category")
     if cat:
@@ -677,7 +886,7 @@ def list_packages(h: Handler, where: list[str], args: list, admin_view=False):
         args.append(owner)
     if not admin_view:
         where.append("EXISTS (SELECT 1 FROM versions v WHERE v.package_id = p.id AND v.yanked = 0)")
-    order = {"downloads": "p.downloads DESC", "name": "p.display_name COLLATE NOCASE ASC",
+    order = {"downloads": "p.downloads DESC", "name": "LOWER(p.display_name) ASC",
              "featured": "p.featured DESC, p.downloads DESC"}.get(h.query.get("sort", ""), "p.updated_at DESC")
     try:
         page = max(1, int(h.query.get("page", 1)))
@@ -947,7 +1156,7 @@ def r_upload_finish(h: Handler, uid: str):
                        (p["id"], up["version"], up["size"], sha.hexdigest(), int(manifest.get("_rawSize") or 0),
                         int(manifest.get("_fileCount") or 0), up["changelog"] or str(manifest.get("changelog") or "")[:5000],
                         str(manifest.get("engine") or "")[:40], json.dumps(deps), now()))
-        except sqlite3.IntegrityError:
+        except h.store.integrity_error:
             raise ApiError(409, "Esa version ya esta publicada", "version_exists")
         db.execute("DELETE FROM uploads WHERE id = ?", (uid,))
         db.execute("UPDATE packages SET updated_at = ? WHERE id = ?", (now(), p["id"]))
@@ -1227,6 +1436,8 @@ def main(argv=None):
     s = sub.add_parser("serve", help="arranca el servidor (por defecto)")
     for p in (ap, s):
         p.add_argument("--data", default=os.environ.get("CRAMION_DATA", "./cramion-data"), help="carpeta de datos (BD y paquetes)")
+        p.add_argument("--db", choices=("sqlite", "mysql"), default=os.environ.get("CRAMION_DB", "sqlite"),
+                       help="sqlite (cramion.db en --data) o mysql (DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME)")
     s.add_argument("--host", default=os.environ.get("CRAMION_HOST", "0.0.0.0"))
     s.add_argument("--port", type=int, default=int(os.environ.get("CRAMION_PORT", "8000")))
     s.add_argument("--static", default=os.environ.get("CRAMION_STATIC", ""), help="carpeta de la web (docs/) a servir en /")
@@ -1252,7 +1463,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.cmd is None:
         args = ap.parse_args(["serve"] + (argv if argv is not None else sys.argv[1:]))
-    store = Store(Path(args.data).expanduser().resolve())
+    args.db_host = os.environ.get("DB_HOST", "localhost")
+    args.db_port = int(os.environ.get("DB_PORT", "3306"))
+    args.db_user = os.environ.get("DB_USER", "root")
+    args.db_password = os.environ.get("DB_PASSWORD", "")
+    args.db_name = os.environ.get("DB_NAME", "cramion_store")
+    store = Store(Path(args.data).expanduser().resolve(), args)
     db = store.db()
 
     if args.cmd in ("superadmin", "role", "passwd"):
@@ -1274,14 +1490,20 @@ def main(argv=None):
             print("%4d  %-24s %-32s %-10s %s" % (u["id"], u["username"], u["email"], u["role"], "SUSPENDIDO" if u["banned"] else ""))
         return
 
+    store.release()
     srv = Server((args.host, args.port), make_handler(store, args))
-    print("Cramion Store API %s en http://%s:%d/api/  (datos: %s%s)" % (
-        API_VERSION, args.host, args.port, store.data_dir, ", web: " + args.static if args.static else ""))
+    print("Cramion Store API %s en http://%s:%d/api/  (datos: %s, BD: %s%s)" % (
+        API_VERSION, args.host, args.port, store.data_dir,
+        "mysql %s/%s" % (args.db_host, args.db_name) if args.db == "mysql" else "sqlite",
+        ", web: " + args.static if args.static else ""))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
 
+
+# PyMySQL viaja en vendor/ (sin pip).
+sys.path.insert(0, str(Path(__file__).resolve().parent / "vendor"))
 
 if __name__ == "__main__":
     main()

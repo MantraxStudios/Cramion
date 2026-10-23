@@ -22,6 +22,8 @@
 #endif
 
 #include <algorithm>
+#include <cfloat>
+#include <initializer_list>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -33,6 +35,15 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg
                                                              LPARAM lparam);
 #endif
 
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <X11/Xlib.h>
+#include <X11/Xresource.h>
+#include <cmath>
+#include <cstdio>
+#include <regex>
+#include <string>
+#endif
+
 namespace cramion::editor {
 
 namespace {
@@ -42,6 +53,150 @@ void checkVk(VkResult result) {
         std::cerr << "[ImGui] Error de Vulkan: " << static_cast<int>(result) << "\n";
     }
 }
+
+#if defined(__linux__) && !defined(__ANDROID__)
+
+// Escala de XWayland en GNOME: con escalado fraccionario, mutter agranda la
+// pantalla X a la mayor escala (redondeada hacia arriba) y deja que cada app
+// se escale sola, pero Xft.dpi lleva la escala del monitor principal (96 si
+// es 1). La escala real es el ancho de la pantalla X entre el ancho logico
+// del escritorio (DisplayConfig de mutter). 0 si no se sabe.
+float xwaylandScale(Display* dpy) {
+    if (std::getenv("WAYLAND_DISPLAY") == nullptr) return 0.0f;
+    FILE* pipe = popen("gdbus call --session --dest org.gnome.Mutter.DisplayConfig "
+                       "--object-path /org/gnome/Mutter/DisplayConfig "
+                       "--method org.gnome.Mutter.DisplayConfig.GetCurrentState 2>/dev/null",
+                       "r");
+    if (pipe == nullptr) return 0.0f;
+    std::string state;
+    char buffer[4096];
+    for (size_t n; (n = std::fread(buffer, 1, sizeof(buffer), pipe)) > 0;) state.append(buffer, n);
+    if (pclose(pipe) != 0 || state.empty()) return 0.0f;
+    // Solo en disposicion logica (1); en la fisica X no esta agrandada.
+    if (state.find("'layout-mode': <uint32 1>") == std::string::npos) return 0.0f;
+    // Monitores logicos: (x, y, escala, rotacion, principal, [('conector', ...
+    static const std::regex logical(R"(\((-?\d+), (-?\d+), ([0-9.]+), (?:uint32 )?\d+, (?:true|false), \[\('([^']+)')");
+    static const std::regex mode(R"(\('[^']*', (\d+), (\d+), )");
+    double extent = 0.0;
+    for (std::sregex_iterator it(state.begin(), state.end(), logical), end; it != end; ++it) {
+        const double x = std::stod((*it)[1]);
+        const double scale = std::stod((*it)[3]);
+        // Modo actual del conector: el ultimo modo antes de su 'is-current'.
+        const size_t monitor = state.find("(('" + (*it)[4].str() + "',");
+        if (monitor == std::string::npos || scale <= 0.0) return 0.0f;
+        const size_t current = state.find("'is-current': <true>", monitor);
+        if (current == std::string::npos) return 0.0f;
+        double width = 0.0;
+        const std::string modes = state.substr(monitor, current - monitor);
+        for (std::sregex_iterator m(modes.begin(), modes.end(), mode); m != end; ++m) width = std::stod((*m)[1]);
+        if (width <= 0.0) return 0.0f;
+        extent = std::max(extent, x + width / scale);
+    }
+    if (extent <= 0.0) return 0.0f;
+    const double ratio = DisplayWidth(dpy, DefaultScreen(dpy)) / extent;
+    // Al cuarto mas cercano (el redondeo de mutter descuadra algun pixel).
+    const float rounded = static_cast<float>(std::round(ratio * 4.0) / 4.0);
+    return rounded >= 1.0f && rounded <= 4.0f ? rounded : 0.0f;
+}
+
+// Escala de la interfaz: CRAMION_UI_SCALE, o Xft.dpi del escritorio (96 = 1)
+// y la escala de XWayland, la mayor.
+float linuxUiScale(HWND hwnd) {
+    if (const char* forced = std::getenv("CRAMION_UI_SCALE")) {
+        const float value = std::strtof(forced, nullptr);
+        if (value >= 0.5f && value <= 4.0f) return value;
+    }
+    if (hwnd == nullptr || hwnd->display == nullptr) return 1.0f;
+    auto* dpy = static_cast<Display*>(hwnd->display);
+    const char* resources = XResourceManagerString(dpy);
+    if (resources == nullptr) return 1.0f;
+    XrmInitialize();
+    XrmDatabase db = XrmGetStringDatabase(resources);
+    float scale = 1.0f;
+    char* type = nullptr;
+    XrmValue value{};
+    if (db != nullptr && XrmGetResource(db, "Xft.dpi", "Xft.Dpi", &type, &value) && value.addr != nullptr) {
+        const float dpi = std::strtof(value.addr, nullptr);
+        if (dpi >= 48.0f && dpi <= 384.0f) scale = dpi / 96.0f;
+    }
+    if (db != nullptr) XrmDestroyDatabase(db);
+    return std::max(scale, xwaylandScale(dpy));
+}
+
+// La primera fuente que exista de la lista.
+const char* firstFont(std::initializer_list<const char*> candidates) {
+    for (const char* font : candidates) {
+        std::error_code error;
+        if (std::filesystem::exists(font, error)) return font;
+    }
+    return nullptr;
+}
+
+ImGuiKey imguiKey(dm::Key key) {
+    using dm::Key;
+    if (key >= Key::A && key <= Key::Z) {
+        return static_cast<ImGuiKey>(ImGuiKey_A + (static_cast<int>(key) - static_cast<int>(Key::A)));
+    }
+    if (key >= Key::Num0 && key <= Key::Num9) {
+        return static_cast<ImGuiKey>(ImGuiKey_0 + (static_cast<int>(key) - static_cast<int>(Key::Num0)));
+    }
+    if (key >= Key::F1 && key <= Key::F12) {
+        return static_cast<ImGuiKey>(ImGuiKey_F1 + (static_cast<int>(key) - static_cast<int>(Key::F1)));
+    }
+    if (key >= Key::Keypad0 && key <= Key::Keypad9) {
+        return static_cast<ImGuiKey>(ImGuiKey_Keypad0 + (static_cast<int>(key) - static_cast<int>(Key::Keypad0)));
+    }
+    switch (key) {
+        case Key::Backspace: return ImGuiKey_Backspace;
+        case Key::Tab: return ImGuiKey_Tab;
+        case Key::Enter: return ImGuiKey_Enter;
+        case Key::Pause: return ImGuiKey_Pause;
+        case Key::CapsLock: return ImGuiKey_CapsLock;
+        case Key::Escape: return ImGuiKey_Escape;
+        case Key::Space: return ImGuiKey_Space;
+        case Key::PageUp: return ImGuiKey_PageUp;
+        case Key::PageDown: return ImGuiKey_PageDown;
+        case Key::End: return ImGuiKey_End;
+        case Key::Home: return ImGuiKey_Home;
+        case Key::Left: return ImGuiKey_LeftArrow;
+        case Key::Up: return ImGuiKey_UpArrow;
+        case Key::Right: return ImGuiKey_RightArrow;
+        case Key::Down: return ImGuiKey_DownArrow;
+        case Key::PrintScreen: return ImGuiKey_PrintScreen;
+        case Key::Insert: return ImGuiKey_Insert;
+        case Key::Delete: return ImGuiKey_Delete;
+        case Key::LeftSuper: return ImGuiKey_LeftSuper;
+        case Key::RightSuper: return ImGuiKey_RightSuper;
+        case Key::Apps: return ImGuiKey_Menu;
+        case Key::KeypadMultiply: return ImGuiKey_KeypadMultiply;
+        case Key::KeypadAdd: return ImGuiKey_KeypadAdd;
+        case Key::KeypadSubtract: return ImGuiKey_KeypadSubtract;
+        case Key::KeypadDecimal: return ImGuiKey_KeypadDecimal;
+        case Key::KeypadDivide: return ImGuiKey_KeypadDivide;
+        case Key::NumLock: return ImGuiKey_NumLock;
+        case Key::ScrollLock: return ImGuiKey_ScrollLock;
+        case Key::LeftShift: return ImGuiKey_LeftShift;
+        case Key::RightShift: return ImGuiKey_RightShift;
+        case Key::LeftControl: return ImGuiKey_LeftCtrl;
+        case Key::RightControl: return ImGuiKey_RightCtrl;
+        case Key::LeftAlt: return ImGuiKey_LeftAlt;
+        case Key::RightAlt: return ImGuiKey_RightAlt;
+        case Key::Semicolon: return ImGuiKey_Semicolon;
+        case Key::Equal: return ImGuiKey_Equal;
+        case Key::Comma: return ImGuiKey_Comma;
+        case Key::Minus: return ImGuiKey_Minus;
+        case Key::Period: return ImGuiKey_Period;
+        case Key::Slash: return ImGuiKey_Slash;
+        case Key::GraveAccent: return ImGuiKey_GraveAccent;
+        case Key::LeftBracket: return ImGuiKey_LeftBracket;
+        case Key::Backslash: return ImGuiKey_Backslash;
+        case Key::RightBracket: return ImGuiKey_RightBracket;
+        case Key::Apostrophe: return ImGuiKey_Apostrophe;
+        default: return ImGuiKey_None;
+    }
+}
+
+#endif
 
 }  // namespace
 
@@ -85,6 +240,51 @@ void ImGuiLayer::initialize(HWND hwnd, gfx::VulkanRenderer& renderer) {
     applyStyle(dpi_scale);
 
     ImGui_ImplWin32_Init(hwnd);
+#elif defined(__linux__) && !defined(__ANDROID__)
+    // Linux: sin backend de plataforma de ImGui; la entrada llega por
+    // onEvent (eventos de la ventana X11 de CramionDM). El diseno de los
+    // paneles se guarda junto al ejecutable, como en Windows.
+    ini_path_ = (gfx::shaders::directory().parent_path() / "CramionEditor.ini").string();
+    io.IniFilename = ini_path_.c_str();
+    io.BackendPlatformName = "cramion_x11";
+    io.BackendFlags |= ImGuiBackendFlags_HasMouseCursors;
+    const float dpi_scale = content_scale_ > 0.0f ? content_scale_ : linuxUiScale(hwnd);
+    // Noto Sans / DejaVu / Liberation en lugar de Segoe UI.
+    if (const char* font = firstFont({"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                                      "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+                                      "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+                                      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                      "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                                      "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"})) {
+        io.Fonts->AddFontFromFileTTF(font, 16.0f);
+    }
+    if (const char* mono = firstFont({"/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                                      "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+                                      "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+                                      "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+                                      "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf"})) {
+        mono_font_ = io.Fonts->AddFontFromFileTTF(mono, 16.0f);
+        // Lo que no tenga (los simbolos de las herramientas de IA: ⏺ ✻ ⎿...).
+        ImFontConfig merge;
+        merge.MergeMode = true;
+        for (const char* extra : {"/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf",
+                                  "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+                                  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"}) {
+            std::error_code error;
+            if (std::filesystem::exists(extra, error)) io.Fonts->AddFontFromFileTTF(extra, 16.0f, &merge);
+        }
+    }
+    // Seminegrita para titulos (cabeceras de componentes, secciones).
+    if (const char* bold = firstFont({"/usr/share/fonts/truetype/noto/NotoSans-SemiBold.ttf",
+                                      "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+                                      "/usr/share/fonts/noto/NotoSans-Bold.ttf",
+                                      "/usr/share/fonts/truetype/ubuntu/Ubuntu-M.ttf",
+                                      "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                                      "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"})) {
+        theme::g_bold_font = io.Fonts->AddFontFromFileTTF(bold, 16.0f);
+    }
+    applyStyle(dpi_scale);
+    last_frame_ = std::chrono::steady_clock::now();
 #else
     // Android: sin .ini, Roboto (la del sistema) y la escala de la pantalla.
     // La entrada la da el player (tactil convertido a raton).
@@ -210,6 +410,27 @@ void ImGuiLayer::beginFrame() {
     ImGui_ImplWin32_NewFrame();
 #else
     ImGuiIO& io = ImGui::GetIO();
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (window_ != nullptr) {
+        display_width_ = window_->width();
+        display_height_ = window_->height();
+        // La forma del cursor que pide ImGui (redimensionar, texto...).
+        if (!(io.ConfigFlags & ImGuiConfigFlags_NoMouseCursorChange)) {
+            static constexpr dm::SystemCursor kCursors[] = {
+                dm::SystemCursor::Arrow,    dm::SystemCursor::TextInput,  dm::SystemCursor::ResizeAll,
+                dm::SystemCursor::ResizeNS, dm::SystemCursor::ResizeEW,   dm::SystemCursor::ResizeNESW,
+                dm::SystemCursor::ResizeNWSE, dm::SystemCursor::Hand,     dm::SystemCursor::Wait,
+                dm::SystemCursor::Wait,     dm::SystemCursor::NotAllowed};
+            const ImGuiMouseCursor cursor = ImGui::GetMouseCursor();
+            if (cursor == ImGuiMouseCursor_None || io.MouseDrawCursor) {
+                window_->setCursorVisible(false);
+            } else {
+                window_->setCursorVisible(true);
+                if (cursor >= 0 && cursor < static_cast<int>(std::size(kCursors))) window_->setCursorShape(kCursors[cursor]);
+            }
+        }
+    }
+#endif
     io.DisplaySize = ImVec2(static_cast<float>(display_width_), static_cast<float>(display_height_));
     io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
     const auto now = std::chrono::steady_clock::now();
@@ -218,6 +439,90 @@ void ImGuiLayer::beginFrame() {
 #endif
     ImGui::NewFrame();
 }
+
+#if defined(__linux__) && !defined(__ANDROID__)
+void ImGuiLayer::setWindow(dm::Window* window) {
+    window_ = window;
+    if (window != nullptr) {
+        display_width_ = window->width();
+        display_height_ = window->height();
+    }
+    ImGuiPlatformIO& platform = ImGui::GetPlatformIO();
+    platform.Platform_ClipboardUserData = this;
+    platform.Platform_SetClipboardTextFn = [](ImGuiContext*, const char* text) {
+        auto* self = static_cast<ImGuiLayer*>(ImGui::GetPlatformIO().Platform_ClipboardUserData);
+        if (self->window_ != nullptr) self->window_->setClipboardText(text != nullptr ? text : "");
+    };
+    platform.Platform_GetClipboardTextFn = [](ImGuiContext*) -> const char* {
+        auto* self = static_cast<ImGuiLayer*>(ImGui::GetPlatformIO().Platform_ClipboardUserData);
+        self->clipboard_ = self->window_ != nullptr ? self->window_->clipboardText() : std::string{};
+        return self->clipboard_.c_str();
+    };
+}
+
+void ImGuiLayer::onEvent(const dm::Event& e) {
+    if (!initialized_) return;
+    ImGuiIO& io = ImGui::GetIO();
+    const auto updateMods = [&io](dm::KeyMods mods) {
+        const auto has = [mods](dm::KeyMods m) { return (mods & m) != dm::KeyMods{}; };
+        io.AddKeyEvent(ImGuiMod_Ctrl, has(dm::KeyMods::Control));
+        io.AddKeyEvent(ImGuiMod_Shift, has(dm::KeyMods::Shift));
+        io.AddKeyEvent(ImGuiMod_Alt, has(dm::KeyMods::Alt));
+        io.AddKeyEvent(ImGuiMod_Super, has(dm::KeyMods::Super));
+    };
+    switch (e.type) {
+        case dm::EventType::MouseMoved:
+            io.AddMouseSourceEvent(ImGuiMouseSource_Mouse);
+            io.AddMousePosEvent(e.mouseX, e.mouseY);
+            break;
+        case dm::EventType::MouseLeave:
+            // Con un boton pulsado (arrastrando fuera) se conserva la posicion.
+            if (!ImGui::IsAnyMouseDown()) io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+            break;
+        case dm::EventType::MouseButtonPressed:
+        case dm::EventType::MouseButtonReleased: {
+            int button = -1;
+            switch (e.button) {
+                case dm::MouseButton::Left: button = 0; break;
+                case dm::MouseButton::Right: button = 1; break;
+                case dm::MouseButton::Middle: button = 2; break;
+                case dm::MouseButton::X1: button = 3; break;
+                case dm::MouseButton::X2: button = 4; break;
+                default: break;
+            }
+            if (button < 0) break;
+            updateMods(e.mods);
+            io.AddMouseSourceEvent(ImGuiMouseSource_Mouse);
+            io.AddMousePosEvent(e.mouseX, e.mouseY);
+            io.AddMouseButtonEvent(button, e.type == dm::EventType::MouseButtonPressed);
+            break;
+        }
+        case dm::EventType::MouseScrolled:
+            io.AddMouseWheelEvent(e.scrollX, e.scrollY);
+            break;
+        case dm::EventType::KeyPressed:
+        case dm::EventType::KeyReleased: {
+            updateMods(e.mods);
+            const ImGuiKey key = imguiKey(e.key);
+            if (key != ImGuiKey_None) io.AddKeyEvent(key, e.type == dm::EventType::KeyPressed);
+            break;
+        }
+        case dm::EventType::TextInput:
+            io.AddInputCharacter(e.codepoint);
+            break;
+        case dm::EventType::WindowFocus:
+        case dm::EventType::WindowLostFocus:
+            io.AddFocusEvent(e.type == dm::EventType::WindowFocus);
+            break;
+        case dm::EventType::WindowResize:
+            display_width_ = e.width;
+            display_height_ = e.height;
+            break;
+        default:
+            break;
+    }
+}
+#endif
 
 void ImGuiLayer::endFrame() {
     ImGui::Render();

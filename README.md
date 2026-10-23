@@ -465,6 +465,25 @@ cmake --build --preset clang-ninja-release --target cramion_package
 
 Los shaders GLSL de `CramionFX/shaders/` se compilan a SPIR-V al construir la librería y se copian a `build/shaders/`, junto al ejecutable.
 
+#### Linux (editor incluido)
+
+En Linux se compilan el editor, el reproductor de juegos exportados (`CramionPlayer`), el servidor dedicado y el proceso de los scripts de C++. La ventana es X11 (en Wayland funciona por XWayland).
+
+```bash
+# Ubuntu/Debian
+sudo apt install clang lld cmake ninja-build libx11-dev libxi-dev libxrandr-dev libxcursor-dev \
+                 libvulkan-dev glslc zenity curl libshaderc1 clangd fonts-noto-core
+cmake --preset linux-release
+cmake --build --preset linux-release
+./build-linux/CramionEditor
+```
+
+- Los diálogos de abrir/guardar usan `zenity` (GNOME) o `kdialog` (KDE).
+- Los scripts de C++ se compilan con el `clang` del sistema (`.so`) e IntelliSense usa `clangd` del PATH.
+- La terminal integrada usa tu `$SHELL` (pty).
+- `CRAMION_UI_SCALE=1.5` fuerza la escala de la interfaz (por defecto, `Xft.dpi` del escritorio).
+- El actualizador (`CramionUpdater`) sigue siendo solo de Windows.
+
 ### 3. Ejecutar
 
 ```powershell

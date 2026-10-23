@@ -367,7 +367,14 @@ int main(int argc, char** argv) {
             info.app_name = "cramion_stream_bench";
             info.enable_validation = options.validation;
             renderer = std::make_unique<gfx::VulkanRenderer>();
+#if defined(__linux__)
+            // La superficie guarda el puntero: vive mientras el renderizador.
+            static gfx::XlibWindow xlib{};
+            xlib = {window->handle()->display, window->handle()->window};
+            renderer->initialize(info, &xlib, window->width(), window->height());
+#else
             renderer->initialize(info, window->handle(), window->width(), window->height());
+#endif
             renderer->setEditorHelpersEnabled(false);
             gfx::GraphicsSettings graphics = renderer->graphicsSettings();
             graphics.vsync = options.vsync;

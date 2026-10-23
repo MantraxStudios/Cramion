@@ -30,6 +30,15 @@
 #include <map>
 #include <sstream>
 
+#if !defined(_WIN32)
+#include <thread>
+
+namespace {
+// Sleep de Win32 (milisegundos).
+void Sleep(unsigned milliseconds) { std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds)); }
+}  // namespace
+#endif
+
 namespace cramion::editor {
 
 // EditorSelfTest.cpp: la ventana tal como se ve, guardada como PNG.
@@ -2459,10 +2468,15 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         return json{{"frame", a.cinema_frames_}, {"pending", a.cinema_pending_}};
     }
     if (name == "cinema_state") {
+#if defined(_WIN32)
         RECT client{};
         GetClientRect(a.window_.handle(), &client);
         return json{{"enabled", a.cinema_}, {"frame", a.cinema_frames_}, {"pending", a.cinema_pending_},
                     {"width", client.right - client.left}, {"height", client.bottom - client.top}};
+#else
+        return json{{"enabled", a.cinema_}, {"frame", a.cinema_frames_}, {"pending", a.cinema_pending_},
+                    {"width", a.window_.width()}, {"height", a.window_.height()}};
+#endif
     }
     if (name == "create_model") {
         const std::string model = safeName(arg(args, "name"));

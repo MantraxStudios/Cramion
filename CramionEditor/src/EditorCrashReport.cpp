@@ -8,7 +8,11 @@
 
 #include <imgui.h>
 
+#if defined(_WIN32)
 #include <shellapi.h>
+#else
+#include "SystemUtil.h"
+#endif
 
 #ifndef CRAMION_VERSION_STRING
 #define CRAMION_VERSION_STRING "dev"
@@ -45,8 +49,12 @@ void EditorApp::drawCrashReportWindow() {
     }
     ImGui::SameLine();
     if (ImGui::Button("Abrir carpeta", ImVec2(w, 0.0f))) {
+#if defined(_WIN32)
         const std::wstring args = L"/select,\"" + crash_report_path_.wstring() + L"\"";
         ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+#else
+        sys::revealInFileManager(crash_report_path_);
+#endif
     }
     ImGui::SameLine();
     if (ImGui::Button("Cerrar", ImVec2(w, 0.0f))) crash_report_open_ = false;

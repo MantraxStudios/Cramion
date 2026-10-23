@@ -21,13 +21,21 @@ add_library(cramion_update STATIC
 target_include_directories(cramion_update PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_include_directories(cramion_update PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(cramion_update SYSTEM PRIVATE "${stb_SOURCE_DIR}")
-target_link_libraries(cramion_update PUBLIC nlohmann_json::nlohmann_json winhttp bcrypt shell32 ole32)
+if(WIN32)
+    target_link_libraries(cramion_update PUBLIC nlohmann_json::nlohmann_json winhttp bcrypt shell32 ole32)
+else()
+    # Linux: HTTPS con curl (proceso aparte) y SHA-256 propio.
+    target_link_libraries(cramion_update PUBLIC nlohmann_json::nlohmann_json)
+endif()
 target_compile_definitions(cramion_update PRIVATE CRAMION_VERSION_STRING="${CRAMION_VERSION_FULL}")
 target_compile_options(cramion_update PRIVATE -Wall -Wextra)
 # stb (Inflate.cpp) sin avisos.
 set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/Inflate.cpp" PROPERTIES COMPILE_OPTIONS "-w")
 add_library(Cramion::Update ALIAS cramion_update)
 
+# El actualizador (interfaz Win32 + Direct3D 11) es solo de Windows; en
+# Linux el editor usa la libreria y la prueba de consola.
+if(WIN32)
 # Dear ImGui con los backends de Win32 y Direct3D 11 (sin Vulkan).
 add_library(cramion_imgui_dx11 STATIC
     "${imgui_SOURCE_DIR}/imgui.cpp"
@@ -47,6 +55,7 @@ set_target_properties(CramionUpdater PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAK
 target_link_options(CramionUpdater PRIVATE "-Xlinker" "/entry:mainCRTStartup")
 target_compile_options(CramionUpdater PRIVATE -Wall -Wextra)
 add_dependencies(CramionEditor CramionUpdater)
+endif()
 
 # Prueba de consola. El zip de prueba se crea al configurar.
 set(_update_fixture "${CMAKE_CURRENT_BINARY_DIR}/fixture")

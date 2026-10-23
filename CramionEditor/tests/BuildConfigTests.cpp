@@ -2,11 +2,15 @@
 // perfiles, game.ini y el icono escrito dentro de una copia del .exe.
 //
 //   CramionBuildConfigTests.exe <CramionPlayer.exe> <icono.png>
+//
+// En Linux el ejecutable no lleva icono: se prueba el PNG del .desktop.
 
 #include "BuildConfig.h"
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <shellapi.h>
+#endif
 
 #include <cstdio>
 #include <filesystem>
@@ -23,6 +27,7 @@ void check(bool ok, const char* what) {
     if (!ok) ++failures;
 }
 
+#if defined(_WIN32)
 // Numero de imagenes del grupo de iconos 1 del .exe (-1 si no tiene).
 int groupIconCount(const std::filesystem::path& exe) {
     HMODULE module = LoadLibraryExW(exe.c_str(), nullptr, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
@@ -37,6 +42,7 @@ int groupIconCount(const std::filesystem::path& exe) {
     FreeLibrary(module);
     return count;
 }
+#endif
 
 }  // namespace
 
@@ -89,6 +95,7 @@ int main(int argc, char** argv) {
               "en Android no (tiene su perfil movil)");
     }
 
+#if defined(_WIN32)
     // Icono dentro de una copia del reproductor.
     const std::filesystem::path exe = folder / "Mi Juego.exe";
     std::filesystem::copy_file(player, exe, std::filesystem::copy_options::overwrite_existing, e);
@@ -109,6 +116,16 @@ int main(int argc, char** argv) {
     if (small) DestroyIcon(small);
     // Otra vez (reexportar): sigue valido.
     check(setExeIcon(exe, icon, &error) && groupIconCount(exe) == after, "reescribir el icono no lo duplica");
+#else
+    // Linux: el icono va en un PNG junto al juego (el del .desktop).
+    (void)player;
+    std::string error;
+    const std::filesystem::path png = folder / "Mi Juego.png";
+    const bool ok = writeIconPng(icon, png, 256, &error);
+    if (!ok) std::printf("  error: %s\n", error.c_str());
+    check(ok && std::filesystem::file_size(png, e) > 8, "se escribe el icono PNG");
+    check(!setExeIcon(folder / "no_existe", icon, &error), "el icono dentro del ejecutable es solo de Windows");
+#endif
 
     std::filesystem::remove_all(folder, e);
     std::printf(failures == 0 ? "TODO OK\n" : "%d FALLO(S)\n", failures);

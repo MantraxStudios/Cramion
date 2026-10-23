@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -11,6 +12,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -195,6 +197,13 @@ std::string lowerExtension(const std::filesystem::path& file) {
     return e;
 }
 
+#if !defined(_WIN32)
+// Los tipos de los iconos de Windows (el formato .ico es el mismo).
+using WORD = std::uint16_t;
+using DWORD = std::uint32_t;
+using BYTE = std::uint8_t;
+#endif
+
 struct IconImage {
     int width = 0;   // 256 se escribe 0 en el directorio
     int height = 0;
@@ -257,6 +266,7 @@ bool readIco(const std::filesystem::path& file, std::vector<IconImage>& images, 
     return !images.empty();
 }
 
+#if defined(_WIN32)
 // Imagen cuadrada de `size` px (centrada, fondo transparente) como DIB de
 // 32 bits para un icono.
 IconImage dibIcon(const asset::ImageRgba8& source, int size) {
@@ -334,6 +344,7 @@ BOOL CALLBACK collectIcons(HMODULE module, LPCWSTR type, LPWSTR name, LONG_PTR p
     for (const WORD language : languages) out->push_back(ResourceId{static_cast<WORD>(reinterpret_cast<ULONG_PTR>(name)), language});
     return TRUE;
 }
+#endif
 
 }  // namespace
 
@@ -343,6 +354,13 @@ bool isIconSource(const std::filesystem::path& file) {
 }
 
 bool setExeIcon(const std::filesystem::path& exe, const std::filesystem::path& image, std::string* error) {
+#if !defined(_WIN32)
+    // Los ejecutables de Linux (ELF) no llevan icono: va en el .desktop.
+    (void)exe;
+    (void)image;
+    if (error) *error = "el icono dentro del ejecutable es solo de Windows (en Linux va en el .desktop)";
+    return false;
+#else
     std::vector<IconImage> images;
     if (!makeIconImages(image, images, error)) return false;
 
@@ -399,6 +417,41 @@ bool setExeIcon(const std::filesystem::path& exe, const std::filesystem::path& i
     }
     if (error) *error = "Windows no dejo cambiar el icono del .exe (error " + std::to_string(GetLastError()) + ")";
     return false;
+#endif
+}
+
+bool writeIconPng(const std::filesystem::path& image, const std::filesystem::path& png, int size, std::string* error) {
+    if (lowerExtension(image) == ".ico") {
+        // Del .ico, la imagen mas grande; las de 256 suelen ir como PNG tal cual.
+        std::vector<IconImage> images;
+        if (!readIco(image, images, error)) return false;
+        const IconImage* best = nullptr;
+        for (const IconImage& i : images) {
+            const bool is_png = i.data.size() > 8 && std::memcmp(i.data.data(), "\x89PNG", 4) == 0;
+            if (is_png && (best == nullptr || i.width > best->width)) best = &i;
+        }
+        if (best == nullptr) {
+            if (error) *error = "el .ico no tiene imagenes PNG (usa un PNG como icono)";
+            return false;
+        }
+        std::ofstream out(png, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(best->data.data()), static_cast<std::streamsize>(best->data.size()));
+        if (!out) {
+            if (error) *error = "no se pudo escribir " + png.string();
+            return false;
+        }
+        return true;
+    }
+    asset::ImageRgba8 picture;
+    if (!asset::loadImageRgba8(image, picture, static_cast<std::uint32_t>(std::max(size, 16))) || picture.width == 0) {
+        if (error) *error = "no se pudo leer la imagen";
+        return false;
+    }
+    if (!asset::saveImagePng(png, picture)) {
+        if (error) *error = "no se pudo escribir " + png.string();
+        return false;
+    }
+    return true;
 }
 
 }  // namespace cramion::editor

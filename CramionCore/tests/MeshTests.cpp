@@ -1583,6 +1583,12 @@ void testVrResolution() {
     check(gfx::vrVramScaleCap(12288, 2528, 2704) == 1.0f && gfx::vrVramScaleCap(0, 2528, 2704) == 1.0f &&
               gfx::vrVramScaleCap(8192, 1832, 1920) == 1.0f,
           "VR: sin tope con 12 GB, VRAM desconocida o un ojo que ya cabe");
+    // Escritorio: ventana maximizada en un monitor de 5760x3240.
+    const float desk8 = gfx::desktopVramScaleCap(8192, 5559, 3144);
+    check(desk8 > 0.67f && desk8 < 0.71f, "escritorio: con 8 GB, 5559x3144 se dibuja a ~4K (0.69)");
+    check(gfx::desktopVramScaleCap(8192, 3840, 2160) == 1.0f && gfx::desktopVramScaleCap(4096, 2560, 1440) == 1.0f &&
+              gfx::desktopVramScaleCap(24576, 7680, 4320) == 1.0f && gfx::desktopVramScaleCap(0, 7680, 4320) == 1.0f,
+          "escritorio: sin tope a 4K con 8 GB, 1440p con 4 GB, desde 24 GB o con VRAM desconocida");
 
     // Sesgo de mips al escalar.
     check(gfx::upscaleMipBias(1.0f, gfx::Upscaler::Taa) == 0.0f && gfx::upscaleMipBias(0.5f, gfx::Upscaler::Off) == 0.0f,

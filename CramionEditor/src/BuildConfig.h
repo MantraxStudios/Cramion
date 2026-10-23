@@ -112,9 +112,14 @@ bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& con
 std::string buildConfigIni(const BuildConfig& config, const std::string& game_name);
 
 // Icono de un .exe (su grupo de iconos 1, el que usan el Explorador y la
-// ventana): desde una imagen (se hacen 16..256 px) o un .ico tal cual.
+// ventana): desde una imagen (se hacen 16..256 px) o un .ico tal cual. Solo
+// Windows: en Linux devuelve false (el icono va en el .desktop).
 bool setExeIcon(const std::filesystem::path& exe, const std::filesystem::path& image, std::string* error = nullptr);
 bool isIconSource(const std::filesystem::path& file);
+// El icono como PNG (hasta `size` px; de un .ico, su imagen PNG mas grande):
+// el de los .desktop de Linux.
+bool writeIconPng(const std::filesystem::path& image, const std::filesystem::path& png, int size = 256,
+                  std::string* error = nullptr);
 
 }  // namespace cramion::editor
 

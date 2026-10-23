@@ -3,6 +3,7 @@
 #include <CramionCore/net/Http.h>
 #include <CramionFX/asset/ImageFile.h>
 
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -10,8 +11,16 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
+#include <cerrno>
 #include <array>
 #include <cctype>
 #include <cmath>
@@ -36,6 +45,7 @@ std::string utf8(const fs::path& p) {
 
 fs::path fromUtf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
 
+#if defined(_WIN32)
 std::wstring widen(const std::string& text) {
     if (text.empty()) return {};
     const int n = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
@@ -44,13 +54,44 @@ std::wstring widen(const std::string& text) {
     return out;
 }
 
+#endif
+
 std::string env(const char* name) {
+#if defined(_WIN32)
     char* value = nullptr;
     std::size_t size = 0;
     std::string result;
     if (_dupenv_s(&value, &size, name) == 0 && value != nullptr) result = value;
     std::free(value);
     return result;
+#else
+    const char* value = std::getenv(name);
+    return value != nullptr ? std::string(value) : std::string();
+#endif
+}
+
+// Nombres de las herramientas: en Windows aapt2.exe, apksigner.bat...; en
+// Linux sin extension (apksigner es un script de shell).
+#if defined(_WIN32)
+constexpr const char* kExe = ".exe";
+constexpr const char* kBat = ".bat";
+#else
+constexpr const char* kExe = "";
+constexpr const char* kBat = "";
+#endif
+std::string exeName(const char* name) { return std::string(name) + kExe; }
+std::string batName(const char* name) { return std::string(name) + kBat; }
+
+// Carpeta de datos de Cramion para Android (bundletool, clave de depuracion):
+// %LOCALAPPDATA%/Cramion/Android en Windows; $XDG_DATA_HOME (o
+// ~/.local/share)/Cramion/Android en Linux.
+fs::path cramionAndroidFolder() {
+#if defined(_WIN32)
+    return fromUtf8(env("LOCALAPPDATA")) / "Cramion" / "Android";
+#else
+    if (const std::string xdg = env("XDG_DATA_HOME"); !xdg.empty()) return fromUtf8(xdg) / "Cramion" / "Android";
+    return fromUtf8(env("HOME")) / ".local" / "share" / "Cramion" / "Android";
+#endif
 }
 
 bool fileExists(const fs::path& p) {
@@ -74,6 +115,7 @@ std::vector<int> versionNumbers(const std::string& text) {
     return out;
 }
 
+#if defined(_WIN32)
 // Un argumento para la linea de comandos de Windows (comillas y barras).
 std::wstring quote(const std::wstring& arg) {
     if (!arg.empty() && arg.find_first_of(L" \t\"") == std::wstring::npos) return arg;
@@ -163,6 +205,85 @@ int run(const fs::path& program, const std::vector<std::string>& args, std::stri
     CloseHandle(read_pipe);
     return static_cast<int>(code);
 }
+#else
+// Ejecuta un programa y junta su salida (stdout y stderr). fork/exec con una
+// tuberia; si `cancel` se activa, se mata el proceso. Devuelve el codigo de
+// salida (-1 si no arranco).
+int run(const fs::path& program, const std::vector<std::string>& args, std::string& output,
+        const std::atomic<bool>* cancel = nullptr, const fs::path& folder = {}) {
+    int pipes[2] = {-1, -1};
+    if (pipe(pipes) != 0) return -1;
+    fcntl(pipes[0], F_SETFD, FD_CLOEXEC);
+    const std::string program_text = utf8(program);
+    const std::string dir = utf8(folder);
+    std::vector<std::string> argv_text;
+    argv_text.push_back(program_text);
+    argv_text.insert(argv_text.end(), args.begin(), args.end());
+    std::vector<char*> argv;
+    for (std::string& a : argv_text) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    // Si no tiene permiso de ejecucion (un script copiado sin +x), por sh. Se
+    // prepara antes del fork (en el hijo no se reserva memoria).
+    std::vector<char*> sh_argv = {const_cast<char*>("/bin/sh")};
+    sh_argv.insert(sh_argv.end(), argv.begin(), argv.end());
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(pipes[0]);
+        close(pipes[1]);
+        output += "No se pudo ejecutar " + program_text + "\n";
+        return -1;
+    }
+    if (pid == 0) {
+        // Hijo: salida a la tuberia, entrada vacia.
+        dup2(pipes[1], STDOUT_FILENO);
+        dup2(pipes[1], STDERR_FILENO);
+        close(pipes[1]);
+        const int null_fd = open("/dev/null", O_RDONLY);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDIN_FILENO);
+            close(null_fd);
+        }
+        if (!dir.empty() && chdir(dir.c_str()) != 0) _exit(127);
+        execv(program_text.c_str(), argv.data());
+        if (errno == EACCES || errno == ENOEXEC) execv("/bin/sh", sh_argv.data());
+        _exit(127);
+    }
+    close(pipes[1]);
+    std::array<char, 4096> buffer{};
+    bool killed = false;
+    for (;;) {
+        pollfd p{pipes[0], POLLIN, 0};
+        const int ready = poll(&p, 1, 30);
+        if (ready > 0) {
+            const ssize_t got = read(pipes[0], buffer.data(), buffer.size());
+            if (got > 0) {
+                output.append(buffer.data(), static_cast<std::size_t>(got));
+                continue;
+            }
+            if (got == 0) break;  // el programa cerro la tuberia
+            if (errno != EINTR) break;
+        } else if (ready < 0 && errno != EINTR) {
+            break;
+        }
+        if (cancel != nullptr && cancel->load()) {
+            kill(pid, SIGKILL);
+            killed = true;
+            break;
+        }
+    }
+    close(pipes[0]);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    if (killed) return 1;
+    if (WIFEXITED(status)) {
+        const int code = WEXITSTATUS(status);
+        if (code == 127) output += "No se pudo ejecutar " + program_text + "\n";
+        return code;
+    }
+    return 1;
+}
+#endif
 
 std::string xmlEscape(const std::string& text) {
     std::string out;
@@ -459,7 +580,7 @@ bool writeIcon(const asset::ImageRgba8& source, int size, const fs::path& file) 
     return asset::saveImagePng(file, icon);
 }
 
-fs::path bundletoolDownloadPath() { return fromUtf8(env("LOCALAPPDATA")) / "Cramion" / "Android" / "bundletool.jar"; }
+fs::path bundletoolDownloadPath() { return cramionAndroidFolder() / "bundletool.jar"; }
 
 bool downloadBundletool(std::string& error) {
     net::HttpRequest request;
@@ -595,7 +716,12 @@ AndroidToolchain findAndroidToolchain(const fs::path& editor_folder, int target_
     for (const char* name : {"ANDROID_HOME", "ANDROID_SDK_ROOT"}) {
         if (const std::string v = env(name); !v.empty()) sdks.push_back(fromUtf8(v));
     }
+#if defined(_WIN32)
     if (const std::string local = env("LOCALAPPDATA"); !local.empty()) sdks.push_back(fromUtf8(local) / "Android" / "Sdk");
+#else
+    // Donde lo deja Android Studio en Linux.
+    if (const std::string home = env("HOME"); !home.empty()) sdks.push_back(fromUtf8(home) / "Android" / "Sdk");
+#endif
     for (const fs::path& s : sdks) {
         if (fileExists(s / "platforms") && fileExists(s / "build-tools")) {
             t.sdk = s;
@@ -612,7 +738,7 @@ AndroidToolchain findAndroidToolchain(const fs::path& editor_folder, int target_
     std::error_code e;
     for (fs::directory_iterator it(t.sdk / "build-tools", e); !e && it != fs::directory_iterator(); it.increment(e)) {
         const fs::path dir = it->path();
-        if (!fileExists(dir / "aapt2.exe") || !fileExists(dir / "zipalign.exe") || !fileExists(dir / "apksigner.bat")) continue;
+        if (!fileExists(dir / exeName("aapt2")) || !fileExists(dir / exeName("zipalign")) || !fileExists(dir / batName("apksigner"))) continue;
         const std::vector<int> v = versionNumbers(utf8(dir.filename()));
         if (t.build_tools.empty() || v > best) {
             best = v;
@@ -633,18 +759,49 @@ AndroidToolchain findAndroidToolchain(const fs::path& editor_folder, int target_
             t.platform = level;
         }
     }
-    if (fileExists(t.sdk / "platform-tools" / "adb.exe")) t.adb = t.sdk / "platform-tools" / "adb.exe";
+    if (fileExists(t.sdk / "platform-tools" / exeName("adb"))) t.adb = t.sdk / "platform-tools" / exeName("adb");
     // Java: JAVA_HOME, el de Android Studio o el del PATH.
     std::vector<fs::path> javas;
     if (const std::string home = env("JAVA_HOME"); !home.empty()) javas.push_back(fromUtf8(home) / "bin");
+#if defined(_WIN32)
     for (const char* studio : {"C:/Program Files/Android/Android Studio/jbr/bin", "C:/Program Files/Android/Android Studio/jre/bin"}) {
         javas.emplace_back(studio);
     }
     if (const std::string local = env("LOCALAPPDATA"); !local.empty()) {
         javas.push_back(fromUtf8(local) / "Programs" / "Android Studio" / "jbr" / "bin");
     }
+#else
+    // Android Studio en Linux (tar.gz en /opt o en ~, snap, JetBrains Toolbox)
+    // y el java del sistema (/usr/bin/java es un enlace al JDK).
+    const std::string home = env("HOME");
+    for (const fs::path& studio : {fs::path("/opt/android-studio"), fromUtf8(home) / "android-studio",
+                                   fs::path("/snap/android-studio/current/android-studio"),
+                                   fs::path("/usr/local/android-studio")}) {
+        javas.push_back(studio / "jbr" / "bin");
+        javas.push_back(studio / "jre" / "bin");
+    }
+    if (!home.empty()) {
+        // Toolbox: ~/.local/share/JetBrains/Toolbox/apps/android-studio/jbr
+        javas.push_back(fromUtf8(home) / ".local" / "share" / "JetBrains" / "Toolbox" / "apps" / "android-studio" / "jbr" / "bin");
+    }
+    {
+        // El del PATH (siguiendo el enlace para tener la carpeta del JDK real).
+        const std::string path_var = env("PATH");
+        std::size_t start = 0;
+        while (start <= path_var.size()) {
+            const std::size_t end = std::min(path_var.find(':', start), path_var.size());
+            const std::string dir = path_var.substr(start, end - start);
+            start = end + 1;
+            if (dir.empty() || !fileExists(fs::path(dir) / "java")) continue;
+            std::error_code canon_error;
+            const fs::path real = fs::canonical(fs::path(dir) / "java", canon_error);
+            if (!canon_error) javas.push_back(real.parent_path());
+            javas.emplace_back(dir);
+        }
+    }
+#endif
     for (const fs::path& j : javas) {
-        if (fileExists(j / "java.exe") && fileExists(j / "keytool.exe")) {
+        if (fileExists(j / exeName("java")) && fileExists(j / exeName("keytool"))) {
             t.java_bin = j;
             break;
         }
@@ -690,7 +847,11 @@ AndroidToolchain findAndroidToolchain(const fs::path& editor_folder, int target_
 }
 
 fs::path androidNdkClang(const fs::path& ndk) {
+#if defined(_WIN32)
     return ndk / "toolchains" / "llvm" / "prebuilt" / "windows-x86_64" / "bin" / "clang++.exe";
+#else
+    return ndk / "toolchains" / "llvm" / "prebuilt" / "linux-x86_64" / "bin" / "clang++";
+#endif
 }
 
 std::string androidClangTarget(const std::string& abi, int min_sdk) {
@@ -745,7 +906,7 @@ bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInpu
     if (input.version_code < 1 || input.version_code > 2100000000) return fail("El codigo de version tiene que ser 1 o mas");
     if (input.libraries.empty()) return fail("Falta libmain.so (el juego compilado para Android) junto al editor");
     // bundletool (32 MB, solo para el AAB) no viene en el zip: se descarga
-    // la primera vez en %LOCALAPPDATA%/Cramion/Android.
+    // la primera vez en %LOCALAPPDATA%/Cramion/Android (~/.local/share en Linux).
     AndroidToolchain local_tools = tools;
     if (input.make_aab && local_tools.bundletool.empty()) {
         if (!step(0.01f, "Descargando bundletool (una sola vez, 32 MB)")) return fail("Cancelado");
@@ -755,7 +916,11 @@ bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInpu
     }
     const AndroidToolchain& tools_ref = local_tools;
     // Las herramientas .bat (apksigner) buscan java en JAVA_HOME.
+#if defined(_WIN32)
     SetEnvironmentVariableW(L"JAVA_HOME", tools.java_bin.parent_path().wstring().c_str());
+#else
+    setenv("JAVA_HOME", utf8(tools.java_bin.parent_path()).c_str(), 1);
+#endif
 
     std::error_code ec;
     const fs::path work = input.work_folder;
@@ -832,7 +997,7 @@ bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInpu
     }
 
     // --- 2. Recursos (aapt2) ---
-    const fs::path aapt2 = tools.build_tools / "aapt2.exe";
+    const fs::path aapt2 = tools.build_tools / exeName("aapt2");
     if (!step(0.06f, "Compilando recursos (aapt2)")) return fail("Cancelado");
     if (!tool(aapt2, {"compile", "--dir", utf8(work / "res"), "-o", utf8(work / "res.zip")}, "aapt2 compile")) return false;
     const auto link = [&](const fs::path& out, bool proto) {
@@ -878,14 +1043,14 @@ bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInpu
     // Clave: la del usuario o la de depuracion (se crea una vez por PC).
     AndroidKey key = input.key;
     if (key.keystore.empty()) {
-        fs::path folder = fromUtf8(env("LOCALAPPDATA")) / "Cramion" / "Android";
+        fs::path folder = cramionAndroidFolder();
         fs::create_directories(folder, ec);
         key.keystore = folder / "debug.keystore";
         key.store_password = key.key_password = "android";
         key.alias = "androiddebugkey";
         if (!fileExists(key.keystore)) {
             if (!step(0.1f, "Creando la clave de depuracion")) return fail("Cancelado");
-            if (!tool(tools.java_bin / "keytool.exe",
+            if (!tool(tools.java_bin / exeName("keytool"),
                       {"-genkeypair", "-keystore", utf8(key.keystore), "-storepass", "android", "-alias", "androiddebugkey",
                        "-keypass", "android", "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000", "-dname",
                        "CN=Android Debug,O=Android,C=US"},
@@ -911,16 +1076,16 @@ bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInpu
         if (!step(input.make_aab ? 0.42f : 0.74f, "Alineando (zipalign)")) return fail("Cancelado");
         const fs::path aligned = work / "aligned.apk";
         // -P 16: las .so alineadas a paginas de 16 KB (Android 15+).
-        if (!tool(tools.build_tools / "zipalign.exe", {"-f", "-P", "16", "4", utf8(work / "unaligned.apk"), utf8(aligned)}, "zipalign")) {
+        if (!tool(tools.build_tools / exeName("zipalign"), {"-f", "-P", "16", "4", utf8(work / "unaligned.apk"), utf8(aligned)}, "zipalign")) {
             // build-tools viejas sin -P: con -p (4 KB).
-            if (!tool(tools.build_tools / "zipalign.exe", {"-f", "-p", "4", utf8(work / "unaligned.apk"), utf8(aligned)}, "zipalign")) {
+            if (!tool(tools.build_tools / exeName("zipalign"), {"-f", "-p", "4", utf8(work / "unaligned.apk"), utf8(aligned)}, "zipalign")) {
                 return false;
             }
         }
         if (!step(input.make_aab ? 0.46f : 0.82f, "Firmando (apksigner)")) return fail("Cancelado");
         result.apk = input.output_folder / fromUtf8(input.file_stem + ".apk");
         fs::remove(result.apk, ec);
-        if (!tool(tools.build_tools / "apksigner.bat",
+        if (!tool(tools.build_tools / batName("apksigner"),
                   {"sign", "--ks", utf8(key.keystore), "--ks-pass", "pass:" + key.store_password, "--ks-key-alias", key.alias,
                    "--key-pass", "pass:" + key.key_password, "--out", utf8(result.apk), utf8(aligned)},
                   "apksigner")) {
@@ -955,14 +1120,14 @@ bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInpu
         if (!step(0.8f, "Construyendo el bundle (bundletool)")) return fail("Cancelado");
         result.aab = input.output_folder / fromUtf8(input.file_stem + ".aab");
         fs::remove(result.aab, ec);
-        if (!tool(tools.java_bin / "java.exe",
+        if (!tool(tools.java_bin / exeName("java"),
                   {"-jar", utf8(tools_ref.bundletool), "build-bundle", "--modules=" + utf8(work / "base.zip"),
                    "--config=" + utf8(work / "BundleConfig.json"), "--output=" + utf8(result.aab)},
                   "bundletool")) {
             return false;
         }
         if (!step(0.92f, "Firmando el AAB (jarsigner)")) return fail("Cancelado");
-        if (!tool(tools.java_bin / "jarsigner.exe",
+        if (!tool(tools.java_bin / exeName("jarsigner"),
                   {"-keystore", utf8(key.keystore), "-storepass", key.store_password, "-keypass", key.key_password, "-sigalg",
                    "SHA256withRSA", "-digestalg", "SHA-256", utf8(result.aab), key.alias},
                   "jarsigner")) {

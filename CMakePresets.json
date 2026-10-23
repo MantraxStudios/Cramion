@@ -29,7 +29,7 @@
     {
       "name": "linux-release",
       "displayName": "Linux (Clang + Ninja, Release)",
-      "description": "Linux con X11: CramionServer (servidor dedicado) y la capa de plataforma (ventana Xlib, Vulkan). Necesita libx11-dev y el SDK de Vulkan.",
+      "description": "Linux con X11 (o XWayland): el editor, CramionPlayer, CramionServer y la capa de plataforma (ventana Xlib, Vulkan). Necesita libx11-dev, libvulkan-dev, glslc, zenity y curl.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-linux",
       "condition": {

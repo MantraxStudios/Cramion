@@ -7,6 +7,7 @@
 
 #include <CramionUpdater/Update.h>
 
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -14,6 +15,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <cstdlib>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include <cstdio>
 #include <cstring>
@@ -123,7 +129,11 @@ std::string fileUrl(const fs::path& path) {
     for (char& c : s) {
         if (c == '\\') c = '/';
     }
+#if defined(_WIN32)
     std::string out = "file:///";
+#else
+    std::string out = "file://";  // la ruta ya empieza por /
+#endif
     for (const char c : s) {
         if (c == ' ') out += "%20";
         else out += c;
@@ -131,18 +141,52 @@ std::string fileUrl(const fs::path& path) {
     return out;
 }
 
+// El nombre del paquete depende de la plataforma (Cramion-linux64.zip en
+// Linux): los JSON de prueba se escriben con el de Windows y se cambia aqui.
+std::string pkg(std::string text) {
+    const std::string win = "Cramion-win64.zip";
+    const std::string mine = update::kPackageAsset;
+    for (std::size_t at = text.find(win); at != std::string::npos; at = text.find(win, at + mine.size())) {
+        text.replace(at, win.size(), mine);
+    }
+    return text;
+}
+
+void setEnv(const char* name, const fs::path* value) {
+#if defined(_WIN32)
+    SetEnvironmentVariableW(update::widen(name).c_str(), value != nullptr ? value->c_str() : nullptr);
+#else
+    if (value != nullptr) {
+        setenv(name, value->c_str(), 1);
+    } else {
+        unsetenv(name);
+    }
+#endif
+}
+
+unsigned long currentPid() {
+#if defined(_WIN32)
+    return GetCurrentProcessId();
+#else
+    return static_cast<unsigned long>(getpid());
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+#if defined(_WIN32)
     SetConsoleOutputCP(CP_UTF8);
+#endif
     const bool online = argc >= 2 && std::string(argv[1]) == "--online";
     const fs::path root = fs::temp_directory_path() / "cramion update tests";  // con espacio a proposito
     std::error_code ec;
     fs::remove_all(root, ec);
     fs::create_directories(root);
     // Ajustes y reopen.json en la carpeta de la prueba, no en %LOCALAPPDATA%.
-    SetEnvironmentVariableW(L"CRAMION_UPDATE_DATA", (root / "data").c_str());
-    SetEnvironmentVariableW(L"CRAMION_UPDATE_FEED", nullptr);
+    const fs::path data_dir = root / "data";
+    setEnv("CRAMION_UPDATE_DATA", &data_dir);
+    setEnv("CRAMION_UPDATE_FEED", nullptr);
 
     std::cout << "Versiones\n";
     {
@@ -171,7 +215,7 @@ int main(int argc, char** argv) {
 
     std::cout << "Feed (formato de GitHub)\n";
     {
-        const std::string github = R"({
+        const std::string github = pkg(R"({
             "tag_name": "v0.7.0", "name": "Cramion Engine v0.7.0",
             "html_url": "https://github.com/MantraxStudios/Cramion/releases/tag/v0.7.0",
             "published_at": "2026-10-02T10:00:00Z",
@@ -179,12 +223,12 @@ int main(int argc, char** argv) {
             "assets": [
                 {"name": "Cramion-win64.zip.sha256", "browser_download_url": "https://x/sha", "size": 64},
                 {"name": "Cramion-win64.zip", "browser_download_url": "https://x/Cramion-win64.zip", "size": 16252928}
-            ]})";
+            ]})");
         update::Release r;
         std::string error;
         check(update::parseRelease(github, r, &error), "se lee la release");
         check(r.version == update::Version::parse("0.7.0"), "version 0.7.0");
-        check(r.zip_url == "https://x/Cramion-win64.zip" && r.zip_size == 16252928, "elige Cramion-win64.zip");
+        check(r.zip_url == pkg("https://x/Cramion-win64.zip") && r.zip_size == 16252928, std::string("elige ") + update::kPackageAsset);
         check(update::formatDate(r.published_at) == "02/10/2026", "fecha dd/mm/aaaa");
         const auto notes = update::parseNotes(r.notes);
         check(notes.size() == 6, "notas: 6 lineas (" + std::to_string(notes.size()) + ")");
@@ -209,22 +253,29 @@ int main(int argc, char** argv) {
         check(!update::parseRelease("<html>", r, &error), "respuesta que no es JSON");
 
         // Canal beta: la lista con la previa mas nueva.
-        const std::string betas = R"([
+        const std::string betas = pkg(R"([
             {"tag_name": "v0.9.0", "draft": true},
             {"tag_name": "v0.8.0-beta.2", "prerelease": true, "assets": [
                 {"name": "Cramion-win64.zip", "browser_download_url": "https://x/b.zip", "size": 10,
                  "digest": "sha256:BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"}]},
-            {"tag_name": "v0.7.1"}])";
+            {"tag_name": "v0.7.1"}])");
         check(update::parseRelease(betas, r, &error, {}, true) && r.version == update::Version::parse("0.8.0-beta.2") && r.prerelease,
               "canal beta: elige la 0.8.0-beta.2");
         check(r.sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "lee el digest de GitHub (en minusculas)");
         check(update::parseRelease(betas, r, &error) && r.version == update::Version::parse("0.7.1") && !r.prerelease,
               "canal estable: se salta la beta");
-        const std::string sidecar = R"({"tag_name": "v1.0.0", "assets": [
+        const std::string sidecar = pkg(R"({"tag_name": "v1.0.0", "assets": [
             {"name": "Cramion-win64.zip", "browser_download_url": "https://x/Cramion-win64.zip"},
-            {"name": "Cramion-win64.zip.sha256", "browser_download_url": "https://x/Cramion-win64.zip.sha256"}]})";
-        check(update::parseRelease(sidecar, r, &error) && r.sha256.empty() && r.sha256_url == "https://x/Cramion-win64.zip.sha256",
-              "encuentra el Cramion-win64.zip.sha256 publicado al lado");
+            {"name": "Cramion-win64.zip.sha256", "browser_download_url": "https://x/Cramion-win64.zip.sha256"}]})");
+        check(update::parseRelease(sidecar, r, &error) && r.sha256.empty() && r.sha256_url == pkg("https://x/Cramion-win64.zip.sha256"),
+              "encuentra el .sha256 publicado al lado");
+#if !defined(_WIN32)
+        // En Linux el paquete de Windows no se elige nunca.
+        check(update::parseRelease(R"({"tag_name": "v1.0.0", "assets": [
+            {"name": "Cramion-win64.zip", "browser_download_url": "https://x/Cramion-win64.zip"}]})", r, &error) &&
+                  r.zip_url.empty(),
+              "Linux: no elige Cramion-win64.zip");
+#endif
     }
 
     std::cout << "Formatos\n";
@@ -235,16 +286,17 @@ int main(int argc, char** argv) {
     const fs::path fixture = fs::path(CRAMION_UPDATE_FIXTURE);
     const fs::path feed_dir = root / "feed";
     fs::create_directories(feed_dir);
-    fs::copy_file(fixture / "Cramion-win64.zip", feed_dir / "Cramion-win64.zip");
-    const std::uint64_t zip_size = fs::file_size(feed_dir / "Cramion-win64.zip");
-    writeAll(feed_dir / "latest.json", R"({"tag_name": "v9.9.9", "body": "- prueba",
+    const fs::path feed_zip = feed_dir / update::kPackageAsset;
+    fs::copy_file(fixture / "Cramion-win64.zip", feed_zip);
+    const std::uint64_t zip_size = fs::file_size(feed_zip);
+    writeAll(feed_dir / "latest.json", pkg(R"({"tag_name": "v9.9.9", "body": "- prueba",
         "assets": [{"name": "Cramion-win64.zip", "browser_download_url": "Cramion-win64.zip", "size": )" +
-                                           std::to_string(zip_size) + "}]}");
+                                           std::to_string(zip_size) + "}]}"));
     update::Release release;
     std::string error;
     check(update::fetchLatest(fileUrl(feed_dir / "latest.json"), release, &error), "feed file:/// con espacios: " + error);
     check(release.version == update::Version::parse("9.9.9"), "version 9.9.9 en el feed");
-    check(fs::path(update::widen(release.zip_url)) == feed_dir / "Cramion-win64.zip", "zip relativo al feed");
+    check(fs::path(update::widen(release.zip_url)) == feed_zip, "zip relativo al feed");
 
     const fs::path zip = root / "downloads" / "Cramion-9.9.9-win64.zip";
     int calls = 0;
@@ -269,11 +321,12 @@ int main(int argc, char** argv) {
         r.sha256 = std::string(64, '0');
         check(!update::verifyPackage(r, zip, &verified, &error) && error.find("no coincide") != std::string::npos,
               "SHA-256 distinto: se rechaza");
-        writeAll(feed_dir / "Cramion-win64.zip.sha256", real + "  Cramion-win64.zip\n");
+        const fs::path sha_file = feed_dir / (std::string(update::kPackageAsset) + ".sha256");
+        writeAll(sha_file, real + "  " + update::kPackageAsset + "\n");
         r.sha256.clear();
-        r.sha256_url = update::narrow((feed_dir / "Cramion-win64.zip.sha256").wstring());
+        r.sha256_url = update::narrow(sha_file.wstring());
         check(update::verifyPackage(r, zip, &verified, &error) && verified, "comprueba con el .sha256 de al lado");
-        writeAll(feed_dir / "Cramion-win64.zip.sha256", std::string(64, 'f') + "\n");
+        writeAll(sha_file, std::string(64, 'f') + "\n");
         check(!update::verifyPackage(r, zip, &verified, &error), ".sha256 de al lado que no coincide: se rechaza");
     }
     check(!update::downloadFile(release.zip_url, root / "downloads" / "cancelada.zip",
@@ -305,11 +358,20 @@ int main(int argc, char** argv) {
     writeAll(install / "assets" / "mio.txt", "no tocar");
     {
         // Un archivo bloqueado del todo: falla y todo vuelve a como estaba.
+#if defined(_WIN32)
         HANDLE lock = CreateFileW((install / "shaders" / "mesh.vert.spv").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
                                   FILE_ATTRIBUTE_NORMAL, nullptr);
         check(lock != INVALID_HANDLE_VALUE, "bloqueo de prueba");
         const bool ok = update::installFiles(staged, install, {}, &error);
         CloseHandle(lock);
+#else
+        // Linux no bloquea archivos abiertos: una carpeta sin permiso de
+        // escritura impide renombrar (como root no vale la prueba).
+        const std::string shaders = (install / "shaders").string();
+        check(chmod(shaders.c_str(), 0555) == 0 && geteuid() != 0, "bloqueo de prueba (carpeta de solo lectura)");
+        const bool ok = update::installFiles(staged, install, {}, &error);
+        chmod(shaders.c_str(), 0755);
+#endif
         check(!ok, "falla con un archivo bloqueado (" + error + ")");
         check(readAll(install / "CramionEditor.exe") == "editor viejo", "vuelta atras: el editor viejo sigue");
         check(!fs::exists(install / "CramionUpdater.exe"), "vuelta atras: no quedan archivos nuevos");
@@ -337,11 +399,19 @@ int main(int argc, char** argv) {
         // Un viejo en uso (como el propio actualizador): queda apuntado y se
         // borra al liberarse.
         writeAll(install / "CramionUpdater.exe", "actualizador en uso");
+#if defined(_WIN32)
         HANDLE in_use = CreateFileW((install / "CramionUpdater.exe").c_str(), GENERIC_READ,
                                     FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+#else
+        auto in_use = std::make_unique<std::ifstream>(install / "CramionUpdater.exe", std::ios::binary);
+#endif
         check(update::installFiles(staged, install, {}, &error), "instala con un archivo abierto (renombrable): " + error);
         check(readAll(install / "CramionUpdater.exe") == "actualizador nuevo", "el abierto se reemplaza igual");
+#if defined(_WIN32)
         CloseHandle(in_use);
+#else
+        in_use.reset();
+#endif
         check(update::cleanupOldFiles() == 0 && !fs::exists(install / L"CramionUpdater.exe.cramion-old"),
               "al volver a abrir se borra el viejo");
     }
@@ -361,9 +431,10 @@ int main(int argc, char** argv) {
         check(update::betaChannel() && update::feedUrl() == update::kBetaFeed, "canal beta: la lista de releases");
         s.channel = "estable";
         update::saveSettings(s);
-        SetEnvironmentVariableW(L"CRAMION_UPDATE_FEED", L"file:///C:/feed.json");
+        const fs::path feed_env = "file:///C:/feed.json";
+        setEnv("CRAMION_UPDATE_FEED", &feed_env);
         check(update::feedUrl() == "file:///C:/feed.json", "CRAMION_UPDATE_FEED manda");
-        SetEnvironmentVariableW(L"CRAMION_UPDATE_FEED", nullptr);
+        setEnv("CRAMION_UPDATE_FEED", nullptr);
 
         update::addReopenProject(L"C:/Proyectos/Mi juego/Mi juego.crproj");
         update::addReopenProject(L"C:/Proyectos/Mi juego/Mi juego.crproj");
@@ -372,7 +443,7 @@ int main(int argc, char** argv) {
         const update::ReopenList list = update::takeReopenList();
         check(list.projects.size() == 2 && list.hub, "reopen: 2 proyectos sin repetir y el Hub");
         check(update::takeReopenList().projects.empty(), "reopen se vacia al leerlo");
-        check(update::runningEngineApps(install, GetCurrentProcessId()).empty(), "ningun editor abierto en la carpeta de prueba");
+        check(update::runningEngineApps(install, currentPid()).empty(), "ningun editor abierto en la carpeta de prueba");
         check(update::quoteArgument(L"C:\\a b\\c.crproj") == L"\"C:\\a b\\c.crproj\"", "argumento con espacios");
         check(update::quoteArgument(L"C:\\a b\\") == L"\"C:\\a b\\\\\"", "barra final antes de la comilla");
     }

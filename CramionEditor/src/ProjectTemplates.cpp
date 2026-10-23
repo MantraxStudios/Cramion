@@ -2166,6 +2166,7 @@ std::filesystem::path fromUtf8(const std::string& s) { return std::filesystem::p
 
 std::filesystem::path userTemplatesFolder() {
     std::filesystem::path base;
+#if defined(_WIN32)
     char* local = nullptr;
     std::size_t length = 0;
     if (_dupenv_s(&local, &length, "LOCALAPPDATA") == 0 && local != nullptr && *local != '\0') {
@@ -2176,6 +2177,24 @@ std::filesystem::path userTemplatesFolder() {
         std::error_code error;
         base = std::filesystem::temp_directory_path(error);
     }
+#else
+    // LOCALAPPDATA si esta (las pruebas la cambian), si no $XDG_DATA_HOME o
+    // ~/.local/share.
+    const auto nonEmpty = [](const char* name) {
+        const char* value = std::getenv(name);
+        return value != nullptr && *value != '\0' ? value : nullptr;
+    };
+    if (const char* local = nonEmpty("LOCALAPPDATA")) {
+        base = local;
+    } else if (const char* xdg = nonEmpty("XDG_DATA_HOME")) {
+        base = xdg;
+    } else if (const char* home = nonEmpty("HOME")) {
+        base = std::filesystem::path(home) / ".local" / "share";
+    } else {
+        std::error_code error;
+        base = std::filesystem::temp_directory_path(error);
+    }
+#endif
     return base / "Cramion" / "Templates";
 }
 

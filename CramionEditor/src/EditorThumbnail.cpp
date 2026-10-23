@@ -20,10 +20,15 @@ std::filesystem::path projectThumbnailFile(const std::filesystem::path& project_
 
 void EditorApp::saveProjectThumbnail() {
     if (!has_project_ || view_w_ < 64.0f || view_h_ < 64.0f) return;
+#if defined(_WIN32)
     RECT client{};
     GetClientRect(window_.handle(), &client);
     const int width = client.right - client.left;
     const int height = client.bottom - client.top;
+#else
+    const int width = static_cast<int>(window_.width());
+    const int height = static_cast<int>(window_.height());
+#endif
     if (width <= 0 || height <= 0) return;  // minimizada
     const std::vector<std::uint8_t> pixels = captureEditorWindow(window_.handle(), {});
     if (pixels.size() != static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4) return;

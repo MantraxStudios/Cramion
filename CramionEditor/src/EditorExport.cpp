@@ -14,10 +14,16 @@
 // Con una configuracion de Android sale <Carpeta>/<Juego>/<Juego>.apk (y/o
 // .aab, y el .obb si los assets van aparte): el mismo .crpack, los shaders y
 // android/<abi>/libmain.so de junto al editor, empaquetados con AndroidBuild.
+//
+// En Linux sale la version de Linux: <Juego> (CramionPlayer, sin extension y
+// ejecutable), las .so de junto al editor, los scripts como .so y, en vez del
+// icono dentro del .exe, <Juego>.png y <Juego>.desktop. Desde Linux no se
+// puede exportar para Windows (no hay CramionPlayer.exe de Windows).
 
 #include "EditorApp.h"
 
 #include "Dialogs.h"
+#include "SystemUtil.h"
 
 #include <CramionCore/ecs/SceneSerializer.h>
 #include <CramionCore/asset/SurfaceShader.h>
@@ -38,19 +44,61 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <thread>
 #include <unordered_set>
 
+#if defined(_WIN32)
 #include <shellapi.h>
+#endif
 
 namespace cramion::editor {
 
 namespace {
 
-std::filesystem::path editorFolder() {
-    wchar_t buffer[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, buffer, MAX_PATH);
-    return std::filesystem::path(buffer).parent_path();
+std::filesystem::path editorFolder() { return sys::executableDir(); }
+
+// Los ejecutables del juego: CramionPlayer.exe en Windows, CramionPlayer en Linux.
+#if defined(_WIN32)
+constexpr const char* kExeExt = ".exe";
+#else
+constexpr const char* kExeExt = "";
+#endif
+
+#if !defined(_WIN32)
+// Linux: <Juego>.desktop junto al juego (icono y nombre en el escritorio y el
+// menu de aplicaciones si se copia a ~/.local/share/applications). Exec e Icon
+// llevan la ruta absoluta (el formato no admite relativas).
+bool writeDesktopEntry(const std::filesystem::path& exe, const std::filesystem::path& icon_png, std::string* error) {
+    const std::filesystem::path file = std::filesystem::path(exe).concat(".desktop");
+    const auto quoted = [](const std::string& text) {
+        std::string out = "\"";
+        for (const char c : text) {
+            if (c == '"' || c == '`' || c == '$' || c == '\\') out += '\\';
+            out += c;
+        }
+        return out + "\"";
+    };
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out << "[Desktop Entry]\n"
+        << "Type=Application\n"
+        << "Name=" << dialogs::utf8(exe.filename()) << "\n"
+        << "Exec=" << quoted(dialogs::utf8(exe)) << "\n"
+        << "Path=" << dialogs::utf8(exe.parent_path()) << "\n";
+    if (!icon_png.empty()) out << "Icon=" << dialogs::utf8(icon_png) << "\n";
+    out << "Terminal=false\n"
+        << "Categories=Game;\n";
+    out.close();
+    if (!out) {
+        if (error) *error = "no se pudo escribir " + dialogs::utf8(file);
+        return false;
+    }
+    // Ejecutable: los escritorios no lanzan un .desktop sin permiso de ejecucion.
+    std::error_code e;
+    std::filesystem::permissions(file, std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec,
+                                 std::filesystem::perm_options::add, e);
+    return true;
 }
+#endif
 
 std::string safeFolderName(std::string name) {
     for (char& c : name) {
@@ -125,6 +173,7 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
     }
     const std::filesystem::path source = editorFolder();
     const bool android = config.platform == BuildPlatform::Android;
+#if defined(_WIN32)
     if (config.platform == BuildPlatform::Linux) {
         export_message_ = "Linux: el reproductor nativo aun no esta disponible. Exporta para Windows: funciona en Linux "
                           "y Steam Deck con Proton (ver Manual > Linux).";
@@ -136,11 +185,25 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
         std::cerr << "[Exportar] " << export_message_ << '\n';
         return;
     }
+#else
+    if (config.platform == BuildPlatform::Windows) {
+        export_message_ = "Windows: desde el editor de Linux no se puede exportar para Windows (no hay un CramionPlayer.exe "
+                          "de Windows junto al editor). Elige la plataforma Linux (x64) en Configuraciones de compilacion, "
+                          "o exporta desde el editor de Windows.";
+        std::cerr << "[Exportar] " << export_message_ << '\n';
+        return;
+    }
+    if (!android && !std::filesystem::exists(source / "CramionPlayer")) {
+        export_message_ = "Falta CramionPlayer junto al editor: compila el proyecto.";
+        std::cerr << "[Exportar] " << export_message_ << '\n';
+        return;
+    }
+#endif
 
     // Lista de copias (se decide aqui, se copia en el otro hilo).
     auto job = std::make_unique<ExportJob>();
     job->target = target;
-    job->exe = target / dialogs::fromUtf8(game_name + ".exe");
+    job->exe = target / dialogs::fromUtf8(game_name + kExeExt);
     if (const std::filesystem::path icon = buildIconPath(config); !icon.empty()) {
         if (std::filesystem::exists(icon) && isIconSource(icon)) {
             job->icon = icon;
@@ -148,6 +211,13 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
             std::cerr << "[Exportar] El icono " << dialogs::utf8(icon) << " no existe o no es una imagen: se usa el del motor\n";
         }
     }
+#if !defined(_WIN32)
+    // Linux: el ejecutable no trae icono; el del .desktop es el del motor si
+    // la configuracion no tiene uno.
+    if (job->icon.empty() && !android && std::filesystem::exists(source / "editor_icons" / "logo.png")) {
+        job->icon = source / "editor_icons" / "logo.png";
+    }
+#endif
     job->run_after = run_after;
     job->android = android;
     std::error_code error;
@@ -281,6 +351,7 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
             }
         }
     } else {
+#if defined(_WIN32)
         add_file(source / "CramionPlayer.exe", job->exe);
         add_folder(source / "shaders", target / "shaders");
         for (std::filesystem::directory_iterator it(source, error); !error && it != std::filesystem::directory_iterator();
@@ -295,12 +366,33 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
             server_exe.replace_filename(job->exe.stem().wstring() + L"Server.exe");
             add_file(source / "CramionServer.exe", server_exe);
         }
+#else
+        add_file(source / "CramionPlayer", job->exe);
+        add_folder(source / "shaders", target / "shaders");
+        // Las .so que haya junto al editor (libfoo.so o libfoo.so.1).
+        for (std::filesystem::directory_iterator it(source, error); !error && it != std::filesystem::directory_iterator();
+             it.increment(error)) {
+            std::error_code fe;
+            const std::string name = dialogs::utf8(it->path().filename());
+            const bool shared = it->path().extension() == ".so" || name.find(".so.") != std::string::npos;
+            if (it->is_regular_file(fe) && shared) add_file(it->path(), target / it->path().filename());
+        }
+        add_file(source / "player_banner.png", game / "banner.png");
+        // Servidor dedicado: el mismo juego sin ventana (CramionServer).
+        if (config.dedicated_server && std::filesystem::exists(source / "CramionServer")) {
+            add_file(source / "CramionServer", target / dialogs::fromUtf8(game_name + "Server"));
+        }
+#endif
         // Steam: steam_api64.dll y steam_appid.txt (EditorPlatform.cpp).
         for (const auto& [from, to] : platformExportFiles(config, target)) add_file(from, to);
         // Scripts de C++: el proceso aislado y la DLL (al dia) con sus simbolos.
         if (cpp_scripts_.hasSources()) {
             if (!cpp_scripts_.upToDate()) {
+#if defined(_WIN32)
                 while (cpp_scripts_.compiling()) Sleep(20);
+#else
+                while (cpp_scripts_.compiling()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+#endif
                 // (La que estaba en marcha cuenta como terminada para cpp_compile_status.)
                 if (std::optional<scripting::CppCompileResult> taken = cpp_scripts_.takeCompileResult()) {
                     cpp_last_result_ = std::move(*taken);
@@ -315,12 +407,18 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 }
                 cpp_scripts_.setBuildFolder(project_.libraryFolder() / "CppScripts");
             }
+#if defined(_WIN32)
             add_file(source / "CramionScriptHost.exe", target / "CramionScriptHost.exe");
             add_file(cpp_scripts_.dll(), target / "scripts" / "game_scripts.dll");
             std::filesystem::path pdb = cpp_scripts_.dll();
             pdb.replace_extension(".pdb");
             std::error_code pe;
             if (std::filesystem::exists(pdb, pe)) add_file(pdb, target / "scripts" / pdb.filename());
+#else
+            // Linux: la .so de los scripts (los simbolos van dentro).
+            add_file(source / "CramionScriptHost", target / "CramionScriptHost");
+            add_file(cpp_scripts_.dll(), target / "scripts" / "game_scripts.so");
+#endif
         }
     }
 
@@ -410,6 +508,12 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 j->error = "No se pudo escribir " + dialogs::utf8(copy.to) + " (disco lleno?)";
                 break;
             }
+#if !defined(_WIN32)
+            // Los mismos permisos (el reproductor y el servidor siguen siendo ejecutables).
+            out.close();
+            std::filesystem::permissions(copy.to, std::filesystem::status(copy.from, te).permissions(),
+                                         std::filesystem::perm_options::replace, te);
+#endif
         }
         // El icono de la configuracion, dentro del .exe (siempre: la copia
         // puede haberse saltado y traer el icono de la exportacion anterior).
@@ -419,7 +523,13 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 j->current = "Icono del juego";
             }
             std::string icon_error;
+#if defined(_WIN32)
             if (setExeIcon(j->exe, j->icon, &icon_error)) {
+#else
+            // Linux: <Juego>.png y <Juego>.desktop junto al ejecutable.
+            const std::filesystem::path png = std::filesystem::path(j->exe).concat(".png");
+            if (writeIconPng(j->icon, png, 256, &icon_error) && writeDesktopEntry(j->exe, png, &icon_error)) {
+#endif
                 std::cout << "[Exportar] Icono: " << dialogs::utf8(j->icon.filename()) << '\n';
             } else {
                 std::cerr << "[Exportar] No se pudo poner el icono: " << icon_error << '\n';
@@ -787,16 +897,28 @@ void EditorApp::drawExportProgress() {
                 if (!j.batch_summary.empty()) export_message_ += "\n\nStatic batching:" + j.batch_summary;
                 export_message_ += j.android_notes;
                 if (j.android_device.empty()) {
+#if defined(_WIN32)
                     ShellExecuteW(nullptr, L"open", j.target.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+                    sys::openWithSystem(j.target);
+#endif
                 }
             } else {
                 export_message_ = "Juego exportado en " + dialogs::utf8(j.target) + " (escena inicial: " + j.scene_name + ")";
                 if (!j.batch_summary.empty()) export_message_ += "\n\nStatic batching:" + j.batch_summary;
+#if defined(_WIN32)
                 if (j.run_after) {
                     ShellExecuteW(nullptr, L"open", j.exe.wstring().c_str(), nullptr, j.target.wstring().c_str(), SW_SHOWNORMAL);
                 } else {
                     ShellExecuteW(nullptr, L"open", j.target.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
+#else
+                if (j.run_after) {
+                    if (sys::spawnDetached(j.exe, {}, j.target) == 0) export_message_ += "\n\nNo se pudo abrir el juego.";
+                } else {
+                    sys::openWithSystem(j.target);
+                }
+#endif
             }
             std::cout << "[Exportar] " << export_message_ << '\n';
             export_job_.reset();
@@ -859,7 +981,7 @@ void EditorApp::drawExportProgress() {
                 ImGui::TextDisabled("Por USB con la depuracion activada, o un emulador abierto.");
             }
         } else {
-            ImGui::TextDisabled("Se creara: %s", dialogs::utf8(parent / dialogs::fromUtf8(game_name) / dialogs::fromUtf8(game_name + ".exe")).c_str());
+            ImGui::TextDisabled("Se creara: %s", dialogs::utf8(parent / dialogs::fromUtf8(game_name) / dialogs::fromUtf8(game_name + kExeExt)).c_str());
             ImGui::Checkbox("Ejecutar el juego al terminar", &export_run_after_);
         }
         if (ImGui::Checkbox("Combinar mallas estaticas (static batching)", &export_static_batching_)) {

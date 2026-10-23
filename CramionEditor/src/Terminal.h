@@ -2,7 +2,8 @@
 #define CRAMION_EDITOR_TERMINAL_H
 
 // Terminal integrada del editor (Ventana > Terminal): una consola de Windows
-// de verdad (ConPTY, Windows 10 1809+) con su emulador VT, para trabajar con
+// de verdad (ConPTY, Windows 10 1809+; en Linux una pty con forkpty y el
+// shell del usuario) con su emulador VT, para trabajar con
 // una IA de linea de comandos (Claude Code, Codex, Gemini...) o con
 // PowerShell sin salir del motor.
 //
@@ -135,7 +136,9 @@ public:
     TerminalSession(const TerminalSession&) = delete;
     TerminalSession& operator=(const TerminalSession&) = delete;
 
-    // `command_line`: lo que se ejecuta (p. ej. "powershell.exe -NoLogo").
+    // `command_line`: lo que se ejecuta (p. ej. "powershell.exe -NoLogo"). En
+    // Linux: vacio = el shell del usuario ($SHELL); si no, se ejecuta con
+    // `$SHELL -ic` (bash o zsh; si no, /bin/bash).
     bool start(const std::wstring& command_line, const std::filesystem::path& folder, int cols, int rows,
                std::string& error);
     void stop();
@@ -162,10 +165,17 @@ private:
     void readLoop();
 
     TerminalScreen screen_;
+#if defined(_WIN32)
     void* pseudo_console_ = nullptr;  // HPCON
     void* input_write_ = nullptr;     // HANDLE
     void* output_read_ = nullptr;
     void* process_ = nullptr;
+#else
+    int master_fd_ = -1;  // lado del editor de la pty
+    int pid_ = 0;         // 0 = sin proceso (o ya recogido)
+    std::atomic<bool> stopping_{false};
+    std::atomic<bool> reader_done_{false};
+#endif
     std::thread reader_;
     std::mutex mutex_;
     std::string pending_;

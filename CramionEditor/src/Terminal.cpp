@@ -8,6 +8,20 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <poll.h>
+#include <pty.h>
+#include <signal.h>
+#include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <chrono>
+#include <cstdlib>
+
+extern char** environ;
 #endif
 
 namespace cramion::editor {
@@ -638,7 +652,7 @@ void TerminalScreen::feed(const char* data, std::size_t size, std::string& reply
 }
 
 // =============================================================================
-// TerminalSession (ConPTY)
+// TerminalSession (ConPTY en Windows, forkpty en Linux)
 // =============================================================================
 
 #if defined(_WIN32)
@@ -812,16 +826,225 @@ void TerminalSession::resize(int cols, int rows) {
 
 #else
 
-TerminalSession::~TerminalSession() = default;
-bool TerminalSession::start(const std::wstring&, const std::filesystem::path&, int, int, std::string& error) {
-    error = "la terminal solo existe en Windows";
-    return false;
+// Linux: una pty (forkpty) con el shell del usuario.
+
+namespace {
+
+winsize windowSize(int cols, int rows) {
+    winsize ws{};
+    ws.ws_col = static_cast<unsigned short>(std::clamp(cols, 2, 1000));
+    ws.ws_row = static_cast<unsigned short>(std::clamp(rows, 2, 1000));
+    return ws;
 }
-void TerminalSession::readLoop() {}
-void TerminalSession::stop() {}
-bool TerminalSession::pump() { return false; }
-void TerminalSession::write(const std::string&) {}
-void TerminalSession::resize(int cols, int rows) { screen_.resize(cols, rows); }
+
+bool executable(const std::string& path) { return !path.empty() && access(path.c_str(), X_OK) == 0; }
+
+// El shell del usuario; para ejecutar un comando, uno que entienda `-ic`
+// con sintaxis POSIX (bash o zsh), para que lea su .bashrc/.zshrc (PATH de
+// nvm, ~/.local/bin...).
+std::string userShell(bool for_command) {
+    const char* env_shell = std::getenv("SHELL");
+    std::string shell = env_shell != nullptr ? env_shell : "";
+    if (for_command) {
+        const std::string base = shell.substr(shell.find_last_of('/') + 1);
+        if (base != "bash" && base != "zsh") shell.clear();
+    }
+    if (executable(shell)) return shell;
+    if (executable("/bin/bash")) return "/bin/bash";
+    return "/bin/sh";
+}
+
+std::string narrow(const std::wstring& text) {
+    std::string out;
+    for (const wchar_t c : text) appendUtf8(out, static_cast<char32_t>(c));
+    return out;
+}
+
+}  // namespace
+
+TerminalSession::~TerminalSession() { stop(); }
+
+bool TerminalSession::start(const std::wstring& command_line, const std::filesystem::path& folder, int cols, int rows,
+                            std::string& error) {
+    stop();
+    screen_ = TerminalScreen(cols, rows);
+
+    // Todo lo que usa el hijo se prepara antes del fork (despues solo vale
+    // lo que es seguro en un proceso con hilos: chdir, close, execve).
+    const std::string command = narrow(command_line);
+    const std::string shell = userShell(!command.empty());
+    std::vector<std::string> args{shell};
+    if (!command.empty()) {
+        args.push_back("-ic");
+        args.push_back(command);
+    }
+    std::vector<std::string> env_strings;
+    for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
+        const std::string entry = *e;
+        if (entry.rfind("TERM=", 0) == 0 || entry.rfind("COLORTERM=", 0) == 0) continue;
+        env_strings.push_back(entry);
+    }
+    env_strings.push_back("TERM=xterm-256color");
+    env_strings.push_back("COLORTERM=truecolor");
+    std::vector<char*> argv;
+    for (std::string& a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    std::vector<char*> envp;
+    for (std::string& e : env_strings) envp.push_back(e.data());
+    envp.push_back(nullptr);
+    const std::string cwd = folder.empty() ? std::string() : folder.string();
+    const long max_fd = std::min(sysconf(_SC_OPEN_MAX), 65536L);
+
+    winsize ws = windowSize(cols, rows);
+    int master = -1;
+    const pid_t pid = forkpty(&master, nullptr, nullptr, &ws);
+    if (pid < 0) {
+        error = std::string("no se pudo crear la pseudoterminal: ") + std::strerror(errno);
+        return false;
+    }
+    if (pid == 0) {
+        // Hijo: sesion nueva con la pty como terminal (forkpty ya lo hizo).
+        for (int fd = 3; fd < max_fd; ++fd) close(fd);
+        signal(SIGPIPE, SIG_DFL);
+        signal(SIGINT, SIG_DFL);
+        signal(SIGQUIT, SIG_DFL);
+        signal(SIGCHLD, SIG_DFL);
+        sigset_t none;
+        sigemptyset(&none);
+        sigprocmask(SIG_SETMASK, &none, nullptr);
+        if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
+            // Sigue en la carpeta del editor.
+        }
+        execve(argv[0], argv.data(), envp.data());
+        _exit(127);
+    }
+
+    fcntl(master, F_SETFD, FD_CLOEXEC);
+    fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK);
+    master_fd_ = master;
+    pid_ = pid;
+    stopping_ = false;
+    reader_done_ = false;
+    started_ = true;
+    running_ = true;
+    reader_ = std::thread([this] { readLoop(); });
+    return true;
+}
+
+void TerminalSession::readLoop() {
+    std::vector<char> buffer(64 * 1024);
+    while (!stopping_) {
+        pollfd p{master_fd_, POLLIN, 0};
+        const int ready = ::poll(&p, 1, 50);
+        if (ready < 0 && errno != EINTR) break;
+        if (ready <= 0) continue;
+        const ssize_t read_bytes = ::read(master_fd_, buffer.data(), buffer.size());
+        if (read_bytes > 0) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            pending_.append(buffer.data(), static_cast<std::size_t>(read_bytes));
+            continue;
+        }
+        if (read_bytes < 0 && (errno == EAGAIN || errno == EINTR)) continue;
+        break;  // EIO: ya nadie tiene abierta la pty (el shell termino)
+    }
+    reader_done_ = true;
+}
+
+void TerminalSession::stop() {
+    if (pid_ > 0) {
+        // Como al cerrar una ventana de terminal: SIGHUP a su grupo.
+        kill(-pid_, SIGHUP);
+        kill(pid_, SIGHUP);
+    }
+    stopping_ = true;
+    if (reader_.joinable()) reader_.join();
+    if (master_fd_ >= 0) {
+        // Lo ultimo que escribio antes de terminar (el hilo ya no lee).
+        char buffer[4096];
+        for (int i = 0; i < 64; ++i) {
+            const ssize_t n = ::read(master_fd_, buffer, sizeof(buffer));
+            if (n <= 0) break;
+            std::lock_guard<std::mutex> lock(mutex_);
+            pending_.append(buffer, static_cast<std::size_t>(n));
+        }
+        close(master_fd_);
+    }
+    master_fd_ = -1;
+    if (pid_ > 0) {
+        bool reaped = false;
+        for (int i = 0; i < 20 && !reaped; ++i) {
+            if (waitpid(pid_, nullptr, WNOHANG) != 0) reaped = true;
+            else std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!reaped) {
+            kill(-pid_, SIGKILL);
+            kill(pid_, SIGKILL);
+            waitpid(pid_, nullptr, 0);
+        }
+        pid_ = 0;
+    }
+    running_ = false;
+}
+
+bool TerminalSession::pump() {
+    std::string data;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        data.swap(pending_);
+    }
+    if (!data.empty()) {
+        std::string reply;
+        screen_.feed(data.data(), data.size(), reply);
+        if (!reply.empty()) write(reply);
+    }
+    if (running_ && pid_ > 0 && waitpid(pid_, nullptr, WNOHANG) == pid_) {
+        pid_ = 0;  // recogido; lo que quede en la pty se lee al pararla
+    }
+    // Termino solo (exit): se cierra la pty; la pantalla se queda.
+    if (running_ && (reader_done_ || pid_ == 0)) {
+        stop();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            data.swap(pending_);
+        }
+        std::string reply;
+        if (!data.empty()) screen_.feed(data.data(), data.size(), reply);
+        const char* note = "\r\n\x1b[90m[Proceso terminado]\x1b[0m\r\n";
+        screen_.feed(note, std::strlen(note), reply);
+    }
+    return !data.empty();
+}
+
+void TerminalSession::write(const std::string& bytes) {
+    if (master_fd_ < 0 || bytes.empty()) return;
+    std::size_t done = 0;
+    int waits = 0;
+    while (done < bytes.size()) {
+        const ssize_t n = ::write(master_fd_, bytes.data() + done, bytes.size() - done);
+        if (n > 0) {
+            done += static_cast<std::size_t>(n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && errno == EAGAIN && waits++ < 40) {
+            // La pty esta llena (pegar mucho texto): espera un poco.
+            pollfd p{master_fd_, POLLOUT, 0};
+            ::poll(&p, 1, 50);
+            continue;
+        }
+        break;
+    }
+}
+
+void TerminalSession::resize(int cols, int rows) {
+    if (cols == screen_.cols() && rows == screen_.rows()) return;
+    screen_.resize(cols, rows);
+    if (master_fd_ >= 0) {
+        // El kernel avisa al programa (SIGWINCH).
+        const winsize ws = windowSize(cols, rows);
+        ioctl(master_fd_, TIOCSWINSZ, &ws);
+    }
+}
 
 #endif
 

@@ -71,14 +71,14 @@ if(ANDROID)
 endif()
 
 # Dear ImGui + sus backends de Win32 y Vulkan. Las cabeceras de Vulkan y
-# vulkan-1.lib vienen de CramionFX.
+# vulkan-1.lib vienen de CramionFX. En Linux no hay backend de plataforma: la
+# entrada la da ImGuiLayer con los eventos de la ventana X11 (CramionDM).
 add_library(cramion_imgui STATIC
     "${imgui_SOURCE_DIR}/imgui.cpp"
     "${imgui_SOURCE_DIR}/imgui_draw.cpp"
     "${imgui_SOURCE_DIR}/imgui_tables.cpp"
     "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
     "${imgui_SOURCE_DIR}/imgui_demo.cpp"
-    "${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp"
     "${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp"
     "${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp"
     "${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp"
@@ -89,7 +89,25 @@ target_include_directories(cramion_imgui SYSTEM PUBLIC
     "${imguizmo_SOURCE_DIR}/src"
     "${imgui_SOURCE_DIR}/misc/cpp"
 )
-target_link_libraries(cramion_imgui PUBLIC Cramion::FX dwmapi imm32)
+target_link_libraries(cramion_imgui PUBLIC Cramion::FX)
+if(WIN32)
+    target_sources(cramion_imgui PRIVATE "${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp")
+    target_link_libraries(cramion_imgui PUBLIC dwmapi imm32)
+endif()
+
+# Bibliotecas del sistema de cada ejecutable (Windows / Linux).
+if(WIN32)
+    set(CRAMION_EDITOR_SYSTEM_LIBS comdlg32 shell32 ole32 gdiplus dbghelp ws2_32)
+    set(CRAMION_PLAYER_SYSTEM_LIBS shell32 ole32 gdiplus dbghelp)
+    set(CRAMION_SHELL_LIBS shell32)
+else()
+    find_package(X11 REQUIRED)
+    find_package(Threads REQUIRED)
+    # util: forkpty (terminal integrada); dl: dlopen; X11: portapapeles y ventana.
+    set(CRAMION_EDITOR_SYSTEM_LIBS X11::X11 Threads::Threads util ${CMAKE_DL_LIBS})
+    set(CRAMION_PLAYER_SYSTEM_LIBS X11::X11 Threads::Threads ${CMAKE_DL_LIBS})
+    set(CRAMION_SHELL_LIBS "")
+endif()
 # Codigo de terceros: sin nuestros avisos y optimizado tambien en Debug.
 target_compile_options(cramion_imgui PRIVATE -O2 -w)
 
@@ -99,13 +117,13 @@ file(GLOB CRAMION_EDITOR_SOURCES CONFIGURE_DEPENDS
 )
 
 add_executable(CramionEditor ${CRAMION_EDITOR_SOURCES} "${CRAMION_ICON_RC}")
-target_link_libraries(CramionEditor PRIVATE Cramion::Core cramion_imgui cramion_update comdlg32 shell32 ole32 gdiplus dbghelp ws2_32)
+target_link_libraries(CramionEditor PRIVATE Cramion::Core cramion_imgui cramion_update ${CRAMION_EDITOR_SYSTEM_LIBS})
 # Las escenas de demostracion (src/DemoScenes.h) las comparte con cramion.exe.
 target_include_directories(CramionEditor PRIVATE "${CMAKE_SOURCE_DIR}/src")
 set_target_properties(CramionEditor PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 # En Release, aplicacion de ventana: sin la consola negra detras (los mensajes
 # siguen en el panel Consola). En Debug se deja la consola para desarrollar.
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
+if(WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Release")
     set_target_properties(CramionEditor PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_options(CramionEditor PRIVATE "-Xlinker" "/entry:mainCRTStartup")
 endif()
@@ -144,6 +162,9 @@ target_link_libraries(CramionPreviewTests PRIVATE Cramion::Core)
 add_executable(CramionTerminalTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TerminalTests.cpp"
                                     "${CMAKE_CURRENT_SOURCE_DIR}/src/Terminal.cpp")
 target_include_directories(CramionTerminalTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(UNIX AND NOT ANDROID)
+    target_link_libraries(CramionTerminalTests PRIVATE util)  # forkpty
+endif()
 
 # Prueba del autocompletado del editor de codigo (consola).
 add_executable(CramionCompletionTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CompletionTests.cpp"
@@ -180,7 +201,7 @@ target_compile_definitions(CramionTemplateTests PRIVATE
 add_executable(CramionBuildConfigTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/BuildConfigTests.cpp"
                                        "${CMAKE_CURRENT_SOURCE_DIR}/src/BuildConfig.cpp")
 target_include_directories(CramionBuildConfigTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(CramionBuildConfigTests PRIVATE Cramion::Core shell32)
+target_link_libraries(CramionBuildConfigTests PRIVATE Cramion::Core ${CRAMION_SHELL_LIBS})
 
 # Prueba de la exportacion a Android (consola): controles tactiles, ajustes,
 # manifiesto y un APK real si hay Android SDK.
@@ -188,7 +209,7 @@ add_executable(CramionAndroidBuildTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/Andro
                                         "${CMAKE_CURRENT_SOURCE_DIR}/src/AndroidBuild.cpp"
                                         "${CMAKE_CURRENT_SOURCE_DIR}/src/BuildConfig.cpp")
 target_include_directories(CramionAndroidBuildTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(CramionAndroidBuildTests PRIVATE Cramion::Core shell32)
+target_link_libraries(CramionAndroidBuildTests PRIVATE Cramion::Core ${CRAMION_SHELL_LIBS})
 
 # --- CramionServer: servidor dedicado sin ventana ni GPU (consola) ---
 # Simula la escena (fisica, navegacion, scripts) a un ritmo fijo y abre la
@@ -209,9 +230,12 @@ add_executable(CramionPlayer
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ProfilerOverlay.cpp"
     "${CRAMION_ICON_RC}")
 target_include_directories(CramionPlayer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(CramionPlayer PRIVATE Cramion::Core cramion_imgui shell32 ole32 gdiplus dbghelp)
-set_target_properties(CramionPlayer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}" WIN32_EXECUTABLE TRUE)
-target_link_options(CramionPlayer PRIVATE "-Xlinker" "/entry:mainCRTStartup")
+target_link_libraries(CramionPlayer PRIVATE Cramion::Core cramion_imgui ${CRAMION_PLAYER_SYSTEM_LIBS})
+set_target_properties(CramionPlayer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+if(WIN32)
+    set_target_properties(CramionPlayer PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(CramionPlayer PRIVATE "-Xlinker" "/entry:mainCRTStartup")
+endif()
 target_compile_definitions(CramionPlayer PRIVATE
     CRAMION_EDITOR_ICON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos"
     CRAMION_EDITOR_LOGO_SOURCE="${CMAKE_SOURCE_DIR}/assets/icon.png")
@@ -224,11 +248,18 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/assets/bannerintro.png")
         COMMENT "Banner del juego exportado")
 endif()
 add_dependencies(CramionEditor CramionPlayer)
+# Linux: las .so copiadas junto al juego exportado (Steam, escaladores) se
+# buscan en la carpeta del ejecutable.
+if(UNIX AND NOT ANDROID)
+    set_target_properties(CramionPlayer CramionServer CramionEditor PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+endif()
 
 # --- CramionMcp.exe: puente MCP por stdio (Claude Desktop y otros) hacia el ---
 # servidor MCP del editor (http://127.0.0.1:7777/mcp).
 add_executable(CramionMcp "${CMAKE_CURRENT_SOURCE_DIR}/mcp/McpBridge.cpp")
-target_link_libraries(CramionMcp PRIVATE ws2_32)
+if(WIN32)
+    target_link_libraries(CramionMcp PRIVATE ws2_32)
+endif()
 set_target_properties(CramionMcp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 add_dependencies(CramionEditor CramionMcp)
 
@@ -238,7 +269,11 @@ add_dependencies(CramionEditor CramionMcp)
 # Sin dependencias del motor: solo las cabeceras del canal y del SDK.
 add_executable(CramionScriptHost "${CMAKE_CURRENT_SOURCE_DIR}/host/ScriptHost.cpp")
 target_include_directories(CramionScriptHost PRIVATE "${CMAKE_SOURCE_DIR}/CramionCore/include" "${CMAKE_SOURCE_DIR}/CramionCore/sdk")
-target_link_libraries(CramionScriptHost PRIVATE dbghelp)
+if(WIN32)
+    target_link_libraries(CramionScriptHost PRIVATE dbghelp)
+else()
+    target_link_libraries(CramionScriptHost PRIVATE ${CMAKE_DL_LIBS})
+endif()
 target_compile_options(CramionScriptHost PRIVATE -Wall -Wextra)
 set_target_properties(CramionScriptHost PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 # El SDK (cabeceras y el arranque de la DLL) junto a los ejecutables, en sdk/:
@@ -262,7 +297,13 @@ add_dependencies(cramion_minigolf CramionScriptHost)
 # LLVM instalados y clangd da el IntelliSense del editor de codigo. Se baja una
 # vez a %LOCALAPPDATA%/Cramion/downloads (compartido entre build y
 # build-release) y se copia lo justo (x86_64) a <bin>/toolchain.
-option(CRAMION_BUNDLE_TOOLCHAIN "Incluir clang/clangd (llvm-mingw) para los scripts de C++" ON)
+# En Linux los scripts usan el clang/clangd del sistema (sin descarga).
+if(WIN32)
+    set(_cramion_bundle_default ON)
+else()
+    set(_cramion_bundle_default OFF)
+endif()
+option(CRAMION_BUNDLE_TOOLCHAIN "Incluir clang/clangd (llvm-mingw) para los scripts de C++" ${_cramion_bundle_default})
 if(CRAMION_BUNDLE_TOOLCHAIN)
     set(CRAMION_TOOLCHAIN_VERSION 20260922)
     set(_tc_name "llvm-mingw-${CRAMION_TOOLCHAIN_VERSION}-ucrt-x86_64")

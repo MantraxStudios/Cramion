@@ -32,6 +32,11 @@ if(NOT EXISTS "${CRAMION_ICON_RC}" OR NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/as
     endif()
 endif()
 
+# Fuera de Windows no hay recursos .rc (el icono va en el .desktop).
+if(NOT WIN32)
+    set(CRAMION_ICON_RC "")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -96,29 +101,27 @@ if(ANDROID)
     return()
 endif()
 
-# Linux (preset linux-release): el motor (Core, FX, la ventana Xlib) y el
-# servidor dedicado CramionServer. El editor y el reproductor siguen siendo
-# de Windows (usan Win32/GDI+ en su interfaz y carga).
+# Linux (preset linux-release): el motor (Core, FX, la ventana Xlib), el
+# editor, el reproductor (CramionPlayer, lo copia la exportacion), el
+# servidor dedicado y el proceso de los scripts de C++. El actualizador
+# (CramionUpdater) sigue siendo de Windows: solo su libreria comun.
 if(UNIX AND NOT APPLE)
     add_subdirectory(CramionCore)
-    add_executable(CramionServer CramionEditor/server/ServerMain.cpp)
-    target_link_libraries(CramionServer PRIVATE Cramion::Core)
-    set_target_properties(CramionServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-    # El proceso aislado de los scripts de C++ (dlopen de la .so del juego) y
-    # el SDK junto a los ejecutables (sdk/), como en Windows.
-    add_executable(CramionScriptHost CramionEditor/host/ScriptHost.cpp)
-    target_include_directories(CramionScriptHost PRIVATE "${CMAKE_SOURCE_DIR}/CramionCore/include" "${CMAKE_SOURCE_DIR}/CramionCore/sdk")
-    target_link_libraries(CramionScriptHost PRIVATE ${CMAKE_DL_LIBS})
-    target_compile_options(CramionScriptHost PRIVATE -Wall -Wextra)
-    set_target_properties(CramionScriptHost PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-    add_custom_target(cramion_sdk_copy ALL
-        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-                "${CMAKE_SOURCE_DIR}/CramionCore/sdk" "${CMAKE_BINARY_DIR}/sdk"
-        COMMENT "SDK de los scripts de C++")
-    add_dependencies(CramionScriptHost cramion_sdk_copy)
-    add_dependencies(CramionServer CramionScriptHost)
-    add_dependencies(CramionCppScriptTests CramionScriptHost)
-    add_dependencies(cramion_minigolf CramionScriptHost)
+    # Su carpeta de compilacion no puede llamarse CramionEditor: el ejecutable
+    # (sin .exe) se crea con ese nombre en la raiz de build-linux.
+    add_subdirectory(CramionEditor CramionEditor-build)
+    add_subdirectory(CramionUpdater)
+    # Paquete descargable: cmake --build --preset linux-release --target cramion_package
+    # Deja <build>/Cramion-linux64.tar.gz (ver cmake/PackageReleaseLinux.cmake).
+    add_custom_target(cramion_package
+        COMMAND ${CMAKE_COMMAND}
+                -DBIN_DIR=${CMAKE_BINARY_DIR}
+                -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+                -DVERSION=${CRAMION_VERSION_FULL}
+                -P "${CMAKE_SOURCE_DIR}/cmake/PackageReleaseLinux.cmake"
+        COMMENT "Empaquetando Cramion ${CRAMION_VERSION_FULL} (Cramion-linux64.tar.gz)"
+        VERBATIM)
+    add_dependencies(cramion_package CramionEditor CramionPlayer CramionServer CramionMcp CramionScriptHost crwpack)
     return()
 endif()
 

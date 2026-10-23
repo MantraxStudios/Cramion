@@ -6,8 +6,21 @@
 #include "Dialogs.h"
 #include "LoadingScreen.h"  // localDataFolder
 
+#if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#else
+// Sockets BSD con los nombres de Winsock que usa este archivo.
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+using SOCKET = int;
+constexpr SOCKET INVALID_SOCKET = -1;
+static int closesocket(SOCKET s) { return ::close(s); }
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -28,7 +41,12 @@ std::string lower(std::string s) {
 bool sendAll(SOCKET s, const std::string& data) {
     std::size_t sent = 0;
     while (sent < data.size()) {
+#if defined(_WIN32)
         const int n = send(s, data.data() + sent, static_cast<int>(data.size() - sent), 0);
+#else
+        // MSG_NOSIGNAL: un cliente que cierra antes no mata al editor con SIGPIPE.
+        const int n = static_cast<int>(::send(s, data.data() + sent, data.size() - sent, MSG_NOSIGNAL));
+#endif
         if (n <= 0) return false;
         sent += static_cast<std::size_t>(n);
     }
@@ -101,6 +119,12 @@ bool writeTokenFile(const std::filesystem::path& file, const std::string& token)
     temporary += ".tmp";
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+#if !defined(_WIN32)
+        // Solo el usuario lo lee (la carpeta puede ser /tmp, compartida).
+        std::error_code perm_ec;
+        std::filesystem::permissions(temporary, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                                     std::filesystem::perm_options::replace, perm_ec);
+#endif
         out << token;
         if (!out) return false;
     }
@@ -119,16 +143,24 @@ McpServer::~McpServer() { stop(); }
 
 bool McpServer::start(std::uint16_t port, std::string* error) {
     stop();
+#if defined(_WIN32)
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         if (error) *error = "WSAStartup fallo";
         return false;
     }
+#endif
     SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listener == INVALID_SOCKET) {
         if (error) *error = "no se pudo crear el socket";
         return false;
     }
+#if !defined(_WIN32)
+    // Sin esto, al volver a encender el puerto sigue en TIME_WAIT. En Linux
+    // SO_REUSEADDR no deja a dos procesos escuchar en el mismo puerto.
+    const int reuse = 1;
+    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+#endif
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
@@ -155,7 +187,13 @@ bool McpServer::start(std::uint16_t port, std::string* error) {
 void McpServer::stop() {
     if (!running_) return;
     running_ = false;
+#if defined(_WIN32)
     closesocket(static_cast<SOCKET>(listener_));  // despierta a accept()
+#else
+    // En Linux close() no despierta a accept(); shutdown() si.
+    shutdown(static_cast<SOCKET>(listener_), SHUT_RDWR);
+    closesocket(static_cast<SOCKET>(listener_));
+#endif
     if (thread_.joinable()) thread_.join();
     listener_ = ~std::uintptr_t{0};
     // El token solo vale con el servidor encendido.
@@ -180,15 +218,22 @@ void McpServer::acceptLoop() {
 
 void McpServer::serve(std::uintptr_t handle) {
     const SOCKET client = static_cast<SOCKET>(handle);
+#if defined(_WIN32)
     DWORD timeout = 10000;
     setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+    timeval timeout{};
+    timeout.tv_sec = 10;
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
 
     // Cabeceras y cuerpo (Content-Length).
     std::string data;
     char buffer[8192];
     std::size_t header_end = std::string::npos;
     while (header_end == std::string::npos) {
-        const int n = recv(client, buffer, sizeof(buffer), 0);
+        const int n = static_cast<int>(recv(client, buffer, sizeof(buffer), 0));
         if (n <= 0) return;
         data.append(buffer, static_cast<std::size_t>(n));
         header_end = data.find("\r\n\r\n");
@@ -231,7 +276,7 @@ void McpServer::serve(std::uintptr_t handle) {
         return;
     }
     while (body.size() < length) {
-        const int n = recv(client, buffer, sizeof(buffer), 0);
+        const int n = static_cast<int>(recv(client, buffer, sizeof(buffer), 0));
         if (n <= 0) return;
         body.append(buffer, static_cast<std::size_t>(n));
     }
@@ -263,11 +308,20 @@ void McpServer::serve(std::uintptr_t handle) {
     // 403 y no 401: con 401 los clientes HTTP de MCP intentan OAuth y el
     // error que ensenan no dice que falta el token.
     if (require_token && !sameToken(presented, token_)) {
+#if defined(_WIN32)
         reject(presented.empty()
                    ? "falta el token del MCP de Cramion: mandalo en Authorization: Bearer <token> (archivo "
                      "%LOCALAPPDATA%/Cramion/mcp-token-<puerto>) o conecta con CramionMcp.exe, que lo manda solo"
                    : "token del MCP de Cramion no valido: cambia en cada sesion del editor, vuelve a leer "
                      "%LOCALAPPDATA%/Cramion/mcp-token-<puerto>");
+#else
+        reject(presented.empty()
+                   ? "falta el token del MCP de Cramion: mandalo en Authorization: Bearer <token> (archivo "
+                     "~/.local/share/Cramion/mcp-token-<puerto>, o $XDG_DATA_HOME/Cramion/...) "
+                     "o conecta con CramionMcp, que lo manda solo"
+                   : "token del MCP de Cramion no valido: cambia en cada sesion del editor, vuelve a leer "
+                     "~/.local/share/Cramion/mcp-token-<puerto> (o $XDG_DATA_HOME/Cramion/...)");
+#endif
         return;
     }
     if (path != "/mcp" && path != "/") {

@@ -5,7 +5,15 @@
 #include "Dialogs.h"
 #include "LoadingScreen.h"  // localDataFolder
 
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <signal.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -22,6 +30,7 @@ namespace cramion::editor {
 
 namespace {
 
+#if defined(_WIN32)
 constexpr const wchar_t* kTempSuffix = L".tmp";
 constexpr const wchar_t* kCrashTempSuffix = L".crash.tmp";  // otro temporal: el hilo puede estar escribiendo
 constexpr std::size_t kPathChars = 2048;
@@ -50,6 +59,39 @@ bool writeAtomic(const wchar_t* file, const wchar_t* suffix, const char* data, s
     if (!ok) DeleteFileW(temporary);
     return ok;
 }
+#else
+constexpr const char* kTempSuffix = ".tmp";
+constexpr const char* kCrashTempSuffix = ".crash.tmp";  // otro temporal: el hilo puede estar escribiendo
+constexpr std::size_t kPathChars = 4096;
+
+std::filesystem::path preferencesFile() { return localDataFolder("Settings") / "EditorSafety.ini"; }
+
+// Escritura atomica con POSIX puro (open/write/fsync/rename: vale tambien
+// dentro de un manejador de senal). O queda el archivo anterior o el nuevo entero.
+bool writeAtomic(const char* file, const char* suffix, const char* data, std::size_t size) {
+    char temporary[kPathChars + 16];
+    const std::size_t file_len = std::strlen(file);
+    const std::size_t suffix_len = std::strlen(suffix);
+    if (file_len + suffix_len + 1 > sizeof(temporary)) return false;
+    std::memcpy(temporary, file, file_len);
+    std::memcpy(temporary + file_len, suffix, suffix_len + 1);
+    const int fd = ::open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return false;
+    bool ok = true;
+    std::size_t written = 0;
+    while (ok && written < size) {
+        const ssize_t done = ::write(fd, data + written, std::min<std::size_t>(size - written, 16u << 20));
+        if (done < 0 && errno == EINTR) continue;
+        ok = done > 0;
+        if (ok) written += static_cast<std::size_t>(done);
+    }
+    ok = ok && ::fsync(fd) == 0;
+    ::close(fd);
+    if (ok) ok = ::rename(temporary, file) == 0;
+    if (!ok) ::unlink(temporary);
+    return ok;
+}
+#endif
 
 // --- Guardado de emergencia ---------------------------------------------------
 // Lo arma tick() en el hilo principal: la instantanea (current_state_ del
@@ -59,6 +101,67 @@ bool writeAtomic(const wchar_t* file, const wchar_t* suffix, const char* data, s
 std::atomic<const std::string*> g_state{nullptr};
 std::atomic<bool> g_armed{false};
 std::atomic<bool> g_emergency_done{false};
+#if !defined(_WIN32)
+char g_file[kPathChars] = {};
+
+std::terminate_handler g_prev_terminate = nullptr;
+constexpr int kCrashSignals[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT};
+struct sigaction g_prev_actions[64] = {};
+
+// La ruta solo cambia con la escena (no cada frame).
+void setEmergencyFile(const std::filesystem::path& file) {
+    g_armed = false;
+    const std::string native = file.native();
+    if (native.size() + 16 >= kPathChars) {  // ruta demasiado larga: sin emergencia
+        g_file[0] = '\0';
+        return;
+    }
+    std::memcpy(g_file, native.c_str(), native.size() + 1);
+}
+
+void arm(const std::string* state) {
+    g_state = state;
+    g_armed = g_file[0] != '\0';
+}
+
+void onTerminate() {
+    autosaveEmergency();
+    if (g_prev_terminate != nullptr) g_prev_terminate();
+    std::abort();
+}
+
+// Delante del manejador de crash (LoadingScreen.cpp): primero se guarda la
+// escena y luego se pasa la senal al anterior (el informe), o al del sistema.
+void onCrashSignal(int signal, siginfo_t* info, void* context) {
+    autosaveEmergency();
+    const struct sigaction& previous = g_prev_actions[signal];
+    if ((previous.sa_flags & SA_SIGINFO) != 0 && previous.sa_sigaction != nullptr) {
+        previous.sa_sigaction(signal, info, context);
+        return;
+    }
+    if (previous.sa_handler != SIG_DFL && previous.sa_handler != SIG_IGN && previous.sa_handler != nullptr) {
+        previous.sa_handler(signal);
+        return;
+    }
+    struct sigaction fallback {};
+    fallback.sa_handler = SIG_DFL;
+    sigemptyset(&fallback.sa_mask);
+    sigaction(signal, &fallback, nullptr);
+    raise(signal);
+}
+
+void installEmergencyHooks() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        g_prev_terminate = std::set_terminate(&onTerminate);
+        struct sigaction action {};
+        action.sa_sigaction = &onCrashSignal;
+        action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        sigemptyset(&action.sa_mask);
+        for (const int signal : kCrashSignals) sigaction(signal, &action, &g_prev_actions[signal]);
+    });
+}
+#else
 wchar_t g_file[kPathChars] = {};
 
 LPTOP_LEVEL_EXCEPTION_FILTER g_prev_filter = nullptr;
@@ -111,6 +214,7 @@ void installEmergencyHooks() {
         g_prev_abort = previous == SIG_ERR ? nullptr : previous;
     });
 }
+#endif
 
 }  // namespace
 
@@ -166,6 +270,7 @@ SceneAutosave::~SceneAutosave() {
 
 std::filesystem::path SceneAutosave::fileFor(const std::filesystem::path& library, const std::filesystem::path& assets,
                                              const std::filesystem::path& scene) {
+#if defined(_WIN32)
     std::wstring name;
     if (scene.empty()) {
         name = L"Sin guardar.crscene";
@@ -180,6 +285,21 @@ std::filesystem::path SceneAutosave::fileFor(const std::filesystem::path& librar
         }
     }
     return library / "Autosave" / (name + L".autosave");
+#else
+    // Linux: la ruta nativa es UTF-8 (wstring dependeria de la locale).
+    std::string name;
+    if (scene.empty()) {
+        name = "Sin guardar.crscene";
+    } else {
+        std::filesystem::path relative = scene.lexically_normal().lexically_relative(assets.lexically_normal());
+        if (relative.empty() || *relative.begin() == "..") relative = scene.filename();
+        name = relative.native();
+        for (char& c : name) {
+            if (c == '/' || c == '\\' || c == ':') c = '~';
+        }
+    }
+    return library / "Autosave" / (name + ".autosave");
+#endif
 }
 
 bool SceneAutosave::newerThanScene(const std::filesystem::path& autosave, const std::filesystem::path& scene) {
@@ -297,7 +417,11 @@ void SceneAutosave::workerLoop() {
                 std::filesystem::remove(job.file, ec);
             } else {
                 const auto start = Clock::now();
+#if defined(_WIN32)
                 const std::wstring wide = job.file.wstring();
+#else
+                const std::string wide = job.file.native();
+#endif
                 std::error_code ec;
                 std::filesystem::create_directories(job.file.parent_path(), ec);
                 if (wide.size() + 16 < kPathChars && writeAtomic(wide.c_str(), kTempSuffix, job.data.data(), job.data.size())) {
@@ -305,7 +429,12 @@ void SceneAutosave::workerLoop() {
                     std::cout << "[Autoguardado] " << dialogs::utf8(job.file.filename()) << " ("
                               << (job.data.size() + 512 * 1024) / (1024 * 1024) << " MB, " << ms << " ms)\n";
                 } else {
-                    std::cerr << "[Autoguardado] No se pudo escribir " << dialogs::utf8(job.file) << " (error " << GetLastError()
+                    std::cerr << "[Autoguardado] No se pudo escribir " << dialogs::utf8(job.file) << " (error "
+#if defined(_WIN32)
+                              << GetLastError()
+#else
+                              << errno
+#endif
                               << ")\n";
                 }
             }

@@ -24,7 +24,11 @@
 
 #include <CramionUpdater/NotesView.h>
 
+#if defined(_WIN32)
 #include <shellapi.h>
+#else
+#include "SystemUtil.h"
+#endif
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -106,7 +110,11 @@ std::string relativeTime(std::int64_t seconds_since_epoch) {
     } else {
         const std::time_t t = static_cast<std::time_t>(seconds_since_epoch);
         std::tm local{};
+#if defined(_WIN32)
         localtime_s(&local, &t);
+#else
+        localtime_r(&t, &local);
+#endif
         std::strftime(text, sizeof(text), "%d/%m/%Y", &local);
     }
     return text;
@@ -133,8 +141,12 @@ std::string ellipsize(const std::string& text, float width) {
 }
 
 void showInExplorer(const std::filesystem::path& path) {
+#if defined(_WIN32)
     const std::wstring args = L"/select,\"" + path.wstring() + L"\"";
     ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+#else
+    sys::revealInFileManager(path);
+#endif
 }
 
 // Suelo en perspectiva (lineas que se juntan en el horizonte).
@@ -534,7 +546,11 @@ void EditorApp::drawHubSidebar() {
     if (ImGui::Button("Carpeta de plantillas", ImVec2(-1.0f, 28.0f))) {
         std::error_code error;
         std::filesystem::create_directories(userTemplatesFolder(), error);
+#if defined(_WIN32)
         ShellExecuteW(nullptr, L"open", userTemplatesFolder().wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+        sys::openWithSystem(userTemplatesFolder());
+#endif
     }
     ImGui::SetItemTooltip("Tus plantillas: se crean desde el editor con Archivo > Guardar proyecto como plantilla");
 

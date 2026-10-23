@@ -8,6 +8,7 @@
 
 #include <CramionFX/vk/ShaderCompiler.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <string>
