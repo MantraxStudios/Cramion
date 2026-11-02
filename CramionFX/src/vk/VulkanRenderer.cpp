@@ -705,11 +705,14 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         bloom_up_pass_.create(device_, bloom_up);
 
         // Escena, bloom, rayos de luz, exposicion, ajustes (GpuCompositeSettings)
-        // y el buffer de distorsion de las particulas.
-        const std::array<Type, 6> composite_bindings = {
+        // y el buffer de distorsion de las particulas. Y la profundidad: los
+        // destellos del sol solo salen si en el sol se ve el cielo (sin ella,
+        // un muro de voxeles muy iluminado delante del sol dejaba pasar el
+        // destello).
+        const std::array<Type, 7> composite_bindings = {
             Type::eCombinedImageSampler, Type::eCombinedImageSampler,
             Type::eCombinedImageSampler, Type::eStorageBuffer, Type::eUniformBuffer,
-            Type::eCombinedImageSampler};
+            Type::eCombinedImageSampler, Type::eCombinedImageSampler};
         FullscreenPassDesc composite{};
         composite.fragment_shader = "composite.frag.spv";
         composite.bindings = composite_bindings;
@@ -1731,7 +1734,8 @@ void VulkanRenderer::createDescriptors() {
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
                                // (+ kMaxFramesInFlight: la distorsion de la composicion)
                                // (+ 1: la mascara reactiva de FSR 3)
-                               kMaxFramesInFlight * 30 + kBloomSets + 2 + 1 + 1 + 6 + 3 + 4 + 1},
+                               // (+ kMaxFramesInFlight: la profundidad de la composicion)
+                               kMaxFramesInFlight * 31 + kBloomSets + 2 + 1 + 1 + 6 + 3 + 4 + 1},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 + kMaxFramesInFlight * 2}};
 
     vk::DescriptorPoolCreateInfo post_pool_info{};
@@ -1764,8 +1768,8 @@ void VulkanRenderer::createDescriptors() {
         // y ajustes), EASU y RCAS (una textura cada uno).
         const std::array<vk::DescriptorPoolSize, 3> sizes = {
             vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight},
-            // (4 texturas por composicion: + la distorsion)
-            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, kMaxFramesInFlight * 4 + 2},
+            // (5 texturas por composicion: + la distorsion y la profundidad)
+            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, kMaxFramesInFlight * 5 + 2},
             vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kMaxFramesInFlight}};
         vk::DescriptorPoolCreateInfo info{};
         info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -4012,6 +4016,8 @@ void VulkanRenderer::updatePostDescriptors() {
         write_texture(composite_sets_[i], 2, composite_pass_.sampler(), light_shafts_, kRead);
         write_storage(composite_sets_[i], 3, exposure_buffer_);
         write_texture(composite_sets_[i], 5, composite_pass_.sampler(), distortion_, kRead);
+        write_texture(composite_sets_[i], 6, composite_pass_.sampler(), gbuffer_.depth(),
+                      compat::depthReadOnlyLayout());
 
         vk::DescriptorBufferInfo settings_info{};
         settings_info.buffer = *composite_buffers_[i].handle();
@@ -4057,6 +4063,8 @@ void VulkanRenderer::updatePostDescriptors() {
         write_texture(early_composite_sets_[i], 2, composite_pass_.sampler(), light_shafts_, kRead);
         write_storage(early_composite_sets_[i], 3, exposure_buffer_);
         write_texture(early_composite_sets_[i], 5, composite_pass_.sampler(), distortion_, kRead);
+        write_texture(early_composite_sets_[i], 6, composite_pass_.sampler(), gbuffer_.depth(),
+                      compat::depthReadOnlyLayout());
         vk::DescriptorBufferInfo settings_info{};
         settings_info.buffer = *composite_buffers_[i].handle();
         settings_info.range = sizeof(GpuCompositeSettings);

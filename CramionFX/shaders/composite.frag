@@ -31,6 +31,10 @@ layout(set = 0, binding = 2) uniform sampler2D light_shafts;
 // Buffer de distorsion de las particulas (particle_distortion.frag, resolucion
 // interna): cuanto se desplaza donde se lee la escena, en UV. 0 sin ellas.
 layout(set = 0, binding = 5) uniform sampler2D distortion_map;
+// Profundidad del G-buffer (1 = cielo; resolucion interna, se lee por UV).
+// Los destellos solo salen donde el sol se ve: los voxeles, los modelos y el
+// terreno escriben aqui; el agua no, pero tiene el fondo detras.
+layout(set = 0, binding = 6) uniform sampler2D g_depth;
 
 layout(set = 0, binding = 3) readonly buffer Exposure {
     float exposure;
@@ -233,13 +237,21 @@ vec3 lensFlare(vec2 uv) {
     }
     vec2 sun = settings.lens.zw;
     vec2 aspect = vec2(settings.flare.y, 1.0);
-    // Cuanto se ve el sol: su brillo en la imagen (5 muestras).
+    // Cuanto se ve el sol: su brillo en la imagen (5 muestras), solo donde la
+    // profundidad es la del cielo. Antes solo contaba el brillo, y una pared
+    // de voxeles iluminada (al atardecer, con el sol justo detras) bastaba
+    // para encender el destello encima de ella. Las nubes no escriben
+    // profundidad: las tapa el brillo, como antes.
     float visible = 0.0;
+    float sky = 0.0;
     for (int i = 0; i < 5; ++i) {
         vec2 o = i == 0 ? vec2(0.0) : vec2(i == 1 ? 0.004 : (i == 2 ? -0.004 : 0.0), i == 3 ? 0.004 : (i == 4 ? -0.004 : 0.0));
-        visible += luminance(textureLod(scene_color, clamp(sun + o, vec2(0.0), vec2(1.0)), 0.0).rgb);
+        vec2 p = clamp(sun + o, vec2(0.0), vec2(1.0));
+        float open_sky = textureLod(g_depth, p, 0.0).r >= 1.0 ? 1.0 : 0.0;
+        sky += open_sky;
+        visible += luminance(textureLod(scene_color, p, 0.0).rgb) * open_sky;
     }
-    visible = clamp(visible / 5.0 / 20.0, 0.0, 1.0);
+    visible = clamp(visible / 5.0 / 20.0, 0.0, 1.0) * (sky / 5.0);
     if (visible <= 0.0) {
         return vec3(0.0);
     }
