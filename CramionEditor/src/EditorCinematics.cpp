@@ -1044,19 +1044,35 @@ void EditorApp::applyWindowRequests() {
     const int width = cinema_window_width_;
     const int height = cinema_window_height_;
 #if defined(_WIN32)
+    // Nunca activa la ventana ni cambia su orden: se puede grabar con otro programa delante (la ventana
+    // tapada sigue dibujando: en modo cine no hay limite de segundo plano, y la captura usa PrintWindow).
+    constexpr UINT kSinFoco = SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW;
     if (request == 1) {
         // Ventana del tamano exacto del video (el area cliente), arriba a la izquierda.
-        if (IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE);
-        SetWindowPos(hwnd, HWND_TOP, 0, 0, width, height, SWP_SHOWWINDOW);
+        if (IsZoomed(hwnd) || IsIconic(hwnd)) {
+            WINDOWPLACEMENT wp{};
+            wp.length = sizeof(wp);
+            GetWindowPlacement(hwnd, &wp);
+            wp.showCmd = SW_SHOWNOACTIVATE;  // restaurada, sin activar
+            wp.rcNormalPosition = RECT{0, 0, width, height};
+            SetWindowPlacement(hwnd, &wp);
+        }
+        SetWindowPos(hwnd, nullptr, 0, 0, width, height, kSinFoco);
         RECT client{};
         GetClientRect(hwnd, &client);
         const int extra_w = width - (client.right - client.left);
         const int extra_h = height - (client.bottom - client.top);
         if (extra_w != 0 || extra_h != 0) {
-            SetWindowPos(hwnd, HWND_TOP, 0, 0, width + extra_w, height + extra_h, SWP_SHOWWINDOW);
+            SetWindowPos(hwnd, nullptr, 0, 0, width + extra_w, height + extra_h, kSinFoco);
         }
     } else {
-        ShowWindow(hwnd, SW_MAXIMIZE);
+        // Al salir: del tamano del area de trabajo (como maximizada), sin activar ni subirla.
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)) {
+            const RECT& r = mi.rcWork;
+            SetWindowPos(hwnd, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, kSinFoco);
+        }
     }
 #else
     Display* display = static_cast<Display*>(hwnd->display);
@@ -1095,13 +1111,15 @@ void EditorApp::drawCinemaView() {
     ImGui::Begin("##cine", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoScrollWithMouse);
-    ImGui::Image(imgui_.viewTexture(kSceneSlot), viewport->Size);
+    // En Play, la vista de Juego (la camara real del juego, sin ayudas); si no, la de Escena.
+    const std::uint32_t slot = cinemaSlot();
+    ImGui::Image(imgui_.viewTexture(slot), viewport->Size);
     ImGui::End();
     ImGui::PopStyleVar(3);
-    view_desired_[kSceneSlot][0] = static_cast<std::uint32_t>(std::max(viewport->Size.x, 16.0f));
-    view_desired_[kSceneSlot][1] = static_cast<std::uint32_t>(std::max(viewport->Size.y, 16.0f));
-    scene_view_visible_ = true;
-    game_view_visible_ = false;
+    view_desired_[slot][0] = static_cast<std::uint32_t>(std::max(viewport->Size.x, 16.0f));
+    view_desired_[slot][1] = static_cast<std::uint32_t>(std::max(viewport->Size.y, 16.0f));
+    scene_view_visible_ = slot == kSceneSlot;
+    game_view_visible_ = slot == kGameSlot;
     overlay_.clear();
     flushOverlay();  // sin gizmos ni iconos
 }

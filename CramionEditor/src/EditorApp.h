@@ -1849,6 +1849,8 @@ public:
     // nunca en Play (la fisica perderia tiempo por max_substeps y el juego iria
     // mas lento que el reloj), ni conectando el casco, en modo cine o en
     // pruebas automaticas (run_tests de MCP incluido).
+    // Modo cine: en Play graba la vista de Juego (camara del juego); fuera de Play, la de Escena.
+    std::uint32_t cinemaSlot() const { return playing() ? kGameSlot : kSceneSlot; }
     bool backgroundThrottleAllowed() const {
         return !playing() && !xrConnecting() && !cinema_ && self_test_step_ <= 0 && !testRunActive();
     }

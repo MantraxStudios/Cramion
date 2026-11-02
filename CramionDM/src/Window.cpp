@@ -18,6 +18,13 @@ namespace {
 
 constexpr wchar_t kWindowClassName[] = L"CramionDMWindowClass";
 
+// CRAMION_NO_ACTIVATE=1: la ventana se abre DETRAS de las demas y sin activarse (grabar o trabajar por MCP
+// mientras el usuario usa otro programa delante). Sin SetForegroundWindow ni SetFocus.
+bool noActivar() {
+    wchar_t v[8] = {};
+    return GetEnvironmentVariableW(L"CRAMION_NO_ACTIVATE", v, 8) > 0 && v[0] == L'1';
+}
+
 // Traduce el wParam/lParam de un mensaje de teclado a un Key de CramionDM,
 // resolviendo la variante izquierda/derecha de Shift/Control/Alt.
 Key translateKey(WPARAM wParam, LPARAM lParam) {
@@ -125,7 +132,20 @@ bool Window::create(const WindowConfig& config) {
     }
     // Maximizada: WM_SIZE (dentro de ShowWindow) ya deja width_/height_ con el
     // tamano real antes de que nadie cree la swapchain.
-    ShowWindow(hwnd_, config.maximized && config.resizable ? SW_SHOWMAXIMIZED : SW_SHOW);
+    if (noActivar()) {
+        // Detras de todo y sin activar: del tamano del area de trabajo si se pedia maximizada.
+        RECT r{};
+        GetWindowRect(hwnd_, &r);
+        if (config.maximized && config.resizable) {
+            MONITORINFO mi{};
+            mi.cbSize = sizeof(mi);
+            if (GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTOPRIMARY), &mi)) r = mi.rcWork;
+        }
+        SetWindowPos(hwnd_, HWND_BOTTOM, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    } else {
+        ShowWindow(hwnd_, config.maximized && config.resizable ? SW_SHOWMAXIMIZED : SW_SHOW);
+    }
     UpdateWindow(hwnd_);
     has_focus_ = GetFocus() == hwnd_;
     createGamepads();

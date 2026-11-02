@@ -1474,7 +1474,7 @@ void EditorApp::drawUi(float delta_seconds) {
         drawCinemaView();
         drawModals();
         flushCommit();
-        render_view_ = kSceneSlot;
+        render_view_ = cinemaSlot();
         updateViewExtent(delta_seconds);
         addCpuSample(kCpuUi, millisecondsSince(ui_start));
         return;
