@@ -142,6 +142,7 @@ struct VoxelSystem::Impl {
     bool active = false;
     VoxelWorld settings;
     std::array<float, 2> scene_trees{1.0f, 0.0f};  // tree_density y clearings del componente (newWorld)
+    int scene_caves = 1;                           // cave_entrances del componente (newWorld)
     std::filesystem::path assets_root;
     std::filesystem::path save_root;
     std::string world_name;
@@ -1176,6 +1177,7 @@ struct VoxelSystem::Impl {
         auto made = std::make_shared<Generator>(seed, static_cast<int>(std::lround(settings.sea_level)),
                                                 profile());  // el de la dimension actual
         made->setVegetation(settings.tree_density, settings.clearings);
+        made->setCaveEntrances(settings.cave_entrances);
         generator = std::move(made);
     }
 
@@ -1190,6 +1192,7 @@ struct VoxelSystem::Impl {
         json["generator"] = static_cast<int>(settings.generator);
         json["tree_density"] = settings.tree_density;
         json["clearings"] = settings.clearings;
+        json["cave_entrances"] = settings.cave_entrances;
         json["dimension"] = dimension;  // donde estaba el jugador
         json["last_played"] = static_cast<std::int64_t>(std::time(nullptr));
         json["meta"] = meta_values;
@@ -1224,6 +1227,7 @@ void VoxelSystem::start(ecs::World& world) {
         if (!e.activeInHierarchy()) continue;
         d.settings = e.get<VoxelWorld>();
         d.scene_trees = {d.settings.tree_density, d.settings.clearings};
+        d.scene_caves = d.settings.cave_entrances;
         d.active = true;
         break;
     }
@@ -1389,6 +1393,7 @@ bool VoxelSystem::newWorld(const std::string& name, int seed) {
     // (loadWorld pudo poner los de otro mundo).
     d.settings.tree_density = d.scene_trees[0];
     d.settings.clearings = d.scene_trees[1];
+    d.settings.cave_entrances = d.scene_caves;
     std::error_code error;
     std::filesystem::remove_all(d.worldFolder(), error);
     d.resetDimensions();  // empieza en la superficie
@@ -1419,6 +1424,9 @@ bool VoxelSystem::loadWorld(const std::string& name) {
     // Los arboles con los que se creo (los de antes no lo guardaban: los del componente).
     d.settings.tree_density = json.value("tree_density", d.settings.tree_density);
     d.settings.clearings = json.value("clearings", d.settings.clearings);
+    // Entradas de cueva (los de antes no lo guardaban: las del componente, y las zonas
+    // sin visitar ya las tienen).
+    d.settings.cave_entrances = std::clamp(json.value("cave_entrances", d.scene_caves), 0, 2);
     // La dimension en la que estaba el jugador (los de antes: la superficie).
     d.resetDimensions();
     if (const std::string dim = json.value("dimension", std::string(kSurfaceDimension)); findDimension(dim) != nullptr) d.dimension = dim;

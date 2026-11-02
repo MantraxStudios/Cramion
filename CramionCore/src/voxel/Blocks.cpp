@@ -400,6 +400,10 @@ void VoxelWorld::reflect(ecs::PropertyVisitor& v) {
             tree_density, ecs::FloatRange{0.0f, 2.0f, 0.01f, "%.2f"});
     v.field({"clearings", "Claros", "Huecos y praderas dentro de los bosques (0 = ninguno, 1 = muchos)"}, clearings,
             ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
+    v.field({"cave_entrances", "Entradas de cueva",
+             "Generador Aventura: bocas en laderas, simas con rampa y grietas que bajan andando a las cuevas. "
+             "0 = solo las aberturas naturales, 1 = una cada ~160 m (mas en las montanas), 2 = el doble"},
+            cave_entrances, 0, 2);
 }
 
 void registerVoxelComponents() {

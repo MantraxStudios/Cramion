@@ -82,6 +82,7 @@ Generator::Generator(int seed, int sea_level, VoxelGenerator profile) : seed_(se
         static std::atomic<std::uint64_t> lake_ids{0};
         lakes_ = std::make_shared<LakeCache>();
         lakes_->id = ++lake_ids;
+        entrances_ = std::make_shared<EntranceCache>();
         structures_ = std::make_shared<Structures>(*this);
     }
 }

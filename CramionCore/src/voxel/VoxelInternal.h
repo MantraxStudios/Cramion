@@ -59,6 +59,23 @@ public:
     // Probabilidad de un arbol en (x, z) tras aplicar la densidad y los claros
     // (`chance` = la del bioma). Igual a `chance` con densidad 1 y sin claros.
     float treeChance(float chance, int x, int z) const;
+    // Entradas de cueva del generador Aventura (VoxelWorld::cave_entrances):
+    // 0 = solo las aberturas naturales de antes (el mundo de siempre), 1 = bocas
+    // en laderas, simas con rampa y alguna grieta (~1 cada 160 m, mas en las
+    // montanas), 2 = el doble. Llamar antes de generar (como setVegetation).
+    void setCaveEntrances(int level);
+    int caveEntrances() const { return cave_entrances_; }
+    // Una entrada (pruebas y depuracion): donde se entra desde la superficie
+    // (start: el primer bloque de aire sobre el suelo) y donde acaba el tunel.
+    struct CaveEntranceInfo {
+        int kind = 0;  // 0 boca en una ladera, 1 sima con rampa, 2 grieta
+        int x = 0, y = 0, z = 0;
+        int end_x = 0, end_y = 0, end_z = 0;
+        bool connected = false;  // el tunel llega a una cueva natural
+        int min_x = 0, min_z = 0, max_x = 0, max_z = 0;  // lo que excava
+    };
+    // Las entradas que empiezan en el rectangulo [x0, x1) x [z0, z1).
+    std::vector<CaveEntranceInfo> caveEntrancesIn(int x0, int z0, int x1, int z1) const;
     // Nivel de los mares de lava del abismo.
     static constexpr int kAbyssLava = 34;
     VoxelGenerator profile() const { return profile_; }
@@ -107,6 +124,27 @@ private:
     std::shared_ptr<LakeCache> lakes_;
     void generateAdventure(ChunkData& chunk) const;
     void placeAdventureTrees(ChunkData& chunk) const;
+    // Cuevas del Aventura (GeneratorCaves.cpp): la densidad en un nudo de la
+    // rejilla de 4 m y la interpolada en un bloque (> 0: hueco).
+    float caveDensity(float wx, float wy, float wz) const;
+    float caveField(int x, int y, int z) const;
+    // Entradas de cueva: una como mucho por celda de 64 x 64 m (se calcula una vez).
+    struct CaveEntrance;
+    struct EntranceCache;
+    std::shared_ptr<const CaveEntrance> caveEntrance(int gx, int gz) const;
+    // Lo que las entradas excavan en las columnas de un chunk.
+    struct EntranceCarve {
+        bool any = false;
+        std::array<int, kChunkSize * kChunkSize> lo{};  // primer bloque de aire (>= hi+1: nada)
+        std::array<int, kChunkSize * kChunkSize> hi{};  // ultimo bloque de aire
+        std::array<std::uint8_t, kChunkSize * kChunkSize> flags{};  // 1 suelo macizo bajo lo, 2 luz
+    };
+    // `heights`: la altura de las columnas del chunk (x + z * 16).
+    void caveEntranceCarve(int x0, int z0, const std::array<int, kChunkSize * kChunkSize>& heights, EntranceCarve& out) const;
+    // Las entradas cuya zona toca el rectangulo [x0, x1] x [z0, z1].
+    std::vector<std::shared_ptr<const CaveEntrance>> entrancesTouching(int x0, int z0, int x1, int z1) const;
+    // (x, z) a menos de `margin` de lo que excava alguna de `list` (sin arboles ahi).
+    static bool nearCaveEntrance(const std::vector<std::shared_ptr<const CaveEntrance>>& list, int x, int z, float margin);
     // Dimensiones (GeneratorDimensions.cpp): abismo, cielo y cristal.
     struct AbyssColumn;
     struct SkyIsland;
@@ -124,6 +162,8 @@ private:
     int sea_ = 62;
     float tree_density_ = 1.0f;
     float clearings_ = 0.0f;
+    int cave_entrances_ = 1;
+    std::shared_ptr<EntranceCache> entrances_;
     VoxelGenerator profile_ = VoxelGenerator::Classic;
     std::array<int, 512> perm_{};
     std::shared_ptr<Structures> structures_;
@@ -134,6 +174,12 @@ struct Generator::LakeCache {
     std::uint64_t id = 0;  // unico por generador (la cache por hilo no confunde generadores)
     std::mutex mutex;
     std::unordered_map<std::int64_t, Lake> cells;
+};
+
+// Entradas de cueva ya calculadas por celda (nulo: la celda no tiene).
+struct Generator::EntranceCache {
+    std::mutex mutex;
+    std::unordered_map<std::int64_t, std::shared_ptr<const CaveEntrance>> cells;
 };
 
 // --- Mallador ------------------------------------------------------------------------

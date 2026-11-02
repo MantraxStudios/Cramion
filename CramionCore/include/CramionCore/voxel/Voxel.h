@@ -190,6 +190,10 @@ struct VoxelWorld {
     float tree_density = 1.0f;
     // Claros (0..1): huecos redondos y praderas dentro de los bosques (0 = ninguno).
     float clearings = 0.0f;
+    // Entradas de cueva del generador Aventura (bocas en laderas, simas con
+    // rampa, grietas): 0 = solo las aberturas naturales (el mundo de antes),
+    // 1 = una cada ~160 m (mas en las montanas), 2 = el doble.
+    int cave_entrances = 1;
 
     void reflect(ecs::PropertyVisitor& v);
 };

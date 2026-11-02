@@ -13,7 +13,8 @@
 //     terracota por capas), nieve, montana con nieve en las cumbres, playa
 //     (palmeras), rio (juncos) y oceano. Agua helada en el frio.
 //   - Cuevas: tuneles anchos y cavernas hondas, con entradas en las colinas;
-//     suelo con musgo, setas y setas luminosas (dan luz).
+//     suelo con musgo, setas y setas luminosas (dan luz). Entradas que se
+//     recorren andando (bocas, simas con rampa y grietas): GeneratorCaves.cpp.
 //   - Arboles: robles de copa redonda (algunos enormes), abedules, abetos,
 //     cactus con brazos y palmeras.
 
@@ -239,17 +240,9 @@ void Generator::generateAdventure(ChunkData& chunk) const {
     for (int gy = 0; gy < gy_count; ++gy) {
         for (int gz = 0; gz < kGx; ++gz) {
             for (int gx = 0; gx < kGx; ++gx) {
-                const float wx = static_cast<float>(x0 + gx * kStep);
-                const float wy = static_cast<float>(gy * kStep);
-                const float wz = static_cast<float>(z0 + gz * kStep);
-                // Tuneles anchos: donde dos ruidos se anulan a la vez.
-                const float a = noise3(wx / 56.0f, wy / 36.0f, wz / 56.0f, 211);
-                const float b = noise3(wx / 56.0f, wy / 36.0f, wz / 56.0f, 223);
-                const float tunnel = 0.11f - std::sqrt(a * a + b * b);
-                // Cavernas grandes en lo hondo.
-                const float cavern = (noise3(wx / 80.0f, wy / 44.0f, wz / 80.0f, 237) - 0.36f) *
-                                     std::clamp((52.0f - wy) / 28.0f, 0.0f, 1.0f);
-                cave_grid[static_cast<std::size_t>(gx + gz * kGx + gy * kGx * kGx)] = std::max(tunnel, cavern);
+                // Tuneles anchos y cavernas hondas (GeneratorCaves.cpp).
+                cave_grid[static_cast<std::size_t>(gx + gz * kGx + gy * kGx * kGx)] =
+                    caveDensity(static_cast<float>(x0 + gx * kStep), static_cast<float>(gy * kStep), static_cast<float>(z0 + gz * kStep));
             }
         }
     }
@@ -264,6 +257,16 @@ void Generator::generateAdventure(ChunkData& chunk) const {
         const float c11 = lerp(G(gx, gy + 1, gz + 1), G(gx + 1, gy + 1, gz + 1), fx);
         return lerp(lerp(c00, c10, fz), lerp(c01, c11, fz), fy) > 0.0f;
     };
+
+    // Entradas de cueva que pasan por este chunk (VoxelWorld::cave_entrances).
+    EntranceCarve carve;
+    if (cave_entrances_ > 0) {
+        std::array<int, kChunkSize * kChunkSize> heights{};
+        for (int z = 0; z < kChunkSize; ++z) {
+            for (int x = 0; x < kChunkSize; ++x) heights[static_cast<std::size_t>(x + z * kChunkSize)] = col(x, z).height;
+        }
+        caveEntranceCarve(x0, z0, heights, carve);
+    }
 
     for (int z = 0; z < kChunkSize; ++z) {
         for (int x = 0; x < kChunkSize; ++x) {
@@ -297,6 +300,9 @@ void Generator::generateAdventure(ChunkData& chunk) const {
                 }
                 return false;
             };
+            const std::size_t ci = static_cast<std::size_t>(x + z * kChunkSize);
+            const bool carved = carve.any && carve.lo[ci] <= carve.hi[ci] && carve.lo[ci] <= c.height;
+            const int carve_lo = carve.lo[ci], carve_hi = carve.hi[ci];
             for (int y = 0; y <= std::min(std::max(c.height, c.water - 1), kWorldHeight - 1); ++y) {
                 BlockId id = block::Air;
                 if (y <= c.height) {
@@ -359,6 +365,7 @@ void Generator::generateAdventure(ChunkData& chunk) const {
                         !(depth < 3 && !cave_entrance) && !(c.height < sea_ + 3 && depth < 4) && !water_beside(y)) {
                         id = block::Air;
                     }
+                    if (carved && y >= carve_lo && y <= carve_hi && id != block::Bedrock && y > 4) id = block::Air;
                 } else if (y < c.water) {
                     id = block::Water;
                 }
@@ -367,6 +374,23 @@ void Generator::generateAdventure(ChunkData& chunk) const {
             // Agua helada en el frio.
             if (underwater && c.temperature < -0.45f && c.water - 1 < kWorldHeight) {
                 chunk.blocks[static_cast<std::size_t>(cellIndex(x, c.water - 1, z))] = block::Ice;
+            }
+
+            if (carved) {
+                // Suelo macizo bajo la entrada (sin agujeros de las cuevas de debajo).
+                if (carve.flags[ci] & 1) {
+                    for (int y = carve_lo - 2; y < carve_lo; ++y) {
+                        if (y > 4 && y <= c.height && chunk.get(x, y, z) == block::Air) {
+                            chunk.blocks[static_cast<std::size_t>(cellIndex(x, y, z))] = block::Stone;
+                        }
+                    }
+                }
+                // Setas luminosas y brotes de cristal junto a las bocas (se ven de noche).
+                if ((carve.flags[ci] & 2) && carve_lo > 1 && carve_lo < kWorldHeight &&
+                    blockDef(chunk.get(x, carve_lo - 1, z)).solid && chunk.get(x, carve_lo, z) == block::Air) {
+                    chunk.blocks[static_cast<std::size_t>(cellIndex(x, carve_lo, z))] =
+                        rand01(wx, carve_lo, wz, seed + 303u) < 0.3f ? block::CrystalSprout : block::GlowMushroom;
+                }
             }
 
             // --- Suelo de las cuevas: musgo, setas y setas luminosas ---
@@ -388,6 +412,7 @@ void Generator::generateAdventure(ChunkData& chunk) const {
             // --- Vegetacion sobre el suelo ---
             const int top = c.height;
             if (top + 2 >= kWorldHeight || underwater || chunk.get(x, top + 1, z) != block::Air) continue;
+            if (carved && carve_hi >= top) continue;  // la entrada se llevo el suelo
             const BlockId ground = chunk.get(x, top, z);
             const float r = rand01(wx, 7, wz, seed + 9u);
             const float field = fbm2(static_cast<float>(wx) / 45.0f, static_cast<float>(wz) / 45.0f, 2, 130);
@@ -470,6 +495,8 @@ void Generator::placeAdventureTrees(ChunkData& chunk) const {
     };
     const std::uint32_t s = static_cast<std::uint32_t>(seed_) + 977u;
     const float clear_margin = treeClearMargin();  // franja libre junto a aldeas y caminos
+    // Sin arboles en las entradas de cueva (ni tapandolas).
+    const auto entrances = entrancesTouching(x0 - kReach, z0 - kReach, x0 + kChunkSize + kReach, z0 + kChunkSize + kReach);
     const int gx0 = static_cast<int>(std::floor(static_cast<float>(x0 - kReach) / kCell));
     const int gx1 = static_cast<int>(std::floor(static_cast<float>(x0 + kChunkSize + kReach) / kCell));
     const int gz0 = static_cast<int>(std::floor(static_cast<float>(z0 - kReach) / kCell));
@@ -481,6 +508,7 @@ void Generator::placeAdventureTrees(ChunkData& chunk) const {
             const AdventureColumn c = adventureColumn(tx, tz);
             if (c.height < sea_ + 1 || c.height > kWorldHeight - 30 || c.river > 0.2f || c.lake) continue;
             if (structures_ && structures_->blocksTrees(tx, tz, clear_margin)) continue;  // sin arboles en aldeas y ciudades
+            if (!entrances.empty() && nearCaveEntrance(entrances, tx, tz, 2.0f)) continue;
             float chance = 0.0f;
             switch (c.biome) {
                 case AB::AForest: chance = 0.55f; break;

@@ -523,6 +523,7 @@ void testVegetation() {
     std::printf("Densidad de arboles\n");
     Generator adv(1234, 62, VoxelGenerator::Adventure);
     Generator classic(1234, 62, VoxelGenerator::Classic);
+    adv.setCaveEntrances(0);  // las huellas son de antes de las entradas de cueva (testCaveEntrances)
     // Un bosque de cada generador (los arboles cuentan en la huella).
     BlockPos forest_adv{}, forest_classic{};
     for (int i = 0; i < 4096; ++i) {
@@ -546,7 +547,7 @@ void testVegetation() {
     const std::array<std::uint64_t, 4> now = hashes();
     std::printf("    huellas %llu %llu %llu %llu\n", static_cast<unsigned long long>(now[0]), static_cast<unsigned long long>(now[1]),
                 static_cast<unsigned long long>(now[2]), static_cast<unsigned long long>(now[3]));
-    check(now == before, "densidad 1 y sin claros (por defecto): el mundo de siempre, bloque a bloque");
+    check(now == before, "densidad 1, sin claros y sin entradas de cueva: el mundo de siempre, bloque a bloque");
     adv.setVegetation(1.0f, 0.0f);
     classic.setVegetation(1.0f, 0.0f);
     check(hashes() == before, "setVegetation(1, 0) explicito: igual");
@@ -610,6 +611,7 @@ void testVegetation() {
     adv.generate(a);
     Generator adv2(1234, 62, VoxelGenerator::Adventure);
     adv2.setVegetation(0.45f, 0.5f);
+    adv2.setCaveEntrances(0);
     adv2.generate(b);
     check(a.blocks == b.blocks, "con densidad y claros sigue siendo determinista");
 
@@ -633,11 +635,210 @@ void testVegetation() {
     check(dry_ok && flattened > 0, "waterLevel: 0 donde el suelo final (aplanado) queda por encima del agua");
 }
 
+
+// VoxelWorld::cave_entrances: en 1 km2 hay entradas (bocas, simas, grietas) por
+// las que se baja andando de la superficie a la cueva (sin escalones de mas de
+// 1 bloque), sin agua dentro, y salen igual con la misma semilla.
+void testCaveEntrances() {
+    std::printf("Entradas de cueva\n");
+    Generator gen(1234, 62, VoxelGenerator::Adventure);
+    const VoxelWorld defaults;
+    check(defaults.cave_entrances == 1 && gen.caveEntrances() == 1, "por defecto 1 (componente y generador)");
+    constexpr int kX0 = -512, kZ0 = -512, kSide = 1000;
+    const std::vector<Generator::CaveEntranceInfo> list = gen.caveEntrancesIn(kX0, kZ0, kX0 + kSide, kZ0 + kSide);
+    int kinds[3] = {0, 0, 0}, connected = 0;
+    for (const auto& e : list) {
+        ++kinds[e.kind];
+        connected += e.connected ? 1 : 0;
+    }
+    std::printf("    %zu entradas en 1 km2 (bocas %d, simas %d, grietas %d; %d llegan a una cueva natural)\n", list.size(), kinds[0],
+                kinds[1], kinds[2], connected);
+    check(list.size() >= 25 && list.size() <= 90, "entre 25 y 90 entradas por km2 (una cada ~110-200 m)");
+
+    // Determinista: otro generador con la misma semilla da las mismas.
+    {
+        Generator other(1234, 62, VoxelGenerator::Adventure);
+        const auto again = other.caveEntrancesIn(kX0, kZ0, kX0 + kSide, kZ0 + kSide);
+        bool same = again.size() == list.size();
+        for (std::size_t i = 0; same && i < list.size(); ++i) {
+            same = again[i].x == list[i].x && again[i].y == list[i].y && again[i].z == list[i].z && again[i].end_x == list[i].end_x &&
+                   again[i].end_y == list[i].end_y && again[i].kind == list[i].kind;
+        }
+        check(same, "las entradas son deterministas (misma semilla, mismas entradas)");
+        if (!list.empty()) {
+            ChunkData a, b;
+            a.cx = b.cx = static_cast<int>(std::floor(static_cast<float>(list[0].x) / kChunkSize));
+            a.cz = b.cz = static_cast<int>(std::floor(static_cast<float>(list[0].z) / kChunkSize));
+            gen.generate(a);
+            other.generate(b);
+            check(a.blocks == b.blocks, "el chunk de una entrada sale igual en dos generadores");
+        }
+    }
+
+    // Recorrido andando: de la superficie (cielo abierto, junto al inicio) a un
+    // hueco con techo a 8 o mas bloques bajo el terreno.
+    int walkable = 0, wet = 0;
+    for (const auto& e : list) {
+        const int margin = 6;
+        const int cx0 = static_cast<int>(std::floor(static_cast<float>(e.min_x - margin) / kChunkSize));
+        const int cz0 = static_cast<int>(std::floor(static_cast<float>(e.min_z - margin) / kChunkSize));
+        const int cx1 = static_cast<int>(std::floor(static_cast<float>(e.max_x + margin) / kChunkSize));
+        const int cz1 = static_cast<int>(std::floor(static_cast<float>(e.max_z + margin) / kChunkSize));
+        const int ncx = cx1 - cx0 + 1, ncz = cz1 - cz0 + 1;
+        std::vector<ChunkData> chunks(static_cast<std::size_t>(ncx * ncz));
+        {
+            std::atomic<int> next{0};
+            std::vector<std::thread> workers;
+            for (int t = 0; t < 8; ++t) {
+                workers.emplace_back([&]() {
+                    for (int i = next++; i < ncx * ncz; i = next++) {
+                        ChunkData& c = chunks[static_cast<std::size_t>(i)];
+                        c.cx = cx0 + i % ncx;
+                        c.cz = cz0 + i / ncx;
+                        gen.generate(c);
+                    }
+                });
+            }
+            for (std::thread& w : workers) w.join();
+        }
+        const int bx0 = cx0 * kChunkSize, bz0 = cz0 * kChunkSize, bw = ncx * kChunkSize, bd = ncz * kChunkSize;
+        const auto get = [&](int x, int y, int z) -> BlockId {
+            if (y < 0) return block::Bedrock;
+            if (y >= kWorldHeight) return block::Air;
+            const int lx = x - bx0, lz = z - bz0;
+            if (lx < 0 || lz < 0 || lx >= bw || lz >= bd) return block::Stone;
+            return chunks[static_cast<std::size_t>(lx / kChunkSize + (lz / kChunkSize) * ncx)].get(lx % kChunkSize, y, lz % kChunkSize);
+        };
+        const auto solid = [&](int x, int y, int z) { return blockDef(get(x, y, z)).solid; };
+        const auto open = [&](int x, int y, int z) {
+            const BlockId id = get(x, y, z);
+            return !blockDef(id).solid && !block::isWater(id);
+        };
+        const auto stand = [&](int x, int y, int z) { return y > 0 && open(x, y, z) && open(x, y + 1, z) && solid(x, y - 1, z); };
+        // Agua dentro de lo que excava: no deberia haber.
+        bool has_water = false;
+        for (int z = e.min_z; z <= e.max_z && !has_water; ++z) {
+            for (int x = e.min_x; x <= e.max_x && !has_water; ++x) {
+                const int h = gen.adventureColumn(x, z).height;
+                for (int y = std::max(1, e.end_y - 4); y <= h && !has_water; ++y) has_water = block::isWater(get(x, y, z));
+            }
+        }
+        wet += has_water ? 1 : 0;
+        // Busqueda en anchura por los sitios donde se puede estar de pie.
+        std::vector<std::uint8_t> seen(static_cast<std::size_t>(bw) * bd * kWorldHeight, 0);
+        const auto idx = [&](int x, int y, int z) {
+            return static_cast<std::size_t>(x - bx0) + static_cast<std::size_t>(z - bz0) * bw + static_cast<std::size_t>(y) * bw * bd;
+        };
+        std::vector<BlockPos> queue;
+        for (int dz = -3; dz <= 3; ++dz) {
+            for (int dx = -3; dx <= 3; ++dx) {
+                const int x = e.x + dx, z = e.z + dz;
+                for (int y = kWorldHeight - 3; y > 1; --y) {
+                    if (solid(x, y, z) || block::isWater(get(x, y, z))) {
+                        if (stand(x, y + 1, z) && !seen[idx(x, y + 1, z)]) {
+                            seen[idx(x, y + 1, z)] = 1;
+                            queue.push_back({x, y + 1, z});
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        bool reached = false;
+        for (std::size_t q = 0; q < queue.size() && !reached; ++q) {
+            const BlockPos p = queue[q];
+            if (p.y <= gen.adventureColumn(p.x, p.z).height - 8) {
+                bool roof = false;
+                for (int y = p.y + 2; y < kWorldHeight && !roof; ++y) roof = solid(p.x, y, p.z);
+                if (roof) {
+                    reached = true;
+                    break;
+                }
+            }
+            static constexpr int kDirs[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+            for (const auto& d : kDirs) {
+                const int nx = p.x + d[0], nz = p.z + d[1];
+                if (nx < bx0 || nz < bz0 || nx >= bx0 + bw || nz >= bz0 + bd) continue;
+                for (int dy = -1; dy <= 1; ++dy) {
+                    const int ny = p.y + dy;
+                    if (ny < 1 || ny + 2 >= kWorldHeight) continue;
+                    if (!stand(nx, ny, nz) || seen[idx(nx, ny, nz)]) continue;
+                    if (dy > 0 && !open(p.x, p.y + 2, p.z)) continue;  // subir: hueco para la cabeza
+                    if (dy < 0 && !open(nx, p.y + 1, nz)) continue;    // bajar: se entra de pie
+                    seen[idx(nx, ny, nz)] = 1;
+                    queue.push_back({nx, ny, nz});
+                }
+            }
+        }
+        walkable += reached ? 1 : 0;
+        if (!reached) std::printf("    sin recorrido: tipo %d en (%d, %d, %d)\n", e.kind, e.x, e.y, e.z);
+    }
+    std::printf("    %d de %zu se recorren andando hasta la cueva; %d con agua\n", walkable, list.size(), wet);
+    check(walkable >= 20 && walkable * 10 >= static_cast<int>(list.size()) * 8,
+          "al menos 20 entradas por km2 (y el 80%) se bajan andando, escalones de 1 bloque, hasta la cueva");
+    check(wet == 0, "ninguna entrada tiene agua dentro");
+
+    // Media en 16 km2 (con mar, rios y aldeas incluidos) y en las montanas, mas.
+    {
+        const auto wide = gen.caveEntrancesIn(-6000, 2000, -2000, 6000);
+        const double per_km2 = static_cast<double>(wide.size()) / 16.0;
+        std::printf("    media en 16 km2: %.1f entradas por km2 (una cada %.0f m)\n", per_km2,
+                    wide.empty() ? 0.0 : std::sqrt(16.0e6 / static_cast<double>(wide.size())));
+        check(per_km2 >= 20.0 && per_km2 <= 70.0, "media de una entrada cada ~120-220 m");
+        // El km2 mas montanoso de una muestra de 8 x 8 km.
+        int mountain_x = 0, mountain_z = 0, best = -1;
+        for (int i = 0; i < 1024; ++i) {
+            const int x = (i % 32 - 16) * 256, z = (i / 32 - 16) * 256;
+            int high = 0;
+            for (int k = 0; k < 25; ++k) {
+                const Generator::AdventureColumn c = gen.adventureColumn(x - 400 + (k % 5) * 200, z - 400 + (k / 5) * 200);
+                high += c.biome == Generator::AMountains ? 1 : 0;
+            }
+            if (high > best) best = high, mountain_x = x, mountain_z = z;
+        }
+        const auto peaks = gen.caveEntrancesIn(mountain_x - 500, mountain_z - 500, mountain_x + 500, mountain_z + 500);
+        std::printf("    montana en (%d, %d) (%d/25 de montana): %zu entradas en 1 km2\n", mountain_x, mountain_z, best, peaks.size());
+        check(static_cast<double>(peaks.size()) > per_km2 * 1.3, "en las montanas hay mas entradas");
+    }
+
+    // Sin las entradas nuevas (0, el mundo de antes): la superficie casi nunca se abre.
+    gen.setCaveEntrances(0);
+    {
+        int open_columns = 0;
+        for (int cz = 0; cz < 12; ++cz) {
+            for (int cx = 0; cx < 12; ++cx) {
+                ChunkData chunk;
+                chunk.cx = kX0 / kChunkSize + cx * 5;
+                chunk.cz = kZ0 / kChunkSize + cz * 5;
+                gen.generate(chunk);
+                for (int z = 0; z < kChunkSize; ++z) {
+                    for (int x = 0; x < kChunkSize; ++x) {
+                        const Generator::AdventureColumn c = gen.adventureColumn(chunk.cx * kChunkSize + x, chunk.cz * kChunkSize + z);
+                        if (c.water <= c.height && chunk.get(x, c.height, z) == block::Air) ++open_columns;
+                    }
+                }
+            }
+        }
+        std::printf("    con 0: %d columnas abiertas a la cueva en 144 chunks\n", open_columns);
+    }
+    // 0: ninguna; 2: mas.
+    const std::size_t none = gen.caveEntrancesIn(kX0, kZ0, kX0 + kSide, kZ0 + kSide).size();
+    gen.setCaveEntrances(2);
+    const std::size_t more = gen.caveEntrancesIn(kX0, kZ0, kX0 + kSide, kZ0 + kSide).size();
+    std::printf("    cave_entrances 0 -> %zu, 1 -> %zu, 2 -> %zu\n", none, list.size(), more);
+    check(none == 0 && more > list.size() * 3 / 2, "cave_entrances 0 = ninguna, 2 = bastantes mas");
+}
+
 }  // namespace
 
 int runDimensionTests();  // VoxelDimensionTests.cpp (devuelve los fallos)
 
 int main() {
+    if (std::getenv("CRAMION_CAVES_ONLY") != nullptr) {  // solo las entradas de cueva (rapido)
+        testCaveEntrances();
+        std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
+        return failures == 0 ? 0 : 1;
+    }
     if (std::getenv("CRAMION_VEG_ONLY") != nullptr) {  // solo la densidad de arboles (rapido)
         testVegetation();
         std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
@@ -654,6 +855,7 @@ int main() {
     testPerformance();
     testStructures();
     testVegetation();
+    testCaveEntrances();
     dumpStructuresForRender();  // solo con CRAMION_STRUCT_DUMP
     failures += runDimensionTests();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
