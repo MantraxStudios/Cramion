@@ -56,6 +56,25 @@ void VulkanBuffer::create(const VulkanDevice& device, vk::DeviceSize size,
     allocation_info.usage = VMA_MEMORY_USAGE_UNKNOWN;
     allocation_info.requiredFlags = static_cast<VkMemoryPropertyFlags>(properties);
     if (host_visible) allocation_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    // Buffers que la CPU escribe cada frame y la GPU lee (clusteres, huesos,
+    // uniformes, instancias): mejor en la VRAM visible desde la CPU (ReBAR /
+    // BAR de 256 MB) que en la RAM del sistema, donde cada lectura del shader
+    // cruza el PCIe (G-buffer, cada cascada, cada cara). Solo preferencia: si
+    // no hay sitio, VMA usa otro tipo. Fuera los de staging y los que se leen
+    // de vuelta (llevan uso de transferencia: en la BAR la CPU lee sin cache)
+    // y los grandes (no agotar la BAR sin ReBAR).
+    constexpr vk::BufferUsageFlags kGpuRead = vk::BufferUsageFlagBits::eUniformBuffer |
+                                              vk::BufferUsageFlagBits::eStorageBuffer |
+                                              vk::BufferUsageFlagBits::eVertexBuffer |
+                                              vk::BufferUsageFlagBits::eIndexBuffer |
+                                              vk::BufferUsageFlagBits::eIndirectBuffer;
+    constexpr vk::BufferUsageFlags kTransfer =
+        vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst;
+    constexpr vk::DeviceSize kMaxBarBuffer = 32ull * 1024ull * 1024ull;
+    if (host_visible && !(properties & vk::MemoryPropertyFlagBits::eHostCached) && (usage & kGpuRead) &&
+        !(usage & kTransfer) && size <= kMaxBarBuffer) {
+        allocation_info.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    }
 
     VmaAllocation allocation = nullptr;
     VmaAllocationInfo info{};

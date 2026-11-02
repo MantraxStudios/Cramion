@@ -513,18 +513,27 @@ void World::attach(entt::entity entity, entt::entity parent, int index) {
 // Marca la entidad y todo su subarbol: sus matrices de mundo dependen de
 // esta. Si ya estaba sucia, sus hijos tambien (se marcaron entonces).
 void World::markTransformDirty(entt::entity entity) {
-    std::vector<entt::entity> stack{entity};
-    bool first = true;
+    // La propia entidad siempre; sin hijos (lo normal: lo que se anima o
+    // mueve cada frame) no hace falta la pila.
+    Transform& own = registry_.get<Transform>(entity);
+    ++own.version;
+    own.dirty = true;
+    const Hierarchy& own_h = registry_.get<Hierarchy>(entity);
+    if (own_h.children.empty()) {
+        return;
+    }
+    // Pila reutilizada (antes, una reserva de memoria por llamada).
+    thread_local std::vector<entt::entity> stack;
+    stack.assign(own_h.children.begin(), own_h.children.end());
     while (!stack.empty()) {
         const entt::entity e = stack.back();
         stack.pop_back();
         Transform& t = registry_.get<Transform>(e);
         ++t.version;
-        if (t.dirty && !first) {
+        if (t.dirty) {
             continue;
         }
         t.dirty = true;
-        first = false;
         const Hierarchy& h = registry_.get<Hierarchy>(e);
         stack.insert(stack.end(), h.children.begin(), h.children.end());
     }

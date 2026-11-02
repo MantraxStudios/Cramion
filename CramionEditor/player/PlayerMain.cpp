@@ -495,6 +495,11 @@ int runPlayer() {
         if (window_width < 320) window_width = 1600;
         if (window_height < 240) window_height = 900;
         const bool show_fps = readIniValue(ini, "show_fps") == "1";
+        // "Mostrar progreso de carga del motor" (configuracion de compilacion,
+        // apagado por defecto): la barra del motor al cambiar de escena y la
+        // linea de progreso del banner. Sin ella, el juego pone su propia
+        // pantalla de carga (Scene.loadAsync) y el motor no dibuja nada encima.
+        const bool show_engine_loading = readIniValue(ini, "show_engine_loading") == "1";
         // Realidad virtual (OpenXR): si hay casco, el juego se ve en el; la
         // ventana queda de espejo. Sin runtime o sin casco, sigue sin VR.
         const bool vr_requested = readIniValue(ini, "vr") == "1";
@@ -1204,6 +1209,7 @@ int runPlayer() {
         scripts.setGraphics(&graphics_host);
         voxels.setPhysics(&physics);
         cinema::CinematicSystem cinematics;
+        anim::KeyframeSystem keyframes;  // animacion por claves (anim/Keyframes.h)
         physics::ParticleWorld particles;
         // Liquidos (fluid::FluidSystem): los scripts los usan con Fluid::*.
         fluid::FluidSystem fluids;
@@ -1342,6 +1348,83 @@ int runPlayer() {
         ecs::RenderSync::Options sync_options;
         sync_options.apply_main_camera = true;
 
+        // Iluminacion horneada de una escena (<escena>.crbake) y las UV de
+        // lightmap con las que se leen sus modelos.
+        const auto apply_scene_lighting = [&](const std::filesystem::path& file) {
+            {
+                gfx::BakedLighting baked;
+                gfx::LightingMode mode = gfx::LightingMode::Realtime;
+                const std::filesystem::path bake_file = lighting::bakedLightingFile(file);
+                auto uvs = std::make_shared<lighting::LightmapUvSet>();
+                if (!file.empty() && std::filesystem::exists(bake_file)) {
+                    std::string bake_error;
+                    if (!lighting::loadBakedLighting(bake_file, baked, mode, &bake_error, uvs.get())) {
+                        std::cerr << "[Juego] " << bake_error << "\n";
+                        uvs->parts.clear();
+                    }
+                }
+                // Las UV de lightmap de esta escena (.crbake v4): los modelos
+                // se leen con ellas (antes del hilo de modelos). Los que ya
+                // estaban en memoria con las de otra escena, fuera.
+                {
+                    std::unordered_set<Uuid> models;
+                    if (const auto& before = asset_manager.lightmapUvs()) {
+                        for (const auto& [key, source] : before->parts) models.insert(key.model);
+                    }
+                    for (const auto& [key, source] : uvs->parts) models.insert(key.model);
+                    asset_manager.setLightmapUvs(uvs->empty() ? nullptr : std::shared_ptr<const lighting::LightmapUvSet>(uvs));
+                    for (const Uuid& model : models) asset_manager.unload(model);
+                }
+                renderer.setBakedLighting(std::move(baked));
+                renderer.setLightingMode(mode);
+            }
+        };
+        // Fisica, navegacion, bloques, audio, video (y los scripts si
+        // with_scripts) con la escena ya en el mundo y en la GPU.
+        const auto start_scene_systems = [&](bool with_scripts) {
+            {
+                // World Partition: lo lejano sale del mundo antes de la fisica.
+                core::Vec3 position, forward;
+                main_camera(position, forward);
+                partition.begin(world, position);
+                // El terreno bajo el jugador, cargado antes de la fisica (no cae al vacio).
+                terrain_streamer.loadNow(world, terrains, position);
+                for (const entt::entity h : world.registry().view<worldpart::StreamingSource>()) {
+                    terrain_streamer.loadNow(world, terrains, world.wrap(h).worldPosition());
+                }
+            }
+            physics.start(world);
+            // La colision de las teselas se prepara en otro hilo: lista
+            // antes del primer paso (si no, el jugador cae al vacio).
+            physics.flushPendingTerrain();
+            twod_system.start(world);  // fisica 2D del nivel
+            // La malla lista antes de que empiecen los scripts.
+            nav.waitForBuild(world, 20.0f);
+            crowds.begin(world);  // las multitudes, con la malla ya lista
+            // Los bloques de alrededor listos antes de empezar (no se cae del mundo).
+            voxels.start(world);
+            if (voxels.active()) {
+                core::Vec3 position, forward;
+                main_camera(position, forward);
+                voxels.waitUntilReady(position, 2, 20.0f);
+            }
+            audio.start(world);
+            video.start(world);  // despues del audio (Play On Awake)
+            if (with_scripts) {
+                scripts.start(world);
+                if (!cpp_scripts.dll().empty()) cpp_scripts.start(world);
+                // La entrada de cada mod (Visual Script o prefab), tras los scripts del juego.
+                for (const project::ModMount& m : mods.mounted()) {
+                    std::string error;
+                    if (!m.entry_asset.empty() && !project::startModEntry(world, project->assetsFolder(), m, &error))
+                        std::cerr << "[Mods] " << m.id << ": " << error << "\n";
+                }
+            }
+            // Todo esta en la GPU: la escena de rayos, en el primer frame
+            // de juego (no un segundo despues, ya jugando).
+            renderer.flushPendingRayTracingScene();
+        };
+
         // Un paso por frame. Devuelve la fraccion y el texto para la pantalla.
         const auto step_load = [&](float& fraction, std::string& text) {
             using Stage = SceneLoad::Stage;
@@ -1370,6 +1453,14 @@ int runPlayer() {
                     // nuevo, hasta el primer update del streamer. Lo esculpido en
                     // el juego no se guarda (como siempre).
                     const ecs::DVec3 origin_before = world.origin();
+                    // DontDestroyOnLoad: los objetos persistentes pasan a la
+                    // escena nueva (con sus UUID; sus scripts empiezan otra vez:
+                    // para conservar su estado, Scene.loadAsync).
+                    std::vector<std::string> persistent;
+                    for (const entt::entity r : world.roots()) {
+                        const ecs::Entity e = world.wrap(r);
+                        if (e.get<ecs::EntityInfo>().dont_destroy_on_load) persistent.push_back(ecs::serializeEntity(world, e));
+                    }
                     {
                         ecs::SceneResetTargets targets;
                         targets.terrain_streamer = &terrain_streamer;
@@ -1389,6 +1480,9 @@ int runPlayer() {
                     if (load.file.empty() || !ecs::loadScene(world, load.file, &error)) {
                         std::cerr << "[Juego] No se pudo abrir la escena " << load.file.string() << " " << error << "\n";
                     }
+                    for (const std::string& text : persistent) {
+                        if (const ecs::Entity e = ecs::restoreEntities(world, text); e.valid()) ecs::setDontDestroyOnLoad(e);
+                    }
                     // Lo que el renderizador guarda en coordenadas del mundo
                     // (sondas, bloques, matrices del frame anterior), al origen
                     // nuevo; el origen absoluto se fija despues (setWorldOrigin).
@@ -1399,34 +1493,7 @@ int runPlayer() {
                     }
                     // Sus celdas en disco (World Partition) se leen al acercarse.
                     partition.setSceneFile(load.file, false);
-                    // Iluminacion horneada de la escena (<escena>.crbake).
-                    {
-                        gfx::BakedLighting baked;
-                        gfx::LightingMode mode = gfx::LightingMode::Realtime;
-                        const std::filesystem::path bake_file = lighting::bakedLightingFile(load.file);
-                        auto uvs = std::make_shared<lighting::LightmapUvSet>();
-                        if (!load.file.empty() && std::filesystem::exists(bake_file)) {
-                            std::string bake_error;
-                            if (!lighting::loadBakedLighting(bake_file, baked, mode, &bake_error, uvs.get())) {
-                                std::cerr << "[Juego] " << bake_error << "\n";
-                                uvs->parts.clear();
-                            }
-                        }
-                        // Las UV de lightmap de esta escena (.crbake v4): los modelos
-                        // se leen con ellas (antes del hilo de modelos). Los que ya
-                        // estaban en memoria con las de otra escena, fuera.
-                        {
-                            std::unordered_set<Uuid> models;
-                            if (const auto& before = asset_manager.lightmapUvs()) {
-                                for (const auto& [key, source] : before->parts) models.insert(key.model);
-                            }
-                            for (const auto& [key, source] : uvs->parts) models.insert(key.model);
-                            asset_manager.setLightmapUvs(uvs->empty() ? nullptr : std::shared_ptr<const lighting::LightmapUvSet>(uvs));
-                            for (const Uuid& model : models) asset_manager.unload(model);
-                        }
-                        renderer.setBakedLighting(std::move(baked));
-                        renderer.setLightingMode(mode);
-                    }
+                    apply_scene_lighting(load.file);
                     // Instancias de prefab guardadas con una revision vieja: al dia.
                     ecs::syncOutdatedInstances(world, [&](const Uuid& id) {
                         const auto info = database.find(id);
@@ -1489,45 +1556,7 @@ int runPlayer() {
                 }
                 case Stage::Systems: {
                     if (load.frames++ == 0) break;
-                    {
-                        // World Partition: lo lejano sale del mundo antes de la fisica.
-                        core::Vec3 position, forward;
-                        main_camera(position, forward);
-                        partition.begin(world, position);
-                        // El terreno bajo el jugador, cargado antes de la fisica (no cae al vacio).
-                        terrain_streamer.loadNow(world, terrains, position);
-                        for (const entt::entity h : world.registry().view<worldpart::StreamingSource>()) {
-                            terrain_streamer.loadNow(world, terrains, world.wrap(h).worldPosition());
-                        }
-                    }
-                    physics.start(world);
-                    // La colision de las teselas se prepara en otro hilo: lista
-                    // antes del primer paso (si no, el jugador cae al vacio).
-                    physics.flushPendingTerrain();
-                    twod_system.start(world);  // fisica 2D del nivel
-                    // La malla lista antes de que empiecen los scripts.
-                    nav.waitForBuild(world, 20.0f);
-                    crowds.begin(world);  // las multitudes, con la malla ya lista
-                    // Los bloques de alrededor listos antes de empezar (no se cae del mundo).
-                    voxels.start(world);
-                    if (voxels.active()) {
-                        core::Vec3 position, forward;
-                        main_camera(position, forward);
-                        voxels.waitUntilReady(position, 2, 20.0f);
-                    }
-                    audio.start(world);
-                    video.start(world);  // despues del audio (Play On Awake)
-                    scripts.start(world);
-                    if (!cpp_scripts.dll().empty()) cpp_scripts.start(world);
-                    // La entrada de cada mod (Visual Script o prefab), tras los scripts del juego.
-                    for (const project::ModMount& m : mods.mounted()) {
-                        std::string error;
-                        if (!m.entry_asset.empty() && !project::startModEntry(world, project->assetsFolder(), m, &error))
-                            std::cerr << "[Mods] " << m.id << ": " << error << "\n";
-                    }
-                    // Todo esta en la GPU: la escena de rayos, en el primer frame
-                    // de juego (no un segundo despues, ya jugando).
-                    renderer.flushPendingRayTracingScene();
+                    start_scene_systems(/*with_scripts=*/true);
                     load.stage = Stage::Done;
                     std::cout << "[Juego] Escena lista\n";
                     prof::setLoading(false);  // este frame aun cuenta como de carga
@@ -1549,6 +1578,61 @@ int runPlayer() {
                 case Stage::Systems: fraction = 0.9f; text = "Preparando fisica, navegacion y scripts"; break;
                 default: fraction = 1.0f; text.clear(); break;
             }
+        };
+
+        // --- Scene.loadAsync (ecs/SceneLoading.h) ---
+        // Los modelos de la escena nueva se leen en los hilos del AssetManager
+        // mientras se juega; el cambio Single para y arranca los sistemas de
+        // la escena (no los scripts: los objetos DontDestroyOnLoad siguen con
+        // su estado) en el frame en que se activa.
+        ecs::AsyncSceneLoader::Host async_scene_host;
+        async_scene_host.model_ready = [&](const Uuid& id) {
+            if (asset_manager.isLoaded(id) || asset_manager.loadFailed(id)) return true;
+            asset_manager.requestModel(id);
+            return asset_manager.isLoaded(id) || asset_manager.loadFailed(id);
+        };
+        async_scene_host.before_single = [&](const std::filesystem::path&) {
+            video.stop();  // antes que el audio
+            audio.stop();
+            physics.stop();
+            particles.clear();
+            fluids.clear();
+            vfx_system.clear();
+            twod_system.stop();
+            if (replays.playing()) replays.stop(world);
+            if (replays.recording()) replays.stopRecording();
+            voxels.stop();
+            // Terreno, World Partition, navegacion y GPU de terrenos de la
+            // escena vieja fuera; el mundo NO se vacia (los objetos se
+            // destruyen uno a uno con sus OnDestroy y los persistentes se quedan).
+            ecs::SceneResetTargets targets;
+            targets.terrain_streamer = &terrain_streamer;
+            targets.terrain_store = &terrains;
+            targets.partition = &partition;
+            targets.physics = &physics;
+            targets.navigation = &nav;
+            targets.render = &sync;
+            targets.video = &video;
+            ecs::SceneResetOptions options;
+            options.save_terrain = false;
+            options.discard_terrain_data = true;
+            options.clear_world = false;
+            ecs::resetSceneState(world, targets, options);
+            nav.resetAgents();
+        };
+        async_scene_host.after_single = [&](const std::filesystem::path& file) {
+            partition.setSceneFile(file, false);
+            apply_scene_lighting(file);
+            ecs::syncOutdatedInstances(world, [&](const Uuid& id) {
+                const auto info = database.find(id);
+                return info && info->type == assets::AssetType::Prefab ? ecs::readPrefabFile(info->path) : std::string{};
+            });
+            renderer.invalidateHistory();
+            const std::u8string stem = file.stem().u8string();
+            scripts.setSceneName(std::string(stem.begin(), stem.end()));
+            orbit.fitted = false;
+            start_scene_systems(/*with_scripts=*/false);
+            std::cout << "[Juego] Escena activada (Scene.loadAsync): " << std::string(stem.begin(), stem.end()) << std::endl;
         };
 
         // --- Camara orbital por defecto (como el DefaultPawn de Unreal) ---
@@ -1927,10 +2011,17 @@ int runPlayer() {
                     banner_done = true;
                 } else {
                     banner_alpha = 1.0f - banner_fade / kBannerFadeSeconds;
-                    if (scene_loading() && since_launch >= kBannerMinSeconds) banner_progress = load_fraction;
+                    if (show_engine_loading && scene_loading() && since_launch >= kBannerMinSeconds) {
+                        banner_progress = load_fraction;
+                    }
                 }
-            } else if (scene_loading()) {
-                draw_loading(display, load_fraction, load_text);  // cambio de escena desde el juego
+            } else if (scene_loading() && show_engine_loading) {
+                // Cambio de escena desde el juego (Scene.load): la barra del
+                // motor solo con "Mostrar progreso de carga del motor". Sin
+                // ella se sigue viendo el ultimo frame hasta que la escena
+                // nueva esta lista (la pantalla de carga es cosa del juego:
+                // Scene.loadAsync).
+                draw_loading(display, load_fraction, load_text);
             }
             // El juego corre en cuanto el banner empieza a fundirse.
             const bool running = loaded && !scene_loading() && (banner_done || banner_fade > 0.0f);
@@ -2001,6 +2092,7 @@ int runPlayer() {
                     cpp_scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
                     cpp_scripts.update(world, dt);
                 }
+                keyframes.update(world, dt);  // antes de las camaras: pueden seguir a lo animado
                 cinematics.update(world, dt, true);
                 replays.update(world, dt);  // despues de los scripts
                 if (platform::Steam::instance().available()) platform::Steam::instance().update();
@@ -2065,6 +2157,7 @@ int runPlayer() {
                                 {"entity", nlohmann::json::parse(cpp_scripts.entityJson(e.source))},
                                 {"position", {{"$v", {e.position.x, e.position.y, 0.0f}}}},
                                 {"button", e.button},
+                                {"wheel", e.number},
                                 {"other", e.other.valid() ? nlohmann::json::parse(cpp_scripts.entityJson(e.other)) : nlohmann::json()}};
                             cpp_scripts.sendMessage(e.target, e.method, v.dump());
                             break;
@@ -2090,7 +2183,13 @@ int runPlayer() {
                                           renderer.device().name());
                 }
                 // Scene::load(...) y Game::quit() desde los scripts.
-                if (const std::filesystem::path next = scripts.takeSceneRequest(); !next.empty()) begin_load(next);
+                if (const std::filesystem::path next = scripts.takeSceneRequest(); !next.empty()) {
+                    begin_load(next);
+                } else if (scripts.sceneLoads().busy()) {
+                    // Scene.loadAsync: la escena actual sigue jugando; el
+                    // cambio (si es Single) en un frame, al activarse.
+                    scripts.updateSceneLoads(world, async_scene_host);
+                }
                 if (scripts.takeQuitRequest()) quit = true;
             }
             if (banner_alpha > 0.0f) draw_banner(display, banner_alpha, banner_progress);

@@ -51,6 +51,7 @@ BuildConfigs loadBuildConfigs(const std::filesystem::path& file) {
                 b.height = std::clamp(c.value("height", b.height), 240, 16384);
                 b.static_batching = c.value("static_batching", b.static_batching);
                 b.show_fps = c.value("show_fps", b.show_fps);
+                b.show_engine_loading = c.value("show_engine_loading", b.show_engine_loading);
                 b.vr = c.value("vr", b.vr);
                 b.dedicated_server = c.value("dedicated_server", b.dedicated_server);
                 b.allow_mods = c.value("allow_mods", b.allow_mods);
@@ -116,6 +117,7 @@ bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& con
                         {"height", b.height},
                         {"static_batching", b.static_batching},
                         {"show_fps", b.show_fps},
+                        {"show_engine_loading", b.show_engine_loading},
                         {"vr", b.vr},
                         {"dedicated_server", b.dedicated_server},
                         {"allow_mods", b.allow_mods},
@@ -168,6 +170,7 @@ std::string buildConfigIni(const BuildConfig& config, const std::string& game_na
     ini << "width=" << config.width << "\n";
     ini << "height=" << config.height << "\n";
     ini << "show_fps=" << (config.show_fps ? 1 : 0) << "\n";
+    if (config.show_engine_loading) ini << "show_engine_loading=1\n";
     if (config.allow_mods) ini << "mods=1\n";
     // Android tiene su propio perfil (android_quality); el bloqueo es del escritorio.
     if (config.graphics_lock && config.platform != BuildPlatform::Android) ini << "graphics_lock=1\n";

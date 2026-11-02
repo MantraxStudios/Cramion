@@ -32,8 +32,9 @@ layout(set = 1, binding = 3) uniform sampler2DArray ocean_derivatives;   // dY/d
 
 layout(push_constant) uniform PushConstants {
     uint body;
-    uint mesh;  // 0 lago, 1 oceano, 2 rio
+    uint mesh;  // 0 lago, 1 oceano, 2 rio, 3 bloques (water_voxel.vert)
     uvec2 pad;
+    vec4 origin;  // bloques: esquina de la seccion
 } push;
 
 const float kWaterPi = 3.14159265358979;
@@ -177,7 +178,7 @@ bool insideLake(WaterBody b, vec2 xz, float margin) {
 // esta bajo el agua). Rio: la de la camara (extra.z).
 float waterSurfaceHeight(WaterBody b, vec2 xz, float t) {
     int type = int(b.extent.z + 0.5);
-    if (type == 2) return b.extra.z;
+    if (type >= 2) return b.extra.z;  // rio y bloques: la de la camara
     if (type == 0 && oceanAvailable()) return b.origin.y + oceanHeight(xz - b.origin.xz, 0.1);
     vec3 n;
     float j;

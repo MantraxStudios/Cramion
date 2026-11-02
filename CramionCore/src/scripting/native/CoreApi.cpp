@@ -8,6 +8,7 @@
 #include "CramionCore/profiling/Profiler.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <random>
@@ -107,7 +108,69 @@ void registerScene(Runtime& rt) {
         }
         rt.scene_request = path;
         return api::Value(true);
-    }, {"\"Nivel2\"", "Cambia de escena al terminar el frame (nombre o ruta del .crscene)", "bool"});
+    }, {"\"Nivel2\"",
+        "Cambia de escena al terminar el frame (nombre o ruta del .crscene). Para una pantalla de carga propia sin "
+        "parar el juego, Scene.loadAsync",
+        "bool"});
+    // Carga en segundo plano (como SceneManager.LoadSceneAsync): ecs/SceneLoading.h.
+    rt.native.function("Scene.loadAsync", [&rt](api::Call& c) -> api::Value {
+        const std::string name = c.string(0);
+        const std::filesystem::path path = rt.findScene(name);
+        if (path.empty()) {
+            rt.write(2, "Scene.loadAsync: no existe la escena \"" + name + "\"");
+            return api::Value(0);
+        }
+        ecs::SceneLoadMode mode = ecs::SceneLoadMode::Single;
+        if (c.arg(1).isString()) {
+            std::string m = c.string(1);
+            for (char& ch : m) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (m == "additive" || m == "aditiva" || m == "aditivo") mode = ecs::SceneLoadMode::Additive;
+        } else if (c.arg(1).isNumber()) {
+            if (c.integer(1) == 1) mode = ecs::SceneLoadMode::Additive;
+        } else if (c.arg(1).isBool() && c.arg(1).truthy()) {
+            mode = ecs::SceneLoadMode::Additive;
+        }
+        const entt::entity notify = c.arg(2).isEntity() ? c.entity(2) : entt::entity{entt::null};
+        return api::Value(rt.scene_loads->load(path, mode, notify));
+    }, {"\"Nivel2\", \"single\", notificar",
+        "Carga una escena en segundo plano sin parar la actual (modo \"single\": al activarse sustituye a la actual y "
+        "la descarga, salvo lo DontDestroyOnLoad; \"additive\": se suma). Devuelve el id de la operacion (0 si no "
+        "existe): Scene.loadProgress, Scene.allowActivation. `notificar` (opcional) recibe OnSceneLoadProgress",
+        "numero"});
+    rt.native.function("Scene.unloadAsync", [&rt](api::Call& c) -> api::Value {
+        const entt::entity notify = c.arg(1).isEntity() ? c.entity(1) : entt::entity{entt::null};
+        return api::Value(rt.scene_loads->unload(c.string(0), notify));
+    }, {"\"Nivel2\", notificar",
+        "Descarga una escena cargada con Scene.loadAsync(..., \"additive\") (o los objetos de la activa). Devuelve el "
+        "id de la operacion (0 si no esta cargada); al terminar, OnSceneUnloaded",
+        "numero"});
+    rt.native.function("Scene.loadProgress", [&rt](api::Call& c) -> api::Value {
+        const ecs::SceneLoadInfo info = rt.scene_loads->info(static_cast<int>(c.integer(0)));
+        if (!info.exists || info.failed) return api::Value(-1.0);
+        return api::Value(info.progress);
+    }, {"id", "Progreso de Scene.loadAsync / unloadAsync: 0..0.9 cargando, 0.9 lista (esperando Scene.allowActivation), "
+              "1 activada; -1 si fallo o no existe",
+        "numero"});
+    rt.native.function("Scene.loadIsDone", [&rt](api::Call& c) -> api::Value {
+        const ecs::SceneLoadInfo info = rt.scene_loads->info(static_cast<int>(c.integer(0)));
+        return api::Value(info.exists && info.done);
+    }, {"id", "true cuando la operacion termino (activada, descargada o fallida)", "bool"});
+    rt.native.function("Scene.allowActivation", [&rt](api::Call& c) -> api::Value {
+        return api::Value(rt.scene_loads->setAllowActivation(static_cast<int>(c.integer(0)), c.boolean(1, true)));
+    }, {"id, permitir",
+        "false: la escena se carga y se queda en 0.9 sin activarse hasta llamar con true (como allowSceneActivation)",
+        "bool"});
+    rt.native.function("Scene.loadedScenes", [&rt](api::Call&) -> api::Value {
+        api::Value::Array out;
+        for (const std::string& s : rt.scene_loads->loadedScenes()) out.emplace_back(s);
+        return api::Value(std::move(out));
+    }, {"", "Escenas cargadas: la activa y las aditivas", "lista de textos"});
+    rt.native.function("Scene.dontDestroyOnLoad", [&rt](api::Call& c) -> api::Value {
+        const ecs::Entity e = rt.entityArg(c, 0);
+        ecs::setDontDestroyOnLoad(e, c.boolean(1, true));
+        return {};
+    }, {"entity, conservar",
+        "El objeto (su raiz) sobrevive a los cambios de escena (Scene.load y Scene.loadAsync en modo single)"});
     rt.native.function("Scene.name", [&rt](api::Call&) { return api::Value(rt.scene_name); },
                        {"", "Nombre de la escena actual", "texto"});
     // Origen flotante: la posicion real (doble precision) del (0,0,0) del

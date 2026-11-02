@@ -33,13 +33,14 @@
 namespace cramion::gfx {
 
 class VulkanDevice;
+class VoxelPass;
 
 inline constexpr std::uint32_t kMaxWaterBodies = 16;
 
 // Un cuerpo de agua para el shader (std140, igual que water_common.glsl).
 struct GpuWaterBody {
     core::Vec4 origin{};         // xyz origen, w = giro en Y (rad)
-    core::Vec4 extent{};         // xy = medio tamano (lago), z = tipo (0 oceano, 1 lago, 2 rio)
+    core::Vec4 extent{};         // xy = medio tamano (lago), z = tipo (0 oceano, 1 lago, 2 rio, 3 bloques)
     core::Vec4 shallow{};        // rgb dispersion, w = transparencia (m)
     core::Vec4 deep{};           // rgb color profundo, w = espuma
     core::Vec4 waves{};          // altura, longitud, velocidad, crestas
@@ -101,7 +102,18 @@ public:
     // Olas interactivas (water::RippleSimulation): `size` x `size` alturas
     // desde la esquina (origin_x, origin_z) cada `cell` metros. Vacio = calma.
     void setRipples(const std::vector<float>& heights, std::uint32_t size, float origin_x, float origin_z, float cell);
-    bool empty() const { return bodies_.empty(); }
+    // Agua de bloques (mundos de voxeles): sus caras las guarda el VoxelPass
+    // (setWaterSection) y se dibujan aqui con water_voxel.vert y el mismo
+    // water.frag, como un cuerpo mas de tipo 3 (look; extra.z = superficie
+    // en la camara, extra.w = luz del cielo en la camara). camera_inside: la
+    // camara esta en un bloque de agua (bajo el agua con este cuerpo).
+    void setVoxelSource(const VoxelPass* voxels) { voxels_ = voxels; }
+    void setVoxelWater(const GpuWaterBody& look, bool enabled, bool camera_inside) {
+        voxel_look_ = look;
+        voxel_enabled_ = enabled;
+        voxel_inside_ = camera_inside;
+    }
+    bool empty() const { return bodies_.empty() && !voxelWaterActive(); }
     // Calidad Baja (iluminacion ligera): el reflejo en pantalla del agua con
     // 12 pasos y 3 de afinado en vez de 32 y 6 (water.frag, ocean.w).
     void setLowQuality(bool low) { low_quality_ = low; }
@@ -142,8 +154,17 @@ private:
     static void upload(const VulkanDevice& device, Mesh& mesh, const std::vector<WaterVertex>& vertices,
                        const std::vector<std::uint32_t>& indices);
 
+    bool voxelWaterActive() const;
+    // Indice del cuerpo del agua de bloques (despues de los de la escena), o -1.
+    int voxelBodyIndex() const;
+
     const VulkanDevice* device_ = nullptr;
     std::uint32_t frames_ = 0;
+    const VoxelPass* voxels_ = nullptr;
+    GpuWaterBody voxel_look_{};
+    bool voxel_enabled_ = false;
+    bool voxel_inside_ = false;
+    vk::raii::Pipeline voxel_pipeline_{nullptr};
     // Oclusion del oceano: una consulta por frame en vuelo alrededor de su
     // dibujo. Sin ningun pixel visible dos frames seguidos (detras de murallas
     // o del terreno) no se simula su FFT: se sigue dibujando (barato) para

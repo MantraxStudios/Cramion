@@ -1,0 +1,60 @@
+<p>
+  El generador <strong class="text-white">Aventura</strong> del mundo de bloques (<code>VoxelWorld</code>) siembra el
+  mundo de <strong class="text-white">estructuras</strong>: aldeas, ciudades amuralladas, torres de mago, ruinas,
+  portales y mazmorras. Se generan dentro del generador de chunks, en los hilos de fondo y sin tirones: el mundo se
+  divide en regiones de 384 m y cada región se planifica una vez (qué hay, dónde, sus calles, casas y salas) a partir
+  de la semilla; luego cada chunk copia la parte que le toca al generarse. La misma semilla da siempre lo mismo,
+  en cualquier orden de carga, y los edificios cruzan los bordes de los chunks sin cortes.
+</p>
+
+<h3 id="tipos">Qué hay</h3>
+<table>
+  <thead><tr><th>type</th><th>Qué es</th></tr></thead>
+  <tbody>
+    <tr><td><code>ciudad</code></td><td>La región del origen tiene <strong class="text-white">siempre</strong> la capital, <em>Aurelia</em>: murallas con almenas y torres, tres puertas con rastrillo, castillo al norte (salón del trono con el rey, biblioteca, armería, comedor, dormitorio real y calabozos), plaza redonda con fuente y mercado, taberna, herrería, templo, tiendas de pociones y armaduras, establo, más de cien casas amuebladas de 2-3 pisos y muelle si hay costa cerca. El terreno se aplana con rampas suaves. Otras ciudades (raras) son iguales en pequeño.</td></tr>
+    <tr><td><code>aldea</code></td><td>En prados llanos: plaza con pozo, caminos de tierra con farolas, taberna, herrería, tiendas, casas de entramado con tejados de tejas de colores, granjas con cultivos y árboles. Estilo según el bioma: nieve (madera de abeto y tejados nevados), desierto (adobe, azoteas y toldos) y playa (tablones y paja).</td></tr>
+    <tr><td><code>mazmorra</code></td><td>Una entrada en ruinas con una escalera de caracol y 2-3 pisos bajo tierra de salas y pasillos: salones con columnas, bibliotecas abandonadas, criptas con sarcófagos, calabozos, puentes sobre lava, salas inundadas, salas con trampas de pinchos, tesoros y la sala del jefe.</td></tr>
+    <tr><td><code>torre</code></td><td>Torre de mago redonda con tejado cónico, escalera de caracol, biblioteca, alquimia y el mago en la cima.</td></tr>
+    <tr><td><code>ruina</code></td><td>Muros rotos con musgo, columnas, altar y un cofre.</td></tr>
+    <tr><td><code>portal</code></td><td>Arco de obsidiana sobre un círculo de runas; su punto <code>portal</code> lleva la dimensión de destino.</td></tr>
+  </tbody>
+</table>
+<p>
+  Todos los edificios se pueden visitar por dentro: camas, mesas con velas, sillas, estanterías, chimeneas encendidas,
+  alfombras, cocinas con horno, barras con barriles, yunque y fragua, bancos y altar, mostradores y expositores,
+  escaleras entre pisos y ventanas que dejan pasar la luz. Faroles, braseros, velas y fuegos dan luz por la noche.
+</p>
+
+<h3 id="api">API</h3>
+<table>
+  <tbody>
+    <tr><td><code>Voxel.structuresNear(pos, radio)</code></td><td>Lista de las estructuras cuya caja toca la esfera (no hace falta que estén cargadas).</td></tr>
+    <tr><td><code>Voxel.structureAt(pos)</code></td><td>La que contiene el punto o <code>nil</code>; en mazmorras, <code>room</code> es el índice de la sala (o -1).</td></tr>
+  </tbody>
+</table>
+<p>Cada estructura es <code>{id, type, name, center, min, max, level, seed, dimension, points}</code>; <code>name</code> va en inglés (lo ve el jugador) y <code>level</code> es la dificultad (crece con la distancia al origen). Cada punto es <code>{kind, pos, dir, tag}</code>:</p>
+<table>
+  <thead><tr><th>kind</th><th>tag</th></tr></thead>
+  <tbody>
+    <tr><td><code>npc</code></td><td>Oficio: rey, reina, consejero, guardia, capitan, tabernero, bardo, herrero, aprendiz, sacerdote, monje, mago, bibliotecario, armero, cocinero, carcelero, prisionero, granjero, pescador, marinero, mozo, aldeano, ciudadano...</td></tr>
+    <tr><td><code>mercader</code></td><td>Tienda: armas, armaduras, pociones, monturas, general.</td></tr>
+    <tr><td><code>cofre</code></td><td>Calidad 1..4 (texto).</td></tr>
+    <tr><td><code>jefe</code> / <code>spawner</code></td><td>Id del bestiario sugerido (esqueleto, zombi, arana, goblin, diablillo, ogro, golem, yeti...).</td></tr>
+    <tr><td><code>entrada</code></td><td>La escalera de una mazmorra (tag: profundidad).</td></tr>
+    <tr><td><code>portal</code></td><td>Dimensión de destino.</td></tr>
+    <tr><td><code>inicio</code></td><td>Solo en la capital: donde aparece el jugador (en la plaza).</td></tr>
+    <tr><td><code>plaza</code>, <code>cama</code>, <code>altar</code>, <code>trampa</code></td><td>Sitios para reunir aldeanos, dormir, rezar y trampas (tag: pinchos).</td></tr>
+  </tbody>
+</table>
+<pre><code>// Aparecer en la plaza de la capital
+for (const Value&amp; s : Voxel::structuresNear(Vec3{0, 70, 0}, 32).items()) {
+    for (const Value&amp; p : s["points"].items()) {
+        if (p["kind"].asString() == "inicio") player.transform().setPosition(p["pos"].asVec3());
+    }
+}</code></pre>
+<p>
+  Los puntos son la posición de los pies (el bloque de aire sobre el suelo) en coordenadas del mundo, como el resto de
+  la API de <code>Voxel</code>. <code>Voxel.surfaceHeight</code> ya da el terreno aplanado bajo aldeas y ciudades. Los
+  bloques nuevos (tejas, entramado, muebles, faroles, piedra de mazmorra...) tienen nombre:
+  <code>Voxel.blockId("lantern")</code>.
+</p>

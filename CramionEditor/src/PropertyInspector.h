@@ -3,6 +3,9 @@
 
 #include <CramionCore/CramionCore.h>
 
+#include <imgui.h>
+
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -115,6 +118,16 @@ private:
 // Campos con valores distintos entre varias entidades (values[0] = el activo).
 MixedFields mixedFields(const std::vector<FieldValues>& values);
 
+// Fotogramas clave desde el Inspector (EditorKeyframes.cpp lo rellena). El
+// editor da el estado de cada campo por su ruta y recoge lo que se pidio.
+struct KeyframeHook {
+    // 0 sin animar, 1 animado, 2 con clave en el fotograma actual.
+    std::function<int(const std::string& path)> state;
+    enum class Action { None, Insert, Delete, Clear };
+    Action action = Action::None;
+    std::string path;  // campo de la peticion
+};
+
 // Dibuja las propiedades de un componente con ImGui a partir de su reflect():
 // el mismo codigo que lo guarda en la escena describe su Inspector.
 class ImGuiPropertyVisitor final : public ecs::PropertyVisitor, FieldPath {
@@ -161,10 +174,24 @@ public:
     // dibujan los campos cuya etiqueta lo contiene (los grupos se abren y las
     // listas que coinciden salen enteras).
     void setFilter(std::string needle) { filter_ = std::move(needle); }
+    // Claves: rombos y menu en las propiedades animables (nullptr = sin ellos).
+    void setKeyframeHook(KeyframeHook* hook) { keyframe_hook_ = hook; }
 
 private:
     bool visible(const ecs::Meta& meta) const;
-    bool label(const ecs::Meta& meta);
+    bool label(const ecs::Meta& meta, bool animatable = false);
+    void beginKeyframeRow(const ecs::Meta& meta, bool animatable, ImVec2 row_min, ImVec2 label_max);
+    void endKeyframeRow();
+    struct KeyRow {
+        bool active = false;
+        int state = 0;
+        int colors = 0;
+        std::string path;
+        ImVec2 row_min{};
+        ImVec2 label_max{};
+    };
+    KeyframeHook* keyframe_hook_ = nullptr;
+    KeyRow key_row_;
     void finishItem();
     int mixed(const char* key) const;
     void record(const char* key, FieldValue value) { change_ = std::make_pair(pathOf(key), std::move(value)); }

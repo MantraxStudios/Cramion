@@ -473,7 +473,38 @@ int main(int argc, char** argv) {
         cpp_scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
         scripts.update(world, dt);
         cpp_scripts.update(world, dt);
-        if (const std::filesystem::path next = scripts.takeSceneRequest(); !next.empty()) load(next);
+        if (const std::filesystem::path next = scripts.takeSceneRequest(); !next.empty()) {
+            load(next);
+        } else if (scripts.sceneLoads().busy()) {
+            // Scene.loadAsync: se lee en otro hilo y se crea por tandas; el
+            // cambio Single para y arranca la fisica y la navegacion.
+            ecs::AsyncSceneLoader::Host host;
+            host.before_single = [&](const std::filesystem::path&) {
+                ecs::SceneResetTargets targets;
+                targets.terrain_streamer = &terrain_streamer;
+                targets.terrain_store = &terrains;
+                targets.partition = &partition;
+                targets.physics = &physics;
+                targets.navigation = &nav;
+                ecs::SceneResetOptions options;
+                options.discard_terrain_data = true;
+                options.clear_world = false;
+                ecs::resetSceneState(world, targets, options);
+                nav.resetAgents();
+            };
+            host.after_single = [&](const std::filesystem::path& file) {
+                const std::u8string stem = file.stem().u8string();
+                scripts.setSceneName(std::string(stem.begin(), stem.end()));
+                partition.setSceneFile(file, false);
+                partition.begin(world, spawn_point);
+                terrain_streamer.loadNow(world, terrains, spawn_point);
+                physics.start(world);
+                physics.flushPendingTerrain();
+                nav.waitForBuild(world, 30.0f);
+                crowds.begin(world);
+            };
+            scripts.updateSceneLoads(world, host);
+        }
         if (scripts.takeQuitRequest()) break;
         ++ticks;
         worst_ms = std::max(worst_ms, std::chrono::duration<double, std::milli>(Clock::now() - work_start).count());

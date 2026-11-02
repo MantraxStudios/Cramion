@@ -83,6 +83,9 @@ struct BuildConfig {
     int height = 900;
     bool static_batching = true;
     bool show_fps = false;      // desarrollo: FPS/CPU/GPU en una esquina
+    // La barra de progreso del motor al cambiar de escena (Scene.load) y la
+    // linea del banner. Apagado: el juego pone su pantalla de carga (Scene.loadAsync).
+    bool show_engine_loading = false;
     bool vr = false;            // realidad virtual (OpenXR) si hay casco; solo Windows
     bool dedicated_server = false;  // copia <Juego>Server.exe (servidor sin ventana) junto al juego
     bool allow_mods = false;        // el juego carga los mods de Mods/ (mods=1 en game.ini)

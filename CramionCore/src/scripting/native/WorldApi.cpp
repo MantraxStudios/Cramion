@@ -1,14 +1,17 @@
-// Fire, Weather / Environment, Voxel y Fluid: el mundo de la escena (fuego,
+// Fire, Weather / Environment, Sky, Voxel y Fluid: el mundo de la escena (fuego,
 // clima, bloques y liquidos).
 
 #include "Modules.h"
 
+#include "CramionCore/ecs/Components.h"
 #include "CramionCore/environment/Environment.h"
 #include "CramionCore/fire/Fire.h"
 #include "CramionCore/fluid/Fluid.h"
 #include "CramionCore/voxel/Voxel.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 
@@ -363,6 +366,32 @@ Vec3 blockVec(const voxel::BlockPos& p) {
     return Vec3{static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)};
 }
 
+// Una estructura como tabla para los scripts (ver ESTRUCTURAS.md).
+api::Value structureValue(const voxel::StructureInfo& s, bool with_room) {
+    api::Value t = api::Value::object();
+    t.set("id", static_cast<double>(s.id));
+    t.set("type", s.type);
+    t.set("name", s.name);
+    t.set("center", s.center);
+    t.set("min", s.min);
+    t.set("max", s.max);
+    t.set("level", s.level);
+    t.set("seed", static_cast<double>(s.seed));
+    t.set("dimension", s.dimension);
+    api::Value::Array points;
+    for (const voxel::StructurePoint& p : s.points) {
+        api::Value pt = api::Value::object();
+        pt.set("kind", p.kind);
+        pt.set("pos", p.position);
+        pt.set("dir", p.direction);
+        pt.set("tag", p.tag);
+        points.push_back(std::move(pt));
+    }
+    t.set("points", api::Value(std::move(points)));
+    if (with_room) t.set("room", s.room);
+    return t;
+}
+
 void registerVoxel(Runtime& rt) {
     api::NativeApi& n = rt.native;
     n.function("Voxel.isActive", [&rt](api::Call&) -> api::Value {
@@ -413,6 +442,14 @@ void registerVoxel(Runtime& rt) {
         const int x = cell(c.number(0)), z = cell(c.number(1));
         return rt.voxels != nullptr ? rt.voxels->surfaceHeight(x, z) : 0;
     }, {"x, z", "altura del terreno", "numero"});
+    n.function("Voxel.waterLevel", [&rt](api::Call& c) -> api::Value {
+        const int x = cell(c.number(0)), z = cell(c.number(1));
+        return rt.voxels != nullptr ? rt.voxels->waterLevel(x, z) : 0;
+    }, {"x, z", "primer bloque por encima del agua de la columna (mar o lago; 0 = sin agua)", "numero"});
+    n.function("Voxel.isWater", [](api::Call& c) -> api::Value {
+        const int id = blockOf(c.arg(0));
+        return validBlock(id) && voxel::block::isWater(static_cast<voxel::BlockId>(id));
+    }, {"id", "es agua (fuente o corriente)?", "bool"});
     n.function("Voxel.isReady", [&rt](api::Call& c) -> api::Value {
         const Vec3 p = c.vec3(0);
         return rt.voxels != nullptr && rt.voxels->isReady(cell(p.x), cell(p.z));
@@ -508,6 +545,46 @@ void registerVoxel(Runtime& rt) {
         const std::string fallback = c.string(1, "");
         return rt.voxels != nullptr ? rt.voxels->meta(key, fallback) : fallback;
     }, {"\"clave\", \"\"", "lee un dato", "texto"});
+    // --- Estructuras (aldeas, ciudades, mazmorras, ruinas, torres, portales) ---
+    n.function("Voxel.structuresNear", [&rt](api::Call& c) {
+        api::Value::Array out;
+        if (rt.voxels == nullptr) return api::Value(std::move(out));
+        for (const voxel::StructureInfo& s : rt.voxels->structuresNear(c.vec3(0), static_cast<float>(c.number(1, 64.0)))) {
+            out.push_back(structureValue(s, false));
+        }
+        return api::Value(std::move(out));
+    }, {"pos, radio", "estructuras cuya caja toca la esfera",
+        "lista de {id, type, name, center, min, max, level, seed, dimension, points = {{kind, pos, dir, tag}}}"});
+    n.function("Voxel.structureAt", [&rt](api::Call& c) {
+        voxel::StructureInfo s;
+        if (rt.voxels == nullptr || !rt.voxels->structureAt(c.vec3(0), s)) return api::Value{};
+        return structureValue(s, true);
+    }, {"pos", "la estructura que contiene el punto (room = sala de la mazmorra o -1)", "objeto o nil"});
+    // --- Dimensiones (superficie, abismo, cielo, cristal) ---
+    n.function("Voxel.dimension", [&rt](api::Call&) -> api::Value {
+        return rt.voxels != nullptr && rt.voxels->active() ? rt.voxels->dimension() : std::string("superficie");
+    }, {"", "dimension actual (\"superficie\", \"abismo\", \"cielo\", \"cristal\")", "texto"});
+    n.function("Voxel.dimensions", [](api::Call&) {
+        api::Value::Array out;
+        for (const voxel::DimensionInfo& d : voxel::dimensions()) {
+            api::Value t = api::Value::object();
+            t.set("name", d.name);
+            t.set("label", d.label);
+            t.set("generator", d.generator);
+            t.set("sky", d.sky);
+            out.push_back(std::move(t));
+        }
+        return api::Value(std::move(out));
+    }, {"", "dimensiones que hay", "lista de {name, label, generator, sky}"});
+    n.function("Voxel.setDimension", [&rt](api::Call& c) -> api::Value {
+        const std::string name = c.string(0);
+        const bool ambience = c.boolean(1, true);
+        return rt.voxels != nullptr && rt.voxels->setDimension(name, ambience);
+    }, {"\"abismo\", ambiente?", "cambia de dimension (guarda la actual; ambiente = el motor pone su cielo)", "bool"});
+    n.function("Voxel.spawnPoint", [&rt](api::Call& c) -> api::Value {
+        if (rt.voxels == nullptr || !rt.voxels->active()) return c.has(0) ? c.vec3(0) : Vec3{};
+        return c.has(0) ? rt.voxels->spawnPoint(c.vec3(0)) : rt.voxels->spawnPoint();
+    }, {"cerca?", "sitio seguro para los pies en la dimension actual (cerca de un punto o de quien mira)", "Vec3"});
 }
 
 // --- Fluid ---
@@ -634,11 +711,164 @@ void registerFluid(Runtime& rt) {
     }, {"", "{particles, capacity, emitters...}", "objeto"});
 }
 
+// --- Sky ---
+// Color del cielo del componente Sky (el primero activo de la escena, el
+// que se dibuja): degradado de cenit/horizonte/suelo, paradas por altura y
+// tinte del sol. Los colores son Vec3 en sRGB 0..1. Lo demas del Sky
+// (nubes, hora) se cambia con Entity.setField("Sky", ...) o con Weather.
+void registerSky(Runtime& rt) {
+    api::NativeApi& n = rt.native;
+    const auto find = [&rt]() -> ecs::Sky* {
+        if (rt.world == nullptr) return nullptr;
+        ecs::Sky* found = nullptr;
+        ecs::Sky* inactive = nullptr;
+        rt.world->forEachDepthFirst([&](ecs::Entity e) {
+            if (found != nullptr) return;
+            ecs::Sky* sky = e.tryGet<ecs::Sky>();
+            if (sky == nullptr) return;
+            if (e.activeInHierarchy()) found = sky;
+            else if (inactive == nullptr) inactive = sky;
+        });
+        return found != nullptr ? found : inactive;
+    };
+    // Sin Sky en la escena: uno nuevo (cielo fisico, sin HDR), como Weather.
+    const auto ensure = [&rt, find]() -> ecs::Sky* {
+        if (ecs::Sky* sky = find()) return sky;
+        if (rt.world == nullptr) return nullptr;
+        ecs::Entity holder = rt.world->create("Ambiente");
+        ecs::Sky& sky = holder.add<ecs::Sky>();
+        sky.use_hdr = false;
+        return &sky;
+    };
+    const auto parse_mode = [](const api::Value& v, ecs::SkyColorMode& out) {
+        if (v.isNumber()) {
+            const int i = static_cast<int>(v.asNumber());
+            if (i < 0 || i > 2) return false;
+            out = static_cast<ecs::SkyColorMode>(i);
+            return true;
+        }
+        std::string name = v.asString();
+        for (char& ch : name) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        if (name == "physical" || name == "fisico") {
+            out = ecs::SkyColorMode::Physical;
+        } else if (name == "gradient" || name == "degradado") {
+            out = ecs::SkyColorMode::Gradient;
+        } else if (name == "gradientstops" || name == "stops" || name == "paradas" || name == "degradado por paradas") {
+            out = ecs::SkyColorMode::GradientStops;
+        } else {
+            return false;
+        }
+        return true;
+    };
+    static constexpr std::array<const char*, 3> kModeNames = {"Physical", "Gradient", "GradientStops"};
+
+    n.function("Sky.setColorMode", [&rt, ensure, parse_mode](api::Call& c) {
+        ecs::SkyColorMode mode{};
+        if (!parse_mode(c.arg(0), mode)) {
+            rt.write(1, "Sky.setColorMode: modo desconocido '" + c.arg(0).asString() +
+                            "' (Physical, Gradient, GradientStops)");
+            return api::Value{};
+        }
+        if (ecs::Sky* sky = ensure()) sky->color_mode = mode;
+        return api::Value{};
+    }, {"\"Gradient\"", "color del cielo: Physical (fisico), Gradient (3 colores) o GradientStops (paradas)"});
+    n.function("Sky.getColorMode", [find](api::Call&) -> api::Value {
+        const ecs::Sky* sky = find();
+        const auto mode = sky != nullptr ? sky->color_mode : ecs::SkyColorMode::Physical;
+        return std::string(kModeNames[static_cast<std::size_t>(mode)]);
+    }, {"", "Physical, Gradient o GradientStops", "texto"});
+    n.function("Sky.setColors", [ensure](api::Call& c) {
+        if (ecs::Sky* sky = ensure()) {
+            sky->zenith_color = c.vec3(0, sky->zenith_color);
+            sky->horizon_color = c.vec3(1, sky->horizon_color);
+            sky->ground_color = c.vec3(2, sky->ground_color);
+            if (sky->color_mode == ecs::SkyColorMode::Physical) sky->color_mode = ecs::SkyColorMode::Gradient;
+        }
+        return api::Value{};
+    }, {"cenit, horizonte, suelo", "colores del degradado (Vec3 sRGB 0..1; nil = el de antes). Pasa a Gradient si era Physical"});
+    n.function("Sky.getColors", [find](api::Call&) -> api::Value {
+        const ecs::Sky* sky = find();
+        const ecs::Sky fallback{};
+        const ecs::Sky& s = sky != nullptr ? *sky : fallback;
+        return api::Value(api::Value::Array{s.zenith_color, s.horizon_color, s.ground_color});
+    }, {"", "{cenit, horizonte, suelo}", "lista de Vec3"});
+    n.function("Sky.setSunsetColors", [ensure](api::Call& c) {
+        if (ecs::Sky* sky = ensure()) {
+            sky->sunset_zenith_color = c.vec3(0, sky->sunset_zenith_color);
+            sky->sunset_horizon_color = c.vec3(1, sky->sunset_horizon_color);
+            sky->sunset_ground_color = c.vec3(2, sky->sunset_ground_color);
+            sky->time_colors = true;
+        }
+        return api::Value{};
+    }, {"cenit, horizonte, suelo", "colores del atardecer (activa los colores por hora)"});
+    n.function("Sky.setNightColors", [ensure](api::Call& c) {
+        if (ecs::Sky* sky = ensure()) {
+            sky->night_zenith_color = c.vec3(0, sky->night_zenith_color);
+            sky->night_horizon_color = c.vec3(1, sky->night_horizon_color);
+            sky->night_ground_color = c.vec3(2, sky->night_ground_color);
+            sky->time_colors = true;
+        }
+        return api::Value{};
+    }, {"cenit, horizonte, suelo", "colores de la noche (activa los colores por hora)"});
+    n.function("Sky.setTimeColors", [ensure](api::Call& c) {
+        if (ecs::Sky* sky = ensure()) sky->time_colors = c.boolean(0, true);
+        return api::Value{};
+    }, {"true", "mezclar dia, atardecer y noche segun la altura del sol"});
+    // Lista de paradas: {altura, color} o {elevation = altura, color = color}.
+    n.function("Sky.setGradient", [&rt, ensure](api::Call& c) {
+        const api::Value& list = c.list(0);
+        std::vector<ecs::SkyGradientStop> stops;
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            const api::Value& item = list[i];
+            if (stops.size() >= ecs::kMaxSkyGradientStops) break;
+            ecs::SkyGradientStop stop;
+            if (item.isObject()) {
+                stop.elevation = static_cast<float>(item["elevation"].asNumber(0.0));
+                if (item["color"].isVec3()) stop.color = item["color"].asVec3();
+            } else if (item.isArray() && item.size() >= 2) {
+                stop.elevation = static_cast<float>(item[0].asNumber(0.0));
+                if (item[1].isVec3()) stop.color = item[1].asVec3();
+            } else {
+                rt.write(1, "Sky.setGradient: cada parada es {altura, color}");
+                return api::Value{};
+            }
+            stop.elevation = std::clamp(stop.elevation, -90.0f, 90.0f);
+            stops.push_back(stop);
+        }
+        if (ecs::Sky* sky = ensure()) {
+            sky->gradient = std::move(stops);
+            sky->color_mode = ecs::SkyColorMode::GradientStops;
+        }
+        return api::Value{};
+    }, {"{{-90, suelo}, {0, horizonte}, {90, cenit}}", "degradado por paradas (altura en grados, hasta 8); pasa a GradientStops"});
+    n.function("Sky.setCurve", [ensure](api::Call& c) {
+        if (ecs::Sky* sky = ensure()) sky->gradient_curve = std::clamp(static_cast<float>(c.number(0)), 0.1f, 16.0f);
+        return api::Value{};
+    }, {"3", "curva del degradado (1 = lineal, mas = horizonte mas fino)"});
+    n.function("Sky.setIntensity", [ensure](api::Call& c) {
+        if (ecs::Sky* sky = ensure()) sky->sky_intensity = std::max(static_cast<float>(c.number(0)), 0.0f);
+        return api::Value{};
+    }, {"1", "brillo de los colores del cielo"});
+    n.function("Sky.setBlend", [ensure](api::Call& c) {
+        if (ecs::Sky* sky = ensure()) sky->color_blend = std::clamp(static_cast<float>(c.number(0)), 0.0f, 1.0f);
+        return api::Value{};
+    }, {"0.5", "0 = cielo fisico .. 1 = solo los colores"});
+    n.function("Sky.setSunTint", [ensure](api::Call& c) {
+        if (ecs::Sky* sky = ensure()) sky->sun_tint = c.vec3(0, Vec3{1.0f, 1.0f, 1.0f});
+        return api::Value{};
+    }, {"Vec3(1, 0.8, 0.6)", "tinte del disco solar y su halo (blanco = sin cambio)"});
+    n.function("Sky.setSunHalo", [ensure](api::Call& c) {
+        if (ecs::Sky* sky = ensure()) sky->sun_halo = std::max(static_cast<float>(c.number(0)), 0.0f);
+        return api::Value{};
+    }, {"1", "halo del sol sobre el degradado (0 = sin halo)"});
+}
+
 }  // namespace
 
 void registerWorldApi(Runtime& rt) {
     registerFire(rt);
     registerWeather(rt);
+    registerSky(rt);
     registerVoxel(rt);
     registerFluid(rt);
 }

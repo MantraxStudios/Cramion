@@ -47,6 +47,10 @@ public:
 
     // Avanza el tiempo y recalcula las matrices de los huesos.
     void update(float delta_seconds);
+    // Solo avanza el tiempo (como update, sin evaluar): la pose se calcula
+    // despues con evaluate(), p. ej. en otro hilo junto a la de otros
+    // personajes.
+    void advance(float delta_seconds);
 
     // Recalcula la pose en el instante actual sin avanzar el tiempo.
     void evaluate();
@@ -55,7 +59,8 @@ public:
     // escala promediadas, rotacion por nlerp en el mismo hemisferio. Los nodos
     // sin pista en un clip aportan su pose de reposo. Sin muestras (o peso 0),
     // la pose de reposo. No toca el clip ni el tiempo de play().
-    void evaluateBlend(const std::vector<ClipSample>& samples);
+    void evaluateBlend(const std::vector<ClipSample>& samples) { evaluateBlend(samples.data(), samples.size()); }
+    void evaluateBlend(const ClipSample* samples, std::size_t count);
 
     // Una matriz por hueso de asset::ModelData::bones, en espacio del modelo.
     const std::vector<core::Mat4>& boneMatrices() const { return bone_matrices_; }
@@ -94,6 +99,14 @@ private:
     std::vector<core::Vec3> rest_translation_;
     std::vector<core::Quat> rest_rotation_;
     std::vector<core::Vec3> rest_scale_;
+    // Muestras que cuentan en evaluateBlend (se reutiliza entre frames).
+    struct BlendActive {
+        const asset::AnimationClip* clip;
+        const std::vector<std::int32_t>* channels;
+        float time;
+        float weight;
+    };
+    std::vector<BlendActive> blend_active_;
 
     std::vector<core::Mat4> local_;
     std::vector<core::Mat4> global_;

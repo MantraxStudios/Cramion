@@ -13,6 +13,7 @@
 // sus funciones y se engancha a las fases del frame (ScriptRuntime.h).
 
 #include "CramionCore/ecs/Reflection.h"
+#include "CramionCore/ecs/SceneLoading.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/scripting/CursorLock.h"
 
@@ -279,6 +280,17 @@ public:
     bool takeQuitRequest();
     // Nombre de la escena actual (Scene.name).
     void setSceneName(const std::string& name);
+    // Scene.loadAsync / Scene.unloadAsync (ecs/SceneLoading.h): las cargas en
+    // segundo plano. Sobreviven a nada: stop() las olvida (Scene.load
+    // sincrono, salir de Play).
+    ecs::AsyncSceneLoader& sceneLoads();
+    // Cada frame con el juego en marcha, despues de los scripts: avanza las
+    // cargas (la escena actual sigue jugando) y avisa a los scripts:
+    // OnSceneLoadProgress {id, scene, progress} al objeto que la pidio, y
+    // OnSceneActivated / OnSceneUnloaded / OnSceneLoadFailed {id, scene, mode}
+    // a todos los objetos con scripts (Visual Scripts y C++). host.destroy y
+    // host.flush_destroys vacios: los de Entity:destroy (con OnDestroy).
+    void updateSceneLoads(ecs::World& world, ecs::AsyncSceneLoader::Host host);
 
     // Prefs: se conservan al cambiar de escena y, con archivo, entre partidas.
     void setPrefsFile(const std::filesystem::path& file);

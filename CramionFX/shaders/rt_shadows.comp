@@ -15,8 +15,9 @@
 // personajes animados, el terreno y los voxeles siguen proyectando con los
 // mapas de sombras; lighting.frag se queda con la mas oscura de las dos.
 //
-// Salida (RGBA16F, un canal por luz): (luz + 1) * 32 + visibilidad (0..31);
-// 0 = hueco libre. Las luces se numeran: puntuales 0..31, focos 32..39. Enteros
+// Salida (RGBA16F, un canal por luz): (luz + 1) * 32 + visibilidad (31 = llega;
+// 0..30 = tapado, con el ancho de su penumbra: encodeVisibility); 0 = hueco
+// libre. Las luces se numeran: puntuales 0..31, focos 32..39. Enteros
 // < 2048: exactos en 16 bits. Es un rayo por luz y pixel (0 o 1): la
 // acumula en el tiempo rt_shadow_temporal.comp y la iluminacion lee el
 // resultado (sin eso la penumbra era ruido que cambiaba cada frame).
@@ -44,6 +45,36 @@ const float kNearPlane = 0.2;
 // la mas oscura de las dos.
 const int kSunId = kMaxPointLights + kMaxSpotLights;
 const float kSunAngularRadius = 0.00465;
+
+// Como unoccludedMask (rt_common.glsl) pero devuelve la distancia al primer
+// impacto que encuentra (-1 = nada tapa). No es la del mas cercano (el rayo
+// acaba en el primero), pero basta para estimar el tamano de la penumbra.
+float occluderDistance(vec3 origin, vec3 direction, float max_distance, uint mask) {
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, scene_tlas, gl_RayFlagsTerminateOnFirstHitEXT, mask, origin,
+                          0.0, direction, max_distance);
+    while (rayQueryProceedEXT(query)) {
+        if (rayQueryGetIntersectionTypeEXT(query, false) ==
+                gl_RayQueryCandidateIntersectionTriangleEXT &&
+            candidateIsOpaque(query)) {
+            rayQueryConfirmIntersectionEXT(query);
+        }
+    }
+    if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+        return -1.0;
+    }
+    return rayQueryGetIntersectionTEXT(query, true);
+}
+
+// Visibilidad de un rayo en 5 bits: 31 = llega a la luz; 0..30 = tapado, con
+// el ancho de la penumbra en ese punto (en el mundo) en escala logaritmica:
+// 5 mm * 2^(codigo / 3), de 5 mm a ~5 m. Penumbra = diametro de la bombilla *
+// (receptor -> lo que tapa) / (lo que tapa -> luz). rt_shadow_temporal.comp
+// la usa para el radio del filtro espacial (rt_shadow_spatial.comp).
+float encodeVisibility(float occluder, float penumbra_width) {
+    if (occluder < 0.0) return 31.0;
+    return clamp(round(log2(max(penumbra_width, 0.005) / 0.005) * 3.0), 0.0, 30.0);
+}
 
 void insertLight(int id, float score, inout int ids[kSlots], inout float scores[kSlots]) {
     if (score <= scores[kSlots - 1]) return;
@@ -109,6 +140,11 @@ void main() {
         ids[0] = kSunId;
         scores[0] = 3.0e38;
     }
+    // La puntuacion usa la normal de la cara real, no la del normal map: con
+    // la de sombreado cada pixel del relieve elegia otras 4 luces (manchas
+    // donde la eleccion cambiaba de un pixel al siguiente y la historia de
+    // esa luz se perdia). Una luz que la cara real ve se traza aunque el
+    // relieve la tape en este pixel (la iluminacion ya la pone a 0 con su N.L).
     int point_count = want_local ? min(lights.counts.x, kMaxPointLights) : 0;
     for (int i = 0; i < point_count; ++i) {
         if (lights.points[i].shadow.y <= 0.0) continue;  // sin sombra
@@ -116,10 +152,10 @@ void main() {
         float d = length(to_light);
         float range = lights.points[i].position_range.w;
         if (d > range) continue;
-        float n_dot_l = dot(normal, to_light / max(d, 1e-4));
-        if (n_dot_l <= 0.0 || dot(geometric, to_light) <= 0.0) continue;
+        float n_dot_l = dot(geometric, to_light / max(d, 1e-4));
+        if (n_dot_l <= 0.0) continue;
         float score = luminance(lights.points[i].color_intensity.rgb) * lights.points[i].color_intensity.a *
-                      attenuation(d, range) * n_dot_l;
+                      attenuation(d, range) * (0.25 + 0.75 * n_dot_l);
         insertLight(i, score, ids, scores);
     }
     int spot_count = want_local ? min(lights.counts.y, kMaxSpotLights) : 0;
@@ -130,15 +166,15 @@ void main() {
         float range = lights.spots[i].position_range.w;
         if (d > range) continue;
         vec3 l = to_light / max(d, 1e-4);
-        float n_dot_l = dot(normal, l);
-        if (n_dot_l <= 0.0 || dot(geometric, l) <= 0.0) continue;
+        float n_dot_l = dot(geometric, l);
+        if (n_dot_l <= 0.0) continue;
         float cosine = dot(-l, normalize(lights.spots[i].direction_intensity.xyz));
         float inner_cos = lights.spots[i].color_inner.a;
         float outer_cos = lights.spots[i].outer_shadow.x;
         float cone = clamp((cosine - outer_cos) / max(inner_cos - outer_cos, 1e-4), 0.0, 1.0);
         if (cone <= 0.0) continue;
         float score = luminance(lights.spots[i].color_inner.rgb) * lights.spots[i].direction_intensity.w *
-                      cone * cone * attenuation(d, range) * n_dot_l;
+                      cone * cone * attenuation(d, range) * (0.25 + 0.75 * n_dot_l);
         insertLight(kMaxPointLights + i, score, ids, scores);
     }
 
@@ -155,8 +191,9 @@ void main() {
             float r = kSunAngularRadius * sqrt(xi.x);
             float angle = 2.0 * kPi * xi.y;
             vec3 direction = normalize(to_sun + (sun_tangent * cos(angle) + sun_bitangent * sin(angle)) * r);
-            float sun_visible = unoccludedMask(origin, direction, 20000.0, kMaskScenery | kMaskTerrain) ? 1.0 : 0.0;
-            result[k] = float(id + 1) * 32.0 + round(sun_visible * 31.0);
+            float sun_hit = occluderDistance(origin, direction, 20000.0, kMaskScenery | kMaskTerrain);
+            // Penumbra del sol: el diametro angular del disco por la distancia.
+            result[k] = float(id + 1) * 32.0 + encodeVisibility(sun_hit, sun_hit * 2.0 * kSunAngularRadius);
             continue;
         }
         bool spot = id >= kMaxPointLights;
@@ -177,11 +214,12 @@ void main() {
         vec3 ray = target - origin;
         float length_to_target = length(ray);
         float max_distance = length_to_target - max(kNearPlane, radius);
-        float visible = 1.0;
-        if (max_distance > 0.0 && !unoccluded(origin, ray / length_to_target, max_distance)) {
-            visible = 0.0;
+        float hit = -1.0;
+        if (max_distance > 0.0) {
+            hit = occluderDistance(origin, ray / length_to_target, max_distance, kMaskAll & ~kMaskNoShadow);
         }
-        result[k] = float(id + 1) * 32.0 + round(visible * 31.0);
+        float penumbra_width = 2.0 * radius * max(hit, 0.0) / max(length_to_target - hit, 0.05);
+        result[k] = float(id + 1) * 32.0 + encodeVisibility(hit, penumbra_width);
     }
     imageStore(output_image, pixel, result);
 }

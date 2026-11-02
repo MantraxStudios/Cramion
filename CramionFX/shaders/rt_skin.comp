@@ -1,0 +1,65 @@
+#version 460
+
+// Personajes animados en la escena de rayos (RayTracing::setSkinnedInstances):
+// deforma los vertices de reposo de un modelo con sus huesos de este frame y
+// los escribe en la region de su hueco en el buffer de vertices de la escena
+// (RtVertex, rt_common.glsl). La misma cuenta que skinned.vert: la BLAS queda
+// en el espacio del modelo (piel x posicion) y la instancia de la TLAS lleva
+// la matriz del actor.
+//
+// Un hilo por vertice.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// asset::SkinnedVertex tal cual (80 bytes).
+struct SkinVertex {
+    float px, py, pz;
+    float nx, ny, nz;
+    float u, v;
+    float tx, ty, tz, tw;
+    uint j0, j1, j2, j3;
+    float w0, w1, w2, w3;
+};
+
+// Igual que rt_common.glsl.
+struct RtVertex {
+    float px, py, pz;
+    float nx, ny, nz;
+    float u, v;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer Source { SkinVertex source[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Bones { mat4 bones[]; };
+layout(std430, set = 0, binding = 2) buffer Vertices { RtVertex vertices[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint source_base;  // primer vertice de reposo del modelo
+    uint target_base;  // primer vertice de la region del hueco
+    uint count;
+    uint bone_base;    // primer hueso de este personaje
+} push;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= push.count) {
+        return;
+    }
+    SkinVertex v = source[push.source_base + i];
+    mat4 skin = v.w0 * bones[push.bone_base + v.j0] + v.w1 * bones[push.bone_base + v.j1] +
+                v.w2 * bones[push.bone_base + v.j2] + v.w3 * bones[push.bone_base + v.j3];
+    vec3 position = (skin * vec4(v.px, v.py, v.pz, 1.0)).xyz;
+    // Como skinned.vert: la normal con la parte 3x3 de la piel.
+    vec3 normal = mat3(skin) * vec3(v.nx, v.ny, v.nz);
+    float normal_length = length(normal);
+    normal = normal_length > 1e-8 ? normal / normal_length : vec3(0.0, 1.0, 0.0);
+    RtVertex out_vertex;
+    out_vertex.px = position.x;
+    out_vertex.py = position.y;
+    out_vertex.pz = position.z;
+    out_vertex.nx = normal.x;
+    out_vertex.ny = normal.y;
+    out_vertex.nz = normal.z;
+    out_vertex.u = v.u;
+    out_vertex.v = v.v;
+    vertices[push.target_base + i] = out_vertex;
+}

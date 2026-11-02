@@ -27,7 +27,8 @@ const voxel::VoxelWorld* findVoxelWorld(ecs::World& world) {
 // Lo que obliga a rehacer el mundo si cambia en el Inspector.
 std::string voxelSignature(const voxel::VoxelWorld& w) {
     std::ostringstream s;
-    s << w.seed << '|' << w.render_distance << '|' << w.sea_level << '|' << w.textures << '|' << w.texture_size;
+    s << w.seed << '|' << w.render_distance << '|' << w.sea_level << '|' << w.textures << '|' << w.texture_size << '|'
+      << w.tree_density << '|' << w.clearings;
     return s.str();
 }
 
@@ -83,11 +84,14 @@ ecs::Entity EditorApp::createVoxelWorldEntity() {
     }
     ecs::Entity entity = world_.create("Mundo de bloques");
     voxel::VoxelWorld& settings = entity.add<voxel::VoxelWorld>();
-    // El mar: el oceano del motor justo en la superficie de los bloques de agua.
-    ecs::Entity sea = world_.create("Mar", entity);
+    // El agua son bloques (se dibujan en el pase del agua). Un WaterBody hijo
+    // DESACTIVADO solo da su aspecto (colores, transparencia, espuma...): activo
+    // dibujaria ademas el plano del oceano.
+    ecs::Entity sea = world_.create("Aspecto del agua", entity);
     water::WaterBody& body = sea.add<water::WaterBody>();
     body = water::oceanPreset();
     sea.setWorldPosition(Vec3{0.0f, std::round(settings.sea_level) - 0.1f, 0.0f});
+    sea.setActive(false);
 
     // La camara del editor sobre el suelo del origen.
     startVoxels();

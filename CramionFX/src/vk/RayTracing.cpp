@@ -8,14 +8,18 @@
 #include "CramionFX/vk/VulkanShader.h"
 #include "CramionFX/vk/VulkanTexture.h"
 
+#include <vk_mem_alloc.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 namespace cramion::gfx {
 namespace {
@@ -40,21 +44,60 @@ static_assert(sizeof(RtMaterial) == 80, "RtMaterial debe coincidir con rt_common
 constexpr std::uint32_t kGroupSize = 8;
 
 // Buffer con direccion en la GPU (entradas de las estructuras de aceleracion
-// y datos que leen los shaders). La memoria se declara antes que el buffer:
-// se destruye despues.
+// y datos que leen los shaders). La memoria la reparte VMA (bloques grandes
+// compartidos): antes cada buffer era una vkAllocateMemory propia, tambien
+// los de cada frame (staging, scratch de las BLAS de streaming), lentas y
+// contra el limite de asignaciones del driver.
 struct DeviceBuffer {
-    vk::raii::DeviceMemory memory{nullptr};
+    const VulkanDevice* owner = nullptr;
+    VmaAllocation allocation = nullptr;
     vk::raii::Buffer buffer{nullptr};
     vk::DeviceAddress address = 0;
     vk::DeviceSize size = 0;
     void* mapped = nullptr;
+    GpuMemoryTicket ticket;
+
+    DeviceBuffer() = default;
+    DeviceBuffer(const DeviceBuffer&) = delete;
+    DeviceBuffer& operator=(const DeviceBuffer&) = delete;
+    DeviceBuffer(DeviceBuffer&& other) noexcept { *this = std::move(other); }
+    DeviceBuffer& operator=(DeviceBuffer&& other) noexcept {
+        if (this != &other) {
+            reset();
+            owner = std::exchange(other.owner, nullptr);
+            allocation = std::exchange(other.allocation, nullptr);
+            buffer = std::move(other.buffer);
+            address = std::exchange(other.address, 0);
+            size = std::exchange(other.size, 0);
+            mapped = std::exchange(other.mapped, nullptr);
+            ticket = std::move(other.ticket);
+        }
+        return *this;
+    }
+    ~DeviceBuffer() { reset(); }
+    // El buffer antes que la memoria a la que esta enlazado.
+    void reset() {
+        buffer = nullptr;
+        if (allocation != nullptr && owner != nullptr && owner->allocator() != nullptr) {
+            vmaFreeMemory(owner->allocator(), allocation);
+        }
+        allocation = nullptr;
+        owner = nullptr;
+        address = 0;
+        size = 0;
+        mapped = nullptr;
+        ticket.release();
+    }
 };
 
 // `data_size`: cuantos bytes de `data` se copian (VK_WHOLE_SIZE = `size`; los
 // buffers de la escena se crean con hueco al final para lo que entre despues).
+// `prefer_vram`: visible desde la CPU pero, si se puede, en la VRAM (ReBAR):
+// lo que la CPU escribe y la GPU lee cada frame (instancias de la TLAS).
 DeviceBuffer createBuffer(const VulkanDevice& device, vk::DeviceSize size,
                           vk::BufferUsageFlags usage, bool host_visible,
-                          const void* data = nullptr, vk::DeviceSize data_size = VK_WHOLE_SIZE) {
+                          const void* data = nullptr, vk::DeviceSize data_size = VK_WHOLE_SIZE,
+                          bool prefer_vram = false) {
     DeviceBuffer result;
     result.size = std::max<vk::DeviceSize>(size, 16);
     if (data_size == VK_WHOLE_SIZE) data_size = size;
@@ -69,23 +112,29 @@ DeviceBuffer createBuffer(const VulkanDevice& device, vk::DeviceSize size,
     buffer_info.sharingMode = vk::SharingMode::eExclusive;
     result.buffer = vk::raii::Buffer(device.handle(), buffer_info);
 
-    const vk::MemoryRequirements requirements = result.buffer.getMemoryRequirements();
-    vk::MemoryAllocateFlagsInfo flags_info{};
-    flags_info.flags = vk::MemoryAllocateFlagBits::eDeviceAddress;
-    vk::MemoryAllocateInfo allocate_info{};
-    allocate_info.pNext = &flags_info;
-    allocate_info.allocationSize = requirements.size;
-    allocate_info.memoryTypeIndex = device.findMemoryType(
-        requirements.memoryTypeBits,
-        host_visible ? vk::MemoryPropertyFlagBits::eHostVisible |
-                           vk::MemoryPropertyFlagBits::eHostCoherent
-                     : vk::MemoryPropertyFlags{vk::MemoryPropertyFlagBits::eDeviceLocal});
-    result.memory = vk::raii::DeviceMemory(device.handle(), allocate_info);
-    result.buffer.bindMemory(*result.memory, 0);
+    VmaAllocationCreateInfo allocation_info{};
+    allocation_info.usage = VMA_MEMORY_USAGE_UNKNOWN;
+    allocation_info.requiredFlags = host_visible ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                                                 : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    if (host_visible) allocation_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    if (host_visible && prefer_vram) allocation_info.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    VmaAllocation allocation = nullptr;
+    VmaAllocationInfo info{};
+    if (vmaAllocateMemoryForBuffer(device.allocator(), static_cast<VkBuffer>(*result.buffer), &allocation_info,
+                                   &allocation, &info) != VK_SUCCESS) {
+        throw std::runtime_error("No hay memoria de la GPU para un buffer de la escena de rayos.");
+    }
+    if (vmaBindBufferMemory(device.allocator(), allocation, static_cast<VkBuffer>(*result.buffer)) != VK_SUCCESS) {
+        vmaFreeMemory(device.allocator(), allocation);
+        throw std::runtime_error("No se pudo enlazar la memoria de un buffer de la escena de rayos.");
+    }
+    result.owner = &device;
+    result.allocation = allocation;
+    result.ticket = GpuMemoryTicket(host_visible ? GpuMemoryKind::Staging : GpuMemoryKind::Buffer, info.size);
     result.address = device.handle().getBufferAddress(vk::BufferDeviceAddressInfo{*result.buffer});
 
     if (host_visible) {
-        result.mapped = result.memory.mapMemory(0, VK_WHOLE_SIZE);
+        result.mapped = info.pMappedData;
         if (data != nullptr) {
             std::memcpy(result.mapped, data, static_cast<std::size_t>(size));
         }
@@ -143,6 +192,71 @@ void imageBarrier(const vk::raii::CommandBuffer& cmd, vk::Image image, std::uint
 constexpr vk::PipelineStageFlags2 kRayStages =
     vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
 
+// Scratch de las construcciones de BLAS por tandas: cada construccion su
+// trozo y, cuando no caben mas, una barrera y se reutiliza desde el principio.
+constexpr vk::DeviceSize kBlasScratchChunk = 64ull * 1024ull * 1024ull;
+
+// Lo que ocupa en el scratch cada construccion (alineado) y el scratch que
+// hace falta para construirlas por tandas de kBlasScratchChunk.
+vk::DeviceSize batchedScratchSize(const std::vector<vk::DeviceSize>& sizes, vk::DeviceSize alignment) {
+    vk::DeviceSize largest = 0;
+    vk::DeviceSize total = 0;
+    for (const vk::DeviceSize size : sizes) {
+        const vk::DeviceSize aligned = alignUp(size, std::max<vk::DeviceSize>(alignment, 1));
+        largest = std::max(largest, aligned);
+        total += aligned;
+    }
+    return std::max(largest, std::min(total, kBlasScratchChunk));
+}
+
+// Construye las BLAS de `infos` (con sus rangos) en pocas llamadas: todas las
+// que caben juntas en el scratch van en un solo vkCmdBuildAccelerationStructuresKHR
+// (el driver las reparte por la GPU en paralelo; antes, una llamada y una
+// barrera por BLAS: la GPU las hacia de una en una). `scratch_sizes`: la de
+// cada una (build o update segun su modo). La barrera del final deja las BLAS
+// listas para la TLAS, los rayos y la consulta de tamanos compactados.
+void recordBatchedBlasBuilds(const vk::raii::CommandBuffer& cmd,
+                             std::vector<vk::AccelerationStructureBuildGeometryInfoKHR>& infos,
+                             const std::vector<const vk::AccelerationStructureBuildRangeInfoKHR*>& ranges,
+                             const std::vector<vk::DeviceSize>& scratch_sizes, vk::DeviceAddress scratch_address,
+                             vk::DeviceSize scratch_capacity, vk::DeviceSize alignment) {
+    if (infos.empty()) return;
+    alignment = std::max<vk::DeviceSize>(alignment, 1);
+    const vk::DeviceAddress base = alignUp(scratch_address, alignment);
+    const auto flush = [&](std::size_t first, std::size_t end) {
+        if (end <= first) return;
+        cmd.buildAccelerationStructuresKHR(
+            vk::ArrayProxy<const vk::AccelerationStructureBuildGeometryInfoKHR>(static_cast<std::uint32_t>(end - first),
+                                                                                infos.data() + first),
+            vk::ArrayProxy<const vk::AccelerationStructureBuildRangeInfoKHR* const>(
+                static_cast<std::uint32_t>(end - first), ranges.data() + first));
+    };
+    std::size_t first = 0;
+    vk::DeviceSize offset = 0;
+    for (std::size_t i = 0; i < infos.size(); ++i) {
+        const vk::DeviceSize need = alignUp(scratch_sizes[i], alignment);
+        if (offset + need > scratch_capacity && i > first) {
+            flush(first, i);
+            // El scratch se reutiliza: la tanda anterior debe haber terminado.
+            memoryBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                          vk::AccessFlagBits2::eAccelerationStructureWriteKHR,
+                          vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                          vk::AccessFlagBits2::eAccelerationStructureReadKHR |
+                              vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
+            first = i;
+            offset = 0;
+        }
+        infos[i].scratchData.deviceAddress = base + offset;
+        offset += need;
+    }
+    flush(first, infos.size());
+    memoryBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                  vk::AccessFlagBits2::eAccelerationStructureWriteKHR,
+                  vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR | kRayStages,
+                  vk::AccessFlagBits2::eAccelerationStructureReadKHR |
+                      vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
+}
+
 }  // namespace
 
 // Estructura de aceleracion con su almacenamiento.
@@ -188,9 +302,48 @@ struct RayTracing::Resources {
     std::uint32_t tlas_capacity_hint = 0;
     DeviceBuffer tlas_scratch;
     std::array<DeviceBuffer, kMaxFramesInFlight> instance_buffers;
+    // Las instancias, persistentes: primero las estaticas (arboles: solo
+    // cambian cuando se vuelven a elegir, setStaticInstances) y detras las
+    // dinamicas (actores, terrenos, personajes: setInstances cada frame). Antes
+    // se rehacia todo el vector cada frame (actores + hasta 40000 arboles), se
+    // comparaba entero (~2,5 MB), se copiaba entero y se reconstruia la TLAS
+    // desde cero con cualquier cambio.
     std::vector<vk::AccelerationStructureInstanceKHR> gpu_instances;
+    std::uint32_t static_count = 0;  // las primeras de gpu_instances
+    std::vector<Instance> static_source;  // las estaticas tal cual llegaron
+    bool static_changed = false;
+    std::uint64_t static_generation = 0;  // blas_generation con la que se convirtieron
+    // Sube cuando cambia la direccion de alguna BLAS (modelos nuevos,
+    // compactadas): las estaticas se vuelven a convertir.
+    std::uint64_t blas_generation = 1;
+    std::vector<vk::AccelerationStructureInstanceKHR> dynamic_scratch;  // (reutilizado cada frame)
+    // Lo que falta por escribir en el buffer de instancias de cada hueco
+    // [begin, end): cada hueco se pone al dia cuando le toca construir.
+    std::array<std::uint32_t, kMaxFramesInFlight> slot_dirty_begin{};
+    std::array<std::uint32_t, kMaxFramesInFlight> slot_dirty_end{};
+    void markInstancesDirty(std::uint32_t begin, std::uint32_t end) {
+        if (end <= begin) return;
+        for (std::uint32_t s = 0; s < kMaxFramesInFlight; ++s) {
+            if (slot_dirty_end[s] <= slot_dirty_begin[s]) {
+                slot_dirty_begin[s] = begin;
+                slot_dirty_end[s] = end;
+            } else {
+                slot_dirty_begin[s] = std::min(slot_dirty_begin[s], begin);
+                slot_dirty_end[s] = std::max(slot_dirty_end[s], end);
+            }
+        }
+    }
+    // tlas_dirty: cambio la topologia (cuantas instancias, que BLAS, mascaras):
+    // construccion entera. tlas_refit: solo se movieron (o se reajusto alguna
+    // BLAS): MODE_UPDATE sobre la misma TLAS, mucho mas barato. Cada
+    // kTlasRebuildInterval reajustes se reconstruye entera (los reajustes
+    // seguidos empeoran el arbol y los rayos van mas lentos).
     bool tlas_dirty = false;
+    bool tlas_refit = false;
     bool tlas_built = false;
+    std::uint32_t tlas_refits = 0;
+    static constexpr std::uint32_t kTlasRebuildInterval = 90;
+    std::uint32_t tlas_built_count = 0;  // instancias de la ultima construccion entera
 
     // --- Mallas extra (terreno, arboles) ---
     struct ExtraModel {
@@ -202,6 +355,11 @@ struct RayTracing::Resources {
         std::vector<vk::AccelerationStructureGeometryKHR> geometries;
         std::vector<vk::AccelerationStructureBuildRangeInfoKHR> ranges;
         DeviceBuffer scratch;
+        // Al esculpir: reajustes (MODE_UPDATE) seguidos desde la ultima
+        // construccion entera, y un staging por hueco de frame para sus
+        // vertices (antes, un buffer nuevo de hasta 8 MB en cada cambio).
+        std::uint32_t refits = 0;
+        std::array<DeviceBuffer, kMaxFramesInFlight> upload;
     };
     std::vector<ExtraModel> extra_models;
     // Textura de una malla extra: propia (memoria + imagen + vista) o solo la
@@ -228,6 +386,9 @@ struct RayTracing::Resources {
     // Staging de las subidas de cada frame en vuelo (se libera cuando vuelve
     // a tocar ese hueco: su frame ya termino).
     std::array<std::vector<DeviceBuffer>, kMaxFramesInFlight> staging;
+    // BLAS sustituidas en el frame de cada hueco (compactadas, personajes):
+    // las sueltan cuando vuelve ese hueco, como el staging.
+    std::array<std::vector<AccelerationStructure>, kMaxFramesInFlight> retired_blas;
     std::uint32_t model_count = 0;
 
     // --- Escena incremental (addModel) ---
@@ -264,6 +425,266 @@ struct RayTracing::Resources {
         std::vector<Range> ranges;
     };
     std::vector<PendingModel> pending_models;
+    // Scratch de las BLAS de streaming (flushPendingModels): uno que se
+    // reutiliza (antes, uno nuevo cada frame con modelos que entraban).
+    DeviceBuffer blas_scratch;
+    // Compactacion diferida de las BLAS de streaming: sus tamanos se piden
+    // en el frame en que se construyen y se leen (sin esperar a la GPU)
+    // cuando ya estan; la copia compactada va en el command buffer de un
+    // frame posterior.
+    struct PendingCompaction {
+        vk::raii::QueryPool queries{nullptr};
+        std::vector<std::uint32_t> models;
+        std::vector<vk::AccelerationStructureKHR> handles;  // las que se midieron
+        std::uint32_t frames = 0;  // frames desde que se grabo
+    };
+    std::vector<PendingCompaction> pending_compactions;
+
+    // Geometria de cada modelo con triangulos propios (dueno de su BLAS): sus
+    // vertices y sus rangos de triangulos. Los personajes animados la usan
+    // para construir su BLAS deformada.
+    struct ModelGeometry {
+        std::uint32_t vertex_base = 0;
+        std::uint32_t vertex_count = 0;
+        struct Range {
+            std::uint32_t first_triangle = 0;
+            std::uint32_t triangle_count = 0;
+            bool opaque = true;
+        };
+        std::vector<Range> ranges;
+    };
+    std::vector<ModelGeometry> model_geometry;  // por fila de modelo (vacio si no tiene)
+
+    // Materiales: copia en la CPU (para editarlos en vivo) y donde empiezan
+    // los de cada modelo (UINT32_MAX: sin materiales en la escena).
+    std::vector<RtMaterial> material_cpu;
+    std::vector<std::uint32_t> material_base_of;
+    std::vector<std::uint32_t> pending_material_writes;  // indices de material_cpu a subir
+
+    // --- Personajes animados (esqueleto) en la escena de rayos ---
+    // Cada uno ocupa un hueco: sus vertices deformados (rt_skin.comp, la misma
+    // cuenta que skinned.vert) en una region propia del buffer de vertices, una
+    // fila propia de rt_models (x, y, z = las del modelo; w = cuanto se suma al
+    // indice de cada vertice: de la region del modelo a la del hueco) y su
+    // propia BLAS (ALLOW_UPDATE | PREFER_FAST_BUILD: reajustada cada frame,
+    // reconstruida cada kSkinRebuildInterval).
+    static constexpr std::uint32_t kSkinSlots = 32;
+    static constexpr std::uint32_t kSkinRebuildInterval = 30;
+    struct SkinSlot {
+        bool active = false;
+        std::uint64_t id = 0;
+        std::uint32_t model = UINT32_MAX;
+        std::uint32_t owner = UINT32_MAX;  // el modelo con los triangulos
+        std::uint32_t vertex_base = 0;  // su region en `vertices`
+        std::uint32_t vertex_capacity = 0;
+        std::uint32_t vertex_count = 0;
+        std::uint32_t source_base = 0;  // sus vertices de reposo en skin_source
+        AccelerationStructure blas;
+        vk::DeviceSize blas_capacity = 0;
+        vk::DeviceSize build_scratch = 0;
+        vk::DeviceSize update_scratch = 0;
+        bool needs_build = true;
+        std::uint32_t refits = 0;
+        bool row_dirty = true;
+        core::Mat4 transform = core::Mat4::identity();
+        std::uint8_t mask = 0;
+        std::uint32_t bone_first = 0;  // en skin_bone_staging
+        std::uint32_t bone_count = 0;
+    };
+    std::array<SkinSlot, kSkinSlots> skin_slots{};
+    std::uint32_t skin_row_base = 0;  // la fila del hueco 0 (detras de las mallas extra)
+    // Los vertices de reposo (asset::SkinnedVertex tal cual, 80 bytes) de cada
+    // modelo animado que ha entrado: model -> primer vertice en skin_source.
+    DeviceBuffer skin_source;
+    std::uint32_t skin_source_used = 0;
+    std::unordered_map<std::uint32_t, std::uint32_t> skin_source_of;
+    struct PendingSkinSource {
+        std::uint32_t base = 0;
+        std::vector<std::uint8_t> bytes;
+    };
+    std::vector<PendingSkinSource> pending_skin_sources;
+    std::vector<core::Mat4> skin_bone_staging;  // los huesos de este frame
+    std::array<DeviceBuffer, kMaxFramesInFlight> skin_bones;
+    DeviceBuffer skin_scratch;
+    bool skin_grow = false;  // las regiones nuevas no caben en `vertices`
+    vk::raii::DescriptorSetLayout skin_layout{nullptr};
+    vk::raii::DescriptorPool skin_pool{nullptr};
+    std::vector<vk::raii::DescriptorSet> skin_sets;  // uno por hueco de frame
+    vk::raii::PipelineLayout skin_pipeline_layout{nullptr};
+    vk::raii::Pipeline skin_pipeline{nullptr};
+    static constexpr vk::BuildAccelerationStructureFlagsKHR kSkinBlasFlags =
+        vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate | vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastBuild;
+
+    // Las geometrias de la BLAS de un personaje: los triangulos de su modelo
+    // (indices absolutos, a la region del modelo) con la direccion de los
+    // vertices desplazada a la region del hueco.
+    std::vector<vk::AccelerationStructureGeometryKHR> skinGeometries(const SkinSlot& s) const {
+        std::vector<vk::AccelerationStructureGeometryKHR> geometries;
+        if (s.owner >= model_geometry.size()) return geometries;
+        const ModelGeometry& g = model_geometry[s.owner];
+        for (const ModelGeometry::Range& range : g.ranges) {
+            vk::AccelerationStructureGeometryTrianglesDataKHR triangles{};
+            triangles.vertexFormat = vk::Format::eR32G32B32Sfloat;
+            triangles.vertexData.deviceAddress =
+                vertices.address + static_cast<vk::DeviceAddress>(s.vertex_base - g.vertex_base) * sizeof(RtVertex);
+            triangles.vertexStride = sizeof(RtVertex);
+            triangles.maxVertex = g.vertex_base + g.vertex_count - 1;
+            triangles.indexType = vk::IndexType::eUint32;
+            triangles.indexData.deviceAddress = indices.address + static_cast<vk::DeviceAddress>(range.first_triangle) * 12;
+            vk::AccelerationStructureGeometryKHR geometry{};
+            geometry.geometryType = vk::GeometryTypeKHR::eTriangles;
+            geometry.geometry.triangles = triangles;
+            geometry.flags = range.opaque ? vk::GeometryFlagBitsKHR::eOpaque : vk::GeometryFlagsKHR{};
+            geometries.push_back(geometry);
+        }
+        return geometries;
+    }
+
+    // El pipeline de rt_skin.comp (la primera vez que hace falta).
+    void ensureSkinPipeline(const VulkanDevice& gpu) {
+        if (*skin_pipeline != nullptr) return;
+        std::array<vk::DescriptorSetLayoutBinding, 3> bindings{};
+        for (std::uint32_t i = 0; i < bindings.size(); ++i) {
+            bindings[i].binding = i;
+            bindings[i].descriptorType = vk::DescriptorType::eStorageBuffer;
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags = vk::ShaderStageFlagBits::eCompute;
+        }
+        vk::DescriptorSetLayoutCreateInfo layout_info{};
+        layout_info.setBindings(bindings);
+        skin_layout = vk::raii::DescriptorSetLayout(gpu.handle(), layout_info);
+        const vk::DescriptorPoolSize pool_size{vk::DescriptorType::eStorageBuffer, 3 * kMaxFramesInFlight};
+        vk::DescriptorPoolCreateInfo pool_info{};
+        pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+        pool_info.maxSets = kMaxFramesInFlight;
+        pool_info.setPoolSizes(pool_size);
+        skin_pool = vk::raii::DescriptorPool(gpu.handle(), pool_info);
+        const std::vector<vk::DescriptorSetLayout> layouts(kMaxFramesInFlight, *skin_layout);
+        vk::DescriptorSetAllocateInfo alloc{};
+        alloc.descriptorPool = *skin_pool;
+        alloc.setSetLayouts(layouts);
+        skin_sets = vk::raii::DescriptorSets(gpu.handle(), alloc);
+        const vk::PushConstantRange push_range{vk::ShaderStageFlagBits::eCompute, 0, 16};
+        const vk::DescriptorSetLayout raw_layout = *skin_layout;
+        vk::PipelineLayoutCreateInfo pipeline_layout_info{};
+        pipeline_layout_info.setSetLayouts(raw_layout);
+        pipeline_layout_info.setPushConstantRanges(push_range);
+        skin_pipeline_layout = vk::raii::PipelineLayout(gpu.handle(), pipeline_layout_info);
+        const vk::raii::ShaderModule module = shaders::loadModule(gpu, "rt_skin.comp.spv");
+        vk::ComputePipelineCreateInfo pipeline_info{};
+        pipeline_info.stage.stage = vk::ShaderStageFlagBits::eCompute;
+        pipeline_info.stage.module = *module;
+        pipeline_info.stage.pName = "main";
+        pipeline_info.layout = *skin_pipeline_layout;
+        skin_pipeline = vk::raii::Pipeline(gpu.handle(), gpu.pipelineCache(), pipeline_info);
+    }
+
+    // Los personajes de este frame: sus vertices deformados (rt_skin.comp) y
+    // sus BLAS (todas en una llamada: reajuste o, cada kSkinRebuildInterval
+    // frames o si cambio de modelo, construccion entera).
+    void recordSkinning(const vk::raii::CommandBuffer& cmd, std::uint32_t slot) {
+        const VulkanDevice& gpu = *device;
+        std::vector<std::uint32_t> active;
+        for (std::uint32_t k = 0; k < kSkinSlots; ++k) {
+            const SkinSlot& s = skin_slots[k];
+            if (s.active && *s.blas.handle != nullptr && s.bone_count > 0 && *skin_source.buffer != nullptr &&
+                s.vertex_base + s.vertex_count <= vertex_used &&
+                sizeof(RtVertex) * static_cast<vk::DeviceSize>(s.vertex_base + s.vertex_count) <= vertices.size) {
+                active.push_back(k);
+            }
+        }
+        if (active.empty()) return;
+        ensureSkinPipeline(gpu);
+
+        // Los huesos de este frame (su hueco ya termino: se puede escribir).
+        const vk::DeviceSize bone_bytes = sizeof(core::Mat4) * static_cast<vk::DeviceSize>(skin_bone_staging.size());
+        DeviceBuffer& bones = skin_bones[slot];
+        if (bones.size < bone_bytes) {
+            bones = createBuffer(gpu, bone_bytes * 2, vk::BufferUsageFlagBits::eStorageBuffer, true, nullptr,
+                                 VK_WHOLE_SIZE, /*prefer_vram=*/true);
+        }
+        std::memcpy(bones.mapped, skin_bone_staging.data(), static_cast<std::size_t>(bone_bytes));
+        const std::array<vk::DescriptorBufferInfo, 3> infos = {
+            vk::DescriptorBufferInfo{*skin_source.buffer, 0, VK_WHOLE_SIZE},
+            vk::DescriptorBufferInfo{*bones.buffer, 0, VK_WHOLE_SIZE},
+            vk::DescriptorBufferInfo{*vertices.buffer, 0, VK_WHOLE_SIZE}};
+        const vk::DescriptorSet set = *skin_sets[slot];
+        std::array<vk::WriteDescriptorSet, 3> writes{};
+        for (std::uint32_t i = 0; i < writes.size(); ++i) {
+            writes[i].dstSet = set;
+            writes[i].dstBinding = i;
+            writes[i].descriptorType = vk::DescriptorType::eStorageBuffer;
+            writes[i].setBufferInfo(infos[i]);
+        }
+        gpu.handle().updateDescriptorSets(writes, nullptr);
+
+        // Los frames anteriores dejan de leer estos vertices (rayos y
+        // reajustes de las BLAS) y las subidas de este frame ya estan.
+        memoryBarrier(cmd,
+                      kRayStages | vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR |
+                          vk::PipelineStageFlagBits2::eTransfer,
+                      vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eAccelerationStructureReadKHR |
+                          vk::AccessFlagBits2::eTransferWrite,
+                      vk::PipelineStageFlagBits2::eComputeShader,
+                      vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite);
+        cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *skin_pipeline);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *skin_pipeline_layout, 0, set, nullptr);
+        for (const std::uint32_t k : active) {
+            const SkinSlot& s = skin_slots[k];
+            const std::array<std::uint32_t, 4> push = {s.source_base, s.vertex_base, s.vertex_count, s.bone_first};
+            cmd.pushConstants<std::array<std::uint32_t, 4>>(*skin_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
+                                                            push);
+            cmd.dispatch((s.vertex_count + 63) / 64, 1, 1);
+        }
+        memoryBarrier(cmd, vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite,
+                      vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR | kRayStages,
+                      vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eAccelerationStructureReadKHR);
+
+        // --- Sus BLAS: una sola llamada ---
+        std::vector<std::vector<vk::AccelerationStructureGeometryKHR>> geometries(active.size());
+        std::vector<std::vector<vk::AccelerationStructureBuildRangeInfoKHR>> ranges(active.size());
+        std::vector<vk::AccelerationStructureBuildGeometryInfoKHR> build_infos(active.size());
+        std::vector<const vk::AccelerationStructureBuildRangeInfoKHR*> range_pointers(active.size());
+        std::vector<vk::DeviceSize> scratch_sizes(active.size());
+        vk::DeviceSize scratch_total = 0;
+        for (std::size_t i = 0; i < active.size(); ++i) {
+            SkinSlot& s = skin_slots[active[i]];
+            geometries[i] = skinGeometries(s);
+            for (const ModelGeometry::Range& range : model_geometry[s.owner].ranges) {
+                vk::AccelerationStructureBuildRangeInfoKHR build_range{};
+                build_range.primitiveCount = range.triangle_count;
+                ranges[i].push_back(build_range);
+            }
+            const bool rebuild = s.needs_build || s.refits >= kSkinRebuildInterval;
+            vk::AccelerationStructureBuildGeometryInfoKHR& info = build_infos[i];
+            info.type = vk::AccelerationStructureTypeKHR::eBottomLevel;
+            info.flags = kSkinBlasFlags;
+            info.mode = rebuild ? vk::BuildAccelerationStructureModeKHR::eBuild
+                                : vk::BuildAccelerationStructureModeKHR::eUpdate;
+            info.srcAccelerationStructure = rebuild ? vk::AccelerationStructureKHR{} : *s.blas.handle;
+            info.dstAccelerationStructure = *s.blas.handle;
+            info.setGeometries(geometries[i]);
+            range_pointers[i] = ranges[i].data();
+            scratch_sizes[i] = rebuild ? s.build_scratch : s.update_scratch;
+            scratch_total += alignUp(std::max(s.build_scratch, s.update_scratch), std::max<vk::DeviceSize>(scratch_alignment, 1));
+            s.refits = rebuild ? 0 : s.refits + 1;
+            s.needs_build = false;
+        }
+        if (skin_scratch.size < scratch_total + scratch_alignment) {
+            staging[slot].push_back(std::move(skin_scratch));
+            skin_scratch = createBuffer(gpu, scratch_total + scratch_total / 4 + scratch_alignment,
+                                        vk::BufferUsageFlagBits::eStorageBuffer, false);
+        }
+        // El scratch y las BLAS los usaba el frame anterior.
+        memoryBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                      vk::AccessFlagBits2::eAccelerationStructureWriteKHR,
+                      vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                      vk::AccessFlagBits2::eAccelerationStructureReadKHR |
+                          vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
+        recordBatchedBlasBuilds(cmd, build_infos, range_pointers, scratch_sizes, skin_scratch.address,
+                                skin_scratch.size - scratch_alignment, scratch_alignment);
+    }
+
     // Los sets de la escena: uno por hueco de frame. Lo que cambia sin parar
     // la GPU (TLAS nueva, buffers que crecen, texturas nuevas) sube
     // scene_version; cada set se reescribe antes de su siguiente uso, cuando su
@@ -444,26 +865,31 @@ struct RayTracing::Resources {
         vk::AccelerationStructureBuildSizesInfoKHR sizes{};
     };
 
-    // Construye todas las BLAS en un solo envio (antes, uno por modelo:
-    // muchos modelos tardaban segundos) y despues las compacta (suelen quedar
-    // en la mitad de memoria). Deja `blas` con una por modelo.
+    // Construye todas las BLAS en un solo envio y por tandas (las que caben en
+    // el scratch, en una sola llamada: la GPU las hace en paralelo) y despues
+    // las compacta (suelen quedar en la mitad de memoria). Deja `blas` con una
+    // por modelo. Las que se reescriben (terreno) se construyen con
+    // ALLOW_UPDATE: al esculpir se reajustan (refit) en vez de rehacerse.
     void buildBottomLevels(const VulkanDevice& device, std::vector<BlasBuild>& builds) {
         const vk::raii::Device& handle = device.handle();
-        vk::DeviceSize scratch_size = 0;
+        std::vector<vk::DeviceSize> scratch_sizes(builds.size(), 0);
+        std::vector<const vk::AccelerationStructureBuildRangeInfoKHR*> range_pointers(builds.size(), nullptr);
         std::vector<vk::AccelerationStructureBuildGeometryInfoKHR> infos(builds.size());
         for (std::size_t i = 0; i < builds.size(); ++i) {
             BlasBuild& b = builds[i];
             vk::AccelerationStructureBuildGeometryInfoKHR& info = infos[i];
             info.type = vk::AccelerationStructureTypeKHR::eBottomLevel;
             info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace;
-            if (b.compact) info.flags |= vk::BuildAccelerationStructureFlagBitsKHR::eAllowCompaction;
+            info.flags |= b.compact ? vk::BuildAccelerationStructureFlagBitsKHR::eAllowCompaction
+                                    : vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate;
             info.mode = vk::BuildAccelerationStructureModeKHR::eBuild;
             info.setGeometries(b.geometries);
             std::vector<std::uint32_t> counts;
             for (const auto& range : b.ranges) counts.push_back(range.primitiveCount);
             b.sizes = handle.getAccelerationStructureBuildSizesKHR(vk::AccelerationStructureBuildTypeKHR::eDevice,
                                                                    info, counts);
-            scratch_size = std::max(scratch_size, b.sizes.buildScratchSize);
+            scratch_sizes[i] = b.sizes.buildScratchSize;
+            range_pointers[i] = b.ranges.data();
 
             AccelerationStructure& as = blas[b.model];
             as.storage = createBuffer(device, b.sizes.accelerationStructureSize,
@@ -492,22 +918,13 @@ struct RayTracing::Resources {
             queries = vk::raii::QueryPool(handle, query_info);
         }
 
+        const vk::DeviceSize scratch_capacity = batchedScratchSize(scratch_sizes, scratch_alignment);
         const DeviceBuffer scratch =
-            createBuffer(device, scratch_size + scratch_alignment, vk::BufferUsageFlagBits::eStorageBuffer, false);
-        const vk::DeviceAddress scratch_address = alignUp(scratch.address, scratch_alignment);
+            createBuffer(device, scratch_capacity + scratch_alignment, vk::BufferUsageFlagBits::eStorageBuffer, false);
         device.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
             if (!compactable.empty()) cmd.resetQueryPool(*queries, 0, static_cast<std::uint32_t>(compactable.size()));
-            for (std::size_t i = 0; i < builds.size(); ++i) {
-                infos[i].scratchData.deviceAddress = scratch_address;
-                const vk::AccelerationStructureBuildRangeInfoKHR* ranges = builds[i].ranges.data();
-                cmd.buildAccelerationStructuresKHR(infos[i], ranges);
-                // El mismo scratch para la siguiente (y la consulta de tamano).
-                memoryBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
-                              vk::AccessFlagBits2::eAccelerationStructureWriteKHR,
-                              vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
-                              vk::AccessFlagBits2::eAccelerationStructureReadKHR |
-                                  vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
-            }
+            recordBatchedBlasBuilds(cmd, infos, range_pointers, scratch_sizes, scratch.address, scratch_capacity,
+                                    scratch_alignment);
             if (!compactable.empty()) {
                 cmd.writeAccelerationStructuresPropertiesKHR(
                     compactable, vk::QueryType::eAccelerationStructureCompactedSizeKHR, *queries, 0);
@@ -562,10 +979,16 @@ struct RayTracing::Resources {
     void createTopLevel(const VulkanDevice& device, std::uint32_t capacity) {
         tlas = AccelerationStructure{};
         tlas_scratch = DeviceBuffer{};
+        // Visibles desde la CPU y, si hay ReBAR, en la VRAM: la construccion
+        // lee las instancias sin cruzar el PCIe.
         for (DeviceBuffer& buffer : instance_buffers) {
             buffer = createBuffer(device, sizeof(vk::AccelerationStructureInstanceKHR) * capacity,
-                                  vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR, true);
+                                  vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR, true, nullptr,
+                                  VK_WHOLE_SIZE, /*prefer_vram=*/true);
         }
+        // Buffers nuevos: cada hueco se escribe entero la primera vez.
+        slot_dirty_begin.fill(0);
+        slot_dirty_end.fill(UINT32_MAX);
         vk::AccelerationStructureGeometryInstancesDataKHR instances_data{};
         instances_data.arrayOfPointers = VK_FALSE;
         instances_data.data.deviceAddress = instance_buffers[0].address;
@@ -574,7 +997,8 @@ struct RayTracing::Resources {
         geometry.geometry.instances = instances_data;
         vk::AccelerationStructureBuildGeometryInfoKHR info{};
         info.type = vk::AccelerationStructureTypeKHR::eTopLevel;
-        info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace;
+        info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace |
+                     vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate;
         info.mode = vk::BuildAccelerationStructureModeKHR::eBuild;
         info.setGeometries(geometry);
         const vk::AccelerationStructureBuildSizesInfoKHR sizes =
@@ -589,7 +1013,7 @@ struct RayTracing::Resources {
         tlas.handle = vk::raii::AccelerationStructureKHR(device.handle(), create_info);
         tlas.address = device.handle().getAccelerationStructureAddressKHR(
             vk::AccelerationStructureDeviceAddressInfoKHR{*tlas.handle});
-        tlas_scratch = createBuffer(device, sizes.buildScratchSize + scratch_alignment,
+        tlas_scratch = createBuffer(device, std::max(sizes.buildScratchSize, sizes.updateScratchSize) + scratch_alignment,
                                     vk::BufferUsageFlagBits::eStorageBuffer, false);
         tlas_capacity = capacity;
 
@@ -701,20 +1125,31 @@ struct RayTracing::Resources {
         return true;
     }
 
+    // Hay algo que subir antes de los rayos de este frame (flushPendingModels).
+    bool uploadsPending() const {
+        if (!pending_models.empty() || !pending_material_writes.empty() || !pending_skin_sources.empty() || skin_grow) {
+            return true;
+        }
+        return std::any_of(skin_slots.begin(), skin_slots.end(), [](const SkinSlot& s) { return s.row_dirty; });
+    }
+
     // Los modelos que entraron con addModel: sus datos al final de los buffers
-    // (que crecen si hace falta) y sus BLAS, en el command buffer del frame. Sin
-    // compactar ni micromapa de opacidad (el any-hit prueba el alfa): hasta la
-    // siguiente reconstruccion entera ocupan algo mas y trazan algo mas lento.
+    // (que crecen si hace falta) y sus BLAS, en el command buffer del frame
+    // (compactadas unos frames despues, compactPending). Sin micromapa de
+    // opacidad (el any-hit prueba el alfa): hasta la siguiente reconstruccion
+    // entera trazan algo mas lento. Tambien los materiales editados y lo de
+    // los personajes animados (sus filas, sus vertices de reposo, sus regiones).
     void flushPendingModels(const vk::raii::CommandBuffer& cmd, std::uint32_t slot) {
         const VulkanDevice& gpu = *device;
         const auto input = vk::BufferUsageFlagBits::eStorageBuffer |
                            vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR;
-        // Lo que los frames anteriores aun leen o escriben de estos buffers.
+        // Lo que los frames anteriores aun leen o escriben de estos buffers
+        // (tambien los vertices deformados de los personajes, rt_skin.comp).
         memoryBarrier(cmd,
                       kRayStages | vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR |
                           vk::PipelineStageFlagBits2::eTransfer,
-                      vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eAccelerationStructureReadKHR |
-                          vk::AccessFlagBits2::eTransferWrite,
+                      vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite |
+                          vk::AccessFlagBits2::eAccelerationStructureReadKHR | vk::AccessFlagBits2::eTransferWrite,
                       vk::PipelineStageFlagBits2::eTransfer,
                       vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite);
         // (Las cuatro, sin cortocircuito.)
@@ -726,7 +1161,20 @@ struct RayTracing::Resources {
         const bool grew_materials = growBuffer(cmd, slot, materials,
                                                sizeof(RtMaterial) * static_cast<vk::DeviceSize>(material_used),
                                                vk::BufferUsageFlagBits::eStorageBuffer);
-        if (grew_vertices || grew_indices || grew_triangles || grew_materials) {
+        // Los vertices de reposo de los personajes (el primero lo crea).
+        bool grew_skin = false;
+        const vk::DeviceSize skin_bytes = sizeof(asset::SkinnedVertex) * static_cast<vk::DeviceSize>(skin_source_used);
+        if (skin_bytes > 0 && *skin_source.buffer == nullptr) {
+            skin_source = createBuffer(gpu, skin_bytes + skin_bytes / 2, vk::BufferUsageFlagBits::eStorageBuffer, false);
+        } else if (skin_bytes > 0) {
+            grew_skin = growBuffer(cmd, slot, skin_source, skin_bytes, vk::BufferUsageFlagBits::eStorageBuffer);
+        }
+        skin_grow = false;
+        if (grew_vertices) {
+            // Las BLAS de los personajes apuntan a los vertices: se reconstruyen.
+            for (SkinSlot& s : skin_slots) s.needs_build = true;
+        }
+        if (grew_vertices || grew_indices || grew_triangles || grew_materials || grew_skin) {
             // La copia de lo de antes pisa el hueco donde va lo nuevo: primero ella.
             memoryBarrier(cmd, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
                           vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite);
@@ -757,6 +1205,27 @@ struct RayTracing::Resources {
                 sizeof(RtMaterial) * p.materials.size());
             add(models, 16ull * p.model, model_info.data() + static_cast<std::size_t>(p.model) * 4, 16);
         }
+        // Materiales editados en vivo (updateModelMaterial).
+        for (const std::uint32_t index : pending_material_writes) {
+            if (index >= material_cpu.size()) continue;
+            add(materials, sizeof(RtMaterial) * static_cast<vk::DeviceSize>(index), &material_cpu[index],
+                sizeof(RtMaterial));
+        }
+        pending_material_writes.clear();
+        // Las filas de rt_models de los personajes que cambiaron de modelo.
+        for (std::uint32_t k = 0; k < kSkinSlots; ++k) {
+            SkinSlot& s = skin_slots[k];
+            if (!s.row_dirty) continue;
+            s.row_dirty = false;
+            const std::size_t row = static_cast<std::size_t>(skin_row_base) + k;
+            if (row * 4 + 4 > model_info.size()) continue;
+            add(models, 16ull * row, model_info.data() + row * 4, 16);
+        }
+        for (const PendingSkinSource& source : pending_skin_sources) {
+            add(skin_source, sizeof(asset::SkinnedVertex) * static_cast<vk::DeviceSize>(source.base),
+                source.bytes.data(), source.bytes.size());
+        }
+        pending_skin_sources.clear();
         if (!copies.empty()) {
             DeviceBuffer upload =
                 createBuffer(gpu, packed.size(), vk::BufferUsageFlagBits::eTransferSrc, true, packed.data());
@@ -781,7 +1250,7 @@ struct RayTracing::Resources {
             vk::AccelerationStructureBuildGeometryInfoKHR info{};
         };
         std::vector<Build> builds;
-        vk::DeviceSize scratch_size = 0;
+        std::vector<vk::DeviceSize> scratch_sizes;
         for (const PendingModel& p : pending_models) {
             if (!p.owns_blas || p.ranges.empty() || p.model >= blas.size() || *blas[p.model].handle != nullptr) continue;
             Build& b = builds.emplace_back();
@@ -807,12 +1276,15 @@ struct RayTracing::Resources {
                 counts.push_back(range.triangle_count);
             }
             b.info.type = vk::AccelerationStructureTypeKHR::eBottomLevel;
-            b.info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace;
+            // Compactables: unos frames despues se copian a su tamano justo
+            // (compactPending, sin esperar a la GPU).
+            b.info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace |
+                           vk::BuildAccelerationStructureFlagBitsKHR::eAllowCompaction;
             b.info.mode = vk::BuildAccelerationStructureModeKHR::eBuild;
             b.info.setGeometries(b.geometries);
             const vk::AccelerationStructureBuildSizesInfoKHR sizes = gpu.handle().getAccelerationStructureBuildSizesKHR(
                 vk::AccelerationStructureBuildTypeKHR::eDevice, b.info, counts);
-            scratch_size = std::max(scratch_size, sizes.buildScratchSize);
+            scratch_sizes.push_back(sizes.buildScratchSize);
             AccelerationStructure& as = blas[p.model];
             as.storage = createBuffer(gpu, sizes.accelerationStructureSize,
                                       vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR, false);
@@ -824,21 +1296,41 @@ struct RayTracing::Resources {
             b.info.dstAccelerationStructure = *as.handle;
         }
         if (!builds.empty()) {
-            // Un scratch para todas, una detras de otra (como buildBottomLevels).
-            DeviceBuffer scratch =
-                createBuffer(gpu, scratch_size + scratch_alignment, vk::BufferUsageFlagBits::eStorageBuffer, false);
-            const vk::DeviceAddress scratch_address = alignUp(scratch.address, scratch_alignment);
-            for (Build& b : builds) {
-                b.info.scratchData.deviceAddress = scratch_address;
-                const vk::AccelerationStructureBuildRangeInfoKHR* ranges = b.ranges.data();
-                cmd.buildAccelerationStructuresKHR(b.info, ranges);
-                memoryBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
-                              vk::AccessFlagBits2::eAccelerationStructureWriteKHR,
-                              vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR | kRayStages,
-                              vk::AccessFlagBits2::eAccelerationStructureReadKHR |
-                                  vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
+            // Todas en pocas llamadas (por tandas en el scratch, que se
+            // reutiliza de un frame a otro: lo protege la barrera del principio).
+            const vk::DeviceSize capacity = batchedScratchSize(scratch_sizes, scratch_alignment);
+            if (blas_scratch.size < capacity + scratch_alignment) {
+                staging[slot].push_back(std::move(blas_scratch));
+                blas_scratch = createBuffer(gpu, capacity + scratch_alignment, vk::BufferUsageFlagBits::eStorageBuffer,
+                                            false);
             }
-            staging[slot].push_back(std::move(scratch));
+            memoryBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                          vk::AccessFlagBits2::eAccelerationStructureWriteKHR,
+                          vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                          vk::AccessFlagBits2::eAccelerationStructureReadKHR |
+                              vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
+            std::vector<vk::AccelerationStructureBuildGeometryInfoKHR> infos;
+            std::vector<const vk::AccelerationStructureBuildRangeInfoKHR*> range_pointers;
+            for (Build& b : builds) {
+                infos.push_back(b.info);
+                range_pointers.push_back(b.ranges.data());
+            }
+            recordBatchedBlasBuilds(cmd, infos, range_pointers, scratch_sizes, blas_scratch.address,
+                                    blas_scratch.size - scratch_alignment, scratch_alignment);
+            // Sus tamanos compactados, para compactarlas unos frames despues.
+            PendingCompaction compaction;
+            vk::QueryPoolCreateInfo query_info{};
+            query_info.queryType = vk::QueryType::eAccelerationStructureCompactedSizeKHR;
+            query_info.queryCount = static_cast<std::uint32_t>(builds.size());
+            compaction.queries = vk::raii::QueryPool(gpu.handle(), query_info);
+            for (const Build& b : builds) {
+                compaction.models.push_back(b.model);
+                compaction.handles.push_back(*blas[b.model].handle);
+            }
+            cmd.resetQueryPool(*compaction.queries, 0, query_info.queryCount);
+            cmd.writeAccelerationStructuresPropertiesKHR(
+                compaction.handles, vk::QueryType::eAccelerationStructureCompactedSizeKHR, *compaction.queries, 0);
+            pending_compactions.push_back(std::move(compaction));
             // Con direccion, las instancias las usan desde el siguiente
             // setInstances (la TLAS de este frame ya se eligio sin ellas).
             for (const Build& b : builds) {
@@ -846,8 +1338,67 @@ struct RayTracing::Resources {
                 as.address = gpu.handle().getAccelerationStructureAddressKHR(
                     vk::AccelerationStructureDeviceAddressInfoKHR{*as.handle});
             }
+            // (Las estaticas son arboles, mallas extra: no cambian de BLAS aqui.)
         }
         pending_models.clear();
+    }
+
+    // Compacta las BLAS de streaming cuyos tamanos ya estan (consulta sin
+    // esperar: si la GPU aun no llego, otro frame). La copia va en este command
+    // buffer; la BLAS vieja vive hasta que este hueco vuelva (la TLAS de este
+    // frame aun la usa) y las instancias pasan a la nueva en el siguiente
+    // setInstances.
+    void compactPending(const vk::raii::CommandBuffer& cmd, std::uint32_t slot) {
+        bool copied = false;
+        for (auto it = pending_compactions.begin(); it != pending_compactions.end();) {
+            PendingCompaction& c = *it;
+            // Al menos lo que tarda en volver su hueco (su fence ya paso).
+            if (++c.frames <= kMaxFramesInFlight) {
+                ++it;
+                continue;
+            }
+            const auto count = static_cast<std::uint32_t>(c.models.size());
+            const auto [result, sizes] = c.queries.getResults<vk::DeviceSize>(
+                0, count, sizeof(vk::DeviceSize) * count, sizeof(vk::DeviceSize), vk::QueryResultFlagBits::e64);
+            if (result == vk::Result::eNotReady && c.frames < 64) {
+                ++it;
+                continue;
+            }
+            if (result == vk::Result::eSuccess) {
+                for (std::uint32_t i = 0; i < count; ++i) {
+                    const std::uint32_t model = c.models[i];
+                    // (Ya no es la misma: la escena se rehizo o se reconstruyo.)
+                    if (model >= blas.size() || *blas[model].handle != c.handles[i]) continue;
+                    const vk::DeviceSize size = std::max<vk::DeviceSize>(sizes[i], 256);
+                    if (size >= blas[model].storage.size) continue;
+                    AccelerationStructure compacted;
+                    compacted.storage =
+                        createBuffer(*device, size, vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR, false);
+                    vk::AccelerationStructureCreateInfoKHR create_info{};
+                    create_info.buffer = *compacted.storage.buffer;
+                    create_info.size = size;
+                    create_info.type = vk::AccelerationStructureTypeKHR::eBottomLevel;
+                    compacted.handle = vk::raii::AccelerationStructureKHR(device->handle(), create_info);
+                    vk::CopyAccelerationStructureInfoKHR copy{};
+                    copy.src = c.handles[i];
+                    copy.dst = *compacted.handle;
+                    copy.mode = vk::CopyAccelerationStructureModeKHR::eCompact;
+                    cmd.copyAccelerationStructureKHR(copy);
+                    compacted.address = device->handle().getAccelerationStructureAddressKHR(
+                        vk::AccelerationStructureDeviceAddressInfoKHR{*compacted.handle});
+                    retired_blas[slot].push_back(std::move(blas[model]));
+                    blas[model] = std::move(compacted);
+                    copied = true;
+                }
+            }
+            it = pending_compactions.erase(it);
+        }
+        if (copied) {
+            memoryBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                          vk::AccessFlagBits2::eAccelerationStructureWriteKHR,
+                          vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR | kRayStages,
+                          vk::AccessFlagBits2::eAccelerationStructureReadKHR);
+        }
     }
 
     // Imagen RGBA8 UNORM (color sRGB, como las de los modelos) con sus mips.
@@ -965,6 +1516,14 @@ struct RayTracing::Resources {
         std::vector<OwnedTexture> extra_textures;
         OwnedTexture white;
         std::array<std::vector<DeviceBuffer>, kMaxFramesInFlight> staging;
+        std::array<std::vector<AccelerationStructure>, kMaxFramesInFlight> retired_blas;
+        std::vector<PendingCompaction> pending_compactions;
+        DeviceBuffer blas_scratch;
+        // Personajes animados.
+        std::array<SkinSlot, kSkinSlots> skin_slots{};
+        DeviceBuffer skin_source;
+        std::array<DeviceBuffer, kMaxFramesInFlight> skin_bones;
+        DeviceBuffer skin_scratch;
         vk::raii::DescriptorPool scene_pool{nullptr};
         std::vector<vk::raii::DescriptorSet> scene_sets;
     };
@@ -996,6 +1555,13 @@ struct RayTracing::Resources {
             old->extra_textures = std::move(extra_textures);
             old->white = std::move(white);
             old->staging = std::move(staging);
+            old->retired_blas = std::move(retired_blas);
+            old->pending_compactions = std::move(pending_compactions);
+            old->blas_scratch = std::move(blas_scratch);
+            old->skin_slots = std::move(skin_slots);
+            old->skin_source = std::move(skin_source);
+            old->skin_bones = std::move(skin_bones);
+            old->skin_scratch = std::move(skin_scratch);
             old->scene_pool = std::move(scene_pool);
             old->scene_sets = std::move(scene_sets);
             device->retireAfterGpu({std::shared_ptr<const void>(std::move(old))});
@@ -1005,8 +1571,31 @@ struct RayTracing::Resources {
         for (DeviceBuffer& buffer : instance_buffers) buffer = DeviceBuffer{};
         tlas_capacity = 0;
         gpu_instances.clear();
+        static_count = 0;
+        static_source.clear();
+        static_changed = false;
+        ++blas_generation;
         tlas_dirty = false;
+        tlas_refit = false;
         tlas_built = false;
+        tlas_refits = 0;
+        for (auto& list : retired_blas) list.clear();
+        pending_compactions.clear();
+        blas_scratch = DeviceBuffer{};
+        for (SkinSlot& s : skin_slots) s = SkinSlot{};
+        skin_source = DeviceBuffer{};
+        skin_source_used = 0;
+        skin_source_of.clear();
+        pending_skin_sources.clear();
+        skin_bone_staging.clear();
+        for (DeviceBuffer& buffer : skin_bones) buffer = DeviceBuffer{};
+        skin_scratch = DeviceBuffer{};
+        skin_grow = false;
+        skin_row_base = 0;
+        model_geometry.clear();
+        material_cpu.clear();
+        material_base_of.clear();
+        pending_material_writes.clear();
         // (Los pipelines y el layout de la escena se quedan: no dependen de ella.)
         scene_sets.clear();
         scene_pool = nullptr;
@@ -1318,6 +1907,10 @@ void RayTracing::build(const VulkanDevice& device,
     };
     // De que modelo es la BLAS de cada uno (UINT32_MAX: sin BLAS).
     r.blas_owner.assign(slots, UINT32_MAX);
+    // Donde empiezan los materiales y los vertices de cada modelo (para
+    // editarlos en vivo y para los personajes animados).
+    std::vector<std::uint32_t> material_base_of(slots, UINT32_MAX);
+    std::vector<std::uint32_t> vertex_base_of(slots, 0);
 
     // Cada textura una vez: las variantes de un modelo y los de un mismo
     // pueblo comparten muchas (y las tres de por defecto todos). Antes cada
@@ -1356,6 +1949,7 @@ void RayTracing::build(const VulkanDevice& device,
             continue;
         }
         const auto material_base = static_cast<std::uint32_t>(materials.size());
+        material_base_of[m] = material_base;
 
         std::vector<std::uint32_t> texture_map(gpu.textures().size(), 0);
         for (std::size_t t = 0; t < gpu.textures().size(); ++t) {
@@ -1441,6 +2035,7 @@ void RayTracing::build(const VulkanDevice& device,
                                             v.normal.y, v.normal.z, v.uv.x, v.uv.y});
             }
         }
+        vertex_base_of[m] = vertex_base;
 
         // Triangulos: primero los opacos, luego los recortados por alfa.
         std::vector<GeometryRange> geometries;
@@ -1528,6 +2123,10 @@ void RayTracing::build(const VulkanDevice& device,
         r.blas_owner.push_back(info.model);
         r.extra_models.push_back(std::move(info));
     }
+    // Las filas de los personajes animados (setSkinnedInstances), detras de
+    // las mallas extra: se rellenan al asignar cada hueco.
+    r.skin_row_base = static_cast<std::uint32_t>(model_info.size() / 4);
+    model_info.resize(model_info.size() + 4ull * Resources::kSkinSlots, 0u);
 
     if (indices.empty()) {
         std::cout << "[Vulkan] Trazado de rayos: la escena no tiene geometria\n";
@@ -1544,19 +2143,44 @@ void RayTracing::build(const VulkanDevice& device,
     const auto room = [](std::size_t count, std::size_t minimum) {
         return static_cast<vk::DeviceSize>(count + std::max(count / 8, minimum));
     };
-    r.vertices = createBuffer(device, sizeof(RtVertex) * room(vertices.size(), 65536), input, false,
-                              vertices.data(), sizeof(RtVertex) * vertices.size());
-    r.indices = createBuffer(device, sizeof(std::uint32_t) * room(indices.size(), 3 * 65536), input, false,
-                             indices.data(), sizeof(std::uint32_t) * indices.size());
-    r.triangle_materials =
-        createBuffer(device, sizeof(std::uint32_t) * room(triangle_materials.size(), 65536),
-                     vk::BufferUsageFlagBits::eStorageBuffer, false, triangle_materials.data(),
-                     sizeof(std::uint32_t) * triangle_materials.size());
+    r.vertices = createBuffer(device, sizeof(RtVertex) * room(vertices.size(), 65536), input, false);
+    r.indices = createBuffer(device, sizeof(std::uint32_t) * room(indices.size(), 3 * 65536), input, false);
+    r.triangle_materials = createBuffer(device, sizeof(std::uint32_t) * room(triangle_materials.size(), 65536),
+                                        vk::BufferUsageFlagBits::eStorageBuffer, false);
     r.materials = createBuffer(device, sizeof(RtMaterial) * room(materials.size(), 1024),
-                               vk::BufferUsageFlagBits::eStorageBuffer, false, materials.data(),
-                               sizeof(RtMaterial) * materials.size());
-    r.models = createBuffer(device, sizeof(std::uint32_t) * model_info.size(),
-                            vk::BufferUsageFlagBits::eStorageBuffer, false, model_info.data());
+                               vk::BufferUsageFlagBits::eStorageBuffer, false);
+    r.models = createBuffer(device, sizeof(std::uint32_t) * model_info.size(), vk::BufferUsageFlagBits::eStorageBuffer,
+                            false);
+    // Los cinco en un solo staging y un solo envio (antes, uno con su espera
+    // por buffer).
+    {
+        struct Part {
+            const DeviceBuffer* target;
+            const void* data;
+            vk::DeviceSize bytes;
+        };
+        const std::array<Part, 5> parts = {
+            Part{&r.vertices, vertices.data(), sizeof(RtVertex) * vertices.size()},
+            Part{&r.indices, indices.data(), sizeof(std::uint32_t) * indices.size()},
+            Part{&r.triangle_materials, triangle_materials.data(), sizeof(std::uint32_t) * triangle_materials.size()},
+            Part{&r.materials, materials.data(), sizeof(RtMaterial) * materials.size()},
+            Part{&r.models, model_info.data(), sizeof(std::uint32_t) * model_info.size()}};
+        vk::DeviceSize total = 0;
+        for (const Part& part : parts) total += alignUp(part.bytes, 16);
+        DeviceBuffer upload = createBuffer(device, total, vk::BufferUsageFlagBits::eTransferSrc, true);
+        std::vector<vk::BufferCopy> offsets;
+        vk::DeviceSize offset = 0;
+        for (const Part& part : parts) {
+            if (part.bytes > 0) std::memcpy(static_cast<std::uint8_t*>(upload.mapped) + offset, part.data, part.bytes);
+            offsets.push_back(vk::BufferCopy{offset, 0, part.bytes});
+            offset += alignUp(part.bytes, 16);
+        }
+        device.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+            for (std::size_t i = 0; i < parts.size(); ++i) {
+                if (offsets[i].size > 0) cmd.copyBuffer(*upload.buffer, *parts[i].target->buffer, offsets[i]);
+            }
+        });
+    }
 
     // (Las BLAS se construyen al final: el micromapa de opacidad del follaje
     // se hornea con el set de la escena, que lleva las texturas.)
@@ -1612,6 +2236,18 @@ void RayTracing::build(const VulkanDevice& device,
     r.triangle_used = static_cast<std::uint32_t>(indices.size() / 3);
     r.material_used = static_cast<std::uint32_t>(materials.size());
     r.model_info = model_info;
+    r.material_cpu = materials;
+    r.material_base_of = std::move(material_base_of);
+    r.model_geometry.assign(slots, Resources::ModelGeometry{});
+    for (std::size_t m = 0; m < models.size() && m < slots; ++m) {
+        if (r.blas_owner[m] != m) continue;
+        Resources::ModelGeometry& g = r.model_geometry[m];
+        g.vertex_base = vertex_base_of[m];
+        g.vertex_count = static_cast<std::uint32_t>(models[m]->vertices.size());
+        for (const GeometryRange& range : model_geometries[m]) {
+            g.ranges.push_back(Resources::ModelGeometry::Range{range.first_triangle, range.triangle_count, range.opaque});
+        }
+    }
     r.texture_infos = std::move(textures);
     r.texture_slots = std::move(texture_slots);
     r.white_index = white_index;
@@ -1708,7 +2344,10 @@ void RayTracing::build(const VulkanDevice& device,
         Resources::ExtraModel& e = r.extra_models[build.model - slots];
         e.geometries = build.geometries;
         e.ranges = build.ranges;
-        e.scratch = createBuffer(device, build.sizes.buildScratchSize + r.scratch_alignment,
+        // (El mayor de construir y reajustar: al esculpir se reajusta.)
+        e.scratch = createBuffer(device,
+                                 std::max(build.sizes.buildScratchSize, build.sizes.updateScratchSize) +
+                                     r.scratch_alignment,
                                  vk::BufferUsageFlagBits::eStorageBuffer, false);
     }
 
@@ -1787,6 +2426,9 @@ bool RayTracing::addModel(std::uint32_t index, const asset::ModelData& model,
         pending.materials.push_back(rt);
     }
     r.material_used += static_cast<std::uint32_t>(pending.materials.size());
+    r.material_cpu.resize(material_base);  // (ya lo mide: material_used)
+    r.material_cpu.insert(r.material_cpu.end(), pending.materials.begin(), pending.materials.end());
+    if (index < r.material_base_of.size()) r.material_base_of[index] = material_base;
 
     // Geometria compartida (variantes de material): la misma clave que build.
     const void* vertex_identity = gpu.vertices().isValid() ? static_cast<const void*>(&gpu.vertices())
@@ -1873,6 +2515,15 @@ bool RayTracing::addModel(std::uint32_t index, const asset::ModelData& model,
     row[1] = pending.ranges.size() > 1 ? pending.ranges[1].first_triangle : 0;
     row[2] = 0;
     row[3] = 0;
+    if (index < r.model_geometry.size()) {
+        Resources::ModelGeometry& g = r.model_geometry[index];
+        g = Resources::ModelGeometry{};
+        g.vertex_base = vertex_base;
+        g.vertex_count = static_cast<std::uint32_t>(model.vertices.size());
+        for (const Resources::PendingModel::Range& range : pending.ranges) {
+            g.ranges.push_back(Resources::ModelGeometry::Range{range.first_triangle, range.triangle_count, range.opaque});
+        }
+    }
     r.pending_models.push_back(std::move(pending));
     return true;
 }
@@ -1907,6 +2558,46 @@ void RayTracing::updateExtraTexture(std::uint32_t texture_index, std::vector<std
     r.pending_textures.push_back(Resources::PendingTexture{texture_index, std::move(mips)});
 }
 
+namespace {
+
+// Instancia de la TLAS: 3x4 por filas (core::Mat4 esta por columnas,
+// m[columna][fila]).
+vk::AccelerationStructureInstanceKHR makeInstance(const core::Mat4& matrix, std::uint32_t custom_index,
+                                                  std::uint8_t mask, vk::DeviceAddress blas_address) {
+    vk::TransformMatrixKHR transform{};
+    for (std::uint32_t row = 0; row < 3; ++row) {
+        for (std::uint32_t column = 0; column < 4; ++column) {
+            transform.matrix[row][column] = matrix.m[column][row];
+        }
+    }
+    vk::AccelerationStructureInstanceKHR gpu{};
+    gpu.setTransform(transform);
+    gpu.setInstanceCustomIndex(custom_index);
+    gpu.setMask(mask);
+    gpu.setFlags(vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable);
+    gpu.setAccelerationStructureReference(blas_address);
+    return gpu;
+}
+
+static_assert(sizeof(vk::AccelerationStructureInstanceKHR) == 64, "instancia de la TLAS: 48 bytes de matriz + 16");
+constexpr std::size_t kInstanceTransformBytes = sizeof(vk::TransformMatrixKHR);
+
+}  // namespace
+
+bool RayTracing::instanceReady(std::uint32_t model) const {
+    if (!sceneBuilt()) return false;
+    const Resources& r = *resources_;
+    const std::uint32_t owner = model < r.blas_owner.size() ? r.blas_owner[model] : UINT32_MAX;
+    return owner < r.blas.size() && r.blas[owner].address != 0;
+}
+
+void RayTracing::setStaticInstances(const std::vector<Instance>& instances) {
+    if (!sceneBuilt()) return;
+    Resources& r = *resources_;
+    r.static_source = instances;
+    r.static_changed = true;
+}
+
 void RayTracing::setInstances(const VulkanDevice& device, const std::vector<Instance>& instances) {
     if (!sceneBuilt()) return;
     Resources& r = *resources_;
@@ -1914,28 +2605,42 @@ void RayTracing::setInstances(const VulkanDevice& device, const std::vector<Inst
     // Solo los modelos que tienen BLAS (la suya o la del grupo con su misma
     // geometria: las variantes de material). El indice propio de la instancia
     // sigue siendo el modelo: sus materiales.
-    std::vector<vk::AccelerationStructureInstanceKHR> gpu_instances;
-    gpu_instances.reserve(instances.size());
-    for (const Instance& instance : instances) {
+    const auto convert = [&](const Instance& instance, std::vector<vk::AccelerationStructureInstanceKHR>& out) {
         const std::uint32_t owner = instance.model < r.blas_owner.size() ? r.blas_owner[instance.model] : UINT32_MAX;
-        if (owner >= r.blas.size() || r.blas[owner].address == 0) continue;
-        // 3x4 por filas; core::Mat4 esta por columnas (m[columna][fila]).
-        vk::TransformMatrixKHR transform{};
-        for (std::uint32_t row = 0; row < 3; ++row) {
-            for (std::uint32_t column = 0; column < 4; ++column) {
-                transform.matrix[row][column] = instance.transform.m[column][row];
-            }
-        }
-        vk::AccelerationStructureInstanceKHR gpu{};
-        gpu.setTransform(transform);
-        gpu.setInstanceCustomIndex(instance.model);
-        gpu.setMask(instance.mask);
-        gpu.setFlags(vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable);
-        gpu.setAccelerationStructureReference(r.blas[owner].address);
-        gpu_instances.push_back(gpu);
+        if (owner >= r.blas.size() || r.blas[owner].address == 0) return;
+        out.push_back(makeInstance(instance.transform, instance.model, instance.mask, r.blas[owner].address));
+    };
+
+    // --- Estaticas (arboles): solo cuando cambian ---
+    bool topology = false;
+    bool static_rewritten = false;
+    if (r.static_changed || r.static_generation != r.blas_generation) {
+        r.dynamic_scratch.clear();
+        for (const Instance& instance : r.static_source) convert(instance, r.dynamic_scratch);
+        r.gpu_instances.assign(r.dynamic_scratch.begin(), r.dynamic_scratch.end());
+        r.static_count = static_cast<std::uint32_t>(r.gpu_instances.size());
+        r.static_changed = false;
+        r.static_generation = r.blas_generation;
+        static_rewritten = true;
+        topology = true;
     }
 
-    const auto count = static_cast<std::uint32_t>(gpu_instances.size());
+    // --- Dinamicas: las de este frame y los personajes animados ---
+    r.dynamic_scratch.clear();
+    r.dynamic_scratch.reserve(instances.size() + Resources::kSkinSlots);
+    for (const Instance& instance : instances) convert(instance, r.dynamic_scratch);
+    bool skinned = false;
+    for (std::uint32_t k = 0; k < Resources::kSkinSlots; ++k) {
+        const Resources::SkinSlot& s = r.skin_slots[k];
+        if (!s.active || s.blas.address == 0) continue;
+        r.dynamic_scratch.push_back(makeInstance(s.transform, r.skin_row_base + k, s.mask, s.blas.address));
+        skinned = true;
+    }
+
+    const std::uint32_t first_dynamic = r.static_count;
+    const auto old_dynamic = static_cast<std::uint32_t>(r.gpu_instances.size()) - first_dynamic;
+    const auto dynamic = static_cast<std::uint32_t>(r.dynamic_scratch.size());
+    const std::uint32_t count = first_dynamic + dynamic;
     if (*r.tlas.handle == nullptr || count > r.tlas_capacity) {
         // La TLAS (y su descriptor) cambia sin parar la GPU: la vieja la
         // sueltan los frames en vuelo (retireTopLevel) y cada set apunta a la
@@ -1945,15 +2650,214 @@ void RayTracing::setInstances(const VulkanDevice& device, const std::vector<Inst
         r.tlas_capacity_hint = capacity;
         r.createTopLevel(device, capacity);
         std::cout << "[Vulkan] TLAS para " << capacity << " instancias\n";
+        topology = true;
     }
-    const bool same = gpu_instances.size() == r.gpu_instances.size() &&
-                      (gpu_instances.empty() ||
-                       std::memcmp(gpu_instances.data(), r.gpu_instances.data(),
-                                   gpu_instances.size() * sizeof(vk::AccelerationStructureInstanceKHR)) == 0);
-    if (!same) {
-        r.gpu_instances = std::move(gpu_instances);
-        r.tlas_dirty = true;
+
+    if (dynamic != old_dynamic || static_rewritten) {
+        // Otra cantidad: todas las dinamicas, de nuevo.
+        r.gpu_instances.resize(first_dynamic);
+        r.gpu_instances.insert(r.gpu_instances.end(), r.dynamic_scratch.begin(), r.dynamic_scratch.end());
+        r.markInstancesDirty(static_rewritten ? 0u : first_dynamic, count);
+        topology = true;
+    } else {
+        // La misma cantidad: solo lo que cambio. Si cambia la BLAS, el indice
+        // o la mascara de alguna, construccion entera; si solo se movieron,
+        // basta con reajustar la TLAS.
+        std::uint32_t lo = UINT32_MAX;
+        std::uint32_t hi = 0;
+        for (std::uint32_t i = 0; i < dynamic; ++i) {
+            vk::AccelerationStructureInstanceKHR& old = r.gpu_instances[first_dynamic + i];
+            const vk::AccelerationStructureInstanceKHR& now = r.dynamic_scratch[i];
+            if (std::memcmp(&old, &now, sizeof(now)) == 0) continue;
+            if (std::memcmp(reinterpret_cast<const std::uint8_t*>(&old) + kInstanceTransformBytes,
+                            reinterpret_cast<const std::uint8_t*>(&now) + kInstanceTransformBytes,
+                            sizeof(now) - kInstanceTransformBytes) != 0) {
+                topology = true;
+            }
+            old = now;
+            lo = std::min(lo, first_dynamic + i);
+            hi = first_dynamic + i + 1;
+        }
+        if (lo < hi) {
+            r.markInstancesDirty(lo, hi);
+            r.tlas_refit = true;
+        }
     }
+    if (topology) r.tlas_dirty = true;
+    // Los personajes se deforman cada frame: sus BLAS cambian de caja.
+    if (skinned) r.tlas_refit = true;
+}
+
+void RayTracing::setSkinnedInstances(const std::vector<SkinnedInstance>& instances, std::vector<std::uint8_t>& in_tlas) {
+    in_tlas.assign(instances.size(), 0);
+    if (!sceneBuilt()) return;
+    Resources& r = *resources_;
+    const VulkanDevice& gpu = *r.device;
+    r.skin_bone_staging.clear();
+
+    // Si el modelo ya esta en la escena (sus triangulos y materiales: entra
+    // con addModel como cualquier otro) y tiene huesos.
+    const auto owner_of = [&](const SkinnedInstance& s) -> std::uint32_t {
+        if (s.model >= r.model_slots || s.model >= r.blas_owner.size()) return UINT32_MAX;
+        const std::uint32_t owner = r.blas_owner[s.model];
+        if (owner >= r.model_geometry.size()) return UINT32_MAX;
+        const Resources::ModelGeometry& g = r.model_geometry[owner];
+        if (g.vertex_count == 0 || g.ranges.empty() || s.bones == nullptr || s.bone_count == 0 || s.data == nullptr ||
+            s.data->vertices.size() != g.vertex_count) {
+            return UINT32_MAX;
+        }
+        return owner;
+    };
+    const std::size_t count = std::min<std::size_t>(instances.size(), Resources::kSkinSlots);
+    std::array<std::int32_t, Resources::kSkinSlots> taken{};
+    taken.fill(-1);
+    std::vector<std::int32_t> slot_of(count, -1);
+    std::vector<std::uint32_t> owners(count, UINT32_MAX);
+    for (std::size_t i = 0; i < count; ++i) owners[i] = owner_of(instances[i]);
+    // Primero los que ya tenian hueco (mismo actor y modelo: su BLAS se reajusta).
+    for (std::size_t i = 0; i < count; ++i) {
+        if (owners[i] == UINT32_MAX) continue;
+        for (std::uint32_t k = 0; k < Resources::kSkinSlots; ++k) {
+            const Resources::SkinSlot& s = r.skin_slots[k];
+            if (taken[k] < 0 && s.active && s.id == instances[i].id && s.model == instances[i].model) {
+                taken[k] = static_cast<std::int32_t>(i);
+                slot_of[i] = static_cast<std::int32_t>(k);
+                break;
+            }
+        }
+    }
+    // Los nuevos, en los huecos libres (mejor uno con region de sobra).
+    for (std::size_t i = 0; i < count; ++i) {
+        if (owners[i] == UINT32_MAX || slot_of[i] >= 0) continue;
+        const std::uint32_t owner = owners[i];
+        const Resources::ModelGeometry& g = r.model_geometry[owner];
+        std::int32_t pick = -1;
+        for (std::uint32_t k = 0; k < Resources::kSkinSlots; ++k) {
+            if (taken[k] >= 0) continue;
+            const Resources::SkinSlot& s = r.skin_slots[k];
+            const bool fits = s.vertex_capacity >= g.vertex_count && s.vertex_base >= g.vertex_base;
+            if (pick < 0 || fits) pick = static_cast<std::int32_t>(k);
+            if (fits) break;
+        }
+        if (pick < 0) break;
+        const auto k = static_cast<std::uint32_t>(pick);
+        taken[k] = static_cast<std::int32_t>(i);
+        slot_of[i] = pick;
+        Resources::SkinSlot& s = r.skin_slots[k];
+        const SkinnedInstance& in = instances[i];
+        s.id = in.id;
+        s.model = in.model;
+        s.owner = owner;
+        s.vertex_count = g.vertex_count;
+        // Su region de vertices: la de antes si cabe y queda detras de la del
+        // modelo (el desplazamiento del indice y de la direccion de la BLAS no
+        // puede ser negativo); si no, una nueva al final del buffer.
+        if (s.vertex_capacity < g.vertex_count || s.vertex_base < g.vertex_base) {
+            s.vertex_base = r.vertex_used;
+            s.vertex_capacity = g.vertex_count;
+            r.vertex_used += g.vertex_count;
+            r.skin_grow = true;
+        }
+        // Sus vertices de reposo (una vez por modelo).
+        auto source = r.skin_source_of.find(owner);
+        if (source == r.skin_source_of.end()) {
+            Resources::PendingSkinSource pending;
+            pending.base = r.skin_source_used;
+            const auto* bytes = reinterpret_cast<const std::uint8_t*>(in.data->vertices.data());
+            pending.bytes.assign(bytes, bytes + sizeof(asset::SkinnedVertex) * in.data->vertices.size());
+            r.skin_source_used += g.vertex_count;
+            source = r.skin_source_of.emplace(owner, pending.base).first;
+            r.pending_skin_sources.push_back(std::move(pending));
+            r.skin_grow = true;
+        }
+        s.source_base = source->second;
+        // Su fila de rt_models: la del modelo y w = de su region a la del hueco.
+        const std::size_t row = static_cast<std::size_t>(r.skin_row_base) + k;
+        if (row * 4 + 4 <= r.model_info.size()) {
+            const std::size_t model_row = static_cast<std::size_t>(in.model) * 4;
+            r.model_info[row * 4 + 0] = r.model_info[model_row + 0];
+            r.model_info[row * 4 + 1] = r.model_info[model_row + 1];
+            r.model_info[row * 4 + 2] = r.model_info[model_row + 2];
+            r.model_info[row * 4 + 3] = s.vertex_base - g.vertex_base;
+        }
+        s.row_dirty = true;
+        // Su BLAS (la de antes si cabe).
+        const std::vector<vk::AccelerationStructureGeometryKHR> geometries = r.skinGeometries(s);
+        std::vector<std::uint32_t> counts;
+        for (const Resources::ModelGeometry::Range& range : g.ranges) counts.push_back(range.triangle_count);
+        vk::AccelerationStructureBuildGeometryInfoKHR info{};
+        info.type = vk::AccelerationStructureTypeKHR::eBottomLevel;
+        info.flags = Resources::kSkinBlasFlags;
+        info.mode = vk::BuildAccelerationStructureModeKHR::eBuild;
+        info.setGeometries(geometries);
+        const vk::AccelerationStructureBuildSizesInfoKHR sizes = gpu.handle().getAccelerationStructureBuildSizesKHR(
+            vk::AccelerationStructureBuildTypeKHR::eDevice, info, counts);
+        s.build_scratch = sizes.buildScratchSize;
+        s.update_scratch = sizes.updateScratchSize;
+        if (*s.blas.handle == nullptr || s.blas_capacity < sizes.accelerationStructureSize) {
+            if (*s.blas.handle != nullptr) gpu.retireAfterGpu({VulkanDevice::keepAlive(std::move(s.blas))});
+            s.blas = AccelerationStructure{};
+            s.blas.storage = createBuffer(gpu, sizes.accelerationStructureSize,
+                                          vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR, false);
+            vk::AccelerationStructureCreateInfoKHR create_info{};
+            create_info.buffer = *s.blas.storage.buffer;
+            create_info.size = sizes.accelerationStructureSize;
+            create_info.type = vk::AccelerationStructureTypeKHR::eBottomLevel;
+            s.blas.handle = vk::raii::AccelerationStructureKHR(gpu.handle(), create_info);
+            s.blas.address = gpu.handle().getAccelerationStructureAddressKHR(
+                vk::AccelerationStructureDeviceAddressInfoKHR{*s.blas.handle});
+            s.blas_capacity = sizes.accelerationStructureSize;
+        }
+        s.needs_build = true;
+        s.refits = 0;
+        if (VulkanDevice::debugLog()) {
+            std::cout << "[Vulkan] Escena de rayos: personaje animado (modelo " << in.model << ", " << g.vertex_count
+                      << " vertices) en el hueco " << k << "\n";
+        }
+    }
+    // Los de este frame: matriz, mascara y huesos.
+    for (std::uint32_t k = 0; k < Resources::kSkinSlots; ++k) {
+        Resources::SkinSlot& s = r.skin_slots[k];
+        if (taken[k] < 0) {
+            s.active = false;
+            continue;
+        }
+        const SkinnedInstance& in = instances[static_cast<std::size_t>(taken[k])];
+        s.active = true;
+        s.transform = in.transform;
+        s.mask = in.mask;
+        s.bone_first = static_cast<std::uint32_t>(r.skin_bone_staging.size());
+        s.bone_count = in.bone_count;
+        r.skin_bone_staging.insert(r.skin_bone_staging.end(), in.bones, in.bones + in.bone_count);
+        in_tlas[static_cast<std::size_t>(taken[k])] = 1;
+    }
+}
+
+bool RayTracing::updateMaterial(std::uint32_t model, std::uint32_t material, const SkinnedModel& gpu) {
+    if (!sceneBuilt()) return true;
+    Resources& r = *resources_;
+    if (model >= r.material_base_of.size() || r.material_base_of[model] == UINT32_MAX ||
+        material >= gpu.materials().size()) {
+        return true;  // (no esta en la escena: nada que cambiar)
+    }
+    const std::uint32_t index = r.material_base_of[model] + material;
+    if (index >= r.material_cpu.size()) return true;
+    const SkinnedModel::Material& source = gpu.materials()[material];
+    RtMaterial& rt = r.material_cpu[index];
+    const bool was_masked = (rt.flags & 1u) != 0;
+    // Lo mismo que build/addModel; las texturas no cambian en vivo.
+    rt.base_color = source.base_color;
+    rt.emissive = source.emissive;
+    rt.params = core::Vec4{source.params.x, source.params.y, 0.0f, 0.0f};
+    rt.flags = source.alpha_masked ? 1u : 0u;
+    rt.uv_transform = source.uv_transform;
+    if (std::find(r.pending_material_writes.begin(), r.pending_material_writes.end(), index) ==
+        r.pending_material_writes.end()) {
+        r.pending_material_writes.push_back(index);
+    }
+    // Recortado por alfa o no decide en que geometria de la BLAS va cada
+    // triangulo (opaca o con any-hit): eso pide rehacer la escena.
+    return was_masked == source.alpha_masked;
 }
 
 void RayTracing::recordUpdates(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
@@ -1963,9 +2867,13 @@ void RayTracing::recordUpdates(const vk::raii::CommandBuffer& cmd, std::uint32_t
     // El frame anterior de este hueco ya termino (su fence): su staging sobra
     // (y lo que se retiro en el: buffers que crecieron, scratch de BLAS).
     r.staging[slot].clear();
+    r.retired_blas[slot].clear();
 
-    // --- Modelos que entraron (addModel): sus datos y sus BLAS ---
-    if (!r.pending_models.empty()) r.flushPendingModels(cmd, slot);
+    // --- BLAS de streaming ya medidas: a su tamano compactado ---
+    if (!r.pending_compactions.empty()) r.compactPending(cmd, slot);
+    // --- Modelos que entraron (addModel), materiales editados y lo de los
+    // personajes: sus datos y sus BLAS ---
+    if (r.uploadsPending()) r.flushPendingModels(cmd, slot);
     // El set de este hueco, al dia (TLAS nueva, buffers que crecieron, texturas).
     r.refreshSceneSet(slot);
 
@@ -1977,13 +2885,17 @@ void RayTracing::recordUpdates(const vk::raii::CommandBuffer& cmd, std::uint32_t
                       vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eAccelerationStructureReadKHR,
                       vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite);
         for (Resources::PendingVertices& pending : r.pending_vertices) {
-            const Resources::ExtraModel& e = r.extra_models[pending.extra];
+            Resources::ExtraModel& e = r.extra_models[pending.extra];
             const vk::DeviceSize bytes = sizeof(RtVertex) * pending.vertices.size();
-            DeviceBuffer staging = createBuffer(*r.device, bytes, vk::BufferUsageFlagBits::eTransferSrc,
-                                                true, pending.vertices.data());
-            cmd.copyBuffer(*staging.buffer, *r.vertices.buffer,
+            // Su staging de este hueco (persistente: el frame anterior de
+            // este hueco ya termino de copiarlo).
+            DeviceBuffer& upload = e.upload[slot];
+            if (upload.size < bytes) {
+                upload = createBuffer(*r.device, bytes, vk::BufferUsageFlagBits::eTransferSrc, true);
+            }
+            std::memcpy(upload.mapped, pending.vertices.data(), static_cast<std::size_t>(bytes));
+            cmd.copyBuffer(*upload.buffer, *r.vertices.buffer,
                            vk::BufferCopy{0, sizeof(RtVertex) * static_cast<vk::DeviceSize>(e.vertex_base), bytes});
-            r.staging[slot].push_back(std::move(staging));
             rebuild.push_back(pending.extra);
         }
         for (Resources::PendingTexture& pending : r.pending_textures) {
@@ -2022,35 +2934,63 @@ void RayTracing::recordUpdates(const vk::raii::CommandBuffer& cmd, std::uint32_t
                       vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eAccelerationStructureReadKHR);
     }
 
-    // --- Sus BLAS, de nuevo (en el mismo sitio: la direccion no cambia) ---
+    // --- Sus BLAS, de nuevo (en el mismo sitio: la direccion no cambia).
+    // Reajuste (MODE_UPDATE: misma topologia, solo cambian las alturas) y
+    // cada kTerrainRebuildInterval cambios una construccion entera (los
+    // reajustes seguidos empeoran el arbol) ---
     if (!rebuild.empty()) {
+        constexpr std::uint32_t kTerrainRebuildInterval = 16;
+        // El scratch de cada uno lo usaba su construccion anterior.
+        memoryBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                      vk::AccessFlagBits2::eAccelerationStructureWriteKHR,
+                      vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                      vk::AccessFlagBits2::eAccelerationStructureReadKHR |
+                          vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
         for (const std::uint32_t extra : rebuild) {
             Resources::ExtraModel& e = r.extra_models[extra];
+            const bool refit = e.refits < kTerrainRebuildInterval;
             vk::AccelerationStructureBuildGeometryInfoKHR info{};
             info.type = vk::AccelerationStructureTypeKHR::eBottomLevel;
-            info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace;
-            info.mode = vk::BuildAccelerationStructureModeKHR::eBuild;
+            info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace |
+                         vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate;
+            info.mode = refit ? vk::BuildAccelerationStructureModeKHR::eUpdate
+                              : vk::BuildAccelerationStructureModeKHR::eBuild;
             info.setGeometries(e.geometries);
+            info.srcAccelerationStructure = refit ? *r.blas[e.model].handle : vk::AccelerationStructureKHR{};
             info.dstAccelerationStructure = *r.blas[e.model].handle;
             info.scratchData.deviceAddress = alignUp(e.scratch.address, r.scratch_alignment);
             const vk::AccelerationStructureBuildRangeInfoKHR* ranges = e.ranges.data();
             cmd.buildAccelerationStructuresKHR(info, ranges);
+            e.refits = refit ? e.refits + 1 : 0;
         }
         memoryBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
                       vk::AccessFlagBits2::eAccelerationStructureWriteKHR,
                       vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR | kRayStages,
                       vk::AccessFlagBits2::eAccelerationStructureReadKHR);
-        // La TLAS guarda las cajas de sus BLAS: hay que rehacerla.
-        r.tlas_dirty = true;
+        // La TLAS guarda las cajas de sus BLAS: se reajusta.
+        r.tlas_refit = true;
     }
 
-    // --- TLAS ---
-    if (r.tlas_dirty && *r.tlas.handle != nullptr) {
+    // --- Personajes animados: vertices deformados y sus BLAS ---
+    r.recordSkinning(cmd, slot);
+
+    // --- TLAS: construccion entera si cambio la topologia; si no, reajuste ---
+    if ((r.tlas_dirty || r.tlas_refit) && *r.tlas.handle != nullptr) {
         DeviceBuffer& instances = r.instance_buffers[slot];
         const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(r.gpu_instances.size(), r.tlas_capacity));
-        if (count > 0) {
-            std::memcpy(instances.mapped, r.gpu_instances.data(), sizeof(vk::AccelerationStructureInstanceKHR) * count);
+        // Solo lo que cambio desde la ultima vez que se uso este hueco.
+        const std::uint32_t dirty_begin = std::min(r.slot_dirty_begin[slot], count);
+        const std::uint32_t dirty_end = std::min(r.slot_dirty_end[slot], count);
+        if (dirty_end > dirty_begin) {
+            std::memcpy(static_cast<std::uint8_t*>(instances.mapped) +
+                            sizeof(vk::AccelerationStructureInstanceKHR) * dirty_begin,
+                        r.gpu_instances.data() + dirty_begin,
+                        sizeof(vk::AccelerationStructureInstanceKHR) * (dirty_end - dirty_begin));
         }
+        r.slot_dirty_begin[slot] = 0;
+        r.slot_dirty_end[slot] = 0;
+        const bool full = r.tlas_dirty || !r.tlas_built || count != r.tlas_built_count ||
+                          r.tlas_refits >= Resources::kTlasRebuildInterval;
         vk::AccelerationStructureGeometryInstancesDataKHR instances_data{};
         instances_data.arrayOfPointers = VK_FALSE;
         instances_data.data.deviceAddress = instances.address;
@@ -2059,9 +2999,11 @@ void RayTracing::recordUpdates(const vk::raii::CommandBuffer& cmd, std::uint32_t
         geometry.geometry.instances = instances_data;
         vk::AccelerationStructureBuildGeometryInfoKHR info{};
         info.type = vk::AccelerationStructureTypeKHR::eTopLevel;
-        info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace;
-        info.mode = vk::BuildAccelerationStructureModeKHR::eBuild;
+        info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace |
+                     vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate;
+        info.mode = full ? vk::BuildAccelerationStructureModeKHR::eBuild : vk::BuildAccelerationStructureModeKHR::eUpdate;
         info.setGeometries(geometry);
+        info.srcAccelerationStructure = full ? vk::AccelerationStructureKHR{} : *r.tlas.handle;
         info.dstAccelerationStructure = *r.tlas.handle;
         info.scratchData.deviceAddress = alignUp(r.tlas_scratch.address, r.scratch_alignment);
         vk::AccelerationStructureBuildRangeInfoKHR range{};
@@ -2078,7 +3020,14 @@ void RayTracing::recordUpdates(const vk::raii::CommandBuffer& cmd, std::uint32_t
         memoryBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
                       vk::AccessFlagBits2::eAccelerationStructureWriteKHR, kRayStages,
                       vk::AccessFlagBits2::eAccelerationStructureReadKHR);
+        if (full) {
+            r.tlas_refits = 0;
+            r.tlas_built_count = count;
+        } else {
+            ++r.tlas_refits;
+        }
         r.tlas_dirty = false;
+        r.tlas_refit = false;
         r.tlas_built = true;
     }
 }

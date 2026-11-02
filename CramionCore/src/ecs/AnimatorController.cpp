@@ -308,12 +308,18 @@ bool stepAnimatorController(const AnimatorController& controller, AnimatorRuntim
 // --- Blend Trees -----------------------------------------------------------------
 
 std::vector<float> blendTreeWeights(const AnimatorState& state, float x, float y) {
+    std::vector<float> weights;
+    blendTreeWeights(state, x, y, weights);
+    return weights;
+}
+
+void blendTreeWeights(const AnimatorState& state, float x, float y, std::vector<float>& weights) {
     const std::size_t n = state.children.size();
-    std::vector<float> weights(n, 0.0f);
-    if (n == 0) return weights;
+    weights.assign(n, 0.0f);
+    if (n == 0) return;
     if (n == 1) {
         weights[0] = 1.0f;
-        return weights;
+        return;
     }
     if (state.motion == AnimatorMotion::BlendTree2D) {
         // Gradient Band: w_i = min_j (1 - dot(p - p_i, p_j - p_i) / |p_j - p_i|^2), recortado a [0, 1].
@@ -346,23 +352,25 @@ std::vector<float> blendTreeWeights(const AnimatorState& state, float x, float y
             }
             std::fill(weights.begin(), weights.end(), 0.0f);
             weights[best] = 1.0f;
-            return weights;
+            return;
         }
         for (float& w : weights) w /= total;
-        return weights;
+        return;
     }
-    // 1D: orden por umbral; entre los dos vecinos, lineal.
-    std::vector<std::size_t> order(n);
+    // 1D: orden por umbral; entre los dos vecinos, lineal. El orden se
+    // reutiliza por hilo (antes, una reserva por estado y frame).
+    thread_local std::vector<std::size_t> order;
+    order.resize(n);
     for (std::size_t i = 0; i < n; ++i) order[i] = i;
     std::stable_sort(order.begin(), order.end(),
                      [&](std::size_t a, std::size_t b) { return state.children[a].threshold < state.children[b].threshold; });
     if (x <= state.children[order.front()].threshold) {
         weights[order.front()] = 1.0f;
-        return weights;
+        return;
     }
     if (x >= state.children[order.back()].threshold) {
         weights[order.back()] = 1.0f;
-        return weights;
+        return;
     }
     for (std::size_t k = 0; k + 1 < n; ++k) {
         const float a = state.children[order[k]].threshold;
@@ -374,7 +382,6 @@ std::vector<float> blendTreeWeights(const AnimatorState& state, float x, float y
             break;
         }
     }
-    return weights;
 }
 
 // --- .cranim -------------------------------------------------------------------

@@ -18,6 +18,12 @@
 layout(push_constant) uniform PushConstants {
     vec4 sun;   // xyz = hacia el sol,  w = iluminancia del sol
     vec4 moon;  // xyz = hacia la luna, w = iluminancia de la luna
+    // Color del cielo del componente Sky (GpuSkyPush): x = mezcla con el
+    // degradado (0 = solo fisico), y = curva, z = numero de paradas (0 = tres
+    // colores: cenit, horizonte, suelo), w = brillo del halo del sol.
+    vec4 custom;
+    vec4 sun_tint;      // rgb = tinte del halo del sol (lineal)
+    uvec4 colors[4];    // 8 colores en media precision (rgb + altura en grados)
 } push;
 
 layout(location = 0) in vec2 v_uv;
@@ -155,9 +161,80 @@ vec3 integrate(vec3 origin, vec3 direction) {
     return radiance;
 }
 
+// Color i del degradado: rgb (lineal, ya escalado) y su altura en grados.
+vec4 gradientColor(int i) {
+    uvec4 pair = push.colors[i >> 1];
+    uvec2 packed_color = (i & 1) == 0 ? pair.xy : pair.zw;
+    return vec4(unpackHalf2x16(packed_color.x), unpackHalf2x16(packed_color.y));
+}
+
+// Cielo de colores puestos a mano (componente Sky): un degradado por la
+// altura de la direccion y un halo alrededor del sol (el disco lo pinta
+// lighting.frag).
+vec3 customSky(vec3 direction) {
+    float h = clamp(direction.y, -1.0, 1.0);
+    int stops = int(push.custom.z + 0.5);
+    vec3 color;
+    if (stops <= 0) {
+        // Cenit, horizonte y suelo. Curva 1 = lineal; mas = el color del
+        // cenit baja hasta cerca del horizonte (franja fina, como el fisico).
+        vec3 zenith = gradientColor(0).rgb;
+        vec3 horizon = gradientColor(1).rgb;
+        vec3 ground = gradientColor(2).rgb;
+        float curve = max(push.custom.y, 0.01);
+        if (h >= 0.0) {
+            color = mix(horizon, zenith, 1.0 - pow(1.0 - h, curve));
+        } else {
+            color = mix(horizon, ground, 1.0 - pow(1.0 + h, curve * 4.0));
+        }
+    } else {
+        // Paradas ordenadas por altura (grados).
+        float elevation = degrees(asin(h));
+        vec4 previous = gradientColor(0);
+        color = previous.rgb;
+        for (int i = 1; i < 8; ++i) {
+            if (i >= stops) {
+                break;
+            }
+            vec4 next = gradientColor(i);
+            if (elevation >= next.a) {
+                color = next.rgb;
+            } else if (elevation > previous.a) {
+                color = mix(previous.rgb, next.rgb, (elevation - previous.a) / max(next.a - previous.a, 1e-3));
+            }
+            previous = next;
+        }
+    }
+
+    // Halo del sol: dos lobulos (uno ancho y otro cerrado), mas fuerte con el
+    // sol bajo, que se apaga cuando el sol se pone.
+    float halo = push.custom.w;
+    if (halo > 0.0) {
+        float c = max(dot(direction, push.sun.xyz), 0.0);
+        float sun_up = smoothstep(-0.08, 0.05, push.sun.y);
+        float low_sun = mix(1.6, 1.0, smoothstep(0.0, 0.4, push.sun.y));
+        float glow = pow(c, 8.0) * 0.12 + pow(c, 64.0) * 0.6 + pow(c, 512.0) * 2.0;
+        color += push.sun_tint.rgb * glow * halo * sun_up * low_sun;
+    }
+    return color;
+}
+
 void main() {
     vec3 direction = directionFromUv(v_uv);
     vec3 origin = vec3(0.0, kGroundRadius + kViewerHeight, 0.0);
-    vec3 radiance = integrate(origin, direction);
+    float blend = clamp(push.custom.x, 0.0, 1.0);
+    vec3 radiance = vec3(0.0);
+    if (blend < 1.0) {
+        radiance = integrate(origin, direction);
+        // Tinte del sol (componente Sky) en el fisico: solo el halo, por la
+        // fase de Mie hacia el sol (blanco = sin cambio).
+        if (any(notEqual(push.sun_tint.rgb, vec3(1.0)))) {
+            float toward_sun = smoothstep(0.6, 1.0, dot(direction, push.sun.xyz));
+            radiance *= mix(vec3(1.0), push.sun_tint.rgb, toward_sun);
+        }
+    }
+    if (blend > 0.0) {
+        radiance = mix(radiance, customSky(direction), blend);
+    }
     out_color = vec4(min(radiance, vec3(60000.0)), 1.0);
 }

@@ -339,6 +339,54 @@ vec2 sphereSegment(vec3 origin, vec3 direction, vec3 center, float radius, float
     return vec2(max(-b - s, 0.0), min(-b + s, max_t));
 }
 
+// Luz de la puntual `l` que llega a p, ya por su fase hacia la camara.
+vec3 pointIncoming(int l, vec3 p, vec3 direction) {
+    vec3 from_light = p - lights.points[l].position_range.xyz;
+    float d = length(from_light);
+    // La luz viaja de la lampara al punto y de ahi a la camara (-direction).
+    float phase = phaseFunction(dot(from_light / max(d, 1e-4), -direction));
+    float visibility = 1.0;
+    int slot = shadowSlot(lights.points[l].shadow.x);
+    if (slot >= 0 && local_shadows.params.z > 0.0) {
+        visibility = pointVisibility(slot, lights.points[l].position_range.xyz, p);
+    }
+    return lights.points[l].color_intensity.rgb *
+           (lights.points[l].color_intensity.a * attenuation(d, lights.points[l].position_range.w) * phase * visibility);
+}
+
+// Igual para el foco `l` (con su cono).
+vec3 spotIncoming(int l, vec3 p, vec3 direction) {
+    vec3 from_light = p - lights.spots[l].position_range.xyz;
+    float d = length(from_light);
+    vec3 travel = from_light / max(d, 1e-4);
+    // Cono: 1 dentro del angulo interior, 0 fuera del exterior.
+    float cone_cos = dot(travel, normalize(lights.spots[l].direction_intensity.xyz));
+    float inner_cos = lights.spots[l].color_inner.a;
+    float outer_cos = lights.spots[l].outer_shadow.x;
+    float cone = clamp((cone_cos - outer_cos) / max(inner_cos - outer_cos, 0.0001), 0.0, 1.0);
+    if (cone <= 0.0) {
+        return vec3(0.0);
+    }
+    float phase = phaseFunction(dot(travel, -direction));
+    float visibility = 1.0;
+    int slot = shadowSlot(lights.spots[l].outer_shadow.y);
+    if (slot >= 0 && local_shadows.params.z > 0.0) {
+        visibility = spotVisibility(slot, p);
+    }
+    return lights.spots[l].color_inner.rgb *
+           (lights.spots[l].direction_intensity.w * cone * cone * attenuation(d, lights.spots[l].position_range.w) *
+            phase * visibility);
+}
+
+// Integral (en metros) de la luz de una local en el trozo [a, b] del rayo:
+// submuestras cada ~1 m (hasta kLocalSamples). Antes la luz local se miraba
+// solo en el punto del paso grande y se multiplicaba por todo el paso: con
+// el rayo hasta unos arboles a 200 m (pasos de 6 m o mas), la muestra que
+// caia junto a la linterna, donde mas brilla, contaba como 6 m de aire
+// iluminado y todo lo del fondo se llenaba de niebla gris o blanca.
+const int kLocalSamples = 4;
+const float kLocalSampleSpacing = 1.0;
+
 // Densidad de los volumenes de niebla en p; `albedo_sigma` suma su color
 // por su densidad (la dispersion con color).
 float fogVolumeDensity(vec3 p, float time, out vec3 albedo_sigma) {
@@ -459,55 +507,43 @@ void main() {
         vec3 incoming = has_sun ? sun_source * sun_visible : vec3(0.0);
         incoming += sky_source * mix(0.35, 1.0, sun_visible);
 
-        for (int l = 0; l < point_count; ++l) {
-            if (t < point_segments[l].x || t > point_segments[l].y) {
-                continue;
+        // Luces locales: cada una en su trozo del paso [t0, t1] (lo que cae
+        // dentro de su esfera de alcance), con sus propias submuestras. Es
+        // una integral en metros: no se vuelve a multiplicar por el paso.
+        vec3 local_integral = vec3(0.0);
+        if (any_local) {
+            float t0 = float(i) * dt;
+            float t1 = t0 + dt;
+            for (int l = 0; l < point_count; ++l) {
+                float a = max(t0, point_segments[l].x);
+                float b = min(t1, point_segments[l].y);
+                if (b <= a) continue;
+                int n = clamp(int(ceil((b - a) / kLocalSampleSpacing)), 1, kLocalSamples);
+                float h = (b - a) / float(n);
+                for (int k = 0; k < n; ++k) {
+                    local_integral += pointIncoming(l, ray_origin + direction * (a + (float(k) + jitter) * h),
+                                                    direction) * h;
+                }
             }
-            vec3 from_light = p - lights.points[l].position_range.xyz;
-            float d = length(from_light);
-            // La luz viaja de la lampara al punto y de ahi a la camara (-direction).
-            float phase = phaseFunction(dot(from_light / max(d, 1e-4), -direction));
-            float visibility = 1.0;
-            int slot = shadowSlot(lights.points[l].shadow.x);
-            if (slot >= 0 && local_shadows.params.z > 0.0) {
-                visibility = pointVisibility(slot, lights.points[l].position_range.xyz, p);
+            for (int l = 0; l < spot_count; ++l) {
+                float a = max(t0, spot_segments[l].x);
+                float b = min(t1, spot_segments[l].y);
+                if (b <= a) continue;
+                int n = clamp(int(ceil((b - a) / kLocalSampleSpacing)), 1, kLocalSamples);
+                float h = (b - a) / float(n);
+                for (int k = 0; k < n; ++k) {
+                    local_integral += spotIncoming(l, ray_origin + direction * (a + (float(k) + jitter) * h),
+                                                   direction) * h;
+                }
             }
-            incoming += lights.points[l].color_intensity.rgb *
-                        (lights.points[l].color_intensity.a *
-                         attenuation(d, lights.points[l].position_range.w) * phase * visibility);
-        }
-
-        for (int l = 0; l < spot_count; ++l) {
-            if (t < spot_segments[l].x || t > spot_segments[l].y) {
-                continue;
-            }
-            vec3 from_light = p - lights.spots[l].position_range.xyz;
-            float d = length(from_light);
-            vec3 travel = from_light / max(d, 1e-4);
-            // Cono: 1 dentro del angulo interior, 0 fuera del exterior.
-            float cone_cos = dot(travel, normalize(lights.spots[l].direction_intensity.xyz));
-            float inner_cos = lights.spots[l].color_inner.a;
-            float outer_cos = lights.spots[l].outer_shadow.x;
-            float cone =
-                clamp((cone_cos - outer_cos) / max(inner_cos - outer_cos, 0.0001), 0.0, 1.0);
-            if (cone <= 0.0) {
-                continue;
-            }
-            float phase = phaseFunction(dot(travel, -direction));
-            float visibility = 1.0;
-            int slot = shadowSlot(lights.spots[l].outer_shadow.y);
-            if (slot >= 0 && local_shadows.params.z > 0.0) {
-                visibility = spotVisibility(slot, p);
-            }
-            incoming += lights.spots[l].color_inner.rgb *
-                        (lights.spots[l].direction_intensity.w * cone * cone *
-                         attenuation(d, lights.spots[l].position_range.w) * phase * visibility);
         }
 
         // Integral exacta del tramo con la fuente constante (el polvo sin
-        // color, los volumenes con el suyo).
-        vec3 source = incoming * (vec3(sigma_dust) + fog_albedo_sigma);
-        scattered += transmittance * (source - source * step_transmittance) / max(sigma, 1e-6);
+        // color, los volumenes con el suyo). La de las locales ya viene en
+        // metros: se le aplica la misma transmitancia media del tramo.
+        vec3 scatter = vec3(sigma_dust) + fog_albedo_sigma;
+        float in_step = (1.0 - step_transmittance) / max(sigma, 1e-6);  // integral de e^(-sigma s), en metros
+        scattered += transmittance * (incoming * scatter * in_step + scatter * local_integral * (in_step / dt));
         transmittance *= step_transmittance;
     }
 

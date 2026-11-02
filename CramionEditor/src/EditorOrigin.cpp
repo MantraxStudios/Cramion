@@ -53,7 +53,7 @@ void EditorApp::alignOriginAfterLoad(const ecs::DVec3& before) {
     renderer_.setWorldOrigin(now.x, now.y, now.z);
 }
 
-void EditorApp::resetSceneSystems(bool keep_terrain_edits) {
+void EditorApp::resetSceneSystems(bool keep_terrain_edits, bool clear_world) {
     // Video: la vista previa del Inspector es de la escena que se va. (Los
     // caminos en Play ya pararon el video antes que el audio; aqui solo se
     // asegura: VideoSystem::stop es idempotente.)
@@ -73,7 +73,7 @@ void EditorApp::resetSceneSystems(bool keep_terrain_edits) {
     // guardaban al soltarse aunque se descartaran los cambios.
     options.save_terrain = false;
     options.discard_terrain_data = !keep_terrain_edits;
-    options.clear_world = true;
+    options.clear_world = clear_world;
     ecs::resetSceneState(world_, targets, options);
     // Lo que dependia de entidades de la escena anterior.
     nav_.resetAgents();

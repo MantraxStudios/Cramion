@@ -8,12 +8,18 @@
 #include "CramionCore/voxel/Voxel.h"
 
 #include "../src/voxel/VoxelInternal.h"
+#include "../src/voxel/Structures.h"
 
 #include <CramionFX/vk/VoxelPass.h>
 
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <map>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 using namespace cramion;
@@ -46,6 +52,106 @@ void testCatalog() {
     int glow = 0;
     for (std::size_t i = 2; i < torch.material.size(); i += 4) glow += torch.material[i] > 200 ? 1 : 0;
     check(glow > 0, "la llama de la antorcha brilla (emision)");
+}
+
+// Generador Aventura (rios, mesetas, vegetacion densa, cuevas con setas) y el
+// estilo de color liso.
+void testAdventure() {
+    std::printf("Generador Aventura\n");
+    const Generator gen(1234, 62, VoxelGenerator::Adventure);
+    check(gen.profile() == VoxelGenerator::Adventure, "perfil Aventura");
+
+    // Biomas en una muestra grande (8 x 8 km).
+    std::array<int, 8> biomes{};
+    int river_water = 0, mesas = 0;
+    BlockPos forest{}, mesa{}, river{};
+    bool have_forest = false, have_mesa = false, have_river = false;
+    for (int z = -4096; z < 4096; z += 48) {
+        for (int x = -4096; x < 4096; x += 48) {
+            const Generator::AdventureColumn c = gen.adventureColumn(x, z);
+            ++biomes[static_cast<std::size_t>(c.biome)];
+            if (c.biome == Generator::ARiver && c.height < 62) {
+                ++river_water;
+                if (!have_river) river = BlockPos{x, c.height, z}, have_river = true;
+            }
+            if (c.mesa) {
+                ++mesas;
+                if (!have_mesa) mesa = BlockPos{x, c.height, z}, have_mesa = true;
+            }
+            if (c.biome == Generator::AForest && !have_forest) forest = BlockPos{x, c.height, z}, have_forest = true;
+        }
+    }
+    bool all = true;
+    for (int b : biomes) all = all && b > 0;
+    std::printf("    oceano %d playa %d rio %d pradera %d bosque %d desierto %d nieve %d montana %d (mesetas %d)\n", biomes[0],
+                biomes[1], biomes[2], biomes[3], biomes[4], biomes[5], biomes[6], biomes[7], mesas);
+    check(all, "estan todos los biomas (oceano, playa, rio, pradera, bosque, desierto, nieve, montana)");
+    check(river_water > 20, "rios con el cauce bajo el nivel del mar (el oceano los llena)");
+    check(mesas > 5, "mesetas en el desierto");
+
+    // Determinista: el mismo chunk dos veces.
+    ChunkData a, b;
+    a.cx = b.cx = 3;
+    a.cz = b.cz = -7;
+    gen.generate(a);
+    gen.generate(b);
+    check(a.blocks == b.blocks, "el mismo chunk sale igual (determinista)");
+
+    // Lo que hay en una zona: 5 x 5 chunks alrededor de cada sitio.
+    std::array<int, block::Count> count{};
+    const auto scan = [&](const BlockPos& at) {
+        for (int dz = -2; dz <= 2; ++dz) {
+            for (int dx = -2; dx <= 2; ++dx) {
+                ChunkData chunk;
+                chunk.cx = static_cast<int>(std::floor(static_cast<float>(at.x) / kChunkSize)) + dx;
+                chunk.cz = static_cast<int>(std::floor(static_cast<float>(at.z) / kChunkSize)) + dz;
+                gen.generate(chunk);
+                for (BlockId id : chunk.blocks) ++count[id];
+            }
+        }
+    };
+    if (have_forest) scan(forest);
+    if (have_mesa) scan(mesa);
+    if (have_river) scan(river);
+    check(count[block::Fern] > 0 && count[block::Bush] > 0 && count[block::TallGrass] > 50, "bosque: helechos, arbustos y hierba");
+    check(count[block::OakLeaves] + count[block::BirchLeaves] > 200 && count[block::OakLog] > 0, "arboles de copa redonda");
+    check(count[block::Terracotta] > 100 && count[block::RedSand] > 0, "mesetas de terracota y arena roja");
+    check(count[block::Reeds] > 0, "juncos en las orillas del rio");
+    check(count[block::GlowMushroom] > 0 && count[block::Moss] > 0, "cuevas con musgo y setas luminosas");
+    std::printf("    flores %d helechos %d setas luminosas %d terracota %d juncos %d\n",
+                count[block::RedFlower] + count[block::YellowFlower] + count[block::BlueFlower] + count[block::WhiteFlower] +
+                    count[block::Lavender],
+                count[block::Fern], count[block::GlowMushroom], count[block::Terracotta], count[block::Reeds]);
+    check(blockDef(block::GlowMushroom).light > 0 && blockId("lavanda") == block::Lavender, "bloques nuevos con su luz y nombre");
+
+    // Color liso: cubos de un solo color sin relieve; plantas con su silueta; hojas macizas.
+    gfx::VoxelTextureLayer stone;
+    buildTexture("stone", 32, {}, stone, true);
+    bool uniform = true, flat_normal = true;
+    for (std::size_t i = 0; i < stone.albedo.size(); i += 4) {
+        uniform = uniform && stone.albedo[i] == stone.albedo[0] && stone.albedo[i + 1] == stone.albedo[1];
+        flat_normal = flat_normal && stone.normal[i] == 128 && stone.normal[i + 1] == 128;
+    }
+    check(uniform && flat_normal, "color liso: la piedra es un solo color y sin relieve");
+    gfx::VoxelTextureLayer flower, leaves;
+    buildTexture("blue_flower", 32, {}, flower, true);
+    buildTexture("oak_leaves", 32, {}, leaves, true);
+    int flower_holes = 0, leaf_holes = 0;
+    for (std::size_t i = 3; i < flower.albedo.size(); i += 4) flower_holes += flower.albedo[i] < 128 ? 1 : 0;
+    for (std::size_t i = 3; i < leaves.albedo.size(); i += 4) leaf_holes += leaves.albedo[i] < 128 ? 1 : 0;
+    check(flower_holes > 100 && leaf_holes == 0, "color liso: la flor conserva su silueta y las hojas son macizas");
+
+    // Rendimiento: un chunk de Aventura.
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < 16; ++i) {
+        ChunkData chunk;
+        chunk.cx = 40 + i;
+        chunk.cz = 17;
+        gen.generate(chunk);
+    }
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 16.0;
+    std::printf("    %.2f ms por chunk\n", ms);
+    check(ms < 40.0, "un chunk de Aventura en menos de 40 ms");
 }
 
 // Posicion de un vertice empaquetado.
@@ -289,7 +395,9 @@ void testWater() {
           "bajo el nivel del mar hay agua (para nadar)");
     const int floor_y = vox.surfaceHeight(sx, sz);
     vox.setBlock(sx, floor_y, sz, block::Air);
-    check(vox.getBlock(sx, floor_y, sz) == block::Water, "al cavar el fondo entra el agua");
+    // El agua corre por pasos (cada 0.25 s): entra en el siguiente.
+    vox.update(0.3f, Vec3{static_cast<float>(sx), 80.0f, static_cast<float>(sz)});
+    check(block::isWater(vox.getBlock(sx, floor_y, sz)), "al cavar el fondo entra el agua");
 }
 
 void testSaving() {
@@ -308,6 +416,7 @@ void testSaving() {
         check(vox.newWorld("Mi mundo", 9876), "crear un mundo con nombre");
         vox.waitUntilReady(viewer, 1, 60.0f);
         h = vox.surfaceHeight(0, 0);
+        vox.setBlock(0, h + 2, 0, block::Air);  // por si el origen cae en un lago (agua: quita 2 de luz)
         vox.setBlock(0, h + 1, 0, block::Glowstone);
         vox.setBlock(1, h + 1, 0, block::Bricks);
         vox.setMeta("mode", "creativo");
@@ -363,10 +472,179 @@ void testPerformance() {
     check(frame_ms < 4.0f, "el frame sin cambios es barato");
 }
 
+#include "VoxelStructureTests.inc"
+
+// Huella (FNV-1a) de unos chunks: detecta cualquier cambio del terreno.
+std::uint64_t chunkHash(const Generator& gen, int cx0, int cz0, int n) {
+    std::uint64_t h = 1469598103934665603ull;
+    for (int dz = 0; dz < n; ++dz) {
+        for (int dx = 0; dx < n; ++dx) {
+            ChunkData chunk;
+            chunk.cx = cx0 + dx;
+            chunk.cz = cz0 + dz;
+            gen.generate(chunk);
+            for (BlockId id : chunk.blocks) h = (h ^ id) * 1099511628211ull;
+        }
+    }
+    return h;
+}
+
+bool isTreeBlock(BlockId id) {
+    return id == block::OakLog || id == block::OakLeaves || id == block::BirchLog || id == block::BirchLeaves ||
+           id == block::SpruceLog || id == block::SpruceLeaves || id == block::Cactus;
+}
+
+// Bloques de arbol en n x n chunks (solo los chunks sin estructuras cerca: las
+// aldeas tienen sus propios arboles plantados).
+int treeBlocks(const Generator& gen, int cx0, int cz0, int n, int* chunks_counted = nullptr) {
+    int count = 0, counted = 0;
+    for (int dz = 0; dz < n; ++dz) {
+        for (int dx = 0; dx < n; ++dx) {
+            ChunkData chunk;
+            chunk.cx = cx0 + dx;
+            chunk.cz = cz0 + dz;
+            if (gen.structures() != nullptr) {
+                const float x = static_cast<float>(chunk.cx * kChunkSize + 8), z = static_cast<float>(chunk.cz * kChunkSize + 8);
+                if (!gen.structures()->nearby(x, 64.0f, z, 40.0f).empty()) continue;
+            }
+            gen.generate(chunk);
+            ++counted;
+            for (BlockId id : chunk.blocks) count += isTreeBlock(id) ? 1 : 0;
+        }
+    }
+    if (chunks_counted != nullptr) *chunks_counted = counted;
+    return count;
+}
+
+// VoxelWorld::tree_density y clearings: por defecto el mundo de siempre (huella
+// tomada antes de existir los campos); 0 = sin arboles; menos de 1, menos
+// arboles y en manchas. Y waterLevel con el suelo aplanado por las aldeas.
+void testVegetation() {
+    std::printf("Densidad de arboles\n");
+    Generator adv(1234, 62, VoxelGenerator::Adventure);
+    Generator classic(1234, 62, VoxelGenerator::Classic);
+    // Un bosque de cada generador (los arboles cuentan en la huella).
+    BlockPos forest_adv{}, forest_classic{};
+    for (int i = 0; i < 4096; ++i) {
+        const int x = (i % 64 - 32) * 64, z = (i / 64 - 32) * 64;
+        if (forest_adv.y == 0 && adv.adventureColumn(x, z).biome == Generator::AForest) forest_adv = BlockPos{x, 1, z};
+        if (forest_classic.y == 0 && classic.terrainHeight(x, z) > 66 && classic.terrainHeight(x, z) < 90 &&
+            (i % 7) == 3) {
+            forest_classic = BlockPos{x, 1, z};
+        }
+    }
+    const auto chunkOf = [](int v) { return static_cast<int>(std::floor(static_cast<float>(v) / kChunkSize)); };
+    const int fax = chunkOf(forest_adv.x), faz = chunkOf(forest_adv.z);
+    const int fcx = chunkOf(forest_classic.x), fcz = chunkOf(forest_classic.z);
+    const auto hashes = [&]() {
+        return std::array<std::uint64_t, 4>{chunkHash(adv, -3, -3, 6), chunkHash(classic, -3, -3, 6),
+                                            chunkHash(adv, fax - 2, faz - 2, 5), chunkHash(classic, fcx - 2, fcz - 2, 5)};
+    };
+    // Huellas de antes de tree_density / clearings (semilla 1234).
+    const std::array<std::uint64_t, 4> before = {4581862800975166454ull, 8828485424106083356ull, 10133045093403751905ull,
+                                                 15734742874848356318ull};
+    const std::array<std::uint64_t, 4> now = hashes();
+    std::printf("    huellas %llu %llu %llu %llu\n", static_cast<unsigned long long>(now[0]), static_cast<unsigned long long>(now[1]),
+                static_cast<unsigned long long>(now[2]), static_cast<unsigned long long>(now[3]));
+    check(now == before, "densidad 1 y sin claros (por defecto): el mundo de siempre, bloque a bloque");
+    adv.setVegetation(1.0f, 0.0f);
+    classic.setVegetation(1.0f, 0.0f);
+    check(hashes() == before, "setVegetation(1, 0) explicito: igual");
+    const VoxelWorld defaults;
+    check(defaults.tree_density == 1.0f && defaults.clearings == 0.0f, "el componente por defecto deja 1 y 0");
+
+    const int n = 10;
+    int counted_adv = 0, counted_classic = 0;
+    const int full_adv = treeBlocks(adv, fax - n / 2, faz - n / 2, n, &counted_adv);
+    const int full_classic = treeBlocks(classic, fcx - n / 2, fcz - n / 2, n, &counted_classic);
+    adv.setVegetation(0.0f, 0.0f);
+    classic.setVegetation(0.0f, 0.0f);
+    const int none_adv = treeBlocks(adv, fax - n / 2, faz - n / 2, n);
+    const int none_classic = treeBlocks(classic, fcx - n / 2, fcz - n / 2, n);
+    check(full_adv > 1000 && full_classic > 100 && counted_adv > 20, "con densidad 1 hay arboles en la muestra");
+    check(none_adv == 0 && none_classic == 0, "densidad 0: ningun arbol (fuera de las estructuras)");
+    adv.setVegetation(0.45f, 0.5f);
+    classic.setVegetation(0.45f, 0.5f);
+    const int some_adv = treeBlocks(adv, fax - n / 2, faz - n / 2, n);
+    const int some_classic = treeBlocks(classic, fcx - n / 2, fcz - n / 2, n);
+    adv.setVegetation(0.45f, 0.0f);
+    const int patches_adv = treeBlocks(adv, fax - n / 2, faz - n / 2, n);
+    adv.setVegetation(1.0f, 0.6f);
+    const int glades_adv = treeBlocks(adv, fax - n / 2, faz - n / 2, n);
+    adv.setVegetation(2.0f, 0.0f);
+    const int dense_adv = treeBlocks(adv, fax - n / 2, faz - n / 2, n);
+    std::printf("    bloques de arbol aventura: 1 -> %d, 0.45 -> %d, 0.45+claros 0.5 -> %d, 1+claros 0.6 -> %d, 2 -> %d, 0 -> %d "
+                "(%d chunks); clasico: 1 -> %d, 0.45+0.5 -> %d\n",
+                full_adv, patches_adv, some_adv, glades_adv, dense_adv, none_adv, counted_adv, full_classic, some_classic);
+    check(some_adv > 0 && some_adv < full_adv * 6 / 10 && patches_adv < full_adv * 7 / 10 && glades_adv < full_adv,
+          "densidad 0.45 y claros: bastantes menos arboles, pero quedan");
+    check(dense_adv > full_adv, "densidad 2: mas arboles");
+    check(some_classic < full_classic, "el Clasico tambien");
+    // Que parte de los arboles queda y cuanto suelo queda abierto (muestra de 8 x 8 km).
+    {
+        const auto sample = [&](float d, float c) {
+            adv.setVegetation(d, c);
+            double sum = 0.0;
+            int open = 0, total = 0;
+            for (int z = -4000; z < 4000; z += 23) {
+                for (int x = -4000; x < 4000; x += 23) {
+                    const float k = adv.treeChance(0.5f, x, z) / 0.5f;
+                    sum += k;
+                    open += k < 0.1f ? 1 : 0;
+                    ++total;
+                }
+            }
+            std::printf("    densidad %.2f claros %.2f: quedan %.0f%% de los arboles, %.0f%% del bosque abierto\n", d, c,
+                        100.0 * sum / total, 100.0 * open / total);
+            return sum / total;
+        };
+        const double r07 = sample(0.7f, 0.0f), r045 = sample(0.45f, 0.0f), r045c = sample(0.45f, 0.5f);
+        const double r02 = sample(0.2f, 0.0f), r1c = sample(1.0f, 0.5f), r15 = sample(1.5f, 0.0f);
+        check(r07 > r045 && r045 > r02 && r045 > 0.25 && r045 < 0.6 && r045c < r045 && r1c < 0.95 && r15 > 1.2,
+              "la densidad baja los arboles de forma gradual y los claros quitan mas");
+    }
+    ChunkData a, b;
+    a.cx = b.cx = fax;
+    a.cz = b.cz = faz;
+    adv.setVegetation(0.45f, 0.5f);
+    adv.generate(a);
+    Generator adv2(1234, 62, VoxelGenerator::Adventure);
+    adv2.setVegetation(0.45f, 0.5f);
+    adv2.generate(b);
+    check(a.blocks == b.blocks, "con densidad y claros sigue siendo determinista");
+
+    // waterLevel: donde una aldea aplano el suelo por encima del mar, columna seca.
+    const Generator plain(1234, 62, VoxelGenerator::Adventure);
+    bool dry_ok = true;
+    int flattened = 0;
+    for (int z = -200; z <= 200 && dry_ok; z += 3) {
+        for (int x = -200; x <= 200; x += 3) {
+            const int ground = plain.terrainHeight(x, z), water = plain.waterLevel(x, z);
+            if (ground != plain.adventureColumn(x, z).height) ++flattened;
+            if (water != 0 && water <= ground) {
+                dry_ok = false;
+                std::printf("    (%d, %d) agua %d con suelo %d\n", x, z, water, ground);
+                break;
+            }
+        }
+    }
+    std::printf("    origen: suelo %d agua %d (%d columnas aplanadas)\n", plain.terrainHeight(0, 0), plain.waterLevel(0, 0),
+                flattened);
+    check(dry_ok && flattened > 0, "waterLevel: 0 donde el suelo final (aplanado) queda por encima del agua");
+}
+
 }  // namespace
 
+int runDimensionTests();  // VoxelDimensionTests.cpp (devuelve los fallos)
+
 int main() {
+    if (std::getenv("CRAMION_VEG_ONLY") != nullptr) {  // solo la densidad de arboles (rapido)
+        testVegetation();
+        std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
+        return failures == 0 ? 0 : 1;
+    }
     testCatalog();
+    testAdventure();
     testMesher();
     testGeneration();
     testQueries();
@@ -374,6 +652,10 @@ int main() {
     testWater();
     testSaving();
     testPerformance();
+    testStructures();
+    testVegetation();
+    dumpStructuresForRender();  // solo con CRAMION_STRUCT_DUMP
+    failures += runDimensionTests();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

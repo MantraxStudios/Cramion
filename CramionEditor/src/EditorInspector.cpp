@@ -529,7 +529,12 @@ void EditorApp::drawInspectorContents() {
             // Visual Script: sus variables expuestas con el control de su tipo (EditorBlueprint.cpp).
             if (type.name == "VisualScript" && !multi) drawVisualScriptVariables(entity);
             visitor.beginComponent(mixed);
-            if (type.reflect(world_, entity.handle(), visitor)) {
+            // Claves (EditorKeyframes.cpp): rombos, I y clic derecho en las propiedades.
+            visitor.setKeyframeHook(inspectorKeyframeHook(entity, type.name));
+            const bool component_changed = type.reflect(world_, entity.handle(), visitor);
+            inspectorKeyframes(entity, multi ? selected : std::vector<ecs::Entity>{}, type.name,
+                               component_changed && visitor.lastChange() ? &visitor.lastChange()->first : nullptr);
+            if (component_changed) {
                 dirty_ = true;
                 // Los valores cambiaron: el proximo frame se recalculan los mezclados.
                 if (mixed_cache != nullptr) mixed_cache->stale = true;
@@ -563,6 +568,16 @@ void EditorApp::drawInspectorContents() {
                         other.setLocalEulerDegrees(other.localEulerDegrees() + de);
                         const Vec3 s = other.localScale();
                         other.setLocalScale(Vec3{s.x * rs.x, s.y * rs.y, s.z * rs.z});
+                    }
+                }
+            }
+            // Animacion por claves: las curvas se editan en su ventana.
+            if (type.name == "KeyframeAnimation" && !multi) {
+                if (const anim::KeyframeAnimation* ka = entity.tryGet<anim::KeyframeAnimation>()) {
+                    ImGui::TextDisabled("%zu curvas animadas", ka->curves.size());
+                    if (ImGui::Button("Editar en Animación (Dope Sheet / Gráficas)")) {
+                        show_animation_ = true;
+                        ImGui::SetWindowFocus(areaTitle(AreaEditor::Animation).c_str());
                     }
                 }
             }

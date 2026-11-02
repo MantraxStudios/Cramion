@@ -245,6 +245,13 @@ void EditorApp::drawBuildConfigsWindow() {
     ImGui::Dummy(ImVec2(label_w - ImGui::GetStyle().ItemSpacing.x, 0.0f));
     ImGui::SameLine(label_w);
     changed |= ImGui::Checkbox("Mostrar FPS (desarrollo)", &c.show_fps);
+    ImGui::Dummy(ImVec2(label_w - ImGui::GetStyle().ItemSpacing.x, 0.0f));
+    ImGui::SameLine(label_w);
+    changed |= ImGui::Checkbox("Mostrar progreso de carga del motor", &c.show_engine_loading);
+    ImGui::SetItemTooltip(
+        "Apagado (recomendado): al cambiar de escena el motor no dibuja nada encima del juego; la pantalla de\n"
+        "carga la pone el juego con Scene::loadAsync (la escena actual sigue animandose mientras carga la nueva).\n"
+        "Encendido: la barra de progreso del motor con Scene::load y una linea de progreso bajo el banner.");
     if (!android) {
         // El Graphics.ini del proyecto es el del visor del editor en este PC:
         // por defecto el juego lo adapta al PC de cada jugador.

@@ -66,6 +66,39 @@
     (<em>Color de la vegetación</em>), cambia la temperatura y las probabilidades del clima al azar.</li>
 </ul>
 
+<h3 id="color-cielo">Color del cielo</h3>
+<p>
+  El grupo <strong>Color del cielo</strong> del componente <a href="componentes-entorno.html#Sky">Sky</a> cambia el cielo
+  físico (sin HDR) por colores puestos a mano. Por defecto está en <em>Físico</em> y el cielo es el de siempre.
+</p>
+<ul>
+  <li><strong>Modo</strong> (<code>color_mode</code>): <em>Fisico</em>, <em>Degradado</em> (tres colores) o
+    <em>Degradado por paradas</em>.</li>
+  <li><strong>Degradado</strong>: <strong>Cenit</strong> (<code>zenith_color</code>), <strong>Horizonte</strong>
+    (<code>horizon_color</code>) y <strong>Suelo</strong> (<code>ground_color</code>, lo que se ve bajo el horizonte
+    donde no hay terreno), con la <strong>Curva</strong> (<code>gradient_curve</code>: 1 = mezcla lineal; más = la franja
+    clara del horizonte es más fina).</li>
+  <li><strong>Colores por hora</strong> (<code>time_colors</code>): los tres colores son los del día y, al bajar el sol,
+    se mezclan con los del <strong>atardecer</strong> (<code>sunset_zenith_color</code>, <code>sunset_horizon_color</code>,
+    <code>sunset_ground_color</code>) y, con el sol bajo el horizonte, con los de la <strong>noche</strong>
+    (<code>night_zenith_color</code>, <code>night_horizon_color</code>, <code>night_ground_color</code>). Sin ellos los
+    colores no cambian con la hora.</li>
+  <li><strong>Paradas</strong> (<code>gradient</code>, modo <em>Degradado por paradas</em>): hasta 8 colores, cada uno a una
+    <strong>altura</strong> en grados (-90 abajo, 0 horizonte, 90 cenit); entre dos paradas el color se mezcla.</li>
+  <li><strong>Intensidad</strong> (<code>sky_intensity</code>, 1 = parecido al cielo físico de día),
+    <strong>Mezcla</strong> (<code>color_blend</code>: 0 = cielo físico, 1 = solo los colores) y
+    <strong>Halo del sol</strong> (<code>sun_halo</code>).</li>
+  <li><strong>Tinte del sol</strong> (<code>sun_tint</code>): color del disco solar y de su halo, también con el cielo
+    físico (blanco = sin cambio). No cambia la luz direccional (eso es el color de la <code>Light</code>).</li>
+</ul>
+<p>
+  El color sale en la misma textura del cielo de la que el motor saca la <strong>niebla</strong>, los
+  <strong>reflejos</strong>, la <strong>luz ambiente</strong> (IBL) y la luz de las nubes, así que todo se tiñe a la vez.
+  Desde un script: <code>Sky.setColors(cenit, horizonte, suelo)</code>, <code>Sky.setGradient({{-90, suelo}, {0, horizonte},
+  {90, cenit}})</code>, <code>Sky.setColorMode("Physical")</code>, <code>Sky.setSunTint(color)</code>... o
+  <code>setField("Sky", "zenith_color", Vec3(...))</code>.
+</p>
+
 <h3 id="superficies">Lluvia, nieve y superficies</h3>
 <ul>
   <li>La lluvia y la nieve se dibujan en la GPU alrededor de la cámara (hasta ~100 000 gotas o copos), ancladas al mundo,

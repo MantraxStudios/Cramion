@@ -154,6 +154,8 @@ struct ScriptSystem::Impl {
     std::unique_ptr<net::WebSocketHub> websockets;  // WebSocket.connect (las que tienen nombre sobreviven al cambio de escena)
     // Scene.load, Game.quit, Prefs.
     std::filesystem::path scene_request;
+    // Scene.loadAsync / Scene.unloadAsync (se olvidan en stop()).
+    std::shared_ptr<ecs::AsyncSceneLoader> scene_loads = std::make_shared<ecs::AsyncSceneLoader>();
     bool quit_request = false;
     std::string scene_name;
     std::map<std::string, std::string> prefs;

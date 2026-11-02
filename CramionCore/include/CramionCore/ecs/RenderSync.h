@@ -368,6 +368,14 @@ private:
         std::uint64_t bounds_version = ~0ull;
         core::Vec3 bounds_center{};
         float bounds_radius = 0.0f;
+        // gatherRig en cache (subia hasta 32 antepasados con 5 try_get cada
+        // uno, dos veces por objeto y frame): los duenos de cada componente,
+        // no sus punteros (el pool los mueve). Se rehace si cambia la
+        // estructura del mundo o el modelo de la entidad.
+        std::uint64_t rig_structure = ~0ull;
+        Uuid rig_model{};
+        entt::entity rig_ik = entt::null, rig_proc = entt::null, rig_skeleton = entt::null,
+                     rig_physbones = entt::null, rig_ragdoll = entt::null, rig_share = entt::null;
     };
     // El Animator del estado (lo crea si era solo la pose de reposo) y su
     // modelo (sin crearlo).
@@ -445,6 +453,27 @@ private:
     void applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& renderer);
     void syncActors(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                     float delta_seconds);
+    // Lo activo en la jerarquia, en profundidad (el orden de la Jerarquia).
+    // Se rehace solo si cambia la estructura del mundo, la escena o el activo
+    // de alguna entidad: antes eran cinco recorridos completos por frame
+    // (actores, luces, camara principal, agua y Render Textures), cada uno
+    // con un try_get<EntityInfo> y un get<Hierarchy> por entidad.
+    const std::vector<entt::entity>& activeOrder(World& world);
+    // Las entidades activas que tienen alguno de los componentes T, en el
+    // orden de activeOrder (se recorren los pools de T, no el mundo entero).
+    template <typename... T, typename Fn>
+    void forEachActiveWith(World& world, Fn&& fn);
+    struct ActiveSlot {
+        entt::entity handle = entt::null;
+        std::uint32_t order = 0;
+    };
+    std::vector<entt::entity> active_order_;
+    std::vector<ActiveSlot> active_slots_;  // por indice de entidad (entt::to_entity)
+    const World* active_world_ = nullptr;
+    std::uint64_t active_structure_ = ~0ull;
+    std::uint64_t active_generation_ = ~0ull;
+    std::uint64_t active_flags_ = 0;  // firma de las entidades desactivadas
+    std::vector<std::pair<std::uint32_t, entt::entity>> active_scratch_;
     // RAM: los modelos fuera de la GPU y sin instancias durante
     // render.streaming.CpuReleaseSeconds sueltan los pixeles de sus texturas
     // releibles (con archivo); vuelven perezosas. Una pasada por segundo.
@@ -532,6 +561,12 @@ private:
         }
     };
     RigComponents gatherRig(Entity e);
+    // gatherRig con la cache de AnimationState (ver rig_structure).
+    RigComponents cachedRig(Entity e, AnimationState& state);
+    // Muestras y pesos de la maquina de estados (se vacian y se reutilizan).
+    std::vector<anim::ClipSample> clip_samples_;
+    std::vector<anim::ClipSample> clip_samples_before_;
+    std::vector<float> blend_weights_;
     struct SharedPose {
         std::uint64_t frame = 0;
         std::vector<core::Mat4> locals;
@@ -660,6 +695,12 @@ private:
     std::uint64_t foliage_water_key_ = 0;
     std::uint64_t foliage_water_signature_ = 0;  // lo que aporta a la firma de la siembra
     std::shared_ptr<const std::vector<foliage::FoliageWater>> foliage_water_;
+    // Firma barata de las entradas de la siembra (bosques, agua, terrenos) y
+    // la firma de la siembra que salio con ellas: si no cambian, no se
+    // rehace la lista de bosques cada frame.
+    std::uint64_t foliage_input_ = 0;
+    bool foliage_input_valid_ = false;
+    std::uint64_t foliage_last_signature_ = 0;
     // World::sceneGeneration de lo que hay en la GPU (0 = aun nada).
     std::uint64_t scene_generation_ = 0;
 

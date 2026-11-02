@@ -287,7 +287,7 @@ std::string EditorApp::cppScriptNameProblem(const std::filesystem::path& folder,
     // Palabras de C++ y nombres del SDK (chocarian con la clase).
     static const char* reserved[] = {"Script", "Entity", "Scene", "Input", "Physics", "Time", "Debug", "Vec2", "Vec3", "Quat", "Color",
                                      "Value", "Values", "Property", "Collision", "Audio", "Graphics", "Navigation", "Network", "Http",
-                                     "Prefs", "Random", "Screen", "Environment", "Weather", "Voxel", "Fire", "Fluid", "DataPack", "XR",
+                                     "Prefs", "Random", "Screen", "Environment", "Weather", "Sky", "Voxel", "Fire", "Fluid", "DataPack", "XR",
                                      "CVars", "CVar", "Json", "Game", "CharacterController", "Range", "Tooltip", "Header", "Label",
                                      "Options", "Requires", "Model", "Material", "Prefab", "Texture", "AudioClip", "class", "struct",
                                      "int", "float", "double", "bool", "void", "auto", "return", "new", "delete", "this", "namespace",

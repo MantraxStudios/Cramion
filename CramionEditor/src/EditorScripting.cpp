@@ -86,7 +86,7 @@ bool isCppApi(std::string_view w) {
         "cramion", "Script", "Entity", "Vec2", "Vec3", "Quat", "Color", "Value", "Values", "Property", "Range", "Tooltip",
         "Header", "Label", "Options", "Requires", "Prefab", "Model", "Material", "Texture", "AudioClip", "SceneAsset",
         "Collision", "RaycastHit", "Debug", "Input", "Physics", "Scene", "Time", "CVar", "CVars", "Audio", "UI",
-        "Network", "Navigation", "Graphics", "Prefs", "Voxel", "Http", "Random", "Screen", "Game", "XR", "Weather", "Fire",
+        "Network", "Navigation", "Graphics", "Prefs", "Voxel", "Http", "Random", "Screen", "Game", "XR", "Weather", "Sky", "Fire",
         "Fluid", "Environment", "DataPack", "CRAMION_SCRIPT", "CR_PROPERTY", "std", "string", "vector", "uint32_t",
         "uint64_t", "size_t"};
     for (const char* k : kNames) {

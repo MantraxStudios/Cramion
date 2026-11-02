@@ -156,9 +156,15 @@ void main() {
     vec3 sun_radiance = toLinear(lights.sun_color_ambient.rgb) * lights.sun_direction_intensity.w;
     vec3 ambient = textureLod(environment_map, vec3(0.0, 1.0, 0.0), 6.0).rgb +
                    toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a;
+    // Agua de bloques en una cueva: poca luz del cielo (extra.w = la de la camara).
+    if (type == 3) {
+        float sky = b.extra.w * b.extra.w;
+        sun_radiance *= sky;
+        ambient *= max(sky, 0.03);
+    }
     vec3 extinction = waterExtinction(b);
-    // Nivel medio del agua (para la luz que baja): el rio, el de la camara.
-    float level = type == 2 ? b.extra.z : b.origin.y;
+    // Nivel medio del agua (para la luz que baja): el rio y los bloques, el de la camara.
+    float level = type >= 2 ? b.extra.z : b.origin.y;
 
     // --- Causticas sobre lo que hay bajo el agua ---
     if (depth < 1.0 && b.look.z > 0.0 && sun_direction.y > 0.0) {

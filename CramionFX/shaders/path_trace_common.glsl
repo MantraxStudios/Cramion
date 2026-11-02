@@ -260,7 +260,9 @@ vec3 applyFog(vec3 color, vec3 position, float sky_visibility) {
         : lights.clouds.y * exp(min(a0, 80.0)) * distance_to_point;
     float fog = lights.clouds.y > 0.0 ? clamp(1.0 - exp(-max(optical, 0.0)), 0.0, 1.0) : 0.0;
 
-    vec3 fog_color = max(irradiance_sh.coefficients[0].rgb * 0.282095, vec3(0.0)) * (1.0 / kPi);
+    // Los coeficientes ya vienen divididos por pi (ibl_sh.comp): como en
+    // lighting.frag, sin dividir otra vez (la niebla salia ~3 veces mas oscura).
+    vec3 fog_color = max(irradiance_sh.coefficients[0].rgb * 0.282095, vec3(0.0));
     float sun_alignment = max(dot(ray_direction, lights.sky_sun.xyz), 0.0);
     fog_color += toLinear(lights.sun_color_ambient.rgb) * lights.sun_direction_intensity.w *
                  pow(sun_alignment, 10.0) * 0.35 * smoothstep(-0.05, 0.1, lights.sky_sun.y);
@@ -304,7 +306,11 @@ void pathTracePixel(ivec2 pixel, ivec2 size) {
         // Negativo = con lightmap (gbuffer_surface.glsl): mismo empaquetado.
         float packed_a = material_sample.a < 0.0 ? -material_sample.a - 0.5 : material_sample.a;
         s.metallic = packed_a - 2.0 * floor(packed_a * 0.5);
-        s.emission = material_sample.rgb;
+        // Con lightmap, gbuffer_surface.glsl suma en este canal la luz rebotada
+        // horneada: el path tracing ya traza esos rebotes, asi que se contaba
+        // dos veces (superficies lavadas). Se pierde la emision propia de lo
+        // que lleva lightmap y ademas brilla (raro) hasta separar los canales.
+        s.emission = material_sample.a < 0.0 ? vec3(0.0) : material_sample.rgb;
         s.model = decodeShading(texelFetch(g_shading, pixel, 0), s.normal);
         s.geometric = gbufferGeometricNormal(pixel, position, s.normal);
 

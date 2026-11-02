@@ -59,6 +59,10 @@ struct EntityInfo {
     // "Visible en el editor" apagado): RenderSync no dibuja su malla. Lo pone
     // y lo quita el editor cada frame; no se serializa.
     bool editor_hidden = false;
+    // DontDestroyOnLoad (Entity:dontDestroyOnLoad, solo en la raiz): sobrevive
+    // a los cambios de escena (Scene.load / Scene.loadAsync en modo Single).
+    // Solo en marcha; no se serializa.
+    bool dont_destroy_on_load = false;
 };
 
 // Jerarquia: padre e hijos EN ORDEN (el de la ventana Jerarquia).
@@ -440,6 +444,24 @@ struct Camera {
     void reflect(PropertyVisitor& v);
 };
 
+// Color del cielo (sin HDR):
+//   Physical       dispersion atmosferica (lo de siempre, por defecto)
+//   Gradient       tres colores: cenit, horizonte y suelo, con una curva
+//   GradientStops  degradado de varias paradas por la altura en grados
+// Lo que salga es el cielo para todo: el fondo, la niebla, los reflejos y la
+// luz ambiente (IBL) salen de la misma LUT del cielo.
+enum class SkyColorMode : int { Physical = 0, Gradient = 1, GradientStops = 2 };
+
+// Una parada del degradado del cielo: el color a esa altura (grados sobre el
+// horizonte: -90 = abajo del todo, 0 = horizonte, 90 = cenit).
+struct SkyGradientStop {
+    float elevation = 0.0f;
+    core::Vec3 color{1.0f, 1.0f, 1.0f};
+};
+
+// Paradas que caben en el shader (sky_lut.frag).
+inline constexpr std::size_t kMaxSkyGradientStops = 8;
+
 // Cielo y hora: cielo HDR (asset) o fisico, nubes y ciclo de dia.
 struct Sky {
     assets::AssetRef environment{{}, assets::AssetType::Environment};
@@ -457,6 +479,34 @@ struct Sky {
     float cloud_shadow_strength = 0.85f;
     float time_of_day = 10.0f;  // horas (sin luz direccional ni HDR)
     bool day_cycle = false;
+
+    // --- Color del cielo (sin HDR) ---
+    // Las escenas de antes no traen estos campos: quedan en Physical, que es
+    // el cielo de siempre. Colores en sRGB (0..1), como los de las luces.
+    SkyColorMode color_mode = SkyColorMode::Physical;
+    core::Vec3 zenith_color{0.24f, 0.47f, 0.85f};    // arriba
+    core::Vec3 horizon_color{0.75f, 0.85f, 0.95f};   // en el horizonte
+    core::Vec3 ground_color{0.38f, 0.36f, 0.33f};    // bajo el horizonte
+    float gradient_curve = 3.0f;   // 1 = lineal; mas = franja del horizonte mas fina
+    float sky_intensity = 1.0f;    // multiplica el brillo de los colores
+    float color_blend = 1.0f;      // 0 = fisico .. 1 = solo los colores
+    core::Vec3 sun_tint{1.0f, 1.0f, 1.0f};  // tinte del disco solar y su halo (tambien en el fisico)
+    float sun_halo = 1.0f;         // halo alrededor del sol en el degradado (0 = sin halo)
+    // Colores por hora (modo Gradient): los de arriba son el dia; al bajar
+    // el sol se mezclan con los del atardecer y, bajo el horizonte, con los
+    // de la noche.
+    bool time_colors = false;
+    core::Vec3 sunset_zenith_color{0.20f, 0.24f, 0.48f};
+    core::Vec3 sunset_horizon_color{1.0f, 0.55f, 0.30f};
+    core::Vec3 sunset_ground_color{0.26f, 0.19f, 0.16f};
+    core::Vec3 night_zenith_color{0.01f, 0.015f, 0.04f};
+    core::Vec3 night_horizon_color{0.04f, 0.05f, 0.09f};
+    core::Vec3 night_ground_color{0.02f, 0.02f, 0.025f};
+    // Modo GradientStops (hasta kMaxSkyGradientStops; se ordenan por altura).
+    std::vector<SkyGradientStop> gradient{
+        SkyGradientStop{-90.0f, {0.30f, 0.28f, 0.26f}}, SkyGradientStop{-3.0f, {0.55f, 0.55f, 0.55f}},
+        SkyGradientStop{0.0f, {0.85f, 0.88f, 0.92f}},   SkyGradientStop{15.0f, {0.50f, 0.68f, 0.92f}},
+        SkyGradientStop{90.0f, {0.20f, 0.40f, 0.80f}}};
 
     void reflect(PropertyVisitor& v);
 };

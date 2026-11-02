@@ -155,6 +155,36 @@ struct CloudSettings {
     float shadow_strength = 0.85f;
 };
 
+// Color del cielo (componente Sky, sin HDR). Colores en sRGB 0..1; el
+// renderizador los pasa a lineal. mode: 0 fisico, 1 degradado de tres
+// colores, 2 degradado por paradas. Se aplica en la LUT del cielo
+// (sky_lut.frag), asi que el fondo, la niebla, los reflejos y el IBL salen
+// del mismo color.
+struct SkyColorSettings {
+    static constexpr std::size_t kMaxStops = 8;
+    struct Stop {
+        float elevation = 0.0f;  // grados (-90..90)
+        core::Vec3 color{1.0f, 1.0f, 1.0f};
+    };
+    int mode = 0;
+    core::Vec3 zenith{0.24f, 0.47f, 0.85f};
+    core::Vec3 horizon{0.75f, 0.85f, 0.95f};
+    core::Vec3 ground{0.38f, 0.36f, 0.33f};
+    float curve = 3.0f;
+    float intensity = 1.0f;
+    float blend = 1.0f;  // 0 fisico .. 1 solo los colores
+    core::Vec3 sun_tint{1.0f, 1.0f, 1.0f};
+    float sun_halo = 1.0f;
+    bool time_colors = false;
+    core::Vec3 sunset_zenith{0.20f, 0.24f, 0.48f};
+    core::Vec3 sunset_horizon{1.0f, 0.55f, 0.30f};
+    core::Vec3 sunset_ground{0.26f, 0.19f, 0.16f};
+    core::Vec3 night_zenith{0.01f, 0.015f, 0.04f};
+    core::Vec3 night_horizon{0.04f, 0.05f, 0.09f};
+    core::Vec3 night_ground{0.02f, 0.02f, 0.025f};
+    std::vector<Stop> stops;  // ordenadas por altura (hasta kMaxStops)
+};
+
 class VulkanRenderer {
 public:
     // Niveles de la cadena de bloom (debe coincidir con kBloomLevels de
@@ -668,6 +698,13 @@ public:
     bool pathTraceReplacesLighting() const {
         return pathTracingActive() && !isolated() && !xr_view_frame_ && drawModeNow() == SceneDrawMode::Lit;
     }
+    // La GI de esta vista sale de los rayos (rt_gi.comp): ya trae la oclusion
+    // del mundo, asi que el SSAO no se aplica encima (oscurecia dos veces las
+    // esquinas y los interiores) ni se calcula.
+    bool rayTracedGiActive() const {
+        return post_.global_illumination && !bakedGiActive() && rayTracingActive() && !isolated() &&
+               !pathTraceReplacesLighting();
+    }
     // Caminos sumados por pixel hasta ahora y tope (al llegar deja de trazar).
     std::uint32_t pathTracingSamples() const { return path_tracing_samples_; }
     std::uint32_t pathTracingMaxSamples() const { return path_tracing_max_samples_; }
@@ -760,6 +797,9 @@ public:
     // Nubes volumetricas.
     void setCloudsEnabled(bool enabled) { clouds_enabled_ = enabled; }
     void setCloudSettings(const CloudSettings& settings) { cloud_settings_ = settings; }
+    // Color del cielo fisico o degradado (componente Sky).
+    void setSkyColors(const SkyColorSettings& settings) { sky_colors_ = settings; }
+    const SkyColorSettings& skyColors() const { return sky_colors_; }
     bool cloudsEnabled() const { return clouds_enabled_; }
     // Tope de calidad propio del renderizador (el movil en Baja y Media): con
     // false no hay nubes aunque la escena las pida. setCloudsEnabled lo llama
@@ -934,10 +974,27 @@ public:
     void clearVoxelSections() {
         voxel_pass_.clearSections();
         staticGeometryChanged();
+        // Otro mundo (u otra dimension): el mapa de lluvia de los bloques de
+        // antes ya no vale; se rehace en cuanto entren las secciones nuevas.
+        rain_map_ready_ = false;
+        rain_map_voxels_dirty_ = true;
     }
     void setVoxelTime(float seconds) { voxel_pass_.setTime(seconds); }
+    // Estilo de color liso (VoxelWorld::flat_colors): variacion de color por bloque.
+    void setVoxelFlatColors(bool flat) { voxel_pass_.setFlatColors(flat); }
     void setVoxelsVisible(bool visible) { voxel_pass_.setVisible(visible); }
     VoxelStats voxelStats() const { return voxel_pass_.stats(); }
+    // Agua de bloques: sus caras por seccion (formato de water_voxel.vert; se
+    // dibujan en el pase del agua) y su aspecto (un GpuWaterBody de tipo 3;
+    // camera_inside = la camara esta en un bloque de agua: bajo el agua).
+    void setVoxelWaterSection(std::uint64_t key, const core::Vec3& origin, const std::uint32_t* vertices,
+                              std::uint32_t vertex_count) {
+        voxel_pass_.setWaterSection(key, origin, vertices, vertex_count);
+    }
+    void removeVoxelWaterSection(std::uint64_t key) { voxel_pass_.removeWaterSection(key); }
+    void setVoxelWater(const GpuWaterBody& look, bool enabled, bool camera_inside) {
+        water_pass_.setVoxelWater(look, enabled, camera_inside);
+    }
 
     // --- Vegetacion instanciada (FoliagePass.h): millones de arboles ---
     // Sin parar la GPU (los buffers de antes se retiran unos frames).
@@ -1404,6 +1461,12 @@ private:
     // (recordFilterHistoryCopies), y la de este frame (updateUniforms).
     core::Mat4 scene_history_view_projection_ = core::Mat4::identity();
     core::Mat4 current_jittered_view_projection_ = core::Mat4::identity();
+    // La vista principal con su jitter: la de este frame y la del anterior.
+    // Con la anterior reproyectan los filtros temporales de las sombras, los
+    // reflejos y la GI: sus historias se escribieron en esos pixeles (con la
+    // de sin jitter, la lectura caia hasta medio pixel desplazada).
+    core::Mat4 main_jittered_view_projection_ = core::Mat4::identity();
+    core::Mat4 history_jittered_view_projection_ = core::Mat4::identity();
     // La proyeccion con el jitter del TAA de este frame (sin escalado
     // temporal, la misma que camera_projection_). Con ella (y con
     // current_jittered_view_projection_) se dibujan los VFX, las particulas,
@@ -1418,14 +1481,30 @@ private:
     // historia del frame siguiente. Las dos viven en General.
     VulkanImage rt_shadow_accum_{};
     VulkanImage rt_shadow_history_{};
+    // Profundidad lineal de la historia (R32F, la escribe rt_shadow_spatial.comp):
+    // el filtro temporal tira la historia que es de otra superficie.
+    VulkanImage rt_shadow_depth_history_{};
+    // Radio del filtro espacial por luz (RGBA8, de rt_shadow_temporal.comp).
+    VulkanImage rt_shadow_penumbra_{};
     bool rt_shadow_history_valid_ = false;
     ComputePass rt_shadow_temporal_pass_{};
     std::vector<vk::raii::DescriptorSet> rt_shadow_temporal_sets_;  // [frame + ojo * kMaxFramesInFlight]
+    // Filtro espacial de la penumbra (rt_shadow_spatial.comp): historia ->
+    // acumulada (lo que lee la iluminacion).
+    ComputePass rt_shadow_spatial_pass_{};
+    std::vector<vk::raii::DescriptorSet> rt_shadow_spatial_sets_;  // [frame + ojo * kMaxFramesInFlight]
     bool rt_shadows_this_frame_ = false;
     // Se decide al preparar las luces del frame (updateUniforms): rayos
     // activos, vista de pantalla y alguna luz local con sombra.
     bool rt_shadows_planned_ = false;
     std::uint32_t rt_shadow_flags_ = 0;  // 1 = luces locales, 2 = sol
+    // Todo lo que proyecta sombra este frame esta en la escena de rayos (lo
+    // pone updateActors). Entonces las sombras por rayos sustituyen a los
+    // mapas en la iluminacion (bit 4 de lights.rt_shadows.x) en vez de
+    // quedarse con la mas oscura de las dos: sin penumbras dobles ni el acne
+    // y las sombras de contacto del mapa. Si falta alguno (personajes sin
+    // BLAS), el minimo de siempre, para que no pierdan su sombra.
+    bool rt_shadow_casters_complete_ = false;
     void recordRtShadowPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Filtro de los reflejos por rayos (rt_reflection_temporal.comp y
     // kReflectionAtrousIterations pasadas de rt_reflection_atrous.comp): la
@@ -1436,6 +1515,9 @@ private:
     VulkanImage rt_reflection_history_{};
     VulkanImage rt_reflection_moments_history_{};
     VulkanImage rt_reflection_filter_{};
+    // De la temporal al a trous: x = distancia al impacto (mediana 3x3),
+    // y = frames de historia.
+    VulkanImage rt_reflection_aux_{};
     bool rt_reflection_history_valid_ = false;
     ComputePass rt_reflection_temporal_pass_{};
     ComputePass rt_reflection_atrous_pass_{};
@@ -1492,6 +1574,12 @@ private:
     vk::raii::Sampler rain_sampler_{nullptr};
     core::Mat4 rain_view_projection_ = core::Mat4::identity();
     bool rain_map_ready_ = false;
+    // Con un mundo de bloques el mapa de lluvia sigue a la camara (el mundo es
+    // infinito y cambia al romper y poner bloques): donde se centro, si los
+    // bloques cambiaron desde entonces y frames desde que se dibujo.
+    core::Vec3 rain_map_center_{};
+    bool rain_map_voxels_dirty_ = false;
+    std::uint32_t rain_map_frames_ = 0;
     std::vector<VulkanBuffer> weather_buffers_;
     std::vector<Decal> decals_;
     // Ranura de loadDecalTexture -> capa del atlas + 1 (0 = aun cargandose o
@@ -1551,6 +1639,7 @@ private:
     FullscreenPass cloud_shadow_pass_{};
     GpuCloudPush cloud_shadow_push_{};
     CloudSettings cloud_settings_{};
+    SkyColorSettings sky_colors_{};
     double cloud_wind_offset_[2] = {0.0, 0.0};  // lo que ha avanzado el viento (m)
     // Sonda de reflexion de la escena y la imagen HDR donde se dibuja cada
     // cara antes de copiarla al cubo (no se usa la del frame: el SSR y la GI
@@ -1796,6 +1885,11 @@ private:
         // Las cajas de LOD0 solo estan si se dibuja con LOD0 (lod0_bounds):
         // con otro LOD no se calculan y quien las pida usa world_box.
         bool per_submesh = false;
+        // Esta en la TLAS de este frame (lo pone updateActors al dar las
+        // instancias a la escena de rayos): rigido con su BLAS ya construida
+        // o personaje animado con hueco (RayTracing::setSkinnedInstances).
+        // Los rayos ya lo ven: las cascadas del sol pueden saltarlo.
+        bool in_tlas = false;
         bool lod0_bounds = false;
         std::uint32_t first_bounds = 0;
         // La union de esas cajas (y las del LOD; con otro LOD, tambien la del
@@ -2123,6 +2217,7 @@ private:
         VulkanImage gi_moments_history;
         // Filtros de las sombras y los reflejos por rayos.
         VulkanImage rt_shadow_history;
+        VulkanImage rt_shadow_depth_history;
         VulkanImage rt_reflection_history;
         VulkanImage rt_reflection_moments_history;
         bool taa_valid = false;
@@ -2361,6 +2456,9 @@ private:
     // quedaria congelada en la cache.
     std::array<bool, scene::kMaxShadowedSpotLights> spot_had_actor_{};
     std::array<bool, scene::kMaxShadowedPointLights> point_had_actor_{};
+    // Caras del cubo (bits 0..5) que tocaba algo animado el frame anterior:
+    // solo esas se redibujan una vez mas (antes, las 6 de la luz entera).
+    std::array<std::uint8_t, scene::kMaxShadowedPointLights> point_had_faces_{};
     // Firma del terreno (trozos y LOD) con que se dibujo cada hueco: si el
     // terreno que ve la camara cambia de detalle, el mapa se rehace.
     std::array<std::uint64_t, scene::kMaxShadowedSpotLights> spot_terrain_signature_{};
@@ -2689,6 +2787,9 @@ private:
     // Lo que define el cielo y el IBL la ultima vez que se rehicieron (sol,
     // luna, luz del entorno, foto HDR, suelo mojado): igual = no se rehacen.
     std::array<float, 16> sky_signature_{};
+    // Lo del color del cielo (GpuSkyPush desde `custom`), en palabras de 32 bits.
+    static constexpr std::size_t kSkyCustomWords = 24;
+    std::array<std::uint32_t, kSkyCustomWords> sky_custom_signature_{};
     std::uint32_t environment_generation_ = 0;
     bool environment_enabled_ = true;
     bool rt_enabled_ = true;

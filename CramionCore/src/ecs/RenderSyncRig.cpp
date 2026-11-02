@@ -118,6 +118,59 @@ RenderSync::RigComponents RenderSync::gatherRig(Entity e) {
     return rig;
 }
 
+// Como gatherRig, pero la cadena de antepasados solo se recorre si cambio la
+// estructura del mundo (emparentar, anadir o quitar componentes) o el modelo
+// de la pieza. Se guardan los duenos y cada frame se piden sus componentes
+// (un try_get por componente que existe).
+RenderSync::RigComponents RenderSync::cachedRig(Entity e, AnimationState& state) {
+    World& world = *e.world();
+    const MeshRenderer* own = e.tryGet<MeshRenderer>();
+    const Uuid own_model = own != nullptr ? own->model.uuid : Uuid{};
+    if (state.rig_structure != world.structureVersion() || !(state.rig_model == own_model)) {
+        state.rig_structure = world.structureVersion();
+        state.rig_model = own_model;
+        const std::vector<Entity> chain = sameModelChain(e);
+        Entity owner;
+        const auto ownerOf = [&](bool found) { return found ? owner.handle() : entt::null; };
+        state.rig_ik = ownerOf(findUp<InverseKinematics>(chain, &owner) != nullptr);
+        state.rig_proc = ownerOf(findUp<ProceduralAnimation>(chain, &owner) != nullptr);
+        state.rig_skeleton = ownerOf(findUp<Skeleton>(chain, &owner) != nullptr);
+        state.rig_physbones = ownerOf(findUp<PhysBones>(chain, &owner) != nullptr);
+        state.rig_ragdoll = ownerOf(findUp<Ragdoll>(chain, &owner) != nullptr);
+        // La clave de la pose compartida: como en gatherRig (el mas alto de
+        // los duenos que no es la propia pieza, en el mismo orden).
+        entt::entity share = entt::null;
+        for (const entt::entity o : {state.rig_ik, state.rig_proc, state.rig_skeleton, state.rig_physbones,
+                                     state.rig_ragdoll}) {
+            if (o == entt::null || o == e.handle() || !world.valid(o)) continue;
+            if (share == entt::null || world.wrap(o).isAncestorOf(world.wrap(share))) share = o;
+        }
+        state.rig_share = share;
+    }
+    RigComponents rig;
+    entt::registry& registry = world.registry();
+    bool stale = false;
+    const auto fetch = [&]<typename T>(entt::entity owner, T*& out) {
+        if (owner == entt::null) return;
+        out = registry.valid(owner) ? registry.try_get<std::remove_const_t<T>>(owner) : nullptr;
+        stale = stale || out == nullptr;
+    };
+    fetch(state.rig_ik, rig.ik);
+    fetch(state.rig_proc, rig.proc);
+    fetch(state.rig_skeleton, rig.skeleton);
+    fetch(state.rig_physbones, rig.physbones);
+    fetch(state.rig_ragdoll, rig.ragdoll);
+    if (stale) {
+        // Alguien quito un componente sin pasar por Entity::remove: de nuevo.
+        state.rig_structure = ~0ull;
+        return gatherRig(e);
+    }
+    if (rig.ragdoll != nullptr) rig.ragdoll_owner = state.rig_ragdoll;
+    rig.share = state.rig_share;
+    rig.drive = drive_sockets_.contains(e.handle());
+    return rig;
+}
+
 bool RenderSync::copySharedPose(const RigComponents& rig, anim::Animator& animator, const asset::ModelData& data) {
     if (rig.share == entt::null) return false;
     const auto it = shared_poses_.find(rig.share);

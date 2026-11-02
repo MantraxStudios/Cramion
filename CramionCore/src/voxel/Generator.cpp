@@ -14,8 +14,10 @@
 //     se dibujan aqui: el mundo no tiene cortes entre chunks.
 
 #include "VoxelInternal.h"
+#include "Structures.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <numeric>
 #include <random>
@@ -38,6 +40,10 @@ float rand01(int x, int y, int z, std::uint32_t seed) { return static_cast<float
 
 float fade(float t) { return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f); }
 float lerp(float a, float b, float t) { return a + (b - a) * t; }
+float smoothstep(float a, float b, float x) {
+    const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
 
 float grad2(int h, float x, float y) {
     switch (h & 7) {
@@ -65,12 +71,71 @@ std::uint16_t packTint(float r, float g, float b) {
 
 }  // namespace
 
-Generator::Generator(int seed, int sea_level) : seed_(seed), sea_(sea_level) {
+Generator::Generator(int seed, int sea_level, VoxelGenerator profile) : seed_(seed), sea_(sea_level), profile_(profile) {
     std::array<int, 256> p{};
     std::iota(p.begin(), p.end(), 0);
     std::mt19937 rng(static_cast<std::uint32_t>(seed));
     std::shuffle(p.begin(), p.end(), rng);
     for (int i = 0; i < 512; ++i) perm_[static_cast<std::size_t>(i)] = p[static_cast<std::size_t>(i & 255)];
+    // Aldeas, ciudades y mazmorras: solo en la superficie de Aventura.
+    if (profile_ == VoxelGenerator::Adventure) {
+        static std::atomic<std::uint64_t> lake_ids{0};
+        lakes_ = std::make_shared<LakeCache>();
+        lakes_->id = ++lake_ids;
+        structures_ = std::make_shared<Structures>(*this);
+    }
+}
+
+int Generator::waterLevel(int x, int z) const {
+    if (profile_ == VoxelGenerator::Adventure) {
+        const AdventureColumn c = adventureColumn(x, z);
+        if (c.water <= c.height) return 0;
+        // El suelo final (aldeas y ciudades aplanan el terreno): si queda por encima
+        // del agua, la columna esta seca.
+        return c.water > terrainHeight(x, z) ? c.water : 0;
+    }
+    if (profile_ == VoxelGenerator::Classic) return column(x, z).height < sea_ ? sea_ : 0;
+    return 0;
+}
+
+void Generator::setVegetation(float tree_density, float clearings) {
+    tree_density_ = std::clamp(tree_density, 0.0f, 2.0f);
+    clearings_ = std::clamp(clearings, 0.0f, 1.0f);
+}
+
+// Densidad de arboles: por debajo de 1 los bosques se rompen en manchas (ruido
+// de baja frecuencia, de unos 200 m) con praderas abiertas entre ellas, y dentro
+// de las manchas tambien hay algo menos de arboles; por encima de 1, mas
+// arboles en todas partes. Los claros son huecos redondos de 30-60 m dentro de
+// los bosques. Todo depende de la semilla (perm_) y de (x, z): determinista.
+float Generator::treeChance(float chance, int x, int z) const {
+    const float d = tree_density_, c = clearings_;
+    if (d == 1.0f && c <= 0.0f) return chance;  // lo de siempre (identico)
+    if (chance <= 0.0f || d <= 0.0f) return 0.0f;
+    const float fx = static_cast<float>(x), fz = static_cast<float>(z);
+    float m = d;
+    if (d < 1.0f) {
+        const float t = 1.0f - d;
+        // Dentro de las manchas algo menos de arboles (`inner`) y la parte del
+        // bosque que queda en manchas (`area`), para que en total quede ~d.
+        const float inner = 0.6f + 0.4f * d;
+        const float area = std::min(1.0f, d / inner);
+        const float patch = fbm2(fx / 210.0f, fz / 210.0f, 3, 151) + fbm2(fx / 70.0f, fz / 70.0f, 2, 152) * 0.3f;
+        const float th = (0.58f - area) / 3.0f;  // umbral medido: el ruido pasa de th en ~area del suelo
+        const float mask = smoothstep(th - 0.04f, th + 0.04f, patch);
+        m = lerp(1.0f, mask, std::min(1.0f, t * 3.0f)) * inner;
+    }
+    if (c > 0.0f) {
+        // Claros: en ~c / 2 del bosque (c = 1, la mitad).
+        const float glade = fbm2(fx / 56.0f, fz / 56.0f, 2, 153);
+        const float th = 0.224f * (1.0f - c);
+        m *= 1.0f - smoothstep(th - 0.03f, th + 0.03f, glade);
+    }
+    return std::min(chance * m, 0.95f);
+}
+
+float Generator::treeClearMargin() const {
+    return 16.0f * std::clamp(std::max(1.0f - tree_density_, clearings_), 0.0f, 1.0f);
 }
 
 float Generator::noise2(float x, float z, int salt) const {
@@ -156,9 +221,25 @@ Generator::Column Generator::column(int x, int z) const {
     return c;
 }
 
-int Generator::terrainHeight(int x, int z) const { return column(x, z).height; }
+int Generator::terrainHeight(int x, int z) const {
+    if (profile_ == VoxelGenerator::Abyss || profile_ == VoxelGenerator::Sky || profile_ == VoxelGenerator::Crystal) {
+        return dimensionHeight(x, z);
+    }
+    if (profile_ == VoxelGenerator::Adventure) {
+        const int h = adventureColumn(x, z).height;
+        return structures_ ? structures_->groundHeight(x, z, h) : h;  // terreno aplanado bajo aldeas y ciudades
+    }
+    return column(x, z).height;
+}
 
 void Generator::generate(ChunkData& chunk) const {
+    if (profile_ == VoxelGenerator::Adventure) {
+        generateAdventure(chunk);
+        return;
+    }
+    if (profile_ == VoxelGenerator::Abyss) return generateAbyss(chunk);
+    if (profile_ == VoxelGenerator::Sky) return generateSky(chunk);
+    if (profile_ == VoxelGenerator::Crystal) return generateCrystal(chunk);
     const int x0 = chunk.cx * kChunkSize;
     const int z0 = chunk.cz * kChunkSize;
     std::array<Column, kChunkSize * kChunkSize> columns{};
@@ -253,7 +334,9 @@ void Generator::generate(ChunkData& chunk) const {
                         if (vein > 0.36f) {
                             if (y < 16 && r < 0.18f) id = block::DiamondOre;
                             else if (y < 32 && r < 0.3f) id = block::GoldOre;
+                            else if (y < 24 && r < 0.26f) id = block::CrystalOre;
                             else if (y < 64 && r < 0.55f) id = block::IronOre;
+                            else if (y >= 40 && y < 110 && r > 0.72f) id = block::CopperOre;
                             else if (y < 128) id = block::CoalOre;
                         }
                     }
@@ -327,6 +410,7 @@ void Generator::placeTrees(ChunkData& chunk) const {
                 case Desert: chance = 0.12f; break;  // cactus
                 default: break;
             }
+            chance = treeChance(chance, tx, tz);
             if (rand01(gx, 3, gz, s) >= chance) continue;
             const int base = c.height + 1;
             const float kind = rand01(gx, 4, gz, s);

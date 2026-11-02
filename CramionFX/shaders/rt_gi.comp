@@ -23,7 +23,12 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 // frame y en la sombra (donde casi toda la luz es del cielo) se notaba.
 const int kRays = 4;
 const float kMaxDistance = 80.0;   // metros; mas lejos cuenta como cielo
-const float kMaxLuminance = 4.0;   // tope por rayo: sin destellos de bombillas
+// Tope por rayo: sin destellos de bombillas. Era 4: la emision va x6 y las
+// luces locales 12-25, asi que casi todo lo que brilla se recortaba (y la
+// cache lo encadenaba rebote tras rebote): lamparas y emisivos apenas
+// iluminaban y los interiores salian apagados. El filtro temporal y el
+// a-trous ya absorben lo que queda por encima.
+const float kMaxLuminance = 16.0;
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);

@@ -1,6 +1,7 @@
 #include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/WaterPass.h"
 
+#include "CramionFX/vk/VoxelPass.h"
 #include "CramionFX/vk/VulkanDevice.h"
 #include "CramionFX/vk/VulkanShader.h"
 
@@ -25,8 +26,9 @@ constexpr std::uint32_t kMaxRippleSize = 256;
 
 struct GpuWaterPush {
     std::uint32_t body = 0;
-    std::uint32_t mesh = 0;  // 0 lago, 1 oceano, 2 rio
+    std::uint32_t mesh = 0;  // 0 lago, 1 oceano, 2 rio, 3 bloques
     std::uint32_t pad[2] = {0, 0};
+    core::Vec4 origin{};     // bloques: esquina de la seccion
 };
 
 struct GpuFftPush {
@@ -268,6 +270,24 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
         underwater_pipeline_ = compat::makeGraphicsPipeline(device, under_info);
     }
 
+    // --- Agua de bloques: los vertices empaquetados del VoxelPass (2 uint32) ---
+    {
+        const vk::raii::ShaderModule voxel_vertex = shaders::loadModule(device, "water_voxel.vert.spv");
+        const std::array<vk::PipelineShaderStageCreateInfo, 2> voxel_stages = {{
+            {{}, vk::ShaderStageFlagBits::eVertex, *voxel_vertex, "main"},
+            {{}, vk::ShaderStageFlagBits::eFragment, *fragment, "main"},
+        }};
+        const vk::VertexInputBindingDescription packed_binding{0, sizeof(std::uint32_t) * 2, vk::VertexInputRate::eVertex};
+        const vk::VertexInputAttributeDescription packed{0, 0, vk::Format::eR32G32Uint, 0};
+        vk::PipelineVertexInputStateCreateInfo packed_input{};
+        packed_input.setVertexBindingDescriptions(packed_binding);
+        packed_input.setVertexAttributeDescriptions(packed);
+        vk::GraphicsPipelineCreateInfo voxel_info = info;
+        voxel_info.setStages(voxel_stages);
+        voxel_info.pVertexInputState = &packed_input;
+        voxel_pipeline_ = compat::makeGraphicsPipeline(device, voxel_info);
+    }
+
     createMeshes(device);
 }
 
@@ -456,6 +476,7 @@ void WaterPass::destroy() {
     pool_ = nullptr;
     pipeline_ = nullptr;
     underwater_pipeline_ = nullptr;
+    voxel_pipeline_ = nullptr;
     layout_ = nullptr;
     set_layout_ = nullptr;
     fft_sets_.clear();
@@ -537,6 +558,13 @@ void WaterPass::createMeshes(const VulkanDevice& device) {
     }
 }
 
+bool WaterPass::voxelWaterActive() const { return voxel_enabled_ && voxels_ != nullptr && voxels_->hasWater(); }
+
+int WaterPass::voxelBodyIndex() const {
+    if (!voxelWaterActive() || bodies_.size() >= kMaxWaterBodies) return -1;
+    return static_cast<int>(bodies_.size());
+}
+
 void WaterPass::setBodies(const std::vector<WaterBodyDesc>& bodies, float time, int underwater) {
     time_ = time;
     underwater_ = underwater < static_cast<int>(std::min<std::size_t>(bodies.size(), kMaxWaterBodies)) ? underwater : -1;
@@ -585,8 +613,13 @@ void WaterPass::prepare(std::uint32_t frame) {
     }
     GpuWaterUniform data{};
     const float period = std::max(spectrum_.period, 1.0f);
-    data.time_count = core::Vec4{time_, static_cast<float>(bodies_.size()), static_cast<float>(underwater_),
-                                 std::fmod(std::max(time_, 0.0f), period)};
+    const int voxel_body = voxelBodyIndex();
+    // En un bloque de agua manda el agua de bloques (el plano de un WaterBody
+    // no sabe de cuevas ni de lagos).
+    const int underwater = voxel_body >= 0 && voxel_inside_ ? voxel_body : underwater_;
+    data.time_count = core::Vec4{time_, static_cast<float>(bodies_.size() + (voxel_body >= 0 ? 1 : 0)),
+                                 static_cast<float>(underwater), std::fmod(std::max(time_, 0.0f), period)};
+    if (voxel_body >= 0) data.bodies[voxel_body] = voxel_look_;
     data.ripple = ripple_params_;
     if (!spectrum_modes_.empty()) {
         data.cascade_size = spectrum_.sizes;
@@ -727,22 +760,35 @@ void WaterPass::recordSimulation(const vk::raii::CommandBuffer& cmd, std::uint32
 
 void WaterPass::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
                        const vk::raii::DescriptorSet& frame_set, const vk::raii::DescriptorSet& scene_set) {
-    if (bodies_.empty() || frame >= sets_.size()) return;
+    if (empty() || frame >= sets_.size()) return;
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *layout_, 0,
                            {*frame_set, *sets_[frame], *scene_set}, nullptr);
     const auto stages = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+    const int voxel_body = voxelBodyIndex();
+    const int underwater = voxel_body >= 0 && voxel_inside_ ? voxel_body : underwater_;
     // Primero lo que se ve bajo el agua (con la copia de la escena), despues
     // las superficies encima.
-    if (underwater_ >= 0) {
+    if (underwater >= 0) {
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *underwater_pipeline_);
         GpuWaterPush push{};
-        push.body = static_cast<std::uint32_t>(underwater_);
-        // Mismo codigo que la superficie (0 lago, 1 oceano, 2 rio); el tipo del
-        // cuerpo va al reves (0 oceano, 1 lago).
-        const float type = bodies_[static_cast<std::size_t>(underwater_)].params.extent.z;
-        push.mesh = type < 0.5f ? 1u : (type < 1.5f ? 0u : 2u);
+        push.body = static_cast<std::uint32_t>(underwater);
+        // Mismo codigo que la superficie (0 lago, 1 oceano, 2 rio, 3 bloques);
+        // el tipo del cuerpo va al reves (0 oceano, 1 lago).
+        const float type = underwater == voxel_body ? 3.0f : bodies_[static_cast<std::size_t>(underwater)].params.extent.z;
+        push.mesh = type < 0.5f ? 1u : (type < 1.5f ? 0u : (type < 2.5f ? 2u : 3u));
         cmd.pushConstants<GpuWaterPush>(*layout_, stages, 0, push);
         cmd.draw(3, 1, 0, 0);
+    }
+    // Agua de bloques, de lejos a cerca (antes que los cuerpos de la escena).
+    if (voxel_body >= 0 && *voxel_pipeline_) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *voxel_pipeline_);
+        voxels_->drawWater(cmd, [&](const core::Vec3& origin) {
+            GpuWaterPush push{};
+            push.body = static_cast<std::uint32_t>(voxel_body);
+            push.mesh = 3u;
+            push.origin = core::Vec4{origin.x, origin.y, origin.z, 0.0f};
+            cmd.pushConstants<GpuWaterPush>(*layout_, stages, 0, push);
+        });
     }
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline_);
     for (std::uint32_t i = 0; i < bodies_.size(); ++i) {

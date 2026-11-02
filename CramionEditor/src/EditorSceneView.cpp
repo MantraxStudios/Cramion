@@ -358,6 +358,7 @@ void EditorApp::drawSceneView() {
     if (view_focused_ || (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))) {
         preferred_view_ = kSceneSlot;
     }
+    if (playing() && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) scripts_.cursorClick();
     // (Las herramientas y opciones van en la cabecera y en el estante de la
     // izquierda, como en Blender: drawSceneHeader / drawViewportShelf.)
 
@@ -569,6 +570,9 @@ void EditorApp::drawSceneView() {
             }
         }
         if (ImGui::IsKeyPressed(ImGuiKey_F, false)) focusSelection();
+        // Como Blender: I inserta claves de posicion, rotacion y escala; Alt+I las quita.
+        // (Solo con el raton encima: sobre el Inspector, I es de la propiedad.)
+        if (view_hovered_ && !io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_I, false)) insertSelectionKeys(io.KeyAlt);
         // Supr con un punto de riel elegido borra el punto, no el objeto; en
         // modelado, los elementos elegidos.
         if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !modelingDeleteSelection() && !deleteSelectedWaypoint()) deleteSelection();
@@ -1074,6 +1078,10 @@ void EditorApp::drawGizmo() {
 
     const bool using_now = ImGuizmo::IsUsing();
     if (gizmo_was_using_ && !using_now) {
+        // Grabacion automatica de claves (EditorKeyframes.cpp): lo que movio el gizmo.
+        autoKeyTransforms(gizmo_ == GizmoOperation::Translate ? "position"
+                          : gizmo_ == GizmoOperation::Rotate  ? "rotation"
+                                                              : "scale");
         commit();  // se solto el gizmo: un paso de deshacer
     }
     gizmo_was_using_ = using_now;

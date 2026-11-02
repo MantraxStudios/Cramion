@@ -23,6 +23,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace cramion::ecs {
 
@@ -101,6 +102,49 @@ struct SceneHeader {
     DVec3 origin{};
 };
 std::string assembleScene(const SceneHeader& header, std::span<const std::string* const> records);
+
+// --- Carga de escenas en segundo plano (SceneLoading.h, Scene.loadAsync) ---
+// Un .crscene leido y parseado en cualquier hilo (formato comprobado y
+// migrado como en deserializeWorld). nullptr + `error` si no es una escena.
+std::shared_ptr<const ParsedEntities> parseSceneText(const std::string& text, SceneHeader* header,
+                                                     std::string* error = nullptr);
+std::size_t parsedEntityCount(const ParsedEntities& parsed);
+// Los modelos (MeshRenderer.model) que dibuja la escena, una vez cada uno
+// (sin los del lote estatico). Cualquier hilo.
+std::vector<Uuid> parsedSceneModels(const ParsedEntities& parsed);
+
+// Crea las entidades de una escena parseada en el mundo POR TANDAS (con un
+// presupuesto de milisegundos por llamada), con sus UUID. hidden = true: las
+// raices se crean desactivadas (nadie las ve, ni el render, ni la fisica, ni
+// los scripts) y activate() les devuelve el estado de la escena. Un UUID que
+// ya esta en el mundo: si es de un objeto DontDestroyOnLoad no se recrea
+// (como restoreEntities: no hay dos copias del "GameManager"); si es de la
+// escena que se va a descargar (recargar la misma escena, escenas copiadas),
+// la copia nueva lleva un UUID nuevo y las referencias entre las entidades
+// nuevas pasan a las copias. `root_offset` se suma a la posicion de las
+// raices (origen de la escena - origen del mundo).
+class SceneEntityBuilder {
+public:
+    SceneEntityBuilder(std::shared_ptr<const ParsedEntities> parsed, bool hidden, const core::Vec3& root_offset = {});
+    ~SceneEntityBuilder();
+    SceneEntityBuilder(const SceneEntityBuilder&) = delete;
+    SceneEntityBuilder& operator=(const SceneEntityBuilder&) = delete;
+
+    // true al terminar (siempre crea al menos un registro por llamada).
+    bool step(World& world, double budget_ms);
+    bool done() const;
+    float progress() const;  // 0..1
+    std::size_t created() const;
+    // Raices creadas (siguen desactivadas hasta activate si hidden).
+    const std::vector<entt::entity>& roots() const;
+    void activate(World& world);
+    // Borra lo creado (sin avisos: nunca estuvo activo).
+    void cancel(World& world);
+
+private:
+    struct State;
+    std::unique_ptr<State> state_;
+};
 
 }  // namespace cramion::ecs
 

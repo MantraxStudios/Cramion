@@ -67,7 +67,7 @@ const std::set<std::string> kSkipMembers = {"Time.deltaTime", "Time.time", "Time
                                             "Debug.warning",  "Debug.error",
                                             // Las del SDK escritas a mano (con tipos): la de la API, con Api::call.
                                             "Scene.find", "Scene.findWithTag", "Scene.create", "Scene.getPositions",
-                                            "Scene.setPositions", "Scene.setTransforms", "Physics.raycast", "Physics.sphereCast",
+                                            "Scene.setPositions", "Scene.setTransforms", "Physics.raycast", "Physics.sphereCast", "Scene.loadAsync", "Scene.unloadAsync",
                                             // Las esperas de las pruebas son corrutinas (Test.h).
                                             "Test.wait", "Test.waitFrames", "Test.waitSeconds", "Test.waitUntil",
                                             "Test.Task", "Test.detail"};

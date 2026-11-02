@@ -325,6 +325,8 @@ void EventTrigger::reflect(ecs::PropertyVisitor& v) {
     v.entity({"target", "Objeto del script", "Quien recibe los eventos (vacio = este objeto)"}, target);
     v.field({"on_hover", "Al entrar el raton", "Script::on(\"Metodo\", fn): {entity, position, button, other}"}, on_hover);
     v.field({"on_exit", "Al salir el raton"}, on_exit);
+    v.field({"on_click", "Clic", "Pulsar y soltar el boton izquierdo encima (sin arrastrar)"}, on_click);
+    v.field({"on_scroll", "Rueda", "Rueda del raton encima: {wheel} (+ = arriba). Si este no lo tiene, lo recibe su padre mas cercano que si"}, on_scroll);
     v.field({"on_right_click", "Clic derecho"}, on_right_click);
     v.field({"on_double_click", "Doble clic"}, on_double_click);
     v.field({"on_drag_begin", "Empieza a arrastrarse"}, on_drag_begin);
@@ -1145,6 +1147,27 @@ void UiSystem::updatePointerEvents(ecs::World& world, const UiInput& input, entt
         pointerEvent(world, hover_trigger_, &EventTrigger::on_exit, input, 0, entt::null);
         hover_trigger_ = trigger;
         pointerEvent(world, trigger, &EventTrigger::on_hover, input, 0, entt::null);
+    }
+    // Rueda: al elemento bajo el raton o a su padre mas cercano con on_scroll (una fila de una lista
+    // pasa la rueda a la lista). Los scripts no ven la rueda en Input sobre la UI (filterGameInput).
+    if (input.wheel != 0.0f && trigger != entt::null && r.valid(trigger)) {
+        for (ecs::Entity p = world.wrap(trigger); p.valid(); p = p.parent()) {
+            const EventTrigger* t = p.tryGet<EventTrigger>();
+            if (t != nullptr && !t->on_scroll.empty()) {
+                pointerEvent(world, p.handle(), &EventTrigger::on_scroll, input, 0, entt::null);
+                if (!events_.empty()) events_.back().number = input.wheel;
+                break;
+            }
+            if (p.has<Canvas>()) break;
+        }
+    }
+    // Clic izquierdo: pulsar y soltar sobre el mismo, sin haber empezado a arrastrar.
+    if (input.mouse_pressed) left_target_ = consumed ? entt::entity{entt::null} : trigger;
+    if (input.mouse_released) {
+        if (left_target_ != entt::null && left_target_ == trigger && !(drag_active_ && drag_source_ == trigger)) {
+            pointerEvent(world, trigger, &EventTrigger::on_click, input, 0, entt::null);
+        }
+        left_target_ = entt::null;
     }
     // Clic derecho: pulsar y soltar sobre el mismo.
     if (input.right_pressed) right_target_ = consumed ? entt::entity{entt::null} : trigger;

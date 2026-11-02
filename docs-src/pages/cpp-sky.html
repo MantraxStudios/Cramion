@@ -1,0 +1,20 @@
+<p>Color del cielo: degradado, paradas por altura y tinte del sol.</p>
+
+<h3 id="sky">Sky</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value getColorMode(...)</code></td><td>Physical, Gradient o GradientStops Devuelve: texto</td></tr>
+    <tr><td><code>Value getColors(...)</code></td><td>{cenit, horizonte, suelo} Devuelve: lista de Vec3</td></tr>
+    <tr><td><code>Value setBlend(valor)</code></td><td>0 = cielo fisico .. 1 = solo los colores</td></tr>
+    <tr><td><code>Value setColorMode(texto)</code></td><td>color del cielo: Physical (fisico), Gradient (3 colores) o GradientStops (paradas)</td></tr>
+    <tr><td><code>Value setColors(cenit, horizonte, suelo)</code></td><td>colores del degradado (Vec3 sRGB 0..1; nil = el de antes). Pasa a Gradient si era Physical</td></tr>
+    <tr><td><code>Value setCurve(valor)</code></td><td>curva del degradado (1 = lineal, mas = horizonte mas fino)</td></tr>
+    <tr><td><code>Value setGradient(tabla)</code></td><td>degradado por paradas (altura en grados, hasta 8); pasa a GradientStops</td></tr>
+    <tr><td><code>Value setIntensity(valor)</code></td><td>brillo de los colores del cielo</td></tr>
+    <tr><td><code>Value setNightColors(cenit, horizonte, suelo)</code></td><td>colores de la noche (activa los colores por hora)</td></tr>
+    <tr><td><code>Value setSunHalo(valor)</code></td><td>halo del sol sobre el degradado (0 = sin halo)</td></tr>
+    <tr><td><code>Value setSunTint(arg)</code></td><td>) tinte del disco solar y su halo (blanco = sin cambio)</td></tr>
+    <tr><td><code>Value setSunsetColors(cenit, horizonte, suelo)</code></td><td>colores del atardecer (activa los colores por hora)</td></tr>
+    <tr><td><code>Value setTimeColors(activar)</code></td><td>mezclar dia, atardecer y noche segun la altura del sol</td></tr>
+  </tbody>
+</table>

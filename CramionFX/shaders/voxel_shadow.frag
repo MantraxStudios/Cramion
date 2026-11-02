@@ -10,7 +10,9 @@ layout(set = 1, binding = 0) uniform sampler2DArray albedo_map;
 
 layout(location = 1) in vec2 v_uv;
 layout(location = 2) flat in uvec2 v_face_layer;
+layout(location = 8) in vec2 v_box_uv;
 
 void main() {
-    if (texture(albedo_map, vec3(v_uv, float(v_face_layer.y))).a < 0.5) discard;
+    vec2 uv = (v_face_layer.x & 8u) != 0u ? fract(v_box_uv) : v_uv;  // vallas y faroles: uv del mundo
+    if (texture(albedo_map, vec3(uv, float(v_face_layer.y))).a < 0.5) discard;
 }

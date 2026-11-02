@@ -130,6 +130,9 @@ cvar::CVar<float> g_cpu_release_seconds("render.streaming.CpuReleaseSeconds", 30
 // objeto se reparten para no animar todos a la vez.
 cvar::CVar<bool> g_anim_lod("anim.lod.Enabled", true,
                             "Animar menos a menudo lo lejano y lo que no se ve (cerca: cada frame)", cvar::Saved);
+cvar::CVar<bool> g_anim_parallel("anim.ParallelPoses", true,
+                                 "Evaluar las poses de los personajes en varios hilos (el resultado es el mismo)",
+                                 cvar::Saved);
 cvar::CVar<float> g_anim_lod_near("anim.lod.Near", 15.0f, "Hasta esta distancia (m) se anima cada frame",
                                   cvar::Saved, 1.0f, 1000.0f);
 cvar::CVar<float> g_anim_lod_mid("anim.lod.Mid", 30.0f, "Hasta esta distancia, uno de cada 2 frames", cvar::Saved,
@@ -1579,7 +1582,12 @@ int RenderSync::externalClip(std::uint32_t model, const Uuid& clip, scene::Scene
 
 void RenderSync::prefetchClips(std::uint32_t model, const Uuid& controller_uuid, const AnimatorController& controller,
                                scene::Scene& scene) {
-    if (!g_async_models.get() || !prefetched_controllers_.insert(ClipKey{model, controller_uuid}).second) return;
+    // Lo normal (cada frame y personaje): ya precargado. Se mira antes de
+    // insertar para no crear un nodo de la tabla cada vez.
+    if (!g_async_models.get()) return;
+    const ClipKey key{model, controller_uuid};
+    if (prefetched_controllers_.contains(key)) return;
+    prefetched_controllers_.insert(key);
     for (const AnimatorState& state : controller.states) {
         if (state.clip.valid()) externalClip(model, state.clip.uuid, scene);
         for (const BlendTreeChild& child : state.children) {
@@ -2363,6 +2371,72 @@ void RenderSync::applyProceduralSprings(Entity entity, const ProceduralAnimation
     }
 }
 
+const std::vector<entt::entity>& RenderSync::activeOrder(World& world) {
+    // Firma de lo desactivado: Entity::setActive sube la version de
+    // estructura, pero se mira tambien el pool de EntityInfo (contiguo, sin
+    // subir por la jerarquia) por si alguien cambia `active` directamente.
+    std::uint64_t flags = 0x9E3779B97F4A7C15ull;
+    {
+        const entt::registry& registry = world.registry();
+        if (const auto* infos = registry.storage<EntityInfo>()) {
+            for (auto [entity, info] : infos->each()) {
+                if (!info.active) {
+                    flags ^= static_cast<std::uint64_t>(entt::to_integral(entity)) * 0xBF58476D1CE4E5B9ull + 1u;
+                    flags = (flags << 7) | (flags >> 57);
+                }
+            }
+        }
+    }
+    if (active_world_ == &world && active_structure_ == world.structureVersion() &&
+        active_generation_ == world.sceneGeneration() && active_flags_ == flags) {
+        return active_order_;
+    }
+    for (const entt::entity e : active_order_) {
+        const std::size_t index = static_cast<std::size_t>(entt::to_entity(e));
+        if (index < active_slots_.size()) active_slots_[index] = ActiveSlot{};
+    }
+    active_order_.clear();
+    world.forEachActiveDepthFirst([&](Entity e) { active_order_.push_back(e.handle()); });
+    for (std::size_t i = 0; i < active_order_.size(); ++i) {
+        const entt::entity e = active_order_[i];
+        const std::size_t index = static_cast<std::size_t>(entt::to_entity(e));
+        if (index >= active_slots_.size()) active_slots_.resize(index + 1);
+        active_slots_[index] = ActiveSlot{e, static_cast<std::uint32_t>(i)};
+    }
+    active_world_ = &world;
+    active_structure_ = world.structureVersion();
+    active_generation_ = world.sceneGeneration();
+    active_flags_ = flags;
+    return active_order_;
+}
+
+template <typename... T, typename Fn>
+void RenderSync::forEachActiveWith(World& world, Fn&& fn) {
+    activeOrder(world);
+    // Copia local: `fn` puede volver a llamar a forEachActiveWith.
+    std::vector<std::pair<std::uint32_t, entt::entity>> found;
+    found.swap(active_scratch_);
+    found.clear();
+    const entt::registry& registry = world.registry();
+    const auto collect = [&](const auto* pool) {
+        if (pool == nullptr) return;
+        for (const entt::entity e : static_cast<const entt::sparse_set&>(*pool)) {
+            const std::size_t index = static_cast<std::size_t>(entt::to_entity(e));
+            if (index < active_slots_.size() && active_slots_[index].handle == e) {
+                found.emplace_back(active_slots_[index].order, e);
+            }
+        }
+    };
+    (collect(registry.storage<T>()), ...);
+    std::sort(found.begin(), found.end());
+    if constexpr (sizeof...(T) > 1) found.erase(std::unique(found.begin(), found.end()), found.end());
+    for (const auto& [order, e] : found) {
+        if (world.valid(e)) fn(world.wrap(e));
+    }
+    found.clear();
+    if (active_scratch_.capacity() < found.capacity()) active_scratch_.swap(found);
+}
+
 // Agua: los cuerpos de este frame al renderizador (parametros de sus olas y
 // color) y la cinta de cada rio, que solo se rehace si cambian sus puntos.
 void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float delta_seconds,
@@ -2409,7 +2483,7 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
             for (std::size_t i = 0; i < gfx::kMaxWaterBodies; ++i) nearest_water.insert(candidates[i].second);
         }
     }
-    world.forEachActiveDepthFirst([&](Entity e) {
+    forEachActiveWith<water::WaterBody>(world, [&](Entity e) {
         const water::WaterBody* body = e.tryGet<water::WaterBody>();
         if (body == nullptr || bodies.size() >= gfx::kMaxWaterBodies) return;  // (recorrido de lo activo)
         if (limit_water && nearest_water.count(e.handle()) == 0) return;
@@ -2941,7 +3015,7 @@ void RenderSync::renderCameraTextures(World& world, scene::Scene& scene, gfx::Vu
         std::int32_t texture;
     };
     std::vector<Job> jobs;
-    world.forEachActiveDepthFirst([&](Entity e) {
+    forEachActiveWith<Camera>(world, [&](Entity e) {
         const Camera* camera = e.tryGet<Camera>();
         if (camera == nullptr || !camera->target_texture.valid()) return;  // (recorrido de lo activo)
         const std::int32_t id = renderTextureFor(camera->target_texture.uuid);
@@ -3053,6 +3127,23 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
     const core::Vec3 world_origin{static_cast<float>(world.origin().x), static_cast<float>(world.origin().y),
                                   static_cast<float>(world.origin().z)};
     renderer.setFoliageOrigin(world_origin);
+
+    // Firma barata de las entradas, antes de nada: los parametros y la
+    // posicion de cada bosque, el agua (riverHash, la forma de cada lago) y la
+    // version de cada terreno, sin copiar nada. Si no cambio desde la ultima
+    // vez, la firma de la siembra tampoco y no se rehace `forests` (antes, en
+    // cada frame: una copia de cada Foliage con sus claros, la lista de
+    // terrenos de cada bosque con sus shared_ptr...).
+    std::uint64_t input = 1469598103934665603ull;
+    const auto mix_input = [&](const void* data, std::size_t size) { mix_into(input, data, size); };
+    std::size_t forest_count = 0;
+    {
+        const std::uint64_t head[] = {world.sceneGeneration(), static_cast<std::uint64_t>(
+                                                                   reinterpret_cast<std::uintptr_t>(terrain_store_))};
+        mix_input(head, sizeof(head));
+        const float origin_values[] = {world_origin.x, world_origin.y, world_origin.z};
+        mix_input(origin_values, sizeof(origin_values));
+    }
     for (const entt::entity handle : world.registry().view<foliage::Foliage>()) {
         const Entity e = world.wrap(handle);
         if (!e.activeInHierarchy()) continue;
@@ -3062,6 +3153,151 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
             first_handle = handle;
         }
         if (handle == foliage_species_owner_) owner = &f;
+        ++forest_count;
+        const core::Vec3 p = e.worldPosition();
+        const float values[] = {f.area, f.density, f.pine, f.oak, f.birch, f.min_scale, f.max_scale, f.min_height,
+                                f.max_height, f.max_slope, p.x, p.y, p.z};
+        const int ints[] = {f.seed, f.max_instances, f.on_terrain ? 1 : 0};
+        const std::uint32_t id = entt::to_integral(handle);
+        mix_input(&id, sizeof(id));
+        mix_input(values, sizeof(values));
+        mix_input(ints, sizeof(ints));
+        for (const foliage::FoliageClearing& c : f.clearings) {
+            const float cv[] = {c.center.x, c.center.z, c.radius};
+            mix_input(cv, sizeof(cv));
+        }
+    }
+    if (forest_count > 0) {
+        for (const entt::entity handle : world.registry().view<water::WaterBody>()) {
+            const Entity e = world.wrap(handle);
+            if (!e.activeInHierarchy()) continue;
+            const water::WaterBody& body = e.get<water::WaterBody>();
+            if (body.type == water::WaterType::River) {
+                const std::uint64_t river = water::riverHash(body, e.worldMatrix());
+                mix_input(&river, sizeof(river));
+            } else if (body.type == water::WaterType::Lake) {
+                const Mat4& m = e.worldMatrix();
+                const Vec3 at = e.worldPosition();
+                const float values[] = {at.x, at.y, at.z, body.size.x, body.size.y, m.m[0][0], m.m[0][2]};
+                mix_input(values, sizeof(values));
+            }
+        }
+        if (terrain_store_ != nullptr) {
+            for (const entt::entity handle : world.registry().view<terrain::Terrain>()) {
+                const Entity e = world.wrap(handle);
+                if (!e.activeInHierarchy()) continue;
+                const terrain::Terrain& t = e.get<terrain::Terrain>();
+                const std::shared_ptr<terrain::TerrainData> data =
+                    e.has<terrain::TerrainTile>() ? terrain_store_->find(t) : terrain_store_->get(t);
+                if (!data) continue;
+                const core::Vec3 origin = e.worldPosition();
+                const float values[] = {t.size, t.height, origin.x, origin.y, origin.z};
+                mix_input(values, sizeof(values));
+                const std::uint64_t version = data->collisionVersion();
+                mix_input(&version, sizeof(version));
+                const void* identity = data.get();
+                mix_input(&identity, sizeof(identity));
+            }
+        }
+    }
+
+    // Especies y ajustes: del bosque "dueño" mientras siga activo. Si se va
+    // (su celda sale), se adopta otro con las mismas especies; si no hay
+    // ninguno igual y quedan varios, se conservan las de ahora (no se rehacen
+    // los arboles por streaming). Con un solo bosque durante 2 s (el editor) o al cambiar
+    // de escena se adopta el que haya.
+    if (owner == nullptr && first != nullptr) {
+        const std::array<asset::TreeSpecies, gfx::FoliagePass::kSpecies>& current = renderer.foliageSpecies();
+        const bool had_owner = foliage_species_owner_ != entt::null;
+        for (const entt::entity handle : world.registry().view<foliage::Foliage>()) {
+            if (!had_owner) break;
+            const Entity e = world.wrap(handle);
+            if (!e.activeInHierarchy()) continue;
+            const foliage::Foliage& f = e.get<foliage::Foliage>();
+            if (f.species() == current) {
+                owner = &f;
+                foliage_species_owner_ = handle;
+                break;
+            }
+        }
+        // Uno solo y distinto: espera a que siga solo un rato (ver
+        // foliage_lone_since_); al empezar la escena, enseguida.
+        bool adopt_lone = false;
+        if (owner == nullptr && had_owner && forest_count == 1) {
+            const auto now = std::chrono::steady_clock::now();
+            if (foliage_lone_forest_ != first_handle) {
+                foliage_lone_forest_ = first_handle;
+                foliage_lone_since_ = now;
+            }
+            adopt_lone = now - foliage_lone_since_ > std::chrono::seconds(2);
+        } else {
+            foliage_lone_forest_ = entt::null;
+        }
+        if (owner == nullptr && (!had_owner || adopt_lone)) {
+            owner = first;
+            foliage_species_owner_ = first_handle;
+            foliage_lone_forest_ = entt::null;
+        }
+    }
+    if (owner != nullptr) {
+        gfx::FoliageSettings foliage_settings = owner->settings();
+        environment::applyToFoliage(environment_frame_, foliage_settings);  // viento del ambiente
+        renderer.setFoliageSettings(foliage_settings);
+        renderer.setFoliageSpecies(owner->species());  // en segundo plano si cambian (sin waitIdle)
+    }
+
+    // Termino una siembra: a la GPU (sin parar la GPU: se cambia al subirse).
+    if (foliage_job_ && foliage_job_->done() && foliage_job_generation_ != world.sceneGeneration()) {
+        // Sembrada para otra escena: no se sube (se vuelve a sembrar abajo).
+        foliage_job_.reset();
+        foliage_result_.reset();
+        foliage_fresh_.reset();  // ni a la cache por bosque
+        foliage_signature_ = 0;
+    }
+    if (foliage_job_ && foliage_job_->done()) {
+        std::shared_ptr<std::vector<gfx::FoliageInstance>> instances = std::move(foliage_result_);
+        foliage_job_.reset();
+        foliage_result_.reset();
+        // Lo sembrado de nuevo, a la cache por bosque.
+        if (foliage_fresh_) {
+            for (auto& [key, seeded] : *foliage_fresh_) foliage_forest_cache_[key] = ForestSeed{std::move(seeded), foliage_seed_serial_};
+            foliage_fresh_.reset();
+        }
+        if (foliage_forest_cache_.size() > 512) {
+            std::erase_if(foliage_forest_cache_,
+                          [&](const auto& entry) { return entry.second.used + 32 < foliage_seed_serial_; });
+        }
+        if (!instances) instances = std::make_shared<std::vector<gfx::FoliageInstance>>();
+        foliage_count_ = instances->size();
+        if (g_async_foliage_upload.get()) {
+            renderer.setFoliageAsync(std::shared_ptr<const std::vector<gfx::FoliageInstance>>(std::move(instances)));
+        } else {
+            renderer.setFoliage(*instances);
+        }
+        foliage_signature_ = foliage_job_signature_;
+        foliage_uploaded_ = true;
+    }
+    if (forest_count == 0) {
+        if (foliage_uploaded_) {
+            renderer.clearFoliage();
+            foliage_uploaded_ = false;
+            foliage_count_ = 0;
+        }
+        foliage_signature_ = 0;
+        foliage_input_valid_ = false;
+        return;
+    }
+    // Mismas entradas: la firma de la siembra seria la de la ultima vez. Si
+    // ya esta en la GPU (o se esta sembrando), nada que hacer.
+    if (foliage_input_valid_ && input == foliage_input_ &&
+        (foliage_job_ != nullptr || foliage_last_signature_ == foliage_signature_)) {
+        return;
+    }
+
+    for (const entt::entity handle : world.registry().view<foliage::Foliage>()) {
+        const Entity e = world.wrap(handle);
+        if (!e.activeInHierarchy()) continue;
+        const foliage::Foliage& f = e.get<foliage::Foliage>();
         const core::Vec3 p = e.worldPosition() + world_origin;
         // Solo lo que cambia la siembra (no las distancias de dibujo).
         const float values[] = {f.area, f.density, f.pine, f.oak, f.birch, f.min_scale, f.max_scale, f.min_height,
@@ -3200,91 +3436,9 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
         hash_bytes(&terrain_sum, sizeof(terrain_sum));
         for (Job& job : forests) job.no_ground = job.params.on_terrain && any_terrain && job.ground.empty();
     }
-    // Especies y ajustes: del bosque "dueño" mientras siga activo. Si se va
-    // (su celda sale), se adopta otro con las mismas especies; si no hay
-    // ninguno igual y quedan varios, se conservan las de ahora (no se rehacen
-    // los arboles por streaming). Con un solo bosque durante 2 s (el editor) o al cambiar
-    // de escena se adopta el que haya.
-    if (owner == nullptr && first != nullptr) {
-        const std::array<asset::TreeSpecies, gfx::FoliagePass::kSpecies>& current = renderer.foliageSpecies();
-        const bool had_owner = foliage_species_owner_ != entt::null;
-        for (const entt::entity handle : world.registry().view<foliage::Foliage>()) {
-            if (!had_owner) break;
-            const Entity e = world.wrap(handle);
-            if (!e.activeInHierarchy()) continue;
-            const foliage::Foliage& f = e.get<foliage::Foliage>();
-            if (f.species() == current) {
-                owner = &f;
-                foliage_species_owner_ = handle;
-                break;
-            }
-        }
-        // Uno solo y distinto: espera a que siga solo un rato (ver
-        // foliage_lone_since_); al empezar la escena, enseguida.
-        bool adopt_lone = false;
-        if (owner == nullptr && had_owner && forests.size() == 1) {
-            const auto now = std::chrono::steady_clock::now();
-            if (foliage_lone_forest_ != first_handle) {
-                foliage_lone_forest_ = first_handle;
-                foliage_lone_since_ = now;
-            }
-            adopt_lone = now - foliage_lone_since_ > std::chrono::seconds(2);
-        } else {
-            foliage_lone_forest_ = entt::null;
-        }
-        if (owner == nullptr && (!had_owner || adopt_lone)) {
-            owner = first;
-            foliage_species_owner_ = first_handle;
-            foliage_lone_forest_ = entt::null;
-        }
-    }
-    if (owner != nullptr) {
-        gfx::FoliageSettings foliage_settings = owner->settings();
-        environment::applyToFoliage(environment_frame_, foliage_settings);  // viento del ambiente
-        renderer.setFoliageSettings(foliage_settings);
-        renderer.setFoliageSpecies(owner->species());  // en segundo plano si cambian (sin waitIdle)
-    }
-
-    // Termino una siembra: a la GPU (sin parar la GPU: se cambia al subirse).
-    if (foliage_job_ && foliage_job_->done() && foliage_job_generation_ != world.sceneGeneration()) {
-        // Sembrada para otra escena: no se sube (se vuelve a sembrar abajo).
-        foliage_job_.reset();
-        foliage_result_.reset();
-        foliage_fresh_.reset();  // ni a la cache por bosque
-        foliage_signature_ = 0;
-    }
-    if (foliage_job_ && foliage_job_->done()) {
-        std::shared_ptr<std::vector<gfx::FoliageInstance>> instances = std::move(foliage_result_);
-        foliage_job_.reset();
-        foliage_result_.reset();
-        // Lo sembrado de nuevo, a la cache por bosque.
-        if (foliage_fresh_) {
-            for (auto& [key, seeded] : *foliage_fresh_) foliage_forest_cache_[key] = ForestSeed{std::move(seeded), foliage_seed_serial_};
-            foliage_fresh_.reset();
-        }
-        if (foliage_forest_cache_.size() > 512) {
-            std::erase_if(foliage_forest_cache_,
-                          [&](const auto& entry) { return entry.second.used + 32 < foliage_seed_serial_; });
-        }
-        if (!instances) instances = std::make_shared<std::vector<gfx::FoliageInstance>>();
-        foliage_count_ = instances->size();
-        if (g_async_foliage_upload.get()) {
-            renderer.setFoliageAsync(std::shared_ptr<const std::vector<gfx::FoliageInstance>>(std::move(instances)));
-        } else {
-            renderer.setFoliage(*instances);
-        }
-        foliage_signature_ = foliage_job_signature_;
-        foliage_uploaded_ = true;
-    }
-    if (forests.empty()) {
-        if (foliage_uploaded_) {
-            renderer.clearFoliage();
-            foliage_uploaded_ = false;
-            foliage_count_ = 0;
-        }
-        foliage_signature_ = 0;
-        return;
-    }
+    foliage_input_ = input;
+    foliage_input_valid_ = true;
+    foliage_last_signature_ = signature;
     if (signature != foliage_signature_ && !foliage_job_) {
         foliage_job_signature_ = signature;
         foliage_job_generation_ = world.sceneGeneration();
@@ -3689,7 +3843,46 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
     walk_scope.emplace("Recorrer entidades");
     // Solo lo activo: las celdas en cache y los mapas desactivados ni se visitan
     // (antes se recorrian enteros y activeInHierarchy subia por los padres).
-    world.forEachActiveDepthFirst([&](Entity e) {
+    // La lista en profundidad se guarda entre frames (activeOrder) y la
+    // comparten luces, camaras y agua. Copia: lo de dentro no debe ver como
+    // se rehace si algo cambia la estructura a mitad.
+    const std::vector<entt::entity> active_walk = activeOrder(world);
+    // Tres pasadas (antes, una con todo seguido):
+    //   1. en serie, en orden: modelo, estado, maquina de estados y tiempos;
+    //      lo que toca la escena o el mundo (clips sueltos, Motion Matching).
+    //   2. en paralelo (jobs::parallelFor): la pose de cada personaje
+    //      (evaluate / evaluateBlend). Solo escribe en su propio Animator y
+    //      lee el modelo, que nadie cambia mientras: sin carreras y con el
+    //      mismo resultado que en serie.
+    //   3. en serie, en orden: inercializacion, esqueleto (IK con rayos,
+    //      procedural, phys bones, ragdoll, sockets) y el actor de la escena.
+    // Las transiciones inerciales que empiezan este frame (raras) evaluan en
+    // la pasada 1, como antes.
+    struct PendingActor {
+        Entity e;
+        AnimationState* state = nullptr;
+        const asset::ModelData* data = nullptr;
+        std::optional<std::uint32_t> model;
+        const MeshRenderer* renderer_component = nullptr;
+        const physics::Cloth* cloth = nullptr;
+        const physics::SoftBody* soft = nullptr;
+        float anim_dt = 0.0f;
+        bool lod_skip = false;
+        bool animating = false;
+        bool posed = false;
+        bool inertial_tracked = false;
+        bool cacheable = false;
+        int deferred_pose = 0;
+        std::uint32_t deferred_begin = 0, deferred_count = 0;
+    };
+    // Se vacian y se reutilizan entre frames (sin reservas de memoria).
+    static thread_local std::vector<PendingActor> pending_actors;
+    static thread_local std::vector<anim::ClipSample> pending_samples;
+    static thread_local std::vector<std::uint32_t> pending_poses;
+    pending_actors.clear();
+    pending_samples.clear();
+    pending_poses.clear();
+    const auto visit_actor = [&](Entity e) {
         const MeshRenderer* renderer_component = e.tryGet<MeshRenderer>();
         // Una tela se dibuja aunque no tenga Mesh Renderer (con su color).
         static const MeshRenderer kClothRenderer{};
@@ -3822,7 +4015,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         bool lod_skip = false;
         if (g_anim_lod.get() && delta_seconds > 0.0f && data.nodes.size() > 1 && data.bones.size() > 1 &&
             !e.has<anim::MotionMatching>() && cloth == nullptr && soft == nullptr) {
-            const RigComponents lod_rig = gatherRig(e);
+            const RigComponents lod_rig = cachedRig(e, state);
             if (lod_rig.physbones == nullptr && lod_rig.ragdoll == nullptr) {
                 const int interval = animationLodInterval(e, scene);
                 state.lod_dt += delta_seconds;
@@ -3838,8 +4031,11 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         }
 
         bool animating = false;
-        bool posed = false;  // la pose de este frame ya se evaluo
+        bool posed = false;  // la pose de este frame ya se evaluo (o se evaluara en paralelo)
         bool inertial_tracked = false;  // pose de animacion: la inercializacion la sigue
+        // Pose aplazada: 0 ninguna, 1 evaluateBlend(muestras), 2 evaluate().
+        int deferred_pose = 0;
+        std::uint32_t deferred_begin = 0, deferred_count = 0;  // en pending_samples
         // Motion Matching (RenderSyncMotion.cpp): si esta activo y tiene base,
         // manda sobre el Animator.
         if (anim::MotionMatching* mm = e.tryGet<anim::MotionMatching>();
@@ -3864,10 +4060,17 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             bool controlled = false;  // la pose ya la hizo el controlador
 
             // Con controlador: la maquina de estados elige el clip.
-            std::shared_ptr<const AnimatorController> controller;
+            // Puntero sin contar referencias (lo guarda controllers_, que no
+            // cambia durante el sync): antes, una copia atomica del shared_ptr
+            // por personaje y frame.
+            const AnimatorController* controller = nullptr;
             {
                 CR_PROFILE_SCOPE("Controlador y clips");
-                controller = animator->controller.valid() ? animatorController(animator->controller.uuid) : nullptr;
+                if (animator->controller.valid()) {
+                    const auto found = controllers_.find(animator->controller.uuid);
+                    controller = found != controllers_.end() ? found->second.get()
+                                                             : animatorController(animator->controller.uuid).get();
+                }
                 if (controller && !controller->states.empty()) prefetchClips(*model, animator->controller.uuid, *controller, scene);
             }
             if (controller && !controller->states.empty()) {
@@ -3919,7 +4122,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     }
                     const float px = animatorParameterValue(*controller, runtime, st.blend_parameter);
                     const float py = animatorParameterValue(*controller, runtime, st.blend_parameter_y);
-                    const std::vector<float> weights = blendTreeWeights(st, px, py);
+                    blendTreeWeights(st, px, py, blend_weights_);  // sin reservar memoria
+                    const std::vector<float>& weights = blend_weights_;
                     float cycle = 0.0f, used = 0.0f;
                     const std::size_t first = out != nullptr ? out->size() : 0;
                     for (std::size_t k = 0; k < st.children.size(); ++k) {
@@ -4018,7 +4222,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     if (!runtime.replay_control) animator->time = 0.0f;  // repeticion: su tiempo manda
                 }
                 const AnimatorState& st = controller->states[static_cast<std::size_t>(runtime.state)];
-                runtime.state_name = st.name;
+                if (runtime.state_name != st.name) runtime.state_name = st.name;  // sin copiar el texto cada frame
                 const float cycle = stateSamples(runtime.state, state.phase, 0.0f, nullptr);
                 if (animator->playing) {
                     runtime.state_time += anim_dt * std::abs(animator->speed * st.speed);
@@ -4033,7 +4237,9 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     // Pausado: el tiempo del Inspector manda (arrastrarlo = scrub).
                     state.phase = std::clamp(animator->time / cycle, 0.0f, 1.0f);
                 }
-                std::vector<anim::ClipSample> samples;
+                // Contenedores del RenderSync, vaciados y reutilizados.
+                std::vector<anim::ClipSample>& samples = clip_samples_;
+                samples.clear();
                 float fresh = 1.0f;
                 if (state.fade_state >= 0 && state.fade_duration > 0.0f) {
                     const float t = std::clamp(state.fade_time / state.fade_duration, 0.0f, 1.0f);
@@ -4041,8 +4247,18 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     stateSamples(state.fade_state, state.fade_phase, 1.0f - fresh, &samples);
                 }
                 stateSamples(runtime.state, state.phase, fresh, &samples);
-                state.animator.evaluateBlend(samples);
-                if (inertial_duration > 0.0f && state.inertial.hasHistory() && animator->playing) {
+                const bool inertial_start = inertial_duration > 0.0f && state.inertial.hasHistory() && animator->playing;
+                if (inertial_start) {
+                    state.animator.evaluateBlend(samples);
+                } else {
+                    // Lo normal: la pose se evalua despues, en paralelo con la
+                    // de los demas personajes (ver pending_actors).
+                    deferred_pose = 1;
+                    deferred_begin = static_cast<std::uint32_t>(pending_samples.size());
+                    deferred_count = static_cast<std::uint32_t>(samples.size());
+                    pending_samples.insert(pending_samples.end(), samples.begin(), samples.end());
+                }
+                if (inertial_start) {
                     // La pose nueva un instante antes: su velocidad al empezar.
                     float before_phase = state.phase;
                     if (cycle > 0.0f) {
@@ -4051,7 +4267,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                                                : std::clamp(before_phase, 0.0f, 1.0f);
                     }
                     const std::vector<Mat4> now = state.animator.locals();
-                    std::vector<anim::ClipSample> earlier;
+                    std::vector<anim::ClipSample>& earlier = clip_samples_before_;
+                    earlier.clear();
                     if (state.fade_state >= 0) {
                         stateSamples(state.fade_state, state.fade_phase, 1.0f - fresh, &earlier);
                     }
@@ -4089,10 +4306,17 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 }
                 state.animator.setSpeed(speed);
                 if (animator->playing) {
-                    state.animator.update(anim_dt);
+                    const bool inertial_switch = switched && animator->blend_time > 0.0f && state.inertial.hasHistory();
+                    if (inertial_switch) {
+                        state.animator.update(anim_dt);
+                    } else {
+                        // Solo el tiempo: la pose, despues y en paralelo.
+                        state.animator.advance(anim_dt);
+                        deferred_pose = 2;
+                    }
                     animator->time = state.animator.time();
                     posed = true;
-                    if (switched && animator->blend_time > 0.0f && state.inertial.hasHistory()) {
+                    if (inertial_switch) {
                         const std::vector<Mat4> now = state.animator.locals();
                         state.animator.setTime(animator->time - anim_dt * speed);
                         state.animator.evaluate();
@@ -4110,6 +4334,42 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 }
             }
         }
+        PendingActor pending;
+        pending.e = e;
+        pending.state = &state;  // animations_ guarda nodos: la direccion no cambia
+        pending.data = &data;
+        pending.model = model;
+        pending.renderer_component = renderer_component;
+        pending.cloth = cloth;
+        pending.soft = soft;
+        pending.anim_dt = anim_dt;
+        pending.lod_skip = lod_skip;
+        pending.animating = animating;
+        pending.posed = posed;
+        pending.inertial_tracked = inertial_tracked;
+        pending.cacheable = cacheable;
+        pending.deferred_pose = deferred_pose;
+        pending.deferred_begin = deferred_begin;
+        pending.deferred_count = deferred_count;
+        if (deferred_pose != 0) pending_poses.push_back(static_cast<std::uint32_t>(pending_actors.size()));
+        pending_actors.push_back(pending);
+    };
+
+    // Pasada 3 (despues de las poses): lo que toca el mundo y la fisica, en orden.
+    const auto finish_actor = [&](const PendingActor& pending) {
+        const Entity e = pending.e;
+        AnimationState& state = *pending.state;
+        const asset::ModelData& data = *pending.data;
+        const std::optional<std::uint32_t> model = pending.model;
+        const MeshRenderer* renderer_component = pending.renderer_component;
+        const physics::Cloth* cloth = pending.cloth;
+        const physics::SoftBody* soft = pending.soft;
+        const float anim_dt = pending.anim_dt;
+        const bool lod_skip = pending.lod_skip;
+        bool animating = pending.animating;
+        const bool posed = pending.posed;
+        const bool inertial_tracked = pending.inertial_tracked;
+        const bool cacheable = pending.cacheable;
         // Transicion inercial en curso: el desfase se suma a la pose animada
         // (antes del IK, que sigue apoyando los pies donde toca).
         if (inertial_tracked && data.nodes.size() > 1) {
@@ -4132,7 +4392,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         // sus componentes (subiendo por la jerarquia) era trabajo de cada
         // objeto en cada frame para nada.
         const bool skeletal = data.nodes.size() > 1 && data.bones.size() > 1;
-        const RigComponents rig = skeletal ? gatherRig(e) : RigComponents{};
+        const RigComponents rig = skeletal ? cachedRig(e, state) : RigComponents{};
         const ProceduralAnimation* proc = rig.proc;
         const bool use_ik = rig.ik != nullptr && rig.ik->enabled;
         const bool use_proc = proc != nullptr && proc->enabled;
@@ -4264,8 +4524,35 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         actor_entities_.push_back(e.handle());
         actor_models_.push_back(*model);
         ++count;
-    });
+    };
+    for (const entt::entity handle : active_walk) {
+        if (world.valid(handle)) visit_actor(world.wrap(handle));
+    }
     walk_scope.reset();
+    {
+        // Pasada 2: las poses de los personajes, repartidas entre los hilos.
+        CR_PROFILE_SCOPE("Poses de animacion");
+        const auto evaluate_pose = [&](const PendingActor& p) {
+            anim::Animator& animator = p.state->animator;
+            if (p.deferred_pose == 1) {
+                animator.evaluateBlend(pending_samples.data() + p.deferred_begin, p.deferred_count);
+            } else if (p.deferred_pose == 2) {
+                animator.evaluate();
+            }
+        };
+        if (pending_poses.size() >= 2 && g_anim_parallel.get() && jobs::workerCount() > 0) {
+            jobs::parallelFor(pending_poses.size(), 1, [&](std::size_t begin, std::size_t end) {
+                for (std::size_t i = begin; i < end; ++i) evaluate_pose(pending_actors[pending_poses[i]]);
+            });
+        } else {
+            for (const std::uint32_t i : pending_poses) evaluate_pose(pending_actors[i]);
+        }
+        prof::counter("Poses evaluadas", static_cast<double>(pending_poses.size()));
+    }
+    {
+        CR_PROFILE_SCOPE("Esqueletos y actores");
+        for (const PendingActor& pending : pending_actors) finish_actor(pending);
+    }
     actors.resize(count);
     prof::counter("Animaciones evaluadas", static_cast<double>(anim_lod_evaluated_));
     prof::counter("Animaciones saltadas (LOD)", static_cast<double>(anim_lod_skipped_));
@@ -4353,7 +4640,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
     // en modo horneado no se dibujan otra vez (ni sus mapas de sombra).
     const bool baked_active = renderer.bakedGiActive() && !renderer.bakedLighting().baked_lights.empty();
 
-    world.forEachActiveDepthFirst([&](Entity e) {
+    forEachActiveWith<Light, PostProcessing, Sky, Weather>(world, [&](Entity e) {
         // Primero si tiene algo que interese (casi ningun objeto): subir por la
         // jerarquia para saber si esta activo cuesta mas que mirar sus componentes.
         if (!e.has<Light>() && !e.has<PostProcessing>() && (sky_entity.valid() || !e.has<Sky>()) &&
@@ -4494,6 +4781,35 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
     } else {
         renderer.setCloudSettings(gfx::CloudSettings{});
     }
+    // Color del cielo (degradado o fisico) y tinte del sol: van a la LUT del
+    // cielo, de la que salen tambien la niebla, los reflejos y el IBL.
+    {
+        gfx::SkyColorSettings colors;
+        if (sky != nullptr) {
+            colors.mode = static_cast<int>(sky->color_mode);
+            colors.zenith = sky->zenith_color;
+            colors.horizon = sky->horizon_color;
+            colors.ground = sky->ground_color;
+            colors.curve = sky->gradient_curve;
+            colors.intensity = sky->sky_intensity;
+            colors.blend = sky->color_blend;
+            colors.sun_tint = sky->sun_tint;
+            colors.sun_halo = sky->sun_halo;
+            colors.time_colors = sky->time_colors;
+            colors.sunset_zenith = sky->sunset_zenith_color;
+            colors.sunset_horizon = sky->sunset_horizon_color;
+            colors.sunset_ground = sky->sunset_ground_color;
+            colors.night_zenith = sky->night_zenith_color;
+            colors.night_horizon = sky->night_horizon_color;
+            colors.night_ground = sky->night_ground_color;
+            colors.stops.reserve(std::min(sky->gradient.size(), gfx::SkyColorSettings::kMaxStops));
+            for (const SkyGradientStop& stop : sky->gradient) {
+                if (colors.stops.size() >= gfx::SkyColorSettings::kMaxStops) break;
+                colors.stops.push_back({stop.elevation, stop.color});
+            }
+        }
+        renderer.setSkyColors(colors);
+    }
 
     // --- Sol ---
     // Luz direccional > sol de la foto HDR > hora del cielo.
@@ -4617,7 +4933,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
 
 void RenderSync::syncCamera(World& world, scene::Scene& scene) {
     Entity main;
-    world.forEachActiveDepthFirst([&](Entity e) {
+    forEachActiveWith<Camera>(world, [&](Entity e) {
         const Camera* camera = e.tryGet<Camera>();
         // Las que dibujan en una Render Texture no son la del juego.
         if (camera != nullptr && camera->target_texture.valid()) return;

@@ -35,6 +35,7 @@ layout(location = 4) out vec3 v_tint;
 layout(location = 5) out vec4 v_current_clip;
 layout(location = 6) out vec4 v_previous_clip;
 layout(location = 7) out vec3 v_to_camera;
+layout(location = 8) out vec2 v_box_uv;  // vertices finos: uv desde la posicion (voxel.frag la usa con fract)
 
 void main() {
     uint a = in_packed.x;
@@ -48,6 +49,14 @@ void main() {
     float sky = float((b >> 10u) & 15u) / 15.0;
     float torch = float((b >> 14u) & 15u) / 15.0;
     vec3 tint = vec3(float((b >> 18u) & 15u), float((b >> 22u) & 15u), float((b >> 26u) & 15u)) / 15.0;
+    // Vertice fino (vallas, faroles; Mesher.cpp emitBox): desplazamiento en
+    // dieciseisavos en lugar de uv y oclusion.
+    bool fine = ((b >> 30u) & 1u) != 0u;
+    if (fine) {
+        local += vec3(float((a >> 23u) & 15u), float((a >> 27u) & 15u), float((a >> 18u) & 15u)) / 16.0;
+        corner_ao = 1.0;
+        uv = vec2(0.0);
+    }
 
     vec3 world = push.origin_time.xyz + local;
     vec3 previous_world = world;
@@ -63,7 +72,8 @@ void main() {
 
     v_world_position = world;
     v_uv = uv;
-    v_face_layer = uvec2(face, layer);
+    v_face_layer = uvec2(face | (fine ? 8u : 0u), layer);
+    v_box_uv = vec2(dot(local, kFaceU[face]), dot(local, kFaceV[face]));
     v_light = vec3(corner_ao, sky, torch);
     v_tint = tint;
     v_to_camera = camera.position.xyz - world;

@@ -87,6 +87,12 @@ struct WaterBody {
 WaterBody oceanPreset();
 WaterBody lakePreset();
 WaterBody riverPreset();
+// El mar de un mundo de bloques (VoxelWorld): oceano en calma a la escala de
+// bloques de 1 m. Con el de oceano (olas de 1,1 m, rompientes y 7 m de
+// claridad) el agua subia por encima de las playas, la espuma de la orilla
+// dibujaba manchas blancas siguiendo los escalones del fondo y se veia todo
+// el interior bajo el agua.
+WaterBody voxelSeaPreset();
 
 // Punto del agua bajo/sobre `position` (mundo).
 struct WaterSample {

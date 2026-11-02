@@ -15,16 +15,25 @@
 //
 //     V = alfa * V_actual + (1 - alfa) * V_anterior
 //
-// Para no dejar estelas cuando algo se mueve, lo acumulado se recorta al rango
-// de visibilidades que tiene esa misma luz en la vecindad 3x3 de este frame
-// (en la misma superficie). Donde todo esta al sol o todo a la sombra ese
-// rango es un solo valor y manda el frame actual (sin retraso); en la penumbra
-// el rango es [0, 1] y se acumula. Una luz sin historia (recien llegada al
-// pixel, algo que se destapa) empieza con la media de sus vecinos.
+// Para no dejar estelas cuando algo se mueve, lo acumulado se recorta a la
+// media +- k desviaciones de esa misma luz en la vecindad 5x5 de este frame
+// (en la misma superficie). Antes era el min/max de un 3x3 de rayos sueltos (0
+// o 1): en la penumbra un vecino de mas o de menos movia el rango y la
+// historia se recortaba casi cada frame (parpadeo). Donde todo esta al sol o
+// todo a la sombra la desviacion es 0 y manda el frame actual (sin retraso).
+// La historia solo se tira de verdad si es de otra superficie: su profundidad
+// lineal (rt_shadow_spatial.comp la guarda en history_depth) tiene que
+// coincidir con la de este punto visto desde la camara anterior (como los
+// reflejos). Lo que se mueve se reproyecta con el vector de movimiento del
+// G-buffer (sin el, un personaje arrastraba la sombra que tenia encima). Una
+// luz sin historia empieza con la media de sus vecinos.
 //
 // Salida (RGBA16UI, un canal por luz): (luz + 1) << 10 | visibilidad
-// (0..1023); 0 = hueco libre. La lee lighting.frag (binding 25) y se copia a
-// la historia para el frame siguiente.
+// (0..1023); 0 = hueco libre. Se copia a la historia y despues
+// rt_shadow_spatial.comp la filtra en la penumbra (lo que lee lighting.frag,
+// binding 25). Ademas, por luz, el radio de ese filtro (out_penumbra): la
+// mitad del ancho medio de la penumbra de los rayos tapados de la vecindad,
+// en pixeles.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -34,6 +43,8 @@ layout(set = 0, binding = 0) uniform CameraBuffer {
     mat4 view_projection;
     mat4 inverse_view_projection;
     vec4 position;
+    mat4 unjittered_view_projection;
+    mat4 previous_view_projection;  // sin jitter (la de los vectores de movimiento)
 } camera;
 
 layout(set = 0, binding = 1) uniform sampler2D g_depth;
@@ -41,13 +52,21 @@ layout(set = 0, binding = 2) uniform sampler2D g_normal;
 layout(set = 0, binding = 3) uniform sampler2D raw_mask;       // rt_shadows.comp de este frame
 layout(set = 0, binding = 4) uniform usampler2D history_mask;  // lo acumulado hasta el frame anterior
 layout(set = 0, binding = 5, rgba16ui) uniform writeonly uimage2D out_mask;
+layout(set = 0, binding = 6) uniform sampler2D velocity_map;   // UV actual - UV anterior (sin jitter)
+layout(set = 0, binding = 7) uniform sampler2D history_depth;  // profundidad lineal de la historia (0 = cielo)
+// Radio del filtro espacial / kMaxRadius (se lee y escribe el mismo pixel: lleva
+// su propia media en el tiempo).
+layout(set = 0, binding = 8, rgba8) uniform image2D out_penumbra;
 
 layout(push_constant) uniform PushConstants {
-    mat4 previous_view_projection;
+    mat4 previous_view_projection;  // con jitter, como la historia
     vec4 params;  // x = hay historia valida, y = peso minimo de lo nuevo (alfa)
 } push;
 
 const int kSlots = 4;
+const float kMaxRadius = 16.0;  // igual que rt_shadow_spatial.comp
+// Recorte de la historia: media +- kClampSigma desviaciones (+ margen).
+const float kClampSigma = 1.5;
 
 float linearDepth(float depth) {
     return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
@@ -61,11 +80,36 @@ vec3 decodeNormal(vec2 e) {
     return normalize(n);
 }
 
-// Hueco de rt_shadows.comp: luz (-1 = libre) y visibilidad 0..1.
-void decodeRaw(float encoded, out int id, out float visibility) {
+// Hueco de rt_shadows.comp: luz (-1 = libre), visibilidad (0 o 1) y, si esta
+// tapado, el codigo del ancho de su penumbra (0..30, encodeVisibility).
+void decodeRaw(float encoded, out int id, out float visibility, out float penumbra_code) {
     uint e = uint(max(encoded, 0.0) + 0.5);
     id = int(e >> 5u) - 1;
-    visibility = float(e & 31u) / 31.0;
+    uint v = e & 31u;
+    visibility = v == 31u ? 1.0 : 0.0;
+    penumbra_code = float(v);
+}
+
+// Donde estaba en la historia (con jitter) el punto `world` que se ve en este
+// pixel. La camara sola (previous_clip) es exacta para lo quieto; lo que se
+// mueve lleva ademas su propio movimiento: el vector del G-buffer menos el que
+// daria la camara sola (los dos sin jitter). Un resto de menos de ~0.1 px es la
+// precision de RG16F, no movimiento. `moving`: la profundidad esperada (la de
+// la camara anterior) ya no es exacta.
+vec2 previousUv(ivec2 pixel, ivec2 size, vec4 world, vec4 previous_clip, out bool moving) {
+    vec2 camera_uv = previous_clip.xy / max(previous_clip.w, 1e-6) * 0.5 + 0.5;
+    moving = false;
+    vec4 current_unjittered = camera.unjittered_view_projection * world;
+    vec4 previous_unjittered = camera.previous_view_projection * world;
+    if (current_unjittered.w <= 1e-6 || previous_unjittered.w <= 1e-6) return camera_uv;
+    vec2 camera_motion = (current_unjittered.xy / current_unjittered.w - previous_unjittered.xy / previous_unjittered.w) * 0.5;
+    vec2 velocity = texelFetch(velocity_map, pixel, 0).xy;
+    if (any(greaterThan(abs(velocity), vec2(15.9)))) return camera_uv;
+    vec2 object_motion = velocity - camera_motion;
+    float threshold = 0.1 + 0.002 * length(camera_motion * vec2(size));
+    if (length(object_motion * vec2(size)) <= threshold) return camera_uv;
+    moving = true;
+    return camera_uv - object_motion;
 }
 
 void main() {
@@ -86,22 +130,27 @@ void main() {
     float current[kSlots];
     vec4 raw = texelFetch(raw_mask, pixel, 0);
     for (int k = 0; k < kSlots; ++k) {
-        decodeRaw(raw[k], ids[k], current[k]);
+        float code;
+        decodeRaw(raw[k], ids[k], current[k], code);
     }
     if (ids[0] < 0 && ids[1] < 0 && ids[2] < 0 && ids[3] < 0) {
         imageStore(out_mask, pixel, uvec4(0u));
         return;
     }
 
-    // --- Rango y media de cada luz en la vecindad 3x3 (misma superficie) ---
+    // --- Media y desviacion de cada luz en la vecindad 5x5 (misma superficie) ---
+    // Con rayos sueltos (0 o 1) un 3x3 tiene muy pocas muestras para estimar
+    // el rango de la penumbra; 5x5 da 25. De paso, el ancho medio de la
+    // penumbra (codigo logaritmico) de los rayos tapados.
     float center_z = linearDepth(depth);
     vec3 center_normal = decodeNormal(texelFetch(g_normal, pixel, 0).rg);
-    float low[kSlots] = float[](1.0, 1.0, 1.0, 1.0);
-    float high[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
     float sum[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
+    float sum2[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
     float count[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
-    for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
+    float code_sum[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
+    float blocked[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
             ivec2 q = clamp(pixel + ivec2(dx, dy), ivec2(0), size - 1);
             if (dx != 0 || dy != 0) {
                 float qz = texelFetch(g_depth, q, 0).r;
@@ -112,19 +161,46 @@ void main() {
             for (int c = 0; c < kSlots; ++c) {
                 int id;
                 float v;
-                decodeRaw(r[c], id, v);
+                float code;
+                decodeRaw(r[c], id, v, code);
                 if (id < 0) continue;
                 for (int k = 0; k < kSlots; ++k) {
                     if (ids[k] == id) {
-                        low[k] = min(low[k], v);
-                        high[k] = max(high[k], v);
                         sum[k] += v;
+                        sum2[k] += v * v;
                         count[k] += 1.0;
+                        if (v < 0.5) {
+                            code_sum[k] += code;
+                            blocked[k] += 1.0;
+                        }
                     }
                 }
             }
         }
     }
+
+    // --- Radio del filtro espacial de la penumbra, por luz ---
+    // La mitad del ancho de la penumbra en pixeles (tamano de un pixel a esta
+    // distancia: 2 z / (P[1][1] alto)). Una penumbra de menos de un pixel (el
+    // pie de un objeto, una luz pequena) no se filtra: sombra de contacto nitida.
+    float pixel_world = 2.0 * center_z / (abs(camera.projection[1][1]) * float(size.y));
+    vec4 penumbra_radius = vec4(0.0);
+    for (int k = 0; k < kSlots; ++k) {
+        // Sin ningun rayo tapado cerca: al sol, nada que filtrar. (En la umbra
+        // si: el radio no salta entre 0 y R en el borde interior de la penumbra.)
+        if (ids[k] < 0 || blocked[k] <= 0.0) continue;
+        float width = 0.005 * exp2(code_sum[k] / blocked[k] / 3.0);
+        penumbra_radius[k] = clamp(0.5 * width / max(pixel_world, 1e-6), 0.0, kMaxRadius) / kMaxRadius;
+    }
+    // El radio de un solo frame salta (sale de los pocos rayos tapados de la
+    // vecindad) y el filtro con un radio que cambia cada frame anadia mas
+    // parpadeo del que quitaba: media en el tiempo en el mismo pixel (sin
+    // reproyectar: el radio cambia despacio por la pantalla). Las luces
+    // conservan su hueco de un frame al siguiente (orden por aporte).
+    if (push.params.x > 0.5) {
+        penumbra_radius = mix(imageLoad(out_penumbra, pixel), penumbra_radius, 0.1);
+    }
+    imageStore(out_penumbra, pixel, penumbra_radius);
 
     // --- Donde estaba este punto el frame anterior ---
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
@@ -132,11 +208,16 @@ void main() {
     world /= world.w;
     vec4 previous_clip = push.previous_view_projection * world;
     bool history = push.params.x > 0.5 && previous_clip.w > 0.0;
-    vec2 previous_uv = previous_clip.xy / max(previous_clip.w, 1e-6) * 0.5 + 0.5;
+    bool moving;
+    vec2 previous_uv = previousUv(pixel, size, world, previous_clip, moving);
     history = history && all(greaterThanEqual(previous_uv, vec2(0.0))) && all(lessThanEqual(previous_uv, vec2(1.0)));
+    // Profundidad esperada en la historia (la de este punto desde la camara
+    // anterior); con algo que se mueve, mas margen (su propio avance).
+    float depth_tolerance = previous_clip.w * (moving ? 0.1 : 0.04) + 0.03;
 
     // Bilineal de la historia, por luz: cada uno de los 4 texeles solo cuenta
-    // si tiene esa misma luz (si no, es de otra superficie u otra zona).
+    // si tiene esa misma luz y es la misma superficie (su profundidad
+    // guardada coincide): si no, es algo que se destapo.
     float history_sum[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
     float history_weight[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
     if (history) {
@@ -148,6 +229,7 @@ void main() {
         for (int i = 0; i < 4; ++i) {
             ivec2 p = base + kOffsets[i];
             if (any(lessThan(p, ivec2(0))) || any(greaterThanEqual(p, size)) || bilinear[i] <= 0.0) continue;
+            if (abs(texelFetch(history_depth, p, 0).r - previous_clip.w) > depth_tolerance) continue;
             uvec4 h = texelFetch(history_mask, p, 0);
             for (int c = 0; c < kSlots; ++c) {
                 int id = int(h[c] >> 10u) - 1;
@@ -172,16 +254,21 @@ void main() {
         float visibility;
         if (history_weight[k] > 0.05) {
             float previous = history_sum[k] / history_weight[k];
-            // Un poco de margen: el recorte estricto devuelve el parpadeo.
-            float margin = (high[k] - low[k]) * 0.1 + 0.02;
-            float clamped = clamp(previous, low[k] - margin, high[k] + margin);
+            // Media +- kClampSigma desviaciones de la vecindad (+ margen): al
+            // sol o a la sombra del todo la desviacion es 0 y la historia va
+            // al valor de ahora; en la penumbra el intervalo cubre lo que da
+            // el ruido de los rayos y la historia se queda.
+            float mean = count[k] > 0.0 ? sum[k] / count[k] : current[k];
+            float sigma = count[k] > 0.0 ? sqrt(max(sum2[k] / count[k] - mean * mean, 0.0)) : 0.0;
+            float margin = kClampSigma * sigma + 0.03;
+            float clamped = clamp(previous, mean - margin, mean + margin);
             // Si el recorte movio mucho la historia (la sombra cambio de
             // verdad), lo nuevo pesa mas y converge en unos pocos frames.
-            float alpha = mix(min_alpha, 0.6, clamp(abs(clamped - previous) * 4.0, 0.0, 1.0));
+            float alpha = mix(min_alpha, 0.6, clamp(abs(clamped - previous) * 3.0 - 0.1, 0.0, 1.0));
             visibility = mix(clamped, current[k], alpha);
         } else {
-            // Sin historia: la media de los vecinos (mucho menos ruido que un
-            // solo rayo).
+            // Sin historia (algo que se destapa): la media de los vecinos
+            // (mucho menos ruido que un solo rayo).
             visibility = spatial;
         }
         uint quantized = uint(clamp(visibility, 0.0, 1.0) * 1023.0 + 0.5);

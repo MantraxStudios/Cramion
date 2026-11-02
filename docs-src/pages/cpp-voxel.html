@@ -10,12 +10,15 @@
     <tr><td><code>Value blockLight(x, y, z)</code></td><td>luz de antorchas 0..15 Devuelve: numero</td></tr>
     <tr><td><code>Value boxCollides(centro, semiejes)</code></td><td>toca bloques? Devuelve: bool</td></tr>
     <tr><td><code>Value deleteWorld(texto)</code></td><td>lo borra Devuelve: bool</td></tr>
+    <tr><td><code>Value dimension(...)</code></td><td>dimension actual (&quot;superficie&quot;, &quot;abismo&quot;, &quot;cielo&quot;, &quot;cristal&quot;) Devuelve: texto</td></tr>
+    <tr><td><code>Value dimensions(...)</code></td><td>dimensiones que hay Devuelve: lista de {name, label, generator, sky}</td></tr>
     <tr><td><code>Value getBlock(x, y, z)</code></td><td>numero del bloque (0 = aire) Devuelve: numero</td></tr>
     <tr><td><code>Value getBlockAt(vec)</code></td><td>bloque en ese punto Devuelve: numero</td></tr>
     <tr><td><code>Value getMeta(texto, texto2)</code></td><td>lee un dato Devuelve: texto</td></tr>
     <tr><td><code>Value inWater(vec)</code></td><td>esta en el agua? Devuelve: bool</td></tr>
     <tr><td><code>Value isActive(...)</code></td><td>hay mundo de bloques? Devuelve: bool</td></tr>
     <tr><td><code>Value isReady(vec)</code></td><td>ya esta generado? Devuelve: bool</td></tr>
+    <tr><td><code>Value isWater(id)</code></td><td>es agua (fuente o corriente)? Devuelve: bool</td></tr>
     <tr><td><code>Value listWorlds(...)</code></td><td>lista de mundos Devuelve: lista de {name, seed, lastPlayed, mode}</td></tr>
     <tr><td><code>Value loadWorld(texto)</code></td><td>carga un mundo guardado Devuelve: bool</td></tr>
     <tr><td><code>Value moveBox(centro, semiejes, delta)</code></td><td>posicion, enSuelo, techo, pared Devuelve: lista {Vec3, bool, bool, bool}</td></tr>
@@ -24,9 +27,14 @@
     <tr><td><code>Value saveWorld(...)</code></td><td>guarda Devuelve: bool</td></tr>
     <tr><td><code>Value seed(...)</code></td><td>semilla Devuelve: numero</td></tr>
     <tr><td><code>Value setBlock(x, y, z, texto)</code></td><td>pone o quita un bloque Devuelve: bool</td></tr>
+    <tr><td><code>Value setDimension(texto, arg)</code></td><td>cambia de dimension (guarda la actual; ambiente = el motor pone su cielo) Devuelve: bool</td></tr>
     <tr><td><code>Value setMeta(texto, texto2)</code></td><td>dato guardado con el mundo</td></tr>
     <tr><td><code>Value skyLight(x, y, z)</code></td><td>luz del cielo 0..15 Devuelve: numero</td></tr>
+    <tr><td><code>Value spawnPoint(arg)</code></td><td>sitio seguro para los pies en la dimension actual (cerca de un punto o de quien mira) Devuelve: Vec3</td></tr>
+    <tr><td><code>Value structureAt(pos)</code></td><td>la estructura que contiene el punto (room = sala de la mazmorra o -1) Devuelve: objeto o nil</td></tr>
+    <tr><td><code>Value structuresNear(pos, radio)</code></td><td>estructuras cuya caja toca la esfera Devuelve: lista de {id, type, name, center, min, max, level, seed, dimension, points = {{kind, pos, dir, tag}}}</td></tr>
     <tr><td><code>Value surfaceHeight(x, z)</code></td><td>altura del terreno Devuelve: numero</td></tr>
+    <tr><td><code>Value waterLevel(x, z)</code></td><td>primer bloque por encima del agua de la columna (mar o lago; 0 = sin agua) Devuelve: numero</td></tr>
     <tr><td><code>Value worldName(...)</code></td><td>nombre del mundo Devuelve: texto</td></tr>
   </tbody>
 </table>

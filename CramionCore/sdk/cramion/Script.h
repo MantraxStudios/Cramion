@@ -1189,3 +1189,62 @@ struct Registrar {
 // Toda la API del motor (Audio, UI, Navigation, Network...) en C++.
 #include "Api.gen.h"
 #include "WsClient.h"
+
+// --- Escenas en segundo plano (como SceneManager.LoadSceneAsync de Unity) ---
+// La escena actual sigue jugando y dibujandose mientras se carga la nueva; el
+// motor no pinta nada encima (la pantalla de carga es la del juego):
+//   AsyncOperation op = Scene::loadAsync("Nivel2");        // Single: sustituye a la actual al activarse
+//   op.allowActivation(false);                               // se queda en 0.9 hasta permitirlo
+//   ... cada frame: barra.setField("UISlider", "value", op.progress() / 0.9f);
+//   if (op.progress() >= 0.9f && listo) op.allowActivation(true);   // cambio en un frame
+//   entity().dontDestroyOnLoad();  // la pantalla de carga sobrevive al cambio (y recibe OnSceneActivated)
+// Mensajes (Script::on): OnSceneLoadProgress {id, scene, progress} al objeto
+// `notify`; OnSceneActivated / OnSceneUnloaded / OnSceneLoadFailed {id, scene,
+// mode} a todos los objetos con scripts.
+namespace cramion {
+
+enum class LoadSceneMode { Single = 0, Additive = 1 };
+
+class AsyncOperation {
+public:
+    AsyncOperation() = default;
+    explicit AsyncOperation(int id) : id_(id) {}
+    int id() const { return id_; }
+    bool valid() const { return id_ > 0; }
+    explicit operator bool() const { return valid(); }
+    /// 0..0.9 cargando, 0.9 lista (esperando allowActivation), 1 activada; -1 si fallo.
+    float progress() const {
+        return id_ > 0 ? detail::api("Scene.loadProgress", Values{Value(id_)}).asFloat(-1.0f) : -1.0f;
+    }
+    /// Termino (activada, descargada o fallida).
+    bool isDone() const { return id_ > 0 && detail::api("Scene.loadIsDone", Values{Value(id_)}).asBool(); }
+    bool failed() const { return progress() < 0.0f; }
+    /// false: se queda en 0.9 sin activarse (allowSceneActivation de Unity).
+    void allowActivation(bool allow) {
+        allow_ = allow;
+        if (id_ > 0) detail::api("Scene.allowActivation", Values{Value(id_), Value(allow)});
+    }
+    bool allowSceneActivation() const { return allow_; }
+
+private:
+    int id_ = 0;
+    bool allow_ = true;
+};
+
+namespace Scene {
+/// Carga una escena (nombre o ruta del .crscene) en segundo plano. Single: al
+/// activarse sustituye a la actual y la descarga (salvo lo DontDestroyOnLoad);
+/// Additive: se suma a la actual. `notify` recibe OnSceneLoadProgress.
+inline AsyncOperation loadAsync(std::string_view name, LoadSceneMode mode = LoadSceneMode::Single, Entity notify = {}) {
+    const Value id = detail::api("Scene.loadAsync", Values{Value(name), Value(mode == LoadSceneMode::Additive ? "additive" : "single"),
+                                                          notify.valid() ? Value(notify) : Value()});
+    return AsyncOperation(id.asInt(0));
+}
+/// Descarga una escena aditiva (o los objetos de la activa, por su nombre).
+inline AsyncOperation unloadAsync(std::string_view name, Entity notify = {}) {
+    const Value id = detail::api("Scene.unloadAsync", Values{Value(name), notify.valid() ? Value(notify) : Value()});
+    return AsyncOperation(id.asInt(0));
+}
+}  // namespace Scene
+
+}  // namespace cramion

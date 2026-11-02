@@ -449,7 +449,9 @@ void VulkanRenderer::prepareRayTracingScene(const scene::Scene& scene, std::vect
     // esta (la escena conserva su copia y sus texturas fijadas). Con un tope de
     // triangulos por frame: una celda de golpe no es un tiron de la GPU.
     if (ray_tracing_.sceneBuilt() && !rt_scene_dirty_) {
-        constexpr std::size_t kRtAddTrianglesPerFrame = 1500000;
+        // (Antes 1,5 millones: con las BLAS por tandas y compactadas despues,
+        // mejor muchas tandas pequenas que un frame de 10-20 ms.)
+        constexpr std::size_t kRtAddTrianglesPerFrame = 300000;
         std::size_t added_triangles = 0;
         const std::size_t count = std::min({rt_scene_used_.size(), skinned_models_.size(), scene.models().size()});
         for (std::uint32_t m = 0; m < count && added_triangles < kRtAddTrianglesPerFrame; ++m) {
@@ -657,8 +659,11 @@ void VulkanRenderer::prepareRayTracingScene(const scene::Scene& scene, std::vect
                 rt_extra_base_ + static_cast<std::uint32_t>(rt_species_extra_[species]), transform,
                 RayTracing::kMaskFoliage});
         }
+        // Instancias estaticas de la TLAS: solo cuando se vuelven a elegir (antes
+        // se anadian a las del frame cada frame: hasta 40000 que se convertian,
+        // comparaban y copiaban enteras).
+        ray_tracing_.setStaticInstances(rt_tree_instances_);
     }
-    instances.insert(instances.end(), rt_tree_instances_.begin(), rt_tree_instances_.end());
 }
 
 void VulkanRenderer::updateRtTerrainCache(const std::vector<TerrainPass::RayTracingSource>& sources) {

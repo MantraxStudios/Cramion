@@ -16,12 +16,13 @@ ComponentRegistry& ComponentRegistry::instance() {
 }
 
 const ComponentType* ComponentRegistry::find(std::string_view name) const {
-    for (const ComponentType& type : types_) {
-        if (type.name == name) {
-            return &type;
-        }
-    }
-    return nullptr;
+    const int index = indexOf(name);
+    return index >= 0 ? &types_[static_cast<std::size_t>(index)] : nullptr;
+}
+
+int ComponentRegistry::indexOf(std::string_view name) const {
+    const auto it = index_.find(name);
+    return it != index_.end() ? static_cast<int>(it->second) : -1;
 }
 
 }  // namespace cramion::ecs

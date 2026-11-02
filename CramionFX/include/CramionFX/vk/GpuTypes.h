@@ -109,6 +109,10 @@ struct GpuLights {
     // que falta lo pone el cielo. (El vidrio, el agua y los liquidos usan solo
     // el fundido: su entorno no sabe del techo y daba destellos de cielo.)
     core::Vec4 probe_trust{1.0f, 1.0f, 0.0f, 0.0f};
+    // Color del cielo (componente Sky): rgb = tinte del disco solar (lineal),
+    // w = cuanto manda el degradado (0 = cielo fisico; lighting.frag pinta
+    // entonces bajo el horizonte el color del degradado en vez de apagarlo).
+    core::Vec4 sky_tint{1.0f, 1.0f, 1.0f, 0.0f};
     // Luces puntuales por teselas (solo lighting.frag): la imagen, a la
     // resolucion interna, en light_tiles[2] x light_tiles[3] teselas de
     // light_tiles[0] x light_tiles[1] pixeles. Cada tesela tiene un bit por
@@ -513,7 +517,16 @@ static_assert(sizeof(GpuCloudPush) == 112, "GpuCloudPush debe coincidir con clou
 struct GpuSkyPush {
     core::Vec4 sun{};   // xyz = hacia el sol,  w = iluminancia
     core::Vec4 moon{};  // xyz = hacia la luna, w = iluminancia
+    // Color del cielo (componente Sky): x = mezcla (0 = fisico), y = curva
+    // del degradado, z = paradas (0 = cenit/horizonte/suelo en colors[0..2]),
+    // w = brillo del halo del sol.
+    core::Vec4 custom{};
+    core::Vec4 sun_tint{1.0f, 1.0f, 1.0f, 0.0f};  // rgb = tinte lineal del halo
+    // Hasta 8 colores en media precision: el i, en colors[i / 2] (.xy si es
+    // par, .zw si es impar): packHalf2x16(r, g), packHalf2x16(b, altura en grados).
+    std::uint32_t colors[16]{};
 };
+static_assert(sizeof(GpuSkyPush) == 128, "GpuSkyPush debe caber en 128 bytes (sky_lut.frag)");
 
 // Constante de push de los rayos de luz (light_shafts.frag).
 struct GpuLightShaftPush {

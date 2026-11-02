@@ -129,10 +129,12 @@ enum class AreaEditor {
     Physics,
     Cinematic,
     Environment,
+    Animation,
     Count
 };
 struct LightingEditorState;  // EditorLighting.cpp: horneado de la luz rebotada
 struct MotionEditorState;    // EditorMotion.cpp: bases de Motion Matching
+struct KeyframeEditorState;  // EditorKeyframes.cpp: Dope Sheet y Graficas
 struct PhysicsToolsState;    // EditorDestruction.cpp: fracturar y asistente de vehiculo
 
 // std::find sobre Uuid: la STL de MSVC intenta vectorizar la comparacion de
@@ -1029,7 +1031,9 @@ private:
     // terrenos y vegetacion, y el mundo. `keep_terrain_edits`: lo esculpido
     // sin guardar se queda en memoria (Play: al parar vuelve la escena del
     // editor); si no, se tira (el usuario ya eligio guardar o no).
-    void resetSceneSystems(bool keep_terrain_edits);
+    // clear_world = false: Scene.loadAsync en Play (los objetos se destruyen
+    // uno a uno con sus OnDestroy y los DontDestroyOnLoad se quedan).
+    void resetSceneSystems(bool keep_terrain_edits, bool clear_world = true);
     ecs::FloatingOriginSettings floating_origin_{};
     void startVoxels();
     void stopVoxels();
@@ -1191,6 +1195,39 @@ private:
     void loadViewSettings();
     void saveViewSettings() const;
     void updateCinematics(float delta_seconds);
+    // Animacion por claves (EditorKeyframes.cpp), como en Blender.
+    void updateKeyframes(float delta_seconds);
+    void resetKeyframesForPlay();
+    void drawAnimationWindow();
+    void drawAnimationHeader();
+    void drawAnimationChannels(ImVec2 min, ImVec2 max);
+    void drawAnimationCanvas(ImVec2 min, ImVec2 max);
+    void drawAnimationPopups();
+    void buildAnimationRows();
+    ecs::Entity animationOwnerFor(ecs::Entity target, bool create);
+    float animationFps();
+    // Clave en el fotograma actual de todos los canales de una propiedad.
+    bool insertKeyframes(ecs::Entity target, const std::string& component, const std::string& path);
+    // Quita la clave del fotograma actual (o todas con `all`); devuelve cuantas.
+    int removeKeyframes(ecs::Entity target, const std::string& component, const std::string& path, bool all);
+    void insertSelectionKeys(bool remove);       // I / Alt+I en la Escena
+    void autoKeyTransforms(const char* path);    // grabacion automatica al soltar el gizmo
+    // Inspector: rombos y menu de claves por componente, y lo que se pidio.
+    KeyframeHook* inspectorKeyframeHook(ecs::Entity entity, const std::string& component);
+    void inspectorKeyframes(ecs::Entity entity, const std::vector<ecs::Entity>& selected, const std::string& component,
+                            const std::string* changed_path);
+    template <typename Fn>
+    void forEachAnimationCurve(Fn&& fn);
+    void animationSelectAll(bool select);
+    void animationBeginMove();
+    void animationApplyMove(float dt, float dv);
+    void animationDeleteSelected();
+    void animationSetInterpolation(anim::Interpolation mode);
+    void animationSetHandles(anim::HandleType type);
+    void animationSetExtrapolation(anim::Extrapolation mode);
+    void animationCopy();
+    void animationPaste();
+    void animationJumpKey(bool forward);
     bool drawCinematicGizmos();  // true si el raton esta sobre un asa
     void drawCameraFrustum(const core::Vec3& position, const core::Quat& rotation, float fov_degrees, float depth,
                            std::uint32_t color);
@@ -2193,6 +2230,10 @@ private:
     cinema::CinematicSystem cinematics_;
     bool show_game_ = true;
     bool show_cinematic_ = true;
+    anim::KeyframeSystem keyframes_;  // animacion por claves en Play
+    bool show_animation_ = true;
+    std::shared_ptr<KeyframeEditorState> keyframe_editor_;
+    KeyframeEditorState& keyframeEditor();
     bool scene_view_visible_ = true;
     bool game_view_visible_ = false;
     // La vista Juego tiene el foco (o un hijo suyo): solo entonces el juego

@@ -31,9 +31,15 @@ class VulkanDevice;
 //   - Mallas extra que no son modelos (el terreno y las especies de arboles):
 //     las da el renderizador; el terreno se puede reescribir al esculpir
 //     (misma cantidad de vertices: se rehace solo su BLAS, en la GPU).
-//   - Una TLAS con una instancia por actor de escenario, por terreno y por
-//     arbol cercano. Se reconstruye EN LA GPU dentro del frame cuando algo se
-//     mueve (sin parar la GPU: antes cada cambio hacia un waitIdle).
+//   - Una TLAS con una instancia por actor de escenario, por terreno, por
+//     arbol cercano y por personaje animado cercano. Se actualiza EN LA GPU
+//     dentro del frame: las instancias son persistentes (estaticas delante,
+//     dinamicas detras) y solo se escribe lo que cambio; si solo se movieron,
+//     se reajusta (MODE_UPDATE) y se reconstruye entera cuando cambia la
+//     topologia o cada cierto numero de reajustes.
+//   - Personajes animados: su piel en la GPU (rt_skin.comp) en una region
+//     propia del buffer de vertices y una BLAS por personaje reajustada cada
+//     frame (setSkinnedInstances).
 //   - Vertices, indices, materiales y todas las texturas accesibles desde los
 //     shaders (rt_common.glsl) para sombrear el punto de impacto.
 //   - Compute shaders: rt_gi.comp (media resolucion), rt_reflections.comp,
@@ -51,11 +57,29 @@ public:
     // Rigidos que no proyectan sombra (mandos de VR, el laser): los rayos de
     // sombra no los ven, como los mapas de sombras; la GI y los reflejos si.
     static constexpr std::uint8_t kMaskNoShadow = 0x08;
+    // Personajes animados (setSkinnedInstances): un bit propio para poder
+    // quitarlos de un tipo de rayo. Los de sombra lo incluyen.
+    static constexpr std::uint8_t kMaskCharacter = 0x10;
 
     struct Instance {
         std::uint32_t model = 0;
         core::Mat4 transform = core::Mat4::identity();
         std::uint8_t mask = kMaskScenery;
+    };
+
+    // Un personaje animado con esqueleto: `bones` = sus huesos de este frame
+    // (en el espacio del modelo, como el buffer de huesos del raster),
+    // `transform` = la matriz del actor. `id`: identidad estable del actor (con
+    // la misma, su BLAS se reajusta en vez de reconstruirse). `data`: el modelo
+    // (sus vertices de reposo se suben la primera vez).
+    struct SkinnedInstance {
+        std::uint32_t model = 0;
+        std::uint64_t id = 0;
+        core::Mat4 transform = core::Mat4::identity();
+        const core::Mat4* bones = nullptr;
+        std::uint32_t bone_count = 0;
+        const asset::ModelData* data = nullptr;
+        std::uint8_t mask = kMaskCharacter;
     };
 
     // Vertice de la escena de rayos (igual que rt_common.glsl, 32 bytes).
@@ -176,10 +200,31 @@ public:
     void updateExtraVertices(std::uint32_t extra_index, std::vector<Vertex> vertices);
     void updateExtraTexture(std::uint32_t texture_index, std::vector<std::vector<std::uint8_t>> mips);
 
-    // Instancias de la TLAS de este frame. Solo para la CPU: la TLAS se
-    // reconstruye en recordUpdates si cambian. Si no caben, la TLAS crece
-    // (sin esperar a la GPU: la vieja la sueltan los frames en vuelo).
+    // Instancias estaticas (los arboles cercanos): solo cuando cambian. Van
+    // delante de las dinamicas en el buffer de instancias y no se vuelven a
+    // convertir, comparar ni copiar cada frame. Se olvidan al rehacer o
+    // soltar la escena (hay que volver a darlas).
+    void setStaticInstances(const std::vector<Instance>& instances);
+    // Personajes animados de este frame (antes de setInstances), ya ordenados
+    // por prioridad (los mas cercanos primero): entran como mucho 32. Cada uno
+    // con su BLAS deformada en la GPU (rt_skin.comp), reajustada cada frame.
+    // `in_tlas[i]` = 1 si el i-esimo esta en la TLAS de este frame (su modelo
+    // ya esta en la escena y le toco hueco).
+    void setSkinnedInstances(const std::vector<SkinnedInstance>& instances, std::vector<std::uint8_t>& in_tlas);
+    // Instancias dinamicas de este frame (actores rigidos, terrenos). Solo
+    // para la CPU: se escribe en el buffer de instancias solo lo que cambio;
+    // si solo se movieron, la TLAS se reajusta (MODE_UPDATE) en vez de
+    // reconstruirse. Si no caben, la TLAS crece (sin esperar a la GPU: la
+    // vieja la sueltan los frames en vuelo).
     void setInstances(const VulkanDevice& device, const std::vector<Instance>& instances);
+    // Una instancia de `model` entra en la TLAS (tiene BLAS ya construida, la
+    // suya o la de su grupo): lo que setInstances no salta.
+    bool instanceReady(std::uint32_t model) const;
+    // Material `material` de `model` editado en vivo (color, metal/rugosidad,
+    // emision, tiling): se sube en el siguiente recordUpdates. false = cambio
+    // el recorte por alfa (va en otra geometria de la BLAS): hay que rehacer
+    // la escena.
+    bool updateMaterial(std::uint32_t model, std::uint32_t material, const SkinnedModel& gpu);
 
     // Al principio del command buffer del frame (antes de cualquier pase de
     // rayos): subidas pendientes, BLAS nuevas (addModel) y rehechas, el set de

@@ -35,6 +35,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <unordered_set>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -522,7 +523,12 @@ bool ScriptSystem::takeQuitRequest() {
     return quit;
 }
 
-void ScriptSystem::setSceneName(const std::string& name) { impl_->scene_name = name; }
+void ScriptSystem::setSceneName(const std::string& name) {
+    impl_->scene_name = name;
+    impl_->scene_loads->setActiveSceneName(name);
+}
+
+ecs::AsyncSceneLoader& ScriptSystem::sceneLoads() { return *impl_->scene_loads; }
 
 void ScriptSystem::setPrefsFile(const std::filesystem::path& file) {
     Impl& d = *impl_;
@@ -648,6 +654,9 @@ void ScriptSystem::stop() {
     d.frame_events.clear();
     d.pending_destroy.clear();
     d.net_entities.clear();
+    // Scene.loadAsync a medias: el que para vacia el mundo (Scene.load) o lo
+    // restaura (salir de Play), con lo oculto que hubiera creado.
+    d.scene_loads->reset();
     if (d.http) d.http->cancelAll();
     d.running = false;
     d.cursor.reset();  // el raton vuelve al sistema (libre y visible)
@@ -722,6 +731,68 @@ void ScriptSystem::callMethod(ecs::Entity target, const std::string& method, con
 
 void ScriptSystem::callMethod(ecs::Entity target, const std::string& method, bool value) {
     sendEvent(*impl_, target, method, api::Value(value));
+}
+
+void ScriptSystem::updateSceneLoads(ecs::World& world, ecs::AsyncSceneLoader::Host host) {
+    Impl& d = *impl_;
+    // Lo que no aporte el programa: destruir como Entity:destroy (OnDestroy de
+    // los Visual Scripts y de los scripts de C++) y aplicarlo ya.
+    if (!host.destroy) {
+        host.destroy = [&d](ecs::Entity e) {
+            if (e.valid()) d.destroyLater(e.handle());
+        };
+    }
+    if (!host.flush_destroys) {
+        host.flush_destroys = [&d, &world] {
+            ecs::World* before = d.world;
+            if (d.world == nullptr) d.world = &world;
+            d.flushDestroys();
+            d.world = before != nullptr ? before : d.world;
+        };
+    }
+    d.scene_loads->update(world, host);
+    const std::vector<ecs::AsyncSceneLoader::Event> events = d.scene_loads->takeEvents();
+    if (events.empty()) return;
+    // Los objetos con scripts (una vez por evento de activacion/descarga).
+    std::vector<entt::entity> scripted;
+    bool collected = false;
+    const auto collect = [&] {
+        if (collected) return;
+        collected = true;
+        std::unordered_set<entt::entity> seen;
+        for (const entt::entity h : world.registry().view<vscript::VisualScript>()) {
+            if (seen.insert(h).second) scripted.push_back(h);
+        }
+        for (const entt::entity h : world.registry().view<CppScript>()) {
+            if (seen.insert(h).second) scripted.push_back(h);
+        }
+    };
+    for (const ecs::AsyncSceneLoader::Event& e : events) {
+        api::Value arg = api::Value::object();
+        arg.set("id", api::Value(e.id));
+        arg.set("scene", api::Value(e.scene));
+        arg.set("mode", api::Value(e.mode == ecs::SceneLoadMode::Additive ? "additive" : "single"));
+        arg.set("progress", api::Value(e.progress));
+        if (!e.error.empty()) arg.set("error", api::Value(e.error));
+        const char* method = nullptr;
+        switch (e.kind) {
+            case ecs::AsyncSceneLoader::Event::Kind::Progress: method = "OnSceneLoadProgress"; break;
+            case ecs::AsyncSceneLoader::Event::Kind::Activated: method = "OnSceneActivated"; break;
+            case ecs::AsyncSceneLoader::Event::Kind::Unloaded: method = "OnSceneUnloaded"; break;
+            case ecs::AsyncSceneLoader::Event::Kind::Failed: method = "OnSceneLoadFailed"; break;
+        }
+        if (e.kind == ecs::AsyncSceneLoader::Event::Kind::Progress) {
+            // Solo al que la pidio (cada frame que cambia).
+            if (e.notify != entt::null && world.valid(e.notify)) sendEvent(d, world.wrap(e.notify), method, arg);
+            continue;
+        }
+        collect();
+        for (const entt::entity h : scripted) {
+            if (world.valid(h)) sendEvent(d, world.wrap(h), method, arg);
+        }
+        // Lo que se activo ahora (sus scripts aun no estaban en la lista).
+        if (e.kind == ecs::AsyncSceneLoader::Event::Kind::Activated) collected = false, scripted.clear();
+    }
 }
 
 const api::NativeApi& ScriptSystem::apiRegistry() {

@@ -25,7 +25,8 @@ struct GpuVoxelPush {
     core::Mat4 light_view_projection;
     std::uint32_t shadow = 0;
     float previous_time = 0.0f;  // segundos del frame anterior (vectores de movimiento del viento)
-    std::uint32_t pad[2] = {0, 0};
+    std::uint32_t style = 0;     // 1 = color liso (variacion por bloque)
+    std::uint32_t pad = 0;
 };
 
 void imageBarrier(const vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLayout from, vk::ImageLayout to,
@@ -141,6 +142,8 @@ void VoxelPass::destroy() {
     set_layout_ = nullptr;
     visible_keys_.clear();
     all_keys_.clear();
+    water_keys_.clear();
+    water_count_ = 0;
     device_ = nullptr;
 }
 
@@ -430,8 +433,11 @@ void VoxelPass::setSection(std::uint64_t key, const core::Vec3& origin, const st
         removeSection(key);
         return;
     }
+    const bool is_new = sections_.find(key) == sections_.end();
     Section& section = sections_[key];
     section.origin = origin;
+    section.water = (key & kWaterKey) != 0;
+    if (is_new && section.water) ++water_count_;
     section.pending_data.assign(vertices, vertices + static_cast<std::size_t>(quads) * 8);
     section.pending_quads = quads;
     if (!section.queued) {
@@ -445,6 +451,7 @@ void VoxelPass::removeSection(std::uint64_t key) {
     if (it == sections_.end()) return;
     retire(it->second.live);
     retire(it->second.pending);
+    if (it->second.water && water_count_ > 0) --water_count_;
     sections_.erase(it);  // su entrada en la cola se salta al subir
 }
 
@@ -455,6 +462,8 @@ void VoxelPass::clearSections() {
     }
     sections_.clear();
     upload_queue_.clear();
+    water_count_ = 0;
+    water_keys_.clear();
 }
 
 bool VoxelPass::recordUploads(const vk::raii::CommandBuffer& cmd, std::uint32_t frame) {
@@ -538,21 +547,43 @@ void VoxelPass::prepare(std::uint32_t /*frame*/, const core::Vec3& camera_positi
     prepared_time_ = time_;
     visible_keys_.clear();
     all_keys_.clear();
+    water_keys_.clear();
     if (!visible_ || layer_count_ == 0) return;
     const core::Frustum frustum(view_projection);
     std::vector<std::pair<float, std::uint64_t>> sorted;
+    std::vector<std::pair<float, std::uint64_t>> water;
     sorted.reserve(sections_.size());
     for (const auto& [key, s] : sections_) {
         if (!s.live.valid() || s.quads == 0) continue;
-        all_keys_.push_back(key);
+        if (!s.water) all_keys_.push_back(key);
         const core::Aabb box{s.origin, s.origin + core::Vec3{16.0f, 16.0f, 16.0f}};
         if (!frustum.intersects(box)) continue;
         const core::Vec3 d = (s.origin + core::Vec3{8.0f, 8.0f, 8.0f}) - camera_position;
-        sorted.emplace_back(core::dot(d, d), key);
+        (s.water ? water : sorted).emplace_back(core::dot(d, d), key);
     }
     // De cerca a lejos: lo cercano tapa y la prueba de profundidad descarta el resto.
     std::sort(sorted.begin(), sorted.end());
     for (const auto& [distance, key] : sorted) visible_keys_.push_back(key);
+    // El agua (transparente), de lejos a cerca.
+    std::sort(water.begin(), water.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (const auto& [distance, key] : water) water_keys_.push_back(key);
+}
+
+void VoxelPass::drawWater(const vk::raii::CommandBuffer& cmd, const std::function<void(const core::Vec3&)>& before_draw) const {
+    if (water_keys_.empty()) return;
+    cmd.bindIndexBuffer(*quad_indices_.handle(), 0, vk::IndexType::eUint32);
+    int bound_page = -1;
+    for (const std::uint64_t key : water_keys_) {
+        const auto it = sections_.find(key);
+        if (it == sections_.end() || !it->second.live.valid()) continue;
+        const Section& s = it->second;
+        if (s.live.page != bound_page) {
+            cmd.bindVertexBuffers(0, *pages_[static_cast<std::size_t>(s.live.page)]->buffer.handle(), {0});
+            bound_page = s.live.page;
+        }
+        before_draw(s.origin);
+        cmd.drawIndexed(s.quads * 6, 1, 0, static_cast<std::int32_t>(s.live.offset / 8), 0);
+    }
 }
 
 void VoxelPass::drawSections(const vk::raii::CommandBuffer& cmd, const std::vector<std::uint64_t>& keys,
@@ -574,6 +605,7 @@ void VoxelPass::drawSections(const vk::raii::CommandBuffer& cmd, const std::vect
         GpuVoxelPush push{};
         push.origin_time = core::Vec4{s.origin.x, s.origin.y, s.origin.z, time_};
         push.previous_time = previous_time_;
+        push.style = flat_colors_ ? 1u : 0u;
         if (light_view_projection != nullptr) {
             push.light_view_projection = *light_view_projection;
             push.shadow = 1;

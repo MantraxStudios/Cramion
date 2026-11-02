@@ -51,6 +51,7 @@ const AreaInfo kAreas[kAreaCount] = {
     {"Física", "Física", bl::Glyph::Physics, false, 2},
     {"Cinemática", "Cinemática (línea de tiempo)", bl::Glyph::Timeline, false, 2},
     {"Ambiente", "Mundo (ambiente)", bl::Glyph::World, false, 2},
+    {"Animación", "Animación (Dope Sheet y Gráficas)", bl::Glyph::Animation, false, 2},
 };
 
 const AreaInfo& info(AreaEditor editor) { return kAreas[static_cast<std::size_t>(editor)]; }
@@ -333,6 +334,7 @@ void EditorApp::applyPendingAreaSwitch() {
         case AreaEditor::Physics: show_physics_ = true; break;
         case AreaEditor::Cinematic: show_cinematic_ = true; break;
         case AreaEditor::Environment: show_environment_window_ = true; break;
+        case AreaEditor::Animation: show_animation_ = true; break;
         default: break;
     }
     if (to == AreaEditor::Scene) focus_scene_ = true;

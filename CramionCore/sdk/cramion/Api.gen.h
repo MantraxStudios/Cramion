@@ -2173,6 +2173,13 @@ template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typenam
 inline Value acquire(const T0& texto = {}, const T1& posicion = {}, const T2& rotacion = {}, const T3& padre = {}) {
     return detail::api("Scene.acquire", Values{Value(texto), Value(posicion), Value(rotacion), Value(padre)});
 }
+/// Scene.allowActivation(id, permitir)
+/// false: la escena se carga y se queda en 0.9 sin activarse hasta llamar con true (como allowSceneActivation)
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value allowActivation(const T0& id = {}, const T1& permitir = {}) {
+    return detail::api("Scene.allowActivation", Values{Value(id), Value(permitir)});
+}
 /// Scene.cancelSpawn(id)
 /// Cancela un Scene.instantiateAsync (borra lo que ya se habia creado)
 /// Devuelve: bool
@@ -2191,6 +2198,12 @@ inline Value destroy(const T0& entity = {}) {
 template <typename T0 = Value>
 inline Value destroyDeferred(const T0& entity = {}) {
     return detail::api("Scene.destroyDeferred", Values{Value(entity)});
+}
+/// Scene.dontDestroyOnLoad(entity, conservar)
+/// El objeto (su raiz) sobrevive a los cambios de escena (Scene.load y Scene.loadAsync en modo single)
+template <typename T0 = Value, typename T1 = Value>
+inline Value dontDestroyOnLoad(const T0& entity = {}, const T1& conservar = {}) {
+    return detail::api("Scene.dontDestroyOnLoad", Values{Value(entity), Value(conservar)});
 }
 /// Scene.findAllWithTag("tag")
 /// Lista de objetos con ese tag
@@ -2214,11 +2227,32 @@ inline Value instantiateAsync(const T0& texto = {}, const T1& posicion = {}, con
     return detail::api("Scene.instantiateAsync", Values{Value(texto), Value(posicion), Value(rotacion), Value(padre)});
 }
 /// Scene.load("Nivel2")
-/// Cambia de escena al terminar el frame (nombre o ruta del .crscene)
+/// Cambia de escena al terminar el frame (nombre o ruta del .crscene). Para una pantalla de carga propia sin parar el juego, Scene.loadAsync
 /// Devuelve: bool
 template <typename T0 = Value>
 inline Value load(const T0& texto = {}) {
     return detail::api("Scene.load", Values{Value(texto)});
+}
+/// Scene.loadIsDone(id)
+/// true cuando la operacion termino (activada, descargada o fallida)
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value loadIsDone(const T0& id = {}) {
+    return detail::api("Scene.loadIsDone", Values{Value(id)});
+}
+/// Scene.loadProgress(id)
+/// Progreso de Scene.loadAsync / unloadAsync: 0..0.9 cargando, 0.9 lista (esperando Scene.allowActivation), 1 activada; -1 si fallo o no existe
+/// Devuelve: numero
+template <typename T0 = Value>
+inline Value loadProgress(const T0& id = {}) {
+    return detail::api("Scene.loadProgress", Values{Value(id)});
+}
+/// Scene.loadedScenes()
+/// Escenas cargadas: la activa y las aditivas
+/// Devuelve: lista de textos
+template <typename... Mas>
+inline Value loadedScenes(Mas&&... mas) {
+    return detail::api("Scene.loadedScenes", Values{Value(std::forward<Mas>(mas))...});
 }
 /// Scene.name()
 /// Nombre de la escena actual
@@ -2329,6 +2363,89 @@ inline Value width(Mas&&... mas) {
     return detail::api("Screen.width", Values{Value(std::forward<Mas>(mas))...});
 }
 }  // namespace Screen
+
+namespace Sky {
+/// Sky.getColorMode()
+/// Physical, Gradient o GradientStops
+/// Devuelve: texto
+template <typename... Mas>
+inline Value getColorMode(Mas&&... mas) {
+    return detail::api("Sky.getColorMode", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Sky.getColors()
+/// {cenit, horizonte, suelo}
+/// Devuelve: lista de Vec3
+template <typename... Mas>
+inline Value getColors(Mas&&... mas) {
+    return detail::api("Sky.getColors", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Sky.setBlend(0.5)
+/// 0 = cielo fisico .. 1 = solo los colores
+template <typename T0 = Value>
+inline Value setBlend(const T0& valor = {}) {
+    return detail::api("Sky.setBlend", Values{Value(valor)});
+}
+/// Sky.setColorMode("Gradient")
+/// color del cielo: Physical (fisico), Gradient (3 colores) o GradientStops (paradas)
+template <typename T0 = Value>
+inline Value setColorMode(const T0& texto = {}) {
+    return detail::api("Sky.setColorMode", Values{Value(texto)});
+}
+/// Sky.setColors(cenit, horizonte, suelo)
+/// colores del degradado (Vec3 sRGB 0..1; nil = el de antes). Pasa a Gradient si era Physical
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value setColors(const T0& cenit = {}, const T1& horizonte = {}, const T2& suelo = {}) {
+    return detail::api("Sky.setColors", Values{Value(cenit), Value(horizonte), Value(suelo)});
+}
+/// Sky.setCurve(3)
+/// curva del degradado (1 = lineal, mas = horizonte mas fino)
+template <typename T0 = Value>
+inline Value setCurve(const T0& valor = {}) {
+    return detail::api("Sky.setCurve", Values{Value(valor)});
+}
+/// Sky.setGradient({{-90, suelo}, {0, horizonte}, {90, cenit}})
+/// degradado por paradas (altura en grados, hasta 8); pasa a GradientStops
+template <typename T0 = Value>
+inline Value setGradient(const T0& tabla = {}) {
+    return detail::api("Sky.setGradient", Values{Value(tabla)});
+}
+/// Sky.setIntensity(1)
+/// brillo de los colores del cielo
+template <typename T0 = Value>
+inline Value setIntensity(const T0& valor = {}) {
+    return detail::api("Sky.setIntensity", Values{Value(valor)});
+}
+/// Sky.setNightColors(cenit, horizonte, suelo)
+/// colores de la noche (activa los colores por hora)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value setNightColors(const T0& cenit = {}, const T1& horizonte = {}, const T2& suelo = {}) {
+    return detail::api("Sky.setNightColors", Values{Value(cenit), Value(horizonte), Value(suelo)});
+}
+/// Sky.setSunHalo(1)
+/// halo del sol sobre el degradado (0 = sin halo)
+template <typename T0 = Value>
+inline Value setSunHalo(const T0& valor = {}) {
+    return detail::api("Sky.setSunHalo", Values{Value(valor)});
+}
+/// Sky.setSunTint(Vec3(1, 0.8, 0.6))
+/// tinte del disco solar y su halo (blanco = sin cambio)
+template <typename T0 = Value>
+inline Value setSunTint(const T0& arg = {}) {
+    return detail::api("Sky.setSunTint", Values{Value(arg)});
+}
+/// Sky.setSunsetColors(cenit, horizonte, suelo)
+/// colores del atardecer (activa los colores por hora)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value setSunsetColors(const T0& cenit = {}, const T1& horizonte = {}, const T2& suelo = {}) {
+    return detail::api("Sky.setSunsetColors", Values{Value(cenit), Value(horizonte), Value(suelo)});
+}
+/// Sky.setTimeColors(true)
+/// mezclar dia, atardecer y noche segun la altura del sol
+template <typename T0 = Value>
+inline Value setTimeColors(const T0& activar = {}) {
+    return detail::api("Sky.setTimeColors", Values{Value(activar)});
+}
+}  // namespace Sky
 
 namespace Spline {
 /// Spline.create({Vec3(0,0,0), Vec3(0,0,20)}, "road", "Camino", cerrada)
@@ -2962,6 +3079,20 @@ template <typename T0 = Value>
 inline Value deleteWorld(const T0& texto = {}) {
     return detail::api("Voxel.deleteWorld", Values{Value(texto)});
 }
+/// Voxel.dimension()
+/// dimension actual ("superficie", "abismo", "cielo", "cristal")
+/// Devuelve: texto
+template <typename... Mas>
+inline Value dimension(Mas&&... mas) {
+    return detail::api("Voxel.dimension", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Voxel.dimensions()
+/// dimensiones que hay
+/// Devuelve: lista de {name, label, generator, sky}
+template <typename... Mas>
+inline Value dimensions(Mas&&... mas) {
+    return detail::api("Voxel.dimensions", Values{Value(std::forward<Mas>(mas))...});
+}
 /// Voxel.getBlock(x, y, z)
 /// numero del bloque (0 = aire)
 /// Devuelve: numero
@@ -3003,6 +3134,13 @@ inline Value isActive(Mas&&... mas) {
 template <typename T0 = Value>
 inline Value isReady(const T0& vec = {}) {
     return detail::api("Voxel.isReady", Values{Value(vec)});
+}
+/// Voxel.isWater(id)
+/// es agua (fuente o corriente)?
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value isWater(const T0& id = {}) {
+    return detail::api("Voxel.isWater", Values{Value(id)});
 }
 /// Voxel.listWorlds()
 /// lista de mundos
@@ -3060,6 +3198,13 @@ template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typenam
 inline Value setBlock(const T0& x = {}, const T1& y = {}, const T2& z = {}, const T3& texto = {}) {
     return detail::api("Voxel.setBlock", Values{Value(x), Value(y), Value(z), Value(texto)});
 }
+/// Voxel.setDimension("abismo", ambiente?)
+/// cambia de dimension (guarda la actual; ambiente = el motor pone su cielo)
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value setDimension(const T0& texto = {}, const T1& arg = {}) {
+    return detail::api("Voxel.setDimension", Values{Value(texto), Value(arg)});
+}
 /// Voxel.setMeta("clave", "texto")
 /// dato guardado con el mundo
 template <typename T0 = Value, typename T1 = Value>
@@ -3073,12 +3218,40 @@ template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
 inline Value skyLight(const T0& x = {}, const T1& y = {}, const T2& z = {}) {
     return detail::api("Voxel.skyLight", Values{Value(x), Value(y), Value(z)});
 }
+/// Voxel.spawnPoint(cerca?)
+/// sitio seguro para los pies en la dimension actual (cerca de un punto o de quien mira)
+/// Devuelve: Vec3
+template <typename T0 = Value>
+inline Value spawnPoint(const T0& arg = {}) {
+    return detail::api("Voxel.spawnPoint", Values{Value(arg)});
+}
+/// Voxel.structureAt(pos)
+/// la estructura que contiene el punto (room = sala de la mazmorra o -1)
+/// Devuelve: objeto o nil
+template <typename T0 = Value>
+inline Value structureAt(const T0& pos = {}) {
+    return detail::api("Voxel.structureAt", Values{Value(pos)});
+}
+/// Voxel.structuresNear(pos, radio)
+/// estructuras cuya caja toca la esfera
+/// Devuelve: lista de {id, type, name, center, min, max, level, seed, dimension, points = {{kind, pos, dir, tag}}}
+template <typename T0 = Value, typename T1 = Value>
+inline Value structuresNear(const T0& pos = {}, const T1& radio = {}) {
+    return detail::api("Voxel.structuresNear", Values{Value(pos), Value(radio)});
+}
 /// Voxel.surfaceHeight(x, z)
 /// altura del terreno
 /// Devuelve: numero
 template <typename T0 = Value, typename T1 = Value>
 inline Value surfaceHeight(const T0& x = {}, const T1& z = {}) {
     return detail::api("Voxel.surfaceHeight", Values{Value(x), Value(z)});
+}
+/// Voxel.waterLevel(x, z)
+/// primer bloque por encima del agua de la columna (mar o lago; 0 = sin agua)
+/// Devuelve: numero
+template <typename T0 = Value, typename T1 = Value>
+inline Value waterLevel(const T0& x = {}, const T1& z = {}) {
+    return detail::api("Voxel.waterLevel", Values{Value(x), Value(z)});
 }
 /// Voxel.worldName()
 /// nombre del mundo

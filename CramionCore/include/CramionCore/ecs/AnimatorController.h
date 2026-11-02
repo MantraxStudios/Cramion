@@ -94,6 +94,8 @@ struct AnimatorState {
 //   2D libre cartesiano (Gradient Band, como Unity): cada hijo pesa segun lo
 //       cerca que esta el punto de el respecto a cada uno de los demas.
 std::vector<float> blendTreeWeights(const AnimatorState& state, float x, float y = 0.0f);
+// Igual, en `weights` (se reutiliza: sin reservar memoria cada frame).
+void blendTreeWeights(const AnimatorState& state, float x, float y, std::vector<float>& weights);
 
 // Origen de una transicion desde "Cualquier estado".
 inline constexpr int kAnyState = -1;

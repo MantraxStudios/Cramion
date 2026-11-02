@@ -233,6 +233,17 @@ void registerTransform(Runtime& rt) {
                return {};
            },
            {"", "lo destruye (al final del frame, con sus hijos)"});
+    // DontDestroyOnLoad (ecs/SceneLoading.h): la raiz del objeto sobrevive a
+    // Scene.load y a Scene.loadAsync en modo single, con sus scripts.
+    method(rt, "dontDestroyOnLoad",
+           [&rt](api::Call& c) -> api::Value {
+               ecs::setDontDestroyOnLoad(rt.selfEntity(c), c.boolean(0, true));
+               return {};
+           },
+           {"conservar", "el objeto (su raiz) no se destruye al cambiar de escena (false: vuelve a ser de la escena)"});
+    method(rt, "isDontDestroyOnLoad",
+           [&rt](api::Call& c) -> api::Value { return ecs::isDontDestroyOnLoad(rt.selfEntity(c)); },
+           {"", "sobrevive a los cambios de escena (DontDestroyOnLoad en el o en su raiz)?", "bool"});
     method(rt, "find",
            [&rt](api::Call& c) -> api::Value {
                const ecs::Entity x = rt.selfEntity(c);

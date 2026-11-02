@@ -188,7 +188,10 @@ const std::map<std::string, std::string>& intros() {
                            "<strong>Esfera</strong> solo con la camara dentro (con distancia de mezcla), y solo cambian las "
                            "secciones marcadas <em>Sobrescribir</em>. Se ordenan por prioridad."},
         {"Sky", "Cielo: un mapa HDR importado o el cielo fisico con hora del dia, nubes volumetricas y ciclo dia/noche. "
-                "La luz direccional de la escena hace de sol."},
+                "La luz direccional de la escena hace de sol. En <em>Color del cielo</em> el cielo fisico se puede cambiar "
+                "por un <strong>Degradado</strong> (cenit, horizonte y suelo, con colores de dia, atardecer y noche) o un "
+                "<strong>Degradado por paradas</strong> (color por altura); la niebla, los reflejos y la luz ambiente "
+                "toman el mismo color. Desde los scripts: <code>Sky.setColors</code>, <code>Sky.setGradient</code>..."},
         {"Weather", "Lluvia, suelo mojado, charcos y una zona inundada. Los <code>Decal</code> de tipo Charco se suman a los "
                     "charcos de la lluvia."},
         {"Terrain", "Terreno de mapa de alturas (como el Landscape de Unreal): tamano, altura maxima, hasta 8 capas de textura y "

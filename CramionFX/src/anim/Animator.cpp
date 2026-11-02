@@ -98,7 +98,7 @@ Animator::Animator(const asset::ModelData& model) : model_(&model) {
     evaluate();
 }
 
-void Animator::evaluateBlend(const std::vector<ClipSample>& samples) {
+void Animator::evaluateBlend(const ClipSample* samples, std::size_t count) {
     if (model_ == nullptr) {
         return;
     }
@@ -106,18 +106,15 @@ void Animator::evaluateBlend(const std::vector<ClipSample>& samples) {
     if (clip_channels_.size() < model_->animations.size()) {
         clip_channels_.resize(model_->animations.size());
     }
-    // Solo las muestras que cuentan (clip valido o reposo, peso > 0).
-    struct Active {
-        const asset::AnimationClip* clip;
-        const std::vector<std::int32_t>* channels;
-        float time;
-        float weight;
-    };
-    std::vector<Active> active;
+    // Solo las muestras que cuentan (clip valido o reposo, peso > 0). La
+    // lista es del animador y se reutiliza (antes, una reserva por frame).
+    std::vector<BlendActive>& active = blend_active_;
+    active.clear();
     float total = 0.0f;
-    for (const ClipSample& s : samples) {
+    for (std::size_t k = 0; k < count; ++k) {
+        const ClipSample& s = samples[k];
         if (!(s.weight > 1e-5f)) continue;
-        Active a{nullptr, nullptr, s.time, s.weight};
+        BlendActive a{nullptr, nullptr, s.time, s.weight};
         if (s.clip >= 0 && static_cast<std::size_t>(s.clip) < model_->animations.size()) {
             const asset::AnimationClip& clip = model_->animations[static_cast<std::size_t>(s.clip)];
             std::vector<std::int32_t>& map = clip_channels_[static_cast<std::size_t>(s.clip)];
@@ -144,7 +141,7 @@ void Animator::evaluateBlend(const std::vector<ClipSample>& samples) {
             Quat rotation{0.0f, 0.0f, 0.0f, 0.0f};
             Quat first{};
             bool have_first = false;
-            for (const Active& a : active) {
+            for (const BlendActive& a : active) {
                 Vec3 t = rest_translation_[i];
                 Quat r = rest_rotation_[i];
                 Vec3 sc = rest_scale_[i];
@@ -204,6 +201,14 @@ void Animator::update(float delta_seconds) {
     if (model_ == nullptr) {
         return;
     }
+    advance(delta_seconds);
+    evaluate();
+}
+
+void Animator::advance(float delta_seconds) {
+    if (model_ == nullptr) {
+        return;
+    }
 
     if (clip_ >= 0) {
         const float duration = model_->animations[static_cast<std::size_t>(clip_)].duration;
@@ -215,8 +220,6 @@ void Animator::update(float delta_seconds) {
             }
         }
     }
-
-    evaluate();
 }
 
 void Animator::evaluate() {
@@ -226,6 +229,10 @@ void Animator::evaluate() {
 
     const asset::AnimationClip* animation =
         (clip_ >= 0) ? &model_->animations[static_cast<std::size_t>(clip_)] : nullptr;
+
+    // La pose de reposo ya descompuesta (constructor): antes se descomponia
+    // node.local de cada nodo animado en cada frame (raices y normalizar).
+    const bool rest_cached = rest_translation_.size() == model_->nodes.size();
 
     // --- 1 y 2) Pose local y global, de padres a hijos ---
     for (std::size_t i = 0; i < model_->nodes.size(); ++i) {
@@ -239,7 +246,13 @@ void Animator::evaluate() {
             Vec3 translation;
             Quat rotation;
             Vec3 scaling;
-            decompose(node.local, translation, rotation, scaling);
+            if (rest_cached) {
+                translation = rest_translation_[i];
+                rotation = rest_rotation_[i];
+                scaling = rest_scale_[i];
+            } else {
+                decompose(node.local, translation, rotation, scaling);
+            }
 
             if (!channel.positions.empty()) {
                 translation = sampleVector(channel.positions, time_);

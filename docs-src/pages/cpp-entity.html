@@ -91,6 +91,7 @@
     <tr><td><code>Value despawnCrowd(...) const</code></td><td>entity().despawnCrowd() Crowd Spawner: quita su multitud</td></tr>
     <tr><td><code>Value detachFromBone(...) const</code></td><td>entity().detachFromBone() Deja de seguir al hueso</td></tr>
     <tr><td><code>Value distanceTo(otra) const</code></td><td>entity().distanceTo(otra) distancia a otro objeto Devuelve: numero</td></tr>
+    <tr><td><code>Value dontDestroyOnLoad(conservar) const</code></td><td>entity().dontDestroyOnLoad(conservar) el objeto (su raiz) no se destruye al cambiar de escena (false: vuelve a ser de la escena)</td></tr>
     <tr><td><code>Value dropdownText() const</code></td><td>entity.dropdownText: Desplegable: texto de la elegida (texto)</td></tr>
     <tr><td><code>Value dropdownValue() const</code></td><td>entity.dropdownValue: Desplegable: la elegida (desde 1) (numero)</td></tr>
     <tr><td><code>void setDropdownValue(const Value&amp; v) const</code></td><td></td></tr>
@@ -116,10 +117,11 @@
     <tr><td><code>Value getTile(x, y, capa) const</code></td><td>entity().getTile(x, y, capa) Tilemap: lo que hay en una celda Devuelve: numero</td></tr>
     <tr><td><code>Value hasComponent(texto) const</code></td><td>entity().hasComponent(&quot;Rigidbody&quot;) tiene ese componente? Devuelve: bool</td></tr>
     <tr><td><code>Value health() const</code></td><td>entity.health: vida de su Destructible (numero)</td></tr>
-    <tr><td><code>Value interactable() const</code></td><td>entity.interactable: su boton/slider/campo responde (bool)</td></tr>
+    <tr><td><code>Value interactable() const</code></td><td>entity.interactable: su boton/slider/campo/casilla/desplegable responde (bool)</td></tr>
     <tr><td><code>void setInteractable(const Value&amp; v) const</code></td><td></td></tr>
     <tr><td><code>Value isBroken() const</code></td><td>entity.isBroken: su Destructible ya se rompio (bool)</td></tr>
     <tr><td><code>Value isCrouching(...) const</code></td><td>entity().isCrouching() Su CharacterController esta agachado? Devuelve: booleano</td></tr>
+    <tr><td><code>Value isDontDestroyOnLoad(...) const</code></td><td>entity().isDontDestroyOnLoad() sobrevive a los cambios de escena (DontDestroyOnLoad en el o en su raiz)? Devuelve: bool</td></tr>
     <tr><td><code>Value isEffectPlaying(...) const</code></td><td>entity().isEffectPlaying() esta emitiendo? Devuelve: bool</td></tr>
     <tr><td><code>Value isMine(...) const</code></td><td>entity().isMine() red: este objeto lo controlas tu (sin red, siempre) Devuelve: bool</td></tr>
     <tr><td><code>Value isMoving() const</code></td><td>entity.isMoving: Su NavAgent va hacia un destino (booleano)</td></tr>
@@ -226,7 +228,7 @@
     <tr><td><code>Value uiSize() const</code></td><td>entity.uiSize: Vec3 tamano de su RectTransform (Vec3)</td></tr>
     <tr><td><code>void setUiSize(const Value&amp; v) const</code></td><td></td></tr>
     <tr><td><code>Value uvRect(...) const</code></td><td>entity().uvRect() parte de la textura de su UIImage: {x, y, width, height} (0..1) Devuelve: objeto</td></tr>
-    <tr><td><code>Value value() const</code></td><td>entity.value: valor de su Slider o Casilla (numero)</td></tr>
+    <tr><td><code>Value value() const</code></td><td>entity.value: valor de su Slider o Casilla (Desplegable: la opcion elegida, desde 1) (numero)</td></tr>
     <tr><td><code>void setValue(const Value&amp; v) const</code></td><td></td></tr>
     <tr><td><code>Value vehicleState(...) const</code></td><td>entity().vehicleState() {speed, forwardSpeed, rpm, rpmFraction, gear, gearCount, automatic} o nil Devuelve: objeto</td></tr>
     <tr><td><code>Value velocity2D() const</code></td><td>entity.velocity2D: Vec3 de su Rigidbody2D (z = 0) (Vec3)</td></tr>

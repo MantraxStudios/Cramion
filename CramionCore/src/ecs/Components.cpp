@@ -1,4 +1,5 @@
 #include "CramionCore/ecs/Components.h"
+#include "CramionCore/anim/Keyframes.h"
 
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/ecs/World.h"
@@ -177,6 +178,59 @@ void Sky::reflect(PropertyVisitor& v) {
     v.field({"time_of_day", "Hora del dia", "Sin luz direccional ni HDR: posicion del sol"},
             time_of_day, FloatRange{0.0f, 24.0f, 0.05f, "%.2f h", true});
     v.field({"day_cycle", "Ciclo de dia"}, day_cycle);
+
+    // --- Color del cielo ---
+    const bool all = v.wantsAllFields();
+    if (v.beginGroup("Color del cielo", color_mode != SkyColorMode::Physical)) {
+        static constexpr std::array<const char*, 3> kColorModes = {"Fisico", "Degradado", "Degradado por paradas"};
+        enumField(v, {"color_mode", "Modo",
+                      "Fisico: dispersion atmosferica (por defecto). Degradado: cenit, horizonte y suelo. "
+                      "Degradado por paradas: colores por altura. Sin HDR; tambien tiñe la niebla, los reflejos "
+                      "y la luz ambiente"},
+                  color_mode, kColorModes);
+        const bool custom = color_mode != SkyColorMode::Physical;
+        if (all || color_mode == SkyColorMode::Gradient) {
+            v.field({"zenith_color", "Cenit", "Color de arriba del todo"}, zenith_color, Vec3Kind::Color);
+            v.field({"horizon_color", "Horizonte", "Color en la linea del horizonte"}, horizon_color, Vec3Kind::Color);
+            v.field({"ground_color", "Suelo", "Color bajo el horizonte (donde no hay terreno)"}, ground_color,
+                    Vec3Kind::Color);
+            v.field({"gradient_curve", "Curva", "1 = mezcla lineal; mas = la franja del horizonte es mas fina"},
+                    gradient_curve, FloatRange{0.1f, 16.0f, 0.05f, "%.2f"});
+        }
+        if (all || color_mode == SkyColorMode::GradientStops) {
+            listField(v, {"gradient", "Paradas", "Color por altura (grados: -90 abajo, 0 horizonte, 90 cenit). Hasta 8"},
+                      gradient, [](SkyGradientStop& s, PropertyVisitor& item) {
+                          item.field({"elevation", "Altura", "Grados sobre el horizonte"}, s.elevation,
+                                     FloatRange{-90.0f, 90.0f, 0.5f, "%.1f grados"});
+                          item.field({"color", "Color"}, s.color, Vec3Kind::Color);
+                      });
+        }
+        if (all || custom) {
+            v.field({"sky_intensity", "Intensidad", "Brillo de los colores (1 = parecido al cielo fisico de dia)"},
+                    sky_intensity, FloatRange{0.0f, 16.0f, 0.01f, "%.2f"});
+            v.field({"color_blend", "Mezcla", "0 = cielo fisico, 1 = solo los colores"}, color_blend,
+                    FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+            v.field({"sun_halo", "Halo del sol", "Brillo alrededor del sol sobre el degradado (0 = sin halo)"},
+                    sun_halo, FloatRange{0.0f, 8.0f, 0.01f, "%.2f"});
+        }
+        v.field({"sun_tint", "Tinte del sol", "Color del disco solar y su halo (blanco = sin cambio)"}, sun_tint,
+                Vec3Kind::Color);
+        if (all || color_mode == SkyColorMode::Gradient) {
+            v.field({"time_colors", "Colores por hora",
+                     "Los colores de arriba son el dia; al bajar el sol se mezclan con los del atardecer y de "
+                     "noche con los de la noche"},
+                    time_colors);
+            if (all || time_colors) {
+                v.field({"sunset_zenith_color", "Atardecer: cenit"}, sunset_zenith_color, Vec3Kind::Color);
+                v.field({"sunset_horizon_color", "Atardecer: horizonte"}, sunset_horizon_color, Vec3Kind::Color);
+                v.field({"sunset_ground_color", "Atardecer: suelo"}, sunset_ground_color, Vec3Kind::Color);
+                v.field({"night_zenith_color", "Noche: cenit"}, night_zenith_color, Vec3Kind::Color);
+                v.field({"night_horizon_color", "Noche: horizonte"}, night_horizon_color, Vec3Kind::Color);
+                v.field({"night_ground_color", "Noche: suelo"}, night_ground_color, Vec3Kind::Color);
+            }
+        }
+        v.endGroup();
+    }
 }
 
 void Weather::reflect(PropertyVisitor& v) {
@@ -845,6 +899,7 @@ void registerBuiltinComponents(ComponentRegistry& registry) {
     registry.registerComponent<BoneSocket>("BoneSocket", "Bone Socket", "Animacion");
     registry.registerComponent<PhysBones>("PhysBones", "Phys Bones", "Animacion");
     registry.registerComponent<PhysBoneCollider>("PhysBoneCollider", "Phys Bone Collider", "Animacion");
+    registry.registerComponent<anim::KeyframeAnimation>("KeyframeAnimation", "Animacion por claves", "Animacion");
     registry.registerComponent<Ragdoll>("Ragdoll", "Ragdoll", "Fisica");
     registry.registerComponent<Light>("Light", "Luz", "Renderizado");
     registry.registerComponent<Camera>("Camera", "Camara", "Renderizado");

@@ -104,6 +104,12 @@ struct Options {
     // volumetrica lejos (fundidos por distancia, cortes entre cascadas).
     bool far_scene = false;
     float hour = 15.5f;  // --hour: hora del dia (sol bajo = sombras largas)
+    // --flashlight: un foco en la camara mirando al fondo (una linterna). Con
+    // --far y la volumetrica, lo del fondo no debe llenarse de niebla gris.
+    bool flashlight = false;
+    float flashlight_range = 25.0f;  // --flashlight-range
+    float fog_density = -1.0f;  // --fog-density: polvo de la volumetrica (-1 = el de la escena)
+    int volumetric_steps = 0;   // --volumetric-steps: tramos por rayo (8-32; 0 = los del preset)
 };
 
 Options parse(int argc, char** argv) {
@@ -139,6 +145,13 @@ Options parse(int argc, char** argv) {
         else if (a == "--freeze-budget") o.freeze_budget = true;
         else if (a == "--far") o.far_scene = true;
         else if (a == "--hour") o.hour = static_cast<float>(std::atof(next().c_str()));
+        else if (a == "--flashlight") o.flashlight = true;
+        else if (a == "--flashlight-range") {
+            o.flashlight = true;
+            o.flashlight_range = std::max(0.5f, static_cast<float>(std::atof(next().c_str())));
+        }
+        else if (a == "--fog-density") o.fog_density = static_cast<float>(std::atof(next().c_str()));
+        else if (a == "--volumetric-steps") o.volumetric_steps = std::atoi(next().c_str());
         else std::cerr << "Opcion desconocida: " << a << "\n";
     }
     return o;
@@ -610,6 +623,21 @@ int main(int argc, char** argv) {
         const core::Vec3 camera_target = demo_entry != nullptr ? demo_entry->target
                                          : options.far_scene          ? core::Vec3{0.0f, 0.6f, -40.0f}
                                                                 : core::Vec3{0.0f, 0.8f, 0.0f};
+        if (options.flashlight) {
+            scene::SpotLight flashlight;
+            flashlight.position = camera_home + core::Vec3{0.3f, -0.3f, 0.0f};
+            flashlight.direction = core::normalize(camera_target - flashlight.position);
+            flashlight.intensity = 60.0f;
+            flashlight.range = options.flashlight_range;
+            scene.lights().spots.push_back(flashlight);
+        }
+        if (options.fog_density >= 0.0f || options.volumetric_steps > 0) {
+            gfx::PostProcessSettings post = renderer.postProcess();
+            post.volumetric_light = true;
+            if (options.fog_density >= 0.0f) post.volumetric_density = options.fog_density;
+            if (options.volumetric_steps > 0) post.volumetric_steps = options.volumetric_steps;
+            renderer.setPostProcess(post);
+        }
         if (!options.animated.empty()) {
             // Entre la camara y su objetivo, a un tercio, mirando a la camara.
             const core::Vec3 spot = camera_home + (camera_target - camera_home) * 0.33f;

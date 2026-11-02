@@ -367,6 +367,8 @@ add_executable(CramionCoreTests
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ecs/ComponentPresets.cpp"
     # Components.cpp registra el componente Environment (reflect).
     "${CMAKE_CURRENT_SOURCE_DIR}/src/environment/Environment.cpp"
+    # Components.cpp registra KeyframeAnimation (reflect).
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/anim/Keyframes.cpp"
 )
 target_include_directories(CramionCoreTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(CramionCoreTests PRIVATE Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json)
@@ -393,6 +395,11 @@ target_compile_options(CramionOptimizationTests PRIVATE -Wall -Wextra)
 add_executable(CramionCinematicsTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CinematicsTests.cpp")
 target_link_libraries(CramionCinematicsTests PRIVATE Cramion::Core)
 target_compile_options(CramionCinematicsTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas de la animacion por claves (consola) ---
+add_executable(CramionKeyframeTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/KeyframeTests.cpp")
+target_link_libraries(CramionKeyframeTests PRIVATE Cramion::Core)
+target_compile_options(CramionKeyframeTests PRIVATE -Wall -Wextra)
 
 # --- Pruebas del terreno (consola) ---
 add_executable(CramionTerrainTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TerrainTests.cpp")
@@ -521,6 +528,12 @@ add_executable(CramionSceneChangeTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/SceneC
 target_link_libraries(CramionSceneChangeTests PRIVATE Cramion::Core)
 target_compile_options(CramionSceneChangeTests PRIVATE -Wall -Wextra)
 
+# --- Pruebas de Scene.loadAsync (consola, sin GPU): carga en segundo plano,
+# progreso, allowActivation, Single/Additive, DontDestroyOnLoad ---
+add_executable(CramionSceneLoadTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/SceneLoadTests.cpp")
+target_link_libraries(CramionSceneLoadTests PRIVATE Cramion::Core)
+target_compile_options(CramionSceneLoadTests PRIVATE -Wall -Wextra)
+
 # --- Pruebas de las mallas creadas por codigo (consola) ---
 add_executable(CramionMeshTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MeshTests.cpp")
 target_link_libraries(CramionMeshTests PRIVATE Cramion::Core)
@@ -540,7 +553,8 @@ target_compile_definitions(CramionCppScriptTests PRIVATE
     CRAMION_SDK_DIR="${CMAKE_CURRENT_SOURCE_DIR}/sdk" CRAMION_BIN_DIR="${CMAKE_BINARY_DIR}")
 
 # --- Pruebas del mundo de bloques (consola) ---
-add_executable(CramionVoxelTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/VoxelTests.cpp")
+add_executable(CramionVoxelTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/VoxelTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/VoxelDimensionTests.cpp")
 target_link_libraries(CramionVoxelTests PRIVATE Cramion::Core)
 target_compile_options(CramionVoxelTests PRIVATE -Wall -Wextra)
 
@@ -558,6 +572,11 @@ target_compile_definitions(cramion_minigolf PRIVATE
 # se ejecuta a mano (cramion_sdkgen sdk/cramion) cuando cambia el registro.
 add_executable(cramion_sdkgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/SdkGen.cpp")
 target_link_libraries(cramion_sdkgen PRIVATE Cramion::Core)
+
+# Vista previa de las dimensiones del mundo de bloques: una zona a OBJ con
+# color por vertice (cramion_dimension_preview <dimension> <salida.obj>).
+add_executable(cramion_dimension_preview "${CMAKE_CURRENT_SOURCE_DIR}/tools/DimensionPreview.cpp")
+target_link_libraries(cramion_dimension_preview PRIVATE Cramion::Core)
 
 add_executable(cramion_docgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/DocGen.cpp")
 target_link_libraries(cramion_docgen PRIVATE Cramion::Core)

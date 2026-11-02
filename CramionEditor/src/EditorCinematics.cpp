@@ -155,6 +155,9 @@ void EditorApp::drawGameView() {
         (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))) {
         preferred_view_ = kGameSlot;
     }
+    // Clic en la vista en Play: vuelve el raton capturado que solto Escape
+    // (CursorLockState::click; sin esto no volvia nunca).
+    if (playing() && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) scripts_.cursorClick();
 
     // (La camara que se ve y las opciones van en la cabecera: drawGameHeader.)
 

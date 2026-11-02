@@ -87,6 +87,7 @@ layout(set = 0, binding = 4) uniform LightBuffer {
                                    // w = sombras del sol: 0 cascadas, 1 sol en las sondas, 2 lightmap
     vec4 probe_trust;              // x/y = confianza en el cubo 0/1 de la sonda (0..1), z = 1 los lightmaps
                                    // llevan la irradiancia, w = SSAO sobre lo horneado (0..1)
+    vec4 sky_tint;                 // rgb = tinte del disco solar (lineal), w = peso del degradado del Sky (0 = fisico)
     uvec4 light_tiles;             // luces puntuales por teselas: xy = pixeles de una tesela, zw = columnas y filas (z = 0: sin teselas)
     uvec4 point_tiles[576];        // un bit por luz puntual en cada tesela (64 x 36 teselas, 4 por uvec4; GpuTypes.h)
 } lights;
@@ -977,10 +978,13 @@ vec3 skyColor(vec3 view_direction, bool celestial) {
     // Bajo el horizonte la atmosfera choca enseguida con el planeta y la LUT
     // es casi negra: ahi se ve la bruma del horizonte, que se apaga poco a
     // poco hacia el suelo (como un mar o una llanura lejana).
+    // Con el degradado del Sky (sky_tint.w) la LUT ya trae el color del suelo:
+    // se usa tal cual en la parte que manda el degradado.
     vec3 sky = skyRadiance(view_direction);
     if (view_direction.y < 0.0) {
         vec3 horizon = skyRadiance(normalize(vec3(view_direction.x, 0.0, view_direction.z)));
-        sky = horizon * mix(0.85, 0.2, smoothstep(0.0, 0.15, -view_direction.y));
+        vec3 faded = horizon * mix(0.85, 0.2, smoothstep(0.0, 0.15, -view_direction.y));
+        sky = mix(faded, sky, clamp(lights.sky_tint.w, 0.0, 1.0));
     }
 
     // Brillo de fondo minimo de la noche (luz de estrellas y airglow).
@@ -995,6 +999,7 @@ vec3 skyColor(vec3 view_direction, bool celestial) {
         float limb = sqrt(clamp((sun_cos - 0.99955) / (1.0 - 0.99955), 0.0, 1.0));
         vec3 sun_tint = mix(vec3(1.0, 0.35, 0.10), vec3(1.0, 0.96, 0.90),
                             smoothstep(0.0, 0.35, to_sun.y));
+        sun_tint *= lights.sky_tint.rgb;  // tinte del sol del Sky (blanco = sin cambio)
         sky += sun_tint * disk * (0.4 + 0.6 * limb) * kSunDiskRadiance * sun_visible;
 
         // --- Luna, estrellas y Via Lactea ---
@@ -1450,6 +1455,10 @@ void main() {
     // Distancia de la camara a lo que se ve: la guarda la captura de la sonda
     // de reflexion (en la imagen de pantalla no la lee nadie).
     float surface_distance = kProbeSkyDistance;
+    // Luz reflejada (SSR o rayos) en superficies poco rugosas: se mueve con
+    // lo reflejado, no con la superficie, asi que la reproyeccion del TAA, FSR
+    // y DLSS la deja con estela. Va a la mascara reactiva (alfa de la salida).
+    float reflection_luma = 0.0;
 
     if (depth >= 1.0) {
         // --- Cielo ---
@@ -1658,6 +1667,10 @@ void main() {
         // debajo de la superficie real y traer luz que alli no llega.
         float horizon = min(1.0 + dot(reflected, geometric_normal), 1.0);
         specular_ibl *= horizon * horizon;
+        // Solo lo que encontro el reflejo (ssr.a) y nitido: lo rugoso ya se
+        // emborrona y casi no se desplaza.
+        reflection_luma = dot(specular_ibl, vec3(0.2126, 0.7152, 0.0722)) * ssr.a *
+                          (1.0 - smoothstep(0.1, 0.4, roughness));
 
         color = diffuse_ibl * multiBounceAo(ao, albedo) + specular_ibl;
         // Tela: el sheen tambien con la luz del cielo (sobre todo de canto).
@@ -1680,6 +1693,9 @@ void main() {
         int rt_flags = int(lights.rt_shadows.x + 0.5);
         bool rt_local = (rt_flags & 1) != 0;
         bool rt_sun = (rt_flags & 2) != 0;
+        // 4: todo lo que proyecta sombra esta en la escena de rayos: los rayos
+        // sustituyen a los mapas (PICA PICA) en vez del minimo de los dos.
+        bool rt_replaces_maps = (rt_flags & 4) != 0;
         if (rt_flags != 0) {
             loadRtShadowNeighborhood(distance_to_camera_z, normal);
         }
@@ -1721,17 +1737,26 @@ void main() {
             // misma a trozos: ahi manda el mapa (y el propio N.L, que ya
             // oscurece).
             float traced_term = 1.0;
+            // Cuanto manda el rayo frente al mapa al sustituirlo: nada casi de
+            // canto al sol (ahi la malla plana de los rayos se tapa a trozos y
+            // decide el mapa) y todo en cuanto la cara mira al sol.
+            float traced_weight = 0.0;
             if (rt_sun) {
                 float traced = rtLocalShadow(kRtSunId);
                 if (traced >= 0.0) {
-                    traced_term = mix(1.0, traced, smoothstep(0.0, 0.12, geometric_n_dot_l));
+                    traced_weight = smoothstep(0.0, 0.12, geometric_n_dot_l);
+                    traced_term = mix(1.0, traced, traced_weight);
                 }
             }
             // Los rayos ya dicen sombra completa: el mapa no puede aclararla
             // (es el minimo), asi que no se lee (PCSS y sombras de contacto son
             // lo mas caro del sol). Salvo en la vista de cascadas, que las pinta.
             bool cascade_view = shadows.params.z > 0.5 && shadows.params.z < 1.5;
-            if (traced_term <= 0.0 && !cascade_view) {
+            if (rt_replaces_maps && traced_weight >= 1.0 && !cascade_view) {
+                // Sustituyen: la sombra es la del rayo, sin PCSS ni sombras de
+                // contacto encima (penumbras dobles, acne y despegadas del mapa).
+                shadow = traced_term;
+            } else if (traced_term <= 0.0 && !cascade_view) {
                 shadow = 0.0;
             } else {
                 shadow = shadowFactor(world_position, geometric_normal, geometric_n_dot_l,
@@ -1836,7 +1861,12 @@ void main() {
                 float rt = rtLocalShadow(i);
                 // Casi de canto a la luz, el mapa y el N.L (ver el sol).
                 float edge = smoothstep(0.0, 0.12, dot(geometric_normal, light_direction));
-                if (rt >= 0.0) point_shadow = min(point_shadow, mix(1.0, rt, lights.points[i].shadow.y * edge));
+                if (rt >= 0.0) {
+                    float traced = mix(1.0, rt, lights.points[i].shadow.y * edge);
+                    // Con todo en la escena de rayos, sustituyen al mapa (salvo
+                    // casi de canto, donde manda el mapa).
+                    point_shadow = rt_replaces_maps && edge >= 1.0 ? traced : min(point_shadow, traced);
+                }
             }
 
             // La bombilla tiene tamano (Radio de la fuente): su brillo en una
@@ -1895,7 +1925,10 @@ void main() {
             if (rt_local && !from_behind) {
                 float rt = rtLocalShadow(kMaxPointLights + i);
                 float edge = smoothstep(0.0, 0.12, dot(geometric_normal, light_direction));
-                if (rt >= 0.0) spot_shadow = min(spot_shadow, mix(1.0, rt, lights.spots[i].outer_shadow.z * edge));
+                if (rt >= 0.0) {
+                    float traced = mix(1.0, rt, lights.spots[i].outer_shadow.z * edge);
+                    spot_shadow = rt_replaces_maps && edge >= 1.0 ? traced : min(spot_shadow, traced);
+                }
             }
 
             float spot_size = lights.spots[i].outer_shadow.w / max(distance_to_light, 0.01);
@@ -2013,5 +2046,12 @@ void main() {
     // Vista principal: el alfa empieza a 0 y los transparentes acumulan en el
     // su opacidad (mascara reactiva del TAA y de FSR 3). La distancia solo la
     // usan las capturas de la sonda.
-    out_color = vec4(color, camera.motion.z == 1u ? 0.0 : surface_distance);
+    // Los reflejos nitidos marcan cuanto pesan en el pixel (hasta 0.5: con la
+    // mascara entera el TAA dejaba pasar el ruido que queda de los rayos).
+    float reactive = 0.0;
+    if (reflection_luma > 0.0) {
+        float total_luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        reactive = 0.5 * clamp(reflection_luma / max(total_luma, 1e-4), 0.0, 1.0);
+    }
+    out_color = vec4(color, camera.motion.z == 1u ? reactive : surface_distance);
 }

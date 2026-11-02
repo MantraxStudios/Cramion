@@ -142,6 +142,26 @@ WaterBody oceanPreset() {
     return b;
 }
 
+WaterBody voxelSeaPreset() {
+    WaterBody b;
+    b.type = WaterType::Ocean;
+    b.wave_height = 0.15f;
+    b.wavelength = 14.0f;
+    b.steepness = 0.35f;
+    b.wind_spread = 30.0f;
+    b.shallow_color = Vec3{0.09f, 0.44f, 0.50f};
+    b.deep_color = Vec3{0.010f, 0.070f, 0.130f};
+    b.clarity = 2.6f;
+    b.roughness = 0.06f;
+    b.refraction = 0.25f;
+    b.caustics = 0.6f;
+    b.foam = 0.25f;
+    b.shore_foam = 0.35f;
+    b.shore_waves = 0.0f;
+    b.scattering = 1.2f;
+    return b;
+}
+
 WaterBody lakePreset() {
     WaterBody b;
     b.type = WaterType::Lake;

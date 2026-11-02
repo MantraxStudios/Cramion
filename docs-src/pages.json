@@ -226,6 +226,11 @@
           "desc": "Tamaño y orientación de la pantalla."
         },
         {
+          "slug": "cpp-sky",
+          "title": "Sky",
+          "desc": "Color del cielo: degradado, paradas por altura y tinte del sol."
+        },
+        {
           "slug": "cpp-steam",
           "title": "Steam",
           "desc": "Steam: logros, estadísticas, marcadores, Rich Presence, overlay, nube, Workshop y salas."
@@ -479,6 +484,16 @@
           "slug": "plantillas",
           "title": "Plantillas",
           "desc": "Vacío, Tercera persona, IA, Mundo de bloques, MMO RPG, Criaturas, Online, Mundo abierto y las tuyas."
+        },
+        {
+          "slug": "mundo-dimensiones",
+          "title": "Dimensiones del mundo de bloques",
+          "desc": "Superficie, abismo, cielo y cristal: viajar en caliente, spawnPoint, guardado y ambiente de cada una."
+        },
+        {
+          "slug": "mundo-estructuras",
+          "title": "Estructuras del mundo de bloques",
+          "desc": "La capital del origen, aldeas, ciudades, mazmorras, torres, ruinas y portales: structuresNear, structureAt y sus puntos."
         },
         {
           "slug": "atajos",

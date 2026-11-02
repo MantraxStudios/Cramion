@@ -219,6 +219,7 @@ TITLES = {
     "DataPack": "Cargar escenas y objetos de un .datapack en marcha.",
     "Environment": "Hora, fecha, estaciones, clima, viento y niebla.",
     "Weather": "Lo mismo que Environment (otro nombre).",
+    "Sky": "Color del cielo: degradado, paradas por altura y tinte del sol.",
     "Fire": "Incendios: encender, apagar y consultar.",
     "Fluid": "Líquidos por partículas: emisores, densidad y tipos.",
     "Game": "El juego: salir.",
@@ -252,6 +253,45 @@ EXTRA_SECTIONS = {
 
 # HTML que se anade al final de una pagina generada.
 PAGE_NOTES = {
+    "cpp-scene": (
+        "<h3 id=\"carga-async\">Cargar escenas sin parar el juego (pantallas de carga propias)</h3>\n"
+        "<p>Como <code>SceneManager.LoadSceneAsync</code> de Unity: <code>Scene::loadAsync(\"Nivel2\")</code> lee el "
+        "<code>.crscene</code> en otro hilo, lee sus modelos (mallas, texturas, LODs) en los hilos del motor y crea sus "
+        "objetos <strong>ocultos</strong> por tandas (<code>scene.LoadBudgetMs</code>, 4 ms por frame). Mientras tanto la "
+        "escena actual sigue jugando y dibujándose y tu pantalla de carga se anima sin tirones: el motor <strong>no dibuja "
+        "ninguna barra</strong>. <code>progress()</code> va de 0 a 0.9 mientras carga, se queda en 0.9 si pusiste "
+        "<code>allowActivation(false)</code> y pasa a 1 al activarse.</p>\n"
+        "<ul>\n"
+        "<li><strong>Single</strong> (por defecto): al activarse, en un solo frame, se paran los sistemas de la escena "
+        "vieja (física, audio, terreno, navegación...), se destruyen sus objetos (con <code>onDestroy</code>) salvo los "
+        "<code>dontDestroyOnLoad()</code>, se activan los nuevos y los sistemas arrancan con ellos. Los scripts no se "
+        "reinician: los objetos persistentes siguen con su estado.</li>\n"
+        "<li><strong>Additive</strong>: la escena se suma a la actual; <code>Scene::unloadAsync(\"Nombre\")</code> la quita.</li>\n"
+        "</ul>\n"
+        "<p>Mensajes (<code>on(\"OnSceneActivated\", ...)</code>): <code>OnSceneLoadProgress</code> {id, scene, progress} "
+        "al objeto que pasaste como <code>notify</code>; <code>OnSceneActivated</code>, <code>OnSceneUnloaded</code> y "
+        "<code>OnSceneLoadFailed</code> {id, scene, mode} a todos los objetos con scripts.</p>\n"
+        "<pre><code>class Portal : public Script {\n"
+        "    AsyncOperation op_;\n"
+        "public:\n"
+        "    void awake() override { on(\"OnSceneActivated\", [this](const Value&) { /* fundido de salida */ }); }\n"
+        "    void entrar() {\n"
+        "        entity().dontDestroyOnLoad();              // esta pantalla sobrevive al cambio\n"
+        "        op_ = Scene::loadAsync(\"Mazmorra\");      // la escena actual sigue animandose\n"
+        "        op_.allowActivation(false);                // esperar al fundido\n"
+        "    }\n"
+        "    void update(float) override {\n"
+        "        if (!op_) return;\n"
+        "        barra.setField(\"UISlider\", \"value\", op_.progress() / 0.9f);\n"
+        "        if (op_.progress() >= 0.9f &amp;&amp; fundidoCompleto()) op_.allowActivation(true);  // cambio en 1 frame\n"
+        "    }\n"
+        "};</code></pre>\n"
+        "<p><code>Scene::load(\"Nivel2\")</code> sigue como siempre (al terminar el frame se para todo, se carga y se "
+        "vuelve a empezar), pero ya no dibuja la barra del motor encima: se ve el último frame hasta que la escena nueva "
+        "está lista. La barra antigua se puede volver a poner en la configuración de compilación (<em>Mostrar progreso de "
+        "carga del motor</em>, apagado por defecto). Con <code>Scene::load</code> los objetos "
+        "<code>dontDestroyOnLoad()</code> también pasan a la escena nueva, pero sus scripts empiezan de nuevo.</p>\n"
+    ),
     "cpp-cvars": (
         "<h3 id=\"websocket\">CVars de WebSocket</h3>\n"
         "<table>\n  <tbody>\n"
@@ -318,7 +358,8 @@ def main():
                               ("Debug", "Debug", "Mensajes en la Consola."),
                               ("Api", "Api (por nombre)", "Llamar a cualquier función o propiedad de la API por su nombre."),
                               ("CVars", "CVars", "Variables de configuración del motor y del juego.")):
-        extra = {"Input": ["Input::MouseState", "MouseState"], "Physics": ["RaycastHit"]}.get(name, [])
+        extra = {"Input": ["Input::MouseState", "MouseState"], "Physics": ["RaycastHit"],
+                 "Scene": ["AsyncOperation"]}.get(name, [])
         pages.append(page("cpp-" + name.lower(), title, desc, desc, [(name, [name] + extra)]))
     pages.append(page("cpp-mesh", "Mesh (mallas por código)", "Crear y cambiar mallas desde C++.",
                       "Mallas creadas por código: <code>Mesh m = Mesh::cube(2.0f);</code>, cambia vértices y llama a <code>apply()</code>.",

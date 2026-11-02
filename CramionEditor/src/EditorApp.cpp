@@ -1460,7 +1460,9 @@ void EditorApp::drawUi(float delta_seconds) {
             quit_play_requested_ = false;
             exitPlay();
         }
-        // Camaras de cine despues de la fisica (pueden seguir a un cuerpo).
+        // Animacion por claves y despues las camaras de cine (pueden seguir a
+        // un cuerpo o a algo animado).
+        updateKeyframes(delta_seconds);
         updateCinematics(delta_seconds);
         // UI en el mundo (VR): con los objetos donde quedan este frame.
         if (has_project_) updateWorldUi();
@@ -1567,6 +1569,7 @@ void EditorApp::drawUi(float delta_seconds) {
         drawEnvironmentWindow();
         drawVideoPreviewWindow();  // doble clic en un video del Proyecto
         if (show_cinematic_) drawCinematicWindow();
+        if (show_animation_) drawAnimationWindow();
         drawModals();
         addCpuSample(kCpuPanels, millisecondsSince(t));
     }
@@ -1755,6 +1758,7 @@ void EditorApp::buildDefaultLayout(unsigned int dockspace_id) {
     ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Project).c_str(), bottom);
     ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Statistics).c_str(), bottom);
     ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Cinematic).c_str(), bottom);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Animation).c_str(), bottom);
     ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Console).c_str(), console);
     ImGui::DockBuilderFinish(dockspace_id);
     area_front_.clear();
@@ -1881,11 +1885,12 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Ambiente (clima y hora)", nullptr, &show_environment_window_);
         ImGui::MenuItem("Juego", nullptr, &show_game_);
         ImGui::MenuItem("Cinemática", nullptr, &show_cinematic_);
+        ImGui::MenuItem("Animación (Dope Sheet y Gráficas)", nullptr, &show_animation_);
         ImGui::Separator();
         if (ImGui::MenuItem("Restablecer diseño")) {
             reset_layout_ = true;
             show_hierarchy_ = show_inspector_ = show_project_ = show_statistics_ = show_console_ =
-                show_render_settings_ = show_physics_ = show_game_ = show_cinematic_ = true;
+                show_render_settings_ = show_physics_ = show_game_ = show_cinematic_ = show_animation_ = true;
         }
         ImGui::EndMenu();
     }

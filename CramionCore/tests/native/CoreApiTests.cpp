@@ -136,6 +136,48 @@ void testScene() {
     t.scripts.setSceneName("Pueblo");
     check(t.call("Scene.name").asString() == "Pueblo", "Scene.name");
 
+    // Scene.loadAsync (aditiva), progreso, allowActivation, unloadAsync y DontDestroyOnLoad.
+    {
+        ecs::World other;
+        other.create("Tienda");
+        check(ecs::saveScene(other, kRoot / "Escenas" / "Nivel3.crscene", &error), "(escena de prueba)");
+    }
+    check(t.call("Scene.loadAsync", {Value("Nivel9")}).asNumber() == 0.0 && t.logged("Scene.loadAsync: no existe"),
+          "Scene.loadAsync de una escena que no existe: 0");
+    const Value op = t.call("Scene.loadAsync", {Value("Nivel3"), Value("additive")});
+    check(op.asNumber() > 0.0, "Scene.loadAsync devuelve un id");
+    check(t.call("Scene.allowActivation", {op, Value(false)}).truthy(), "Scene.allowActivation(false)");
+    double progress = 0.0;
+    bool monotonic = true;
+    for (int i = 0; i < 2000 && progress < 0.89; ++i) {
+        t.scripts.updateSceneLoads(t.world, {});
+        const double p = t.call("Scene.loadProgress", {op}).asNumber();
+        if (p < progress) monotonic = false;
+        progress = p;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(progress == static_cast<double>(0.9f) && monotonic && !t.call("Scene.loadIsDone", {op}).truthy(),
+          "Scene.loadProgress sube hasta 0.9 y espera");
+    const ecs::Entity tienda = t.world.findByName("Tienda");
+    check(tienda.valid() && !tienda.activeInHierarchy(), "creada pero oculta hasta activarse");
+    t.call("Scene.allowActivation", {op, Value(true)});
+    t.scripts.updateSceneLoads(t.world, {});
+    check(t.call("Scene.loadIsDone", {op}).truthy() && t.call("Scene.loadProgress", {op}).asNumber() == 1.0 &&
+              tienda.activeInHierarchy(),
+          "allowActivation(true): activada (progreso 1)");
+    const Value scenes = t.call("Scene.loadedScenes");
+    check(scenes.size() == 2 && scenes[0].asString() == "Pueblo" && scenes[1].asString() == "Nivel3", "Scene.loadedScenes");
+    t.call("dontDestroyOnLoad", {}, ApiFixture::entity(tienda));
+    check(t.call("isDontDestroyOnLoad", {}, ApiFixture::entity(tienda)).truthy() &&
+              tienda.get<ecs::EntityInfo>().dont_destroy_on_load,
+          "Entity:dontDestroyOnLoad");
+    t.call("dontDestroyOnLoad", {Value(false)}, ApiFixture::entity(tienda));
+    const Value un = t.call("Scene.unloadAsync", {Value("Nivel3")});
+    t.scripts.updateSceneLoads(t.world, {});
+    t.frame();
+    check(un.asNumber() > 0.0 && t.call("Scene.loadIsDone", {un}).truthy() && !tienda.valid(),
+          "Scene.unloadAsync la quita (con Entity:destroy)");
+
     t.world.setOrigin(ecs::DVec3{1000.5, 0.0, -20.0});
     const Value origin = t.call("Scene.origin");
     check(origin.size() == 3 && origin[0].asNumber() == 1000.5 && origin[2].asNumber() == -20.0, "Scene.origin: lista x, y, z");

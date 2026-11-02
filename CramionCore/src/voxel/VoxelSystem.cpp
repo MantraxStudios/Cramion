@@ -14,6 +14,8 @@
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/water/Water.h"
 #include "VoxelInternal.h"
+#include "VoxelDimensions.h"
+#include "Structures.h"
 
 #include <CramionFX/vk/VulkanRenderer.h>
 
@@ -101,6 +103,31 @@ bool readChunkFile(const std::filesystem::path& file, ChunkData& chunk) {
     return out == chunk.blocks.size();
 }
 
+// Lo mismo en memoria (dimensiones de un mundo sin nombre: lo construido en
+// cada una se conserva al ir y volver, aunque no se guarde en disco).
+std::vector<std::uint8_t> encodeChunk(const ChunkData& chunk) {
+    std::vector<std::uint8_t> bytes;
+    const std::vector<BlockId>& b = chunk.blocks;
+    for (std::size_t i = 0; i < b.size();) {
+        std::size_t run = 1;
+        while (i + run < b.size() && b[i + run] == b[i] && run < 65535) ++run;
+        bytes.push_back(static_cast<std::uint8_t>(run & 0xFF));
+        bytes.push_back(static_cast<std::uint8_t>(run >> 8));
+        bytes.push_back(b[i]);
+        i += run;
+    }
+    return bytes;
+}
+bool decodeChunk(const std::vector<std::uint8_t>& bytes, ChunkData& chunk) {
+    std::size_t out = 0;
+    for (std::size_t i = 0; i + 2 < bytes.size() && out < chunk.blocks.size(); i += 3) {
+        const std::size_t run = static_cast<std::size_t>(bytes[i]) | (static_cast<std::size_t>(bytes[i + 1]) << 8);
+        const BlockId id = bytes[i + 2] < block::Count ? bytes[i + 2] : block::Air;
+        for (std::size_t k = 0; k < run && out < chunk.blocks.size(); ++k) chunk.blocks[out++] = id;
+    }
+    return out == chunk.blocks.size();
+}
+
 }  // namespace
 
 // ================================================================================
@@ -114,6 +141,7 @@ struct VoxelSystem::Impl {
     // --- Estado ---
     bool active = false;
     VoxelWorld settings;
+    std::array<float, 2> scene_trees{1.0f, 0.0f};  // tree_density y clearings del componente (newWorld)
     std::filesystem::path assets_root;
     std::filesystem::path save_root;
     std::string world_name;
@@ -126,6 +154,25 @@ struct VoxelSystem::Impl {
     BlockListener listener;
     physics::PhysicsSystem* physics = nullptr;
 
+    // --- Dimensiones (setDimension) ---
+    std::string dimension = kSurfaceDimension;
+    // Mundo sin nombre: chunks cambiados de cada dimension (encodeChunk).
+    std::unordered_map<std::string, std::unordered_map<std::int64_t, std::shared_ptr<const std::vector<std::uint8_t>>>> memory_chunks;
+    ecs::World* scene = nullptr;  // la de start(): su ambiente cambia con la dimension
+    bool ambience = true;
+    AmbienceSnapshot ambience_snapshot;
+    VoxelGenerator profile() const { return dimensionGenerator(dimension, settings.generator); }
+    void applyAmbience() {
+        if (scene != nullptr && (ambience || ambience_snapshot.taken)) {
+            applyDimensionAmbience(*scene, ambience ? dimension : std::string(kSurfaceDimension), ambience_snapshot);
+        }
+    }
+    // Vuelve a la superficie (mundo nuevo o cargado).
+    void resetDimensions() {
+        memory_chunks.clear();
+        dimension = kSurfaceDimension;
+    }
+
     struct Chunk {
         ChunkData data;
         std::array<bool, kSectionCount> dirty{};
@@ -133,6 +180,7 @@ struct VoxelSystem::Impl {
         std::array<std::uint32_t, kSectionCount> in_flight{};  // version que se esta mallando (0 = nada)
         std::array<bool, kSectionCount> meshed{};
         std::array<bool, kSectionCount> uploaded{};             // hay algo en el renderizador
+        std::array<bool, kSectionCount> water_uploaded{};       // hay agua en el renderizador
         bool ever_meshed = false;
         int top = kWorldHeight - 1;  // el bloque no-aire mas alto (encima: aire con cielo 15)
         std::array<bool, kSectionCount> collision_built{};  // la malla de colision esta al dia
@@ -152,6 +200,7 @@ struct VoxelSystem::Impl {
         std::uint64_t epoch = 0;
         std::shared_ptr<const Generator> generator;
         std::filesystem::path saved;       // generar: chunk guardado (si hay)
+        std::shared_ptr<const std::vector<std::uint8_t>> saved_bytes;  // o guardado en memoria (encodeChunk)
         std::unique_ptr<SectionSnapshot> snapshot;
         float priority = 0.0f;
     };
@@ -162,6 +211,7 @@ struct VoxelSystem::Impl {
         std::uint64_t epoch = 0;
         std::unique_ptr<ChunkData> chunk;
         std::vector<std::uint32_t> vertices;
+        std::vector<std::uint32_t> water;  // caras del agua (pase del agua)
         float milliseconds = 0.0f;
     };
     std::vector<std::thread> workers;
@@ -177,6 +227,7 @@ struct VoxelSystem::Impl {
         std::uint64_t key;
         Vec3 origin;
         std::vector<std::uint32_t> vertices;  // vacio = quitar
+        bool water = false;                   // malla del agua (pase del agua)
     };
     std::vector<SectionUpdate> section_updates;
     bool clear_renderer = true;
@@ -187,8 +238,11 @@ struct VoxelSystem::Impl {
     float last_chunk_ms = 0.0f;
     float last_mesh_ms = 0.0f;
 
-    // Agua que entra al cavar junto al mar.
+    // Agua que corre (como Minecraft): celdas por revisar en el proximo paso
+    // (cada 0.25 s), sin repetir.
     std::deque<BlockPos> water_flow;
+    std::unordered_set<std::uint64_t> water_flow_set;
+    float water_flow_timer = 0.0f;
 
     Impl() {
         const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
@@ -231,8 +285,9 @@ struct VoxelSystem::Impl {
                 r.chunk->cz = job.cz;
                 job.generator->generate(*r.chunk);  // tambien da los tintes
                 if (!job.saved.empty() && readChunkFile(job.saved, *r.chunk)) r.chunk->modified = true;
+                if (job.saved_bytes && decodeChunk(*job.saved_bytes, *r.chunk)) r.chunk->modified = true;
             } else {
-                meshSection(*job.snapshot, r.vertices);
+                meshSection(*job.snapshot, r.vertices, &r.water);
             }
             r.milliseconds = static_cast<float>(msSince(start));
             std::lock_guard lock(mutex);
@@ -484,8 +539,10 @@ struct VoxelSystem::Impl {
         return save_root / fromUtf8(safeName(world_name));
     }
     std::filesystem::path chunkFile(int cx, int cz) const {
-        const std::filesystem::path folder = worldFolder();
+        std::filesystem::path folder = worldFolder();
         if (folder.empty()) return {};
+        // Cada dimension en su carpeta (la superficie, donde siempre).
+        if (dimension != kSurfaceDimension) folder = folder / "dimensions" / fromUtf8(dimension);
         return folder / "chunks" / (std::to_string(cx) + "." + std::to_string(cz) + ".bin");
     }
 
@@ -521,6 +578,11 @@ struct VoxelSystem::Impl {
 
     void saveChunk(const Chunk& chunk) {
         if (!chunk.data.modified) return;
+        if (world_name.empty() && active) {
+            memory_chunks[dimension][chunkKey(chunk.data.cx, chunk.data.cz)] =
+                std::make_shared<const std::vector<std::uint8_t>>(encodeChunk(chunk.data));
+            return;
+        }
         const std::filesystem::path file = chunkFile(chunk.data.cx, chunk.data.cz);
         if (!file.empty() && !writeChunkFile(file, chunk.data)) {
             std::cerr << "[Voxel] No se pudo guardar " << file.string() << "\n";
@@ -534,6 +596,9 @@ struct VoxelSystem::Impl {
         for (int s = 0; s < kSectionCount; ++s) {
             if (it->second->uploaded[static_cast<std::size_t>(s)]) {
                 section_updates.push_back({sectionKey(it->second->data.cx, s, it->second->data.cz), Vec3{}, {}});
+            }
+            if (it->second->water_uploaded[static_cast<std::size_t>(s)]) {
+                section_updates.push_back({sectionKey(it->second->data.cx, s, it->second->data.cz), Vec3{}, {}, true});
             }
         }
         removeColliders(*it->second);
@@ -591,8 +656,7 @@ struct VoxelSystem::Impl {
                     const std::size_t si = static_cast<std::size_t>(SectionSnapshot::index(x, y, z));
                     s->blocks[si] = id;
                     s->light[si] = light;
-                    if (x >= 0 && y >= 0 && z >= 0 && x < kChunkSize && y < kChunkSize && z < kChunkSize && id != block::Air &&
-                        id != block::Water) {
+                    if (x >= 0 && y >= 0 && z >= 0 && x < kChunkSize && y < kChunkSize && z < kChunkSize && id != block::Air) {
                         ++solid;
                     }
                 }
@@ -649,10 +713,13 @@ struct VoxelSystem::Impl {
                 c->meshed[s] = true;
                 c->ever_meshed = true;
                 c->uploaded[s] = !r.vertices.empty();
-                section_updates.push_back({sectionKey(r.cx, r.sy, r.cz),
-                                           Vec3{static_cast<float>(r.cx * kChunkSize), static_cast<float>(r.sy * kChunkSize),
-                                                static_cast<float>(r.cz * kChunkSize)},
-                                           std::move(r.vertices)});
+                const Vec3 origin{static_cast<float>(r.cx * kChunkSize), static_cast<float>(r.sy * kChunkSize),
+                                  static_cast<float>(r.cz * kChunkSize)};
+                section_updates.push_back({sectionKey(r.cx, r.sy, r.cz), origin, std::move(r.vertices)});
+                if (!r.water.empty() || c->water_uploaded[s]) {
+                    c->water_uploaded[s] = !r.water.empty();
+                    section_updates.push_back({sectionKey(r.cx, r.sy, r.cz), origin, std::move(r.water), true});
+                }
             }
         }
         if (!later.empty()) {
@@ -701,6 +768,8 @@ struct VoxelSystem::Impl {
             if (const std::filesystem::path file = chunkFile(pos.first, pos.second); !file.empty()) {
                 std::error_code error;
                 if (std::filesystem::exists(file, error)) job.saved = file;
+            } else if (const auto dim = memory_chunks.find(dimension); dim != memory_chunks.end()) {
+                if (const auto it = dim->second.find(chunkKey(pos.first, pos.second)); it != dim->second.end()) job.saved_bytes = it->second;
             }
             generating.insert(chunkKey(pos.first, pos.second));
             submit(std::move(job));
@@ -745,6 +814,10 @@ struct VoxelSystem::Impl {
                     section_updates.push_back({sectionKey(c.cx, c.sy, c.cz), Vec3{}, {}});
                     chunk->uploaded[s] = false;
                 }
+                if (chunk->water_uploaded[s]) {
+                    section_updates.push_back({sectionKey(c.cx, c.sy, c.cz), Vec3{}, {}, true});
+                    chunk->water_uploaded[s] = false;
+                }
                 continue;
             }
             Job job;
@@ -762,22 +835,71 @@ struct VoxelSystem::Impl {
         }
     }
 
-    void flowWater(int budget) {
-        const int sea = generator ? generator->seaLevel() : 62;
-        while (!water_flow.empty() && budget-- > 0) {
-            const BlockPos p = water_flow.front();
-            water_flow.pop_front();
-            if (getBlock(p.x, p.y, p.z) != block::Water) continue;
-            for (int d = 0; d < 6; ++d) {
-                if (d == 2) continue;  // no sube
-                const int x = p.x + kDirs[d][0], y = p.y + kDirs[d][1], z = p.z + kDirs[d][2];
-                if (y < 1 || y >= sea || chunkOf(x, z) == nullptr) continue;
-                const BlockId id = getBlock(x, y, z);
-                if (id == block::Air || (blockDef(id).replaceable && id != block::Water)) {
-                    setBlockInternal(x, y, z, block::Water, false);
-                    water_flow.push_back({x, y, z});
-                }
+    static std::uint64_t cellKey(int x, int y, int z) {
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(x) & 0xFFFFFFu) << 40) |
+               (static_cast<std::uint64_t>(static_cast<std::uint32_t>(z) & 0xFFFFFFu) << 16) | static_cast<std::uint64_t>(y & 0xFFFF);
+    }
+    void queueWater(int x, int y, int z) {
+        if (y < 1 || y >= kWorldHeight) return;
+        if (water_flow_set.insert(cellKey(x, y, z)).second) water_flow.push_back({x, y, z});
+    }
+    // Tras cambiar una celda: si hay agua en ella o al lado, se revisan ella y sus vecinas.
+    void wakeWater(int x, int y, int z, BlockId before) {
+        bool touches = block::isWater(before) || block::isWater(getBlock(x, y, z));
+        for (int d = 0; d < 6 && !touches; ++d) touches = block::isWater(getBlock(x + kDirs[d][0], y + kDirs[d][1], z + kDirs[d][2]));
+        if (!touches) return;
+        queueWater(x, y, z);
+        for (const auto& d : kDirs) queueWater(x + d[0], y + d[1], z + d[2]);
+    }
+    // El agua que tendria que haber en una celda (aire, planta o agua que corre):
+    // la fuente no cambia; con agua encima, corriente 1 (cae); si no, la de la
+    // vecina mas fuerte que pueda extenderse (sobre suelo) mas 1, hasta 7. Dos
+    // fuentes al lado sobre suelo hacen una fuente (como Minecraft).
+    void updateWaterCell(const BlockPos& p) {
+        if (p.y < 1 || p.y >= kWorldHeight - 1 || chunkOf(p.x, p.z) == nullptr) return;
+        const BlockId id = getBlock(p.x, p.y, p.z);
+        const int level = block::waterLevel(id);
+        if (level == 0) return;
+        const BlockDef& def = blockDef(id);
+        if (level < 0 && id != block::Air && !(def.shape == BlockShape::Cross && def.replaceable)) return;
+        int target = 99;
+        if (block::isWater(getBlock(p.x, p.y + 1, p.z))) target = 1;
+        int sources = 0;
+        static constexpr int kSides[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (const auto& sd : kSides) {
+            const int nx = p.x + sd[0], nz = p.z + sd[1];
+            if (chunkOf(nx, nz) == nullptr) continue;
+            const int nl = block::waterLevel(getBlock(nx, p.y, nz));
+            if (nl < 0) continue;
+            if (nl == 0) ++sources;
+            // Solo se extiende a los lados lo que no puede caer.
+            const BlockId below = getBlock(nx, p.y - 1, nz);
+            const bool spreads = blockDef(below).solid ||
+                                 (block::waterLevel(below) == 0 && !block::isWater(getBlock(nx, p.y + 1, nz)));
+            if (spreads) target = std::min(target, nl + 1);
+        }
+        const BlockId below = getBlock(p.x, p.y - 1, p.z);
+        if (sources >= 2 && (blockDef(below).solid || block::waterLevel(below) == 0)) target = 0;
+        const BlockId want = target == 0 ? block::Water : (target <= 7 ? block::flowingWater(target) : block::Air);
+        if (level < 0 && want == block::Air) return;  // seco y sigue seco (la planta se queda)
+        if (want != id) setBlockInternal(p.x, p.y, p.z, want, false);
+    }
+    void flowWater(float delta_seconds) {
+        water_flow_timer += delta_seconds;
+        if (water_flow_timer < 0.25f || water_flow.empty()) return;
+        water_flow_timer = 0.0f;
+        std::deque<BlockPos> now;
+        now.swap(water_flow);
+        water_flow_set.clear();
+        int budget = 384;
+        while (!now.empty()) {
+            const BlockPos p = now.front();
+            now.pop_front();
+            if (budget-- <= 0) {
+                queueWater(p.x, p.y, p.z);  // lo que no cabe, al siguiente paso
+                continue;
             }
+            updateWaterCell(p);
         }
     }
 
@@ -788,18 +910,7 @@ struct VoxelSystem::Impl {
         BlockId& cell = c->data.blocks[static_cast<std::size_t>(cellIndex(floorMod(x, kChunkSize), y, floorMod(z, kChunkSize)))];
         const BlockId before = cell;
         if (before == id) return true;
-        // Al quitar un bloque bajo el nivel del mar junto al agua, entra el agua.
-        const int sea = generator ? generator->seaLevel() : 62;
-        if (by_player && id == block::Air && y < sea) {
-            for (int d = 0; d < 6; ++d) {
-                if (d == 3) continue;  // el agua de abajo no sube
-                if (getBlock(x + kDirs[d][0], y + kDirs[d][1], z + kDirs[d][2]) == block::Water) {
-                    id = block::Water;
-                    water_flow.push_back({x, y, z});
-                    break;
-                }
-            }
-        }
+        (void)by_player;
         cell = id;
         c->data.modified = true;
         if (id != block::Air) c->top = std::max(c->top, y);
@@ -833,7 +944,73 @@ struct VoxelSystem::Impl {
             if (above.shape == BlockShape::Cross && !blockDef(id).solid) setBlockInternal(x, y + 1, z, block::Air, false);
         }
         if (listener) listener(BlockPos{x - ox, y - oy, z - oz}, before, id);
+        // El agua de alrededor fluye si se abrio un hueco (o se quito su fuente).
+        wakeWater(x, y, z, before);
         return true;
+    }
+
+    // ------------------------------------------------------------ agua (aspecto)
+    // El agua de bloques se dibuja en el pase del agua como un cuerpo mas
+    // (tipo 3). Su aspecto: el de un WaterBody hijo del VoxelWorld si lo hay
+    // (aunque este desactivado: asi se ajusta sin dibujar el plano), si no uno
+    // azul claro como el de Minecraft. Y si la camara esta en un bloque de agua
+    // (niebla, causticas y rayos bajo el agua), con la altura de su superficie.
+    void syncWaterLook(gfx::VulkanRenderer& renderer) const {
+        gfx::GpuWaterBody p{};
+        water::WaterBody look;
+        look.shallow_color = Vec3{0.10f, 0.45f, 0.52f};
+        look.deep_color = Vec3{0.012f, 0.07f, 0.13f};
+        look.clarity = 3.0f;
+        look.foam = 0.35f;
+        look.shore_foam = 0.3f;
+        look.caustics = 0.7f;
+        look.refraction = 0.3f;
+        look.roughness = 0.05f;
+        look.wave_height = 0.05f;
+        look.wavelength = 4.0f;
+        look.steepness = 0.3f;
+        look.scattering = 1.0f;
+        look.detail = 1.0f;
+        if (scene != nullptr) {
+            for (const entt::entity h : scene->registry().view<water::WaterBody>()) {
+                const ecs::Entity e = scene->wrap(h);
+                const ecs::Entity parent = e.parent();
+                if (parent.valid() && parent.has<VoxelWorld>()) {
+                    look = e.get<water::WaterBody>();
+                    break;
+                }
+            }
+        }
+        constexpr float kRad = 3.14159265f / 180.0f;
+        p.origin = core::Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+        p.extent = core::Vec4{0.0f, 0.0f, 3.0f, 0.0f};  // 3 = agua de bloques
+        p.shallow = core::Vec4{look.shallow_color.x, look.shallow_color.y, look.shallow_color.z, look.clarity};
+        p.deep = core::Vec4{look.deep_color.x, look.deep_color.y, look.deep_color.z, std::min(look.foam, 0.6f)};
+        // Olas pequenas: los bloques no se mueven (solo tiembla la superficie).
+        p.waves = core::Vec4{std::min(look.wave_height, 0.06f), std::clamp(look.wavelength, 2.0f, 8.0f), look.wave_speed,
+                             look.steepness};
+        p.wind = core::Vec4{look.wind_direction * kRad, look.wind_spread * kRad, 1.2f, look.detail};
+        p.look = core::Vec4{look.roughness, look.refraction, look.caustics, std::min(look.shore_foam, 0.4f)};
+        p.under = core::Vec4{look.god_rays, look.particles, 0.0f, 0.0f};
+        bool inside = false;
+        float surface = 0.0f, sky = 1.0f;
+        if (active && has_viewer) {
+            const int x = static_cast<int>(std::floor(viewer.x)), z = static_cast<int>(std::floor(viewer.z));
+            int y = static_cast<int>(std::floor(viewer.y));
+            if (chunkOf(x, z) != nullptr && block::isWater(getBlock(x, y, z))) {
+                inside = true;
+                while (y + 1 < kWorldHeight && block::isWater(getBlock(x, y + 1, z))) ++y;
+                // La luz del cielo sobre la superficie (el agua la va quitando hacia abajo:
+                // la de la camara dejaria negro el fondo del mar).
+                sky = static_cast<float>(std::max(channel(x, y + 1, z, true), channel(x, y, z, true))) / 15.0f;
+                const BlockId up = getBlock(x, y + 1, z);
+                const int top = blockDef(up).opaque ? 16 : waterHeight16(block::waterLevel(getBlock(x, y, z)));
+                surface = static_cast<float>(y) + static_cast<float>(top) / 16.0f - static_cast<float>(oy);
+            }
+        }
+        // extra: olas de playa, luz en las crestas, superficie en la camara, luz del cielo en la camara.
+        p.extra = core::Vec4{0.0f, look.scattering, surface, sky};
+        renderer.setVoxelWater(p, active, inside);
     }
 
     // ------------------------------------------------------------ colision
@@ -993,9 +1170,13 @@ struct VoxelSystem::Impl {
         generating.clear();
         section_updates.clear();
         water_flow.clear();
+        water_flow_set.clear();
         clear_renderer = true;
         seed = new_seed;
-        generator = std::make_shared<Generator>(seed, static_cast<int>(std::lround(settings.sea_level)));
+        auto made = std::make_shared<Generator>(seed, static_cast<int>(std::lround(settings.sea_level)),
+                                                profile());  // el de la dimension actual
+        made->setVegetation(settings.tree_density, settings.clearings);
+        generator = std::move(made);
     }
 
     void writeWorldInfo() const {
@@ -1005,6 +1186,11 @@ struct VoxelSystem::Impl {
         json["name"] = world_name;
         json["seed"] = seed;
         json["sea_level"] = settings.sea_level;
+        // El mismo terreno al volver: con que generador se creo.
+        json["generator"] = static_cast<int>(settings.generator);
+        json["tree_density"] = settings.tree_density;
+        json["clearings"] = settings.clearings;
+        json["dimension"] = dimension;  // donde estaba el jugador
         json["last_played"] = static_cast<std::int64_t>(std::time(nullptr));
         json["meta"] = meta_values;
         std::error_code error;
@@ -1037,6 +1223,7 @@ void VoxelSystem::start(ecs::World& world) {
         const ecs::Entity e = world.wrap(h);
         if (!e.activeInHierarchy()) continue;
         d.settings = e.get<VoxelWorld>();
+        d.scene_trees = {d.settings.tree_density, d.settings.clearings};
         d.active = true;
         break;
     }
@@ -1047,6 +1234,8 @@ void VoxelSystem::start(ecs::World& world) {
     d.oz = static_cast<int>(std::llround(world.origin().z));
     d.world_name.clear();
     d.meta_values.clear();
+    d.scene = &world;
+    d.resetDimensions();
     d.resetWorld(d.settings.seed);
     // Bajo el agua solo si la camara esta en un bloque de agua de verdad.
     Impl* impl = &d;
@@ -1055,7 +1244,7 @@ void VoxelSystem::start(ecs::World& world) {
         const int x = static_cast<int>(std::floor(camera.x)) + impl->ox, y = static_cast<int>(std::floor(camera.y)) + impl->oy,
                   z = static_cast<int>(std::floor(camera.z)) + impl->oz;
         if (impl->chunkOf(x, z) == nullptr) return -1;
-        return impl->getBlock(x, y, z) == block::Water ? 1 : 0;
+        return block::isWater(impl->getBlock(x, y, z)) ? 1 : 0;
     });
 }
 
@@ -1065,6 +1254,10 @@ void VoxelSystem::stop() {
     if (d.active) water::setUnderwaterOverride({});
     d.active = false;
     d.world_name.clear();
+    // La escena (y su ambiente) es de quien la cree: no se toca al parar.
+    d.scene = nullptr;
+    d.ambience_snapshot = AmbienceSnapshot{};
+    d.resetDimensions();
     d.resetWorld(d.seed);
     d.generator.reset();
     d.has_viewer = false;
@@ -1082,7 +1275,7 @@ void VoxelSystem::update(float delta_seconds, const Vec3& viewer) {
     d.viewer_cz = floorDiv(static_cast<int>(std::floor(viewer.z)) + d.oz, kChunkSize);
     d.has_viewer = true;
     d.collect(6.0);
-    d.flowWater(64);
+    d.flowWater(delta_seconds);
     d.stream(3.0);
     d.updateCollision(2.0);
 }
@@ -1095,12 +1288,15 @@ void VoxelSystem::syncRenderer(gfx::VulkanRenderer& renderer) {
     }
     if (!d.active) {
         d.section_updates.clear();
+        renderer.setVoxelWater(gfx::GpuWaterBody{}, false, false);
         return;
     }
     // Texturas: se generan en otro hilo la primera vez (o si cambia la carpeta).
     const std::filesystem::path folder = d.settings.textures.empty() ? std::filesystem::path{} : d.assets_root / fromUtf8(d.settings.textures);
     const std::uint32_t size = std::bit_ceil(static_cast<std::uint32_t>(std::clamp(d.settings.texture_size, 16, 1024)));
-    const std::string signature = folder.string() + "|" + std::to_string(size);
+    const bool flat = d.settings.flat_colors;
+    const std::string signature = folder.string() + "|" + std::to_string(size) + (flat ? "|liso" : "");
+    renderer.setVoxelFlatColors(flat);
     if (signature != d.textures_signature && !d.textures_future.valid()) {
         d.textures_signature = signature;
         // En el sistema de jobs (antes un std::async por textura: un hilo del
@@ -1108,13 +1304,13 @@ void VoxelSystem::syncRenderer(gfx::VulkanRenderer& renderer) {
         auto promise = std::make_shared<std::promise<std::vector<gfx::VoxelTextureLayer>>>();
         d.textures_future = promise->get_future();
         jobs::schedule(
-            [promise, folder, size]() {
+            [promise, folder, size, flat]() {
                 try {
                     const auto& names = textureNames();
                     std::vector<gfx::VoxelTextureLayer> layers(names.size());
                     // Una textura por trozo; quien espera ayuda (parallelFor).
                     jobs::parallelFor(names.size(), 1, [&](std::size_t begin, std::size_t end) {
-                        for (std::size_t i = begin; i < end; ++i) buildTexture(names[i], size, folder, layers[i]);
+                        for (std::size_t i = begin; i < end; ++i) buildTexture(names[i], size, folder, layers[i], flat);
                     });
                     promise->set_value(std::move(layers));
                 } catch (...) {
@@ -1136,15 +1332,19 @@ void VoxelSystem::syncRenderer(gfx::VulkanRenderer& renderer) {
     }
     for (Impl::SectionUpdate& u : d.section_updates) {
         if (u.vertices.empty()) {
-            renderer.removeVoxelSection(u.key);
+            if (u.water) renderer.removeVoxelWaterSection(u.key);
+            else renderer.removeVoxelSection(u.key);
         } else {
             // Del chunk (absoluto) al mundo local.
             const Vec3 origin = u.origin - Vec3{static_cast<float>(d.ox), static_cast<float>(d.oy), static_cast<float>(d.oz)};
-            renderer.setVoxelSection(u.key, origin, u.vertices.data(), static_cast<std::uint32_t>(u.vertices.size() / 2));
+            const auto count = static_cast<std::uint32_t>(u.vertices.size() / 2);
+            if (u.water) renderer.setVoxelWaterSection(u.key, origin, u.vertices.data(), count);
+            else renderer.setVoxelSection(u.key, origin, u.vertices.data(), count);
         }
     }
     d.section_updates.clear();
     renderer.setVoxelTime(d.time);
+    d.syncWaterLook(renderer);
 }
 
 void VoxelSystem::waitUntilReady(const Vec3& center, int radius_chunks, float timeout_seconds) {
@@ -1185,9 +1385,14 @@ bool VoxelSystem::newWorld(const std::string& name, int seed) {
     if (!d.world_name.empty()) saveWorld();
     d.world_name = name;
     d.meta_values.clear();
-    // Un mundo nuevo empieza sin nada guardado.
+    // Un mundo nuevo empieza sin nada guardado, con los arboles del componente
+    // (loadWorld pudo poner los de otro mundo).
+    d.settings.tree_density = d.scene_trees[0];
+    d.settings.clearings = d.scene_trees[1];
     std::error_code error;
     std::filesystem::remove_all(d.worldFolder(), error);
+    d.resetDimensions();  // empieza en la superficie
+    d.applyAmbience();
     d.resetWorld(seed);
     d.writeWorldInfo();
     return true;
@@ -1209,6 +1414,15 @@ bool VoxelSystem::loadWorld(const std::string& name) {
             if (value.is_string()) d.meta_values[key] = value.get<std::string>();
         }
     }
+    // Los mundos de antes no lo guardaban: el Clasico.
+    d.settings.generator = static_cast<VoxelGenerator>(std::clamp(json.value("generator", 0), 0, 1));
+    // Los arboles con los que se creo (los de antes no lo guardaban: los del componente).
+    d.settings.tree_density = json.value("tree_density", d.settings.tree_density);
+    d.settings.clearings = json.value("clearings", d.settings.clearings);
+    // La dimension en la que estaba el jugador (los de antes: la superficie).
+    d.resetDimensions();
+    if (const std::string dim = json.value("dimension", std::string(kSurfaceDimension)); findDimension(dim) != nullptr) d.dimension = dim;
+    d.applyAmbience();
     d.resetWorld(json.value("seed", d.settings.seed));
     return true;
 }
@@ -1288,6 +1502,36 @@ int VoxelSystem::surfaceHeight(int x, int z) const {
     const Impl& d = *impl_;
     return (d.generator ? d.generator->terrainHeight(x + d.ox, z + d.oz) : 64) - d.oy;
 }
+
+// --- Estructuras (Structures.cpp): en coordenadas absolutas por dentro ---
+namespace {
+void structureToLocal(StructureInfo& s, const Vec3& offset) {
+    s.center = s.center - offset;
+    s.min = s.min - offset;
+    s.max = s.max - offset;
+    for (StructurePoint& p : s.points) p.position = p.position - offset;
+}
+}  // namespace
+
+std::vector<StructureInfo> VoxelSystem::structuresNear(const Vec3& position, float radius) const {
+    const Impl& d = *impl_;
+    if (!d.generator || d.generator->structures() == nullptr) return {};
+    const Vec3 offset{static_cast<float>(d.ox), static_cast<float>(d.oy), static_cast<float>(d.oz)};
+    const Vec3 p = position + offset;
+    std::vector<StructureInfo> list = d.generator->structures()->nearby(p.x, p.y, p.z, radius);
+    for (StructureInfo& s : list) structureToLocal(s, offset);
+    return list;
+}
+
+bool VoxelSystem::structureAt(const Vec3& position, StructureInfo& out) const {
+    const Impl& d = *impl_;
+    if (!d.generator || d.generator->structures() == nullptr) return false;
+    const Vec3 offset{static_cast<float>(d.ox), static_cast<float>(d.oy), static_cast<float>(d.oz)};
+    const Vec3 p = position + offset;
+    if (!d.generator->structures()->at(p.x, p.y, p.z, out)) return false;
+    structureToLocal(out, offset);
+    return true;
+}
 void VoxelSystem::shiftOrigin(const Vec3& offset) {
     Impl& d = *impl_;
     d.ox += static_cast<int>(std::lround(offset.x));
@@ -1297,8 +1541,13 @@ void VoxelSystem::shiftOrigin(const Vec3& offset) {
     // colisiones la fisica; lo que este en cola se convierte al mandarlo.
 }
 bool VoxelSystem::inWater(const Vec3& p) const {
-    return getBlock(static_cast<int>(std::floor(p.x)), static_cast<int>(std::floor(p.y)), static_cast<int>(std::floor(p.z))) ==
-           block::Water;
+    return block::isWater(getBlock(static_cast<int>(std::floor(p.x)), static_cast<int>(std::floor(p.y)), static_cast<int>(std::floor(p.z))));
+}
+int VoxelSystem::waterLevel(int x, int z) const {
+    const Impl& d = *impl_;
+    if (!d.generator) return 0;
+    const int level = d.generator->waterLevel(x + d.ox, z + d.oz);
+    return level > 0 ? level - d.oy : 0;
 }
 
 VoxelHit VoxelSystem::raycast(const Vec3& origin, const Vec3& direction, float max_distance) const {
@@ -1465,6 +1714,124 @@ VoxelStats VoxelSystem::stats() const {
     s.last_chunk_ms = d.last_chunk_ms;
     s.last_mesh_ms = d.last_mesh_ms;
     return s;
+}
+
+// --- Dimensiones ----------------------------------------------------------------------
+
+const std::string& VoxelSystem::dimension() const { return impl_->dimension; }
+
+bool VoxelSystem::setDimension(const std::string& name, bool ambience) {
+    Impl& d = *impl_;
+    if (!d.active || findDimension(name) == nullptr) return false;
+    d.ambience = ambience;
+    if (name != d.dimension) {
+        // Lo construido en la actual: con nombre, a disco; sin nombre, a memoria.
+        for (const auto& [key, chunk] : d.chunks) d.saveChunk(*chunk);
+        d.dimension = name;
+        // Fuera chunks, colisiones, trabajos en vuelo (otra epoca) y las
+        // secciones del renderizador (syncRenderer las borra todas); otro
+        // generador. Los chunks nuevos cargan alrededor de quien mira.
+        d.resetWorld(d.seed);
+        d.writeWorldInfo();
+    }
+    d.applyAmbience();
+    return true;
+}
+
+namespace {
+// Se puede pisar: solido y cubo (ni hojas, ni nubes, ni lava).
+bool goodGround(BlockId id) {
+    const BlockDef& def = blockDef(id);
+    return def.solid && def.shape == BlockShape::Cube && !(def.cutout && def.waves) && id != block::Lava && id != block::Cloud;
+}
+// Se puede estar dentro: no choca y no es liquido.
+bool freeCell(BlockId id) {
+    return !blockDef(id).solid && id != block::Lava && !block::isWater(id) && id != block::FallingWater;
+}
+}  // namespace
+
+Vec3 VoxelSystem::spawnPoint() const {
+    const Impl& d = *impl_;
+    const Vec3 origin{static_cast<float>(d.ox), static_cast<float>(d.oy), static_cast<float>(d.oz)};
+    return spawnPoint(d.has_viewer ? d.viewer - origin : Vec3{0.0f, 0.0f, 0.0f} - origin);
+}
+
+Vec3 VoxelSystem::spawnPoint(const Vec3& around) const {
+    const Impl& d = *impl_;
+    if (!d.generator) return around;
+    const int ax = static_cast<int>(std::floor(around.x)) + d.ox, az = static_cast<int>(std::floor(around.z)) + d.oz;
+    const int ccx = floorDiv(ax, kChunkSize), ccz = floorDiv(az, kChunkSize);
+    const bool abyss = d.generator->profile() == VoxelGenerator::Abyss;
+    // En el abismo, dentro de la caverna (no sobre el techo).
+    const int y_cap = abyss ? 140 : kWorldHeight - 3;
+    const auto mem = d.memory_chunks.find(d.dimension);
+    ChunkData temp;
+    for (int ring = 0; ring <= 6; ++ring) {
+        long long best_d2 = -1;
+        int bx = 0, by = 0, bz = 0;
+        for (int dz = -ring; dz <= ring; ++dz) {
+            for (int dx = -ring; dx <= ring; ++dx) {
+                if (std::max(std::abs(dx), std::abs(dz)) != ring) continue;
+                const int cx = ccx + dx, cz = ccz + dz;
+                const ChunkData* data = nullptr;
+                if (const Impl::Chunk* c = d.chunkAt(cx, cz)) {
+                    data = &c->data;
+                } else {
+                    // Sin cargar: lo genera aqui (y encima lo guardado).
+                    temp = ChunkData{};
+                    temp.cx = cx;
+                    temp.cz = cz;
+                    d.generator->generate(temp);
+                    if (const std::filesystem::path file = d.chunkFile(cx, cz); !file.empty()) {
+                        std::error_code error;
+                        if (std::filesystem::exists(file, error)) readChunkFile(file, temp);
+                    } else if (mem != d.memory_chunks.end()) {
+                        if (const auto it = mem->second.find(chunkKey(cx, cz)); it != mem->second.end()) decodeChunk(*it->second, temp);
+                    }
+                    data = &temp;
+                }
+                const auto at = [&](int x, int y, int z) { return data->get(x, y, z); };
+                const auto valid = [&](int x, int y, int z) {
+                    if (!goodGround(at(x, y, z)) || !freeCell(at(x, y + 1, z)) || !freeCell(at(x, y + 2, z))) return false;
+                    for (int oz = -1; oz <= 1; ++oz) {
+                        for (int ox = -1; ox <= 1; ++ox) {
+                            if (at(x + ox, y, z + oz) == block::Lava || at(x + ox, y + 1, z + oz) == block::Lava) return false;
+                            if ((ox == 0) != (oz == 0) && !goodGround(at(x + ox, y, z + oz))) return false;  // ni borde ni hueco
+                        }
+                    }
+                    return true;
+                };
+                for (int z = 1; z < kChunkSize - 1; ++z) {
+                    for (int x = 1; x < kChunkSize - 1; ++x) {
+                        int found = -1;
+                        if (abyss) {
+                            for (int y = 3; y < y_cap && found < 0; ++y) {
+                                if (valid(x, y, z)) found = y;
+                            }
+                        } else {
+                            for (int y = y_cap; y >= 1 && found < 0; --y) {
+                                if (valid(x, y, z)) found = y;
+                            }
+                        }
+                        if (found < 0) continue;
+                        const long long ex = cx * kChunkSize + x - ax, ez = cz * kChunkSize + z - az;
+                        const long long d2 = ex * ex + ez * ez;
+                        if (best_d2 < 0 || d2 < best_d2) {
+                            best_d2 = d2;
+                            bx = cx * kChunkSize + x;
+                            by = found;
+                            bz = cz * kChunkSize + z;
+                        }
+                    }
+                }
+            }
+        }
+        if (best_d2 >= 0) {
+            return Vec3{static_cast<float>(bx - d.ox) + 0.5f, static_cast<float>(by + 1 - d.oy), static_cast<float>(bz - d.oz) + 0.5f};
+        }
+    }
+    return Vec3{around.x, static_cast<float>(surfaceHeight(static_cast<int>(std::floor(around.x)), static_cast<int>(std::floor(around.z))) + 1),
+                around.z};
 }
 
 }  // namespace cramion::voxel

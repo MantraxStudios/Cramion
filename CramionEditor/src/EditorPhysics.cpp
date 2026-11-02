@@ -268,6 +268,7 @@ void EditorApp::enterPlay() {
     cinematics_.reset();
     cinematics_.clearPreview();
     timeline_playing_ = false;
+    resetKeyframesForPlay();
     // Como Unity: al dar Play se ve el Juego (salvo "quedarse en la vista actual").
     if (show_game_ && play_focus_game_) {
         focus_game_ = true;
@@ -296,8 +297,10 @@ void EditorApp::exitPlay() {
         focus_scene_ = true;
     }
     const std::uint64_t steps = physics_.stats().steps;
-    scripts_.stop();
+    // Primero los scripts de C++: sus onDestroy (guardar partida, Voxel.setMeta,
+    // Prefs...) llaman a la API, que falla si scripts_ ya no esta en marcha.
     stopCppScripts();
+    scripts_.stop();
     scripts_.unmountDataPacks();  // lo montado en Play (DataPack.load) sale del proyecto
     scripts_.shutdownNetwork();  // salir de Play cierra la partida en red
     video_.stop();  // ANTES que el audio: suelta sus voces de stream
@@ -357,6 +360,7 @@ void EditorApp::exitPlay() {
     }
     physics_.start(world_);
     cinematics_.reset();
+    resetKeyframesForPlay();
     updateTitle();
     std::cout << "[Fisica] Stop (" << steps << " pasos, "
               << event_counts_[static_cast<int>(PhysicsEventType::CollisionEnter)] << " colisiones, "
@@ -426,6 +430,13 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         stopVoxels();
         crowds_.end(world_);
         const ecs::DVec3 origin_before = world_.origin();
+        // DontDestroyOnLoad: pasan a la escena nueva con sus UUID (sus
+        // scripts empiezan otra vez; Scene.loadAsync conserva su estado).
+        std::vector<std::string> persistent;
+        for (const entt::entity r : world_.roots()) {
+            const ecs::Entity e = world_.wrap(r);
+            if (e.get<ecs::EntityInfo>().dont_destroy_on_load) persistent.push_back(ecs::serializeEntity(world_, e));
+        }
         // Cambio de escena: la secuencia comun (World Partition sin restaurar
         // -al parar vuelve el mundo entero con el snapshot-, navegacion,
         // teselas del nivel anterior, GPU de terrenos y vegetacion, trabajos
@@ -435,6 +446,9 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         play_scene_changed_ = true;
         if (!ecs::loadScene(world_, next, &error)) {
             std::cerr << "[Scene.load] " << next.string() << ": " << error << "\n";
+        }
+        for (const std::string& text : persistent) {
+            if (const ecs::Entity e = ecs::restoreEntities(world_, text); e.valid()) ecs::setDontDestroyOnLoad(e);
         }
         alignOriginAfterLoad(origin_before);
         ecs::syncOutdatedInstances(world_, [&](const Uuid& id) { return prefabText(id); });
@@ -460,6 +474,52 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         scripts_.start(world_);
         cpp_scripts_.start(world_);
         std::cout << "[Scene.load] " << dialogs::utf8(next.filename()) << std::endl;
+    } else if (scripts_.sceneLoads().busy()) {
+        // Scene.loadAsync en Play: la escena sigue jugando mientras se lee y
+        // se crea la nueva (oculta); al activarse (modo Single) se paran y
+        // arrancan los sistemas de la escena en un frame, sin parar los
+        // scripts (los DontDestroyOnLoad siguen con su estado). Al parar Play
+        // vuelve la escena del editor (snapshot), como con Scene.load.
+        ecs::AsyncSceneLoader::Host host;
+        host.model_ready = [this](const Uuid& id) {
+            if (!asset_manager_) return true;
+            if (asset_manager_->isLoaded(id) || asset_manager_->loadFailed(id)) return true;
+            asset_manager_->requestModel(id);
+            return asset_manager_->isLoaded(id) || asset_manager_->loadFailed(id);
+        };
+        host.before_single = [this](const std::filesystem::path&) {
+            video_.stop();  // ANTES que el audio
+            audio_.stop();
+            physics_.stop();
+            particles_.clear();
+            renderer_.setParticles({});
+            fluids_.clear();
+            stopVoxels();
+            crowds_.end(world_);
+            resetSceneSystems(/*keep_terrain_edits=*/true, /*clear_world=*/false);
+            play_scene_changed_ = true;
+            clearSelection();
+        };
+        host.after_single = [this](const std::filesystem::path& next) {
+            ecs::syncOutdatedInstances(world_, [&](const Uuid& id) { return prefabText(id); });
+            renderer_.invalidateHistory();
+            const std::u8string stem = next.stem().u8string();
+            scripts_.setSceneName(std::string(stem.begin(), stem.end()));
+            loadSceneLighting(next);
+            play_lighting_changed_ = true;
+            world_partition_.setSceneFile(next, false);
+            world_partition_.begin(world_, scene_.camera().position());
+            loadTerrainAround(world_, terrain_streamer_, terrain_store_, scene_.camera().position());
+            physics_.start(world_);
+            physics_.flushPendingTerrain();
+            effectsEnterPlay();
+            crowds_.begin(world_);
+            startVoxels();
+            audio_.start(world_);
+            video_.start(world_);
+            std::cout << "[Scene.loadAsync] " << dialogs::utf8(next.filename()) << std::endl;
+        };
+        scripts_.updateSceneLoads(world_, host);
     }
     if (scripts_.takeQuitRequest()) quit_play_requested_ = true;
     Vec3 position = scene_.camera().position();

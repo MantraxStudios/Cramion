@@ -33,6 +33,7 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -82,8 +83,22 @@ public:
                     std::uint32_t vertex_count);
     void removeSection(std::uint64_t key);
     void clearSections();
+    // Agua de bloques (la dibuja el pase del agua con water_voxel.vert, no el
+    // G-buffer ni las sombras): mismas paginas y subidas, otra lista.
+    void setWaterSection(std::uint64_t key, const core::Vec3& origin, const std::uint32_t* vertices,
+                         std::uint32_t vertex_count) {
+        setSection(key | kWaterKey, origin, vertices, vertex_count);
+    }
+    void removeWaterSection(std::uint64_t key) { removeSection(key | kWaterKey); }
+    bool hasWater() const { return water_count_ > 0; }
+    // Las secciones de agua visibles, de lejos a cerca: enlaza los vertices y
+    // los indices y llama a `before_draw` con la esquina de cada una (para
+    // sus push constants) antes de dibujarla. El pipeline ya enlazado.
+    void drawWater(const vk::raii::CommandBuffer& cmd, const std::function<void(const core::Vec3&)>& before_draw) const;
     // Segundos (el vaiven de hojas y plantas).
     void setTime(float seconds) { time_ = seconds; }
+    // Color liso: cada bloque con una variacion suave de su color (voxel.frag).
+    void setFlatColors(bool flat) { flat_colors_ = flat; }
     void setVisible(bool visible) { visible_ = visible; }
 
     // Una vez por frame: sube lo pendiente y libera lo que ya no se usa.
@@ -123,7 +138,9 @@ private:
         std::uint32_t pending_quads = 0;
         std::vector<std::uint32_t> pending_data;
         bool queued = false;
+        bool water = false;
     };
+    static constexpr std::uint64_t kWaterKey = 1ull << 62;
     struct Retired {
         Allocation allocation;
         std::uint64_t release_frame = 0;
@@ -172,10 +189,13 @@ private:
     float time_ = 0.0f;
     float prepared_time_ = 0.0f;  // el de prepare() de este frame
     float previous_time_ = 0.0f;  // el del frame anterior
+    bool flat_colors_ = false;
     bool visible_ = true;
 
     std::vector<std::uint64_t> visible_keys_;
     std::vector<std::uint64_t> all_keys_;  // para las sombras (su propio recorte)
+    std::vector<std::uint64_t> water_keys_;  // agua visible, de lejos a cerca
+    std::size_t water_count_ = 0;            // secciones de agua (subidas o no)
 };
 
 }  // namespace cramion::gfx

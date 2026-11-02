@@ -172,6 +172,12 @@ template <typename T0 = Value>
 Value distanceTo(const T0& otra = {}) const {
     return call("distanceTo", Values{Value(otra)});
 }
+/// entity().dontDestroyOnLoad(conservar)
+/// el objeto (su raiz) no se destruye al cambiar de escena (false: vuelve a ser de la escena)
+template <typename T0 = Value>
+Value dontDestroyOnLoad(const T0& conservar = {}) const {
+    return call("dontDestroyOnLoad", Values{Value(conservar)});
+}
 /// entity.dropdownText: Desplegable: texto de la elegida (texto)
 Value dropdownText() const { return get("dropdownText"); }
 /// entity.dropdownValue: Desplegable: la elegida (desde 1) (numero)
@@ -316,6 +322,13 @@ Value isBroken() const { return get("isBroken"); }
 template <typename... Mas>
 Value isCrouching(Mas&&... mas) const {
     return call("isCrouching", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity().isDontDestroyOnLoad()
+/// sobrevive a los cambios de escena (DontDestroyOnLoad en el o en su raiz)?
+/// Devuelve: bool
+template <typename... Mas>
+Value isDontDestroyOnLoad(Mas&&... mas) const {
+    return call("isDontDestroyOnLoad", Values{Value(std::forward<Mas>(mas))...});
 }
 /// entity().isEffectPlaying()
 /// esta emitiendo?

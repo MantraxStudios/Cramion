@@ -9,6 +9,7 @@ layout(push_constant) uniform VoxelPush {
     mat4 light_view_projection;
     uint shadow;
     float previous_time;  // segundos del frame anterior (vectores de movimiento)
+    uint style;           // 1 = color liso (VoxelWorld::flat_colors)
 } push;
 
 const vec3 kFaceNormal[7] = vec3[](vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),

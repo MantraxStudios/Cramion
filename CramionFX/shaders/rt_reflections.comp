@@ -80,12 +80,21 @@ void main() {
         vec3 bitangent = cross(normal, tangent);
         vec3 local_view = vec3(dot(view_direction, tangent), dot(view_direction, bitangent),
                                max(dot(view_direction, normal), 1e-4));
+        // Una muestra que sale por debajo de la superficie (normal map muy
+        // inclinado respecto a la vista) no se cambia por el espejo (un pico
+        // sesgado: el centro del lobulo pesaba de mas): se repite con otro
+        // punto de la secuencia (xi girado) y solo si los tres salen por
+        // debajo queda el espejo.
         vec2 xi = sampleNoise(vec2(pixel), 0.0);
-        vec3 h = sampleGgxVisibleNormal(local_view, roughness * roughness, xi);
-        vec3 halfway = normalize(tangent * h.x + bitangent * h.y + normal * h.z);
-        vec3 sampled = reflect(-view_direction, halfway);
-        if (dot(sampled, normal) > 0.0) {
-            direction = sampled;
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            vec3 h = sampleGgxVisibleNormal(local_view, roughness * roughness, xi);
+            vec3 halfway = normalize(tangent * h.x + bitangent * h.y + normal * h.z);
+            vec3 sampled = reflect(-view_direction, halfway);
+            if (dot(sampled, normal) > 0.0) {
+                direction = sampled;
+                break;
+            }
+            xi = fract(xi + vec2(0.7548776662, 0.5698402910));
         }
     }
 

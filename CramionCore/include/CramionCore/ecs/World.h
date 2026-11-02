@@ -389,6 +389,9 @@ void ComponentRegistry::registerComponent(std::string name, std::string label,
         }
     };
     type.pool = [](const World& w) -> const entt::sparse_set* { return w.registry().storage<T>(); };
+    type.get = [](World& w, entt::entity e) -> void* { return w.registry().try_get<T>(e); };
+    type.size = sizeof(T);
+    index_.emplace(type.name, types_.size());
     types_.push_back(std::move(type));
 }
 

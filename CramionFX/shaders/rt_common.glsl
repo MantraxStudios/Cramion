@@ -218,10 +218,17 @@ float spatialNoise(vec2 p) {
     return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
 }
 
+// Las dos dimensiones tienen que ser independientes. Antes las dos salian del
+// mismo ruido con el pixel desplazado y, como dot() es lineal, eso solo suma
+// una constante: y = fract(x + c). Todos los rayos de la pantalla salian por
+// una sola espiral del hemisferio (y los de un mismo pixel, desplazamientos
+// del mismo valor). Ahora: x e y con dos patrones distintos (ejes cambiados:
+// otra forma lineal) y cada rayo (offset) con su propio indice en R2, que no
+// se repite entre frames (16 indices por frame).
 vec2 sampleNoise(vec2 pixel, float offset) {
-    vec2 base = vec2(spatialNoise(pixel + offset * vec2(47.0, 17.0)),
-                     spatialNoise(pixel + offset * vec2(13.0, 71.0) + vec2(5.0, 29.0)));
-    return fract(base + push.params.x * vec2(0.7548776662, 0.5698402910));
+    vec2 base = vec2(spatialNoise(pixel), spatialNoise(pixel.yx * vec2(1.0, -1.0) + vec2(5.588238, 13.71473)));
+    float index = push.params.x * 16.0 + offset;
+    return fract(base + index * vec2(0.7548776662, 0.5698402910));
 }
 
 vec3 irradianceSh(vec3 n) {
@@ -297,6 +304,7 @@ const uint kMaskScenery = 0x01u;
 const uint kMaskTerrain = 0x02u;
 const uint kMaskFoliage = 0x04u;
 const uint kMaskNoShadow = 0x08u;  // rigidos sin sombra: los rayos de sombra no los ven
+const uint kMaskCharacter = 0x10u;  // personajes animados (BLAS deformada cada frame)
 const uint kMaskAll = 0xFFu;
 
 // Lanza un rayo y devuelve el primer impacto (con recorte por alfa). `mask`:
@@ -334,9 +342,14 @@ void fillHit(uint model, uint geometry, uint primitive, vec2 barycentrics, float
     uint triangle = rtTriangle(model, geometry, primitive);
     vec3 w = vec3(1.0 - barycentrics.x - barycentrics.y, barycentrics);
 
-    RtVertex a = rt_vertices[rt_indices[triangle * 3u]];
-    RtVertex b = rt_vertices[rt_indices[triangle * 3u + 1u]];
-    RtVertex c = rt_vertices[rt_indices[triangle * 3u + 2u]];
+    // rt_models.w: personajes animados (RayTracing::setSkinnedInstances): sus
+    // vertices deformados estan en otra region, a esa distancia de los del
+    // modelo (los demas, 0). Las UV son las mismas: el alfa de los candidatos
+    // (candidateIsOpaque) puede leer las del modelo.
+    uint vertex_offset = rt_models[model].w;
+    RtVertex a = rt_vertices[rt_indices[triangle * 3u] + vertex_offset];
+    RtVertex b = rt_vertices[rt_indices[triangle * 3u + 1u] + vertex_offset];
+    RtVertex c = rt_vertices[rt_indices[triangle * 3u + 2u] + vertex_offset];
     vec3 normal = vec3(a.nx, a.ny, a.nz) * w.x + vec3(b.nx, b.ny, b.nz) * w.y +
                   vec3(c.nx, c.ny, c.nz) * w.z;
     // Las normales se transforman con la inversa traspuesta: con la matriz

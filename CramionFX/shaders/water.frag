@@ -17,6 +17,10 @@
 //   - Espuma: orilla, olas que rompen en la playa, crestas del oceano (la
 //     que deja el jacobiano del FFT y se deshace poco a poco), orillas y
 //     rapidos del rio, salpicaduras.
+//   - Agua de bloques (push.mesh 3, water_voxel.vert): caras de cubo (arriba
+//     a 14/16, lados y escalones), normal de la cara, corriente por bloque
+//     (flow map en dos fases), cascadas en los lados que caen, y la luz del
+//     cielo y de las antorchas del bloque (oscura en las cuevas).
 //   - Desde abajo: ventana de Snell (lo de fuera refractado, Fresnel exacto
 //     agua -> aire) y reflexion total fuera de ella, sin espuma de orilla
 //     (antes la orilla salia en todo: el "blanco" al bucear), atenuado por
@@ -431,6 +435,12 @@ void main() {
     float t = water.time_count.x;
     bool river = push.mesh == 2u;
     bool fft_ocean = push.mesh == 1u && oceanAvailable();
+    // Agua de bloques: la cara (arriba, lados, abajo) y su luz de bloques.
+    bool voxel = push.mesh == 3u;
+    vec3 face_normal = voxel ? normalize(v_normal) : vec3(0.0, 1.0, 0.0);
+    bool voxel_top = !voxel || face_normal.y > 0.5;
+    float voxel_sky = voxel ? v_uv.x : 1.0;
+    float voxel_torch = voxel ? v_uv.y : 0.0;
 
     vec3 to_camera = camera.position.xyz - v_world_position;
     float surface_distance = length(to_camera);
@@ -444,6 +454,7 @@ void main() {
     vec3 geometric = cross(dFdx(v_world_position), dFdy(v_world_position));
     geometric = dot(geometric, geometric) > 1e-20 ? normalize(geometric) : vec3(0.0, 1.0, 0.0);
     if (geometric.y < 0.0) geometric = -geometric;
+    if (voxel) geometric = face_normal;  // las caras de los lados y de abajo miran hacia fuera
     bool camera_in_this = int(water.time_count.z + 0.5) == int(push.body) && water.time_count.z > -0.5;
     bool below = camera_in_this && dot(geometric, to_camera) < 0.0;
 
@@ -453,6 +464,8 @@ void main() {
     vec3 wave_normal;
     if (fft_ocean) {
         wave_normal = oceanNormal(v_grid, footprint, jacobian, fft_foam, lost_variance);
+    } else if (voxel && !voxel_top) {
+        wave_normal = vec3(0.0, 1.0, 0.0);  // los lados: la normal de la cara (abajo)
     } else {
         wave_normal = gerstnerNormal(b, v_grid, t, footprint, jacobian, lost_variance);
     }
@@ -500,6 +513,20 @@ void main() {
         slope = mix(s0, s1, flow_weight);
         lost_variance += mix(lost0, lost1, flow_weight);
         slope = river_side * slope.x + river_dir * slope.y;
+    } else if (voxel) {
+        // Corriente del bloque (arriba) o la cascada (lados con agua encima: el
+        // rizado baja); flow map en dos fases como el rio. Quieta, el de siempre.
+        vec2 velocity = voxel_top ? v_flow * 1.6 : (v_slope > 0.5 ? vec2(0.0, -3.5) : vec2(0.0));
+        if (dot(velocity, velocity) > 1e-4) {
+            float lost0 = 0.0;
+            float lost1 = 0.0;
+            vec2 s0 = detailSlope(v_grid - velocity * phase0 * kFlowCycle + jump0, t, b.wind.x, detail_strength * 1.3, footprint, lost0);
+            vec2 s1 = detailSlope(v_grid - velocity * phase1 * kFlowCycle + jump1, t, b.wind.x, detail_strength * 1.3, footprint, lost1);
+            slope = mix(s0, s1, flow_weight);
+            lost_variance += mix(lost0, lost1, flow_weight);
+        } else {
+            slope = detailSlope(v_grid, t, b.wind.x, detail_strength, footprint, lost_variance);
+        }
     } else if (fft_ocean) {
         // El FFT ya lleva el rizado (la cascada fina): solo un poco de ruido.
         slope = detailSlope(v_grid, t, b.wind.x, detail_strength * 0.35, footprint, lost_variance);
@@ -511,6 +538,13 @@ void main() {
     vec2 ripple_slope = rippleSlope(v_world_position.xz);
     slope += ripple_slope;
     vec3 normal_up = normalize(vec3(wave_normal.x - slope.x, wave_normal.y, wave_normal.z - slope.y));
+    if (voxel && !voxel_top) {
+        // Lados y abajo: la cara, inclinada por el rizado en su plano.
+        vec3 side_tangent = abs(face_normal.y) > 0.5 ? vec3(1.0, 0.0, 0.0) : vec3(abs(face_normal.x) > 0.5 ? 0.0 : 1.0, 0.0,
+                                                                                    abs(face_normal.x) > 0.5 ? 1.0 : 0.0);
+        vec3 side_up = abs(face_normal.y) > 0.5 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        normal_up = normalize(face_normal - side_tangent * slope.x - side_up * slope.y);
+    }
 
     // --- Luz ---
     vec3 sun_direction = normalize(-lights.sun_direction_intensity.xyz);
@@ -519,6 +553,13 @@ void main() {
     vec3 sky_light = textureLod(environment_map, vec3(0.0, 1.0, 0.0), 6.0).rgb;
     vec3 ambient = sky_light + toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a;
     float sun_height = clamp(sun_direction.y, 0.0, 1.0);
+    // Agua de bloques: la luz del cielo que llega al bloque (en una cueva casi
+    // nada) y la de las antorchas de alrededor.
+    float voxel_sky_light = voxel_sky * voxel_sky;
+    if (voxel) {
+        sun_radiance *= voxel_sky_light;
+        ambient = ambient * max(voxel_sky_light, 0.02) + vec3(1.0, 0.72, 0.42) * (voxel_torch * voxel_torch * 0.8);
+    }
     vec3 extinction = waterExtinction(b);
 
     vec2 size = vec2(textureSize(g_depth, 0));
@@ -544,7 +585,7 @@ void main() {
             transmitted = normalize(transmitted);
             float cos_t = clamp(-dot(transmitted, n), 0.0, 1.0);
             fresnel = fresnelDielectric(cos_i, cos_t, kWaterIor, 1.0);
-            air = airRadiance(v_world_position, transmitted, v_world_position.y);
+            air = airRadiance(v_world_position, transmitted, v_world_position.y) * (voxel ? max(voxel_sky_light, 0.03) : 1.0);
             // El sol visto a traves de la superficie (un disco que tiembla).
             float to_sun = max(dot(transmitted, sun_direction), 0.0);
             air += sun_radiance * shadow * pow(to_sun, 900.0) * 6.0;
@@ -666,6 +707,8 @@ void main() {
     // El cielo de verdad (con nubes) si esa parte se ve en pantalla.
     vec4 sky = screenSky(reflected);
     fallback = mix(fallback, sky.rgb, sky.a * (1.0 - smoothstep(0.1, 0.4, roughness)));
+    // Bajo tierra el cielo no se refleja (solo lo que se ve en pantalla).
+    if (voxel) fallback *= max(voxel_sky_light, 0.03);
     vec3 reflection = mix(min(fallback, vec3(kMaxRadiance)), screen.rgb, screen.a);
     // Fresnel del aire al agua (exacto: a ras se refleja todo).
     float sin_t = sqrt(max(1.0 - n_dot_v * n_dot_v, 0.0)) / kWaterIor;
@@ -751,6 +794,11 @@ void main() {
     }
     // Espuma en las crestas fuertes de las olas interactivas (salpicaduras).
     float splash_foam = smoothstep(0.35, 1.2, length(ripple_slope)) * smoothstep(0.01, 0.06, rippleHeight(v_world_position.xz));
+    // Agua de bloques: la cascada (lados que caen) y la corriente rapida, algo blancas.
+    if (voxel) {
+        float streaks = smoothstep(0.5, 0.85, fbm(v_grid * vec2(1.2, 0.35) + vec2(0.0, t * 2.5), footprint));
+        splash_foam += (!voxel_top && v_slope > 0.5) ? 0.25 + 0.5 * streaks : 0.15 * length(v_flow) * streaks;
+    }
     // Saturacion suave: por mucha espuma que se sume siempre queda encaje
     // (huecos de agua). Solo el borde que lame la orilla llega a ser opaco.
     float shore_weight = river ? 0.45 : 0.9;

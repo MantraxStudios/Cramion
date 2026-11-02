@@ -15,6 +15,7 @@
 
 #include "CramionCore/Uuid.h"
 #include "CramionCore/asset/AssetDatabase.h"
+#include "CramionCore/anim/Keyframes.h"
 #include "CramionCore/cinematics/Cinematics.h"
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/asset/AssetTypes.h"

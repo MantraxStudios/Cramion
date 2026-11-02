@@ -182,6 +182,50 @@ void testSerialization() {
     check(raro.valid() && approx(raro.worldPosition(), {1.0f, 2.0f, 3.0f}), "campos parciales");
 }
 
+// Color del cielo (Sky): las escenas de antes (sin los campos) quedan en el
+// cielo fisico; los campos nuevos van y vuelven por JSON (escena y MCP).
+void testSkyColors() {
+    std::printf("Color del cielo\n");
+    World world;
+    Entity env = world.create("Entorno");
+    // Un Sky de antes: solo los campos viejos.
+    check(componentFromJson(world, env, "Sky", R"({"use_hdr":false,"clouds":true,"time_of_day":18.0})"),
+          "Sky viejo se lee");
+    const Sky& old_sky = env.get<Sky>();
+    check(old_sky.color_mode == SkyColorMode::Physical && old_sky.color_blend == 1.0f &&
+              approx(old_sky.sun_tint, {1.0f, 1.0f, 1.0f}) && !old_sky.time_colors,
+          "Sky viejo: cielo fisico y sol sin tinte");
+
+    std::string error;
+    check(componentFromJson(world, env, "Sky",
+                            R"({"color_mode":"Degradado","zenith_color":[0.1,0.2,0.9],"horizon_color":[1,0.5,0.2],
+                                "ground_color":[0.2,0.2,0.2],"gradient_curve":2.0,"sky_intensity":1.5,
+                                "sun_tint":[1,0.8,0.6],"time_colors":true,"night_zenith_color":[0,0,0.05],
+                                "gradient":[{"elevation":-10,"color":[0.3,0.3,0.3]},{"elevation":45,"color":[0,0,1]}]})",
+                            &error),
+          "set_component con los campos nuevos");
+    const Sky& sky = env.get<Sky>();
+    check(sky.color_mode == SkyColorMode::Gradient && approx(sky.zenith_color, {0.1f, 0.2f, 0.9f}) &&
+              approx(sky.horizon_color, {1.0f, 0.5f, 0.2f}) && approx(sky.gradient_curve, 2.0f) &&
+              approx(sky.sky_intensity, 1.5f) && approx(sky.sun_tint, {1.0f, 0.8f, 0.6f}) && sky.time_colors &&
+              approx(sky.night_zenith_color, {0.0f, 0.0f, 0.05f}),
+          "campos del degradado");
+    check(sky.gradient.size() == 2 && approx(sky.gradient[1].elevation, 45.0f) &&
+              approx(sky.gradient[1].color, {0.0f, 0.0f, 1.0f}),
+          "paradas del degradado");
+    check(componentFromJson(world, env, "Sky", R"({"color_mode":2})") &&
+              env.get<Sky>().color_mode == SkyColorMode::GradientStops,
+          "modo por indice");
+
+    const std::string text = serializeWorld(world);
+    World loaded;
+    check(deserializeWorld(loaded, text), "escena con el cielo de colores");
+    Entity env2 = loaded.find(env.uuid());
+    check(env2.valid() && env2.has<Sky>() && env2.get<Sky>().color_mode == SkyColorMode::GradientStops &&
+              approx(env2.get<Sky>().zenith_color, {0.1f, 0.2f, 0.9f}) && env2.get<Sky>().gradient.size() == 2,
+          "ida y vuelta del cielo de colores");
+}
+
 void testModelInstantiation() {
     std::printf("Instanciar modelos\n");
     World world;
@@ -429,6 +473,7 @@ int main() {
     testHierarchy();
     testDuplicateAndReflection();
     testSerialization();
+    testSkyColors();
     testModelInstantiation();
     testPostVolumes();
     testUltraRealisticPreset();

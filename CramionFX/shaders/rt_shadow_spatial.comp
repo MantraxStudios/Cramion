@@ -1,0 +1,150 @@
+#version 450
+
+// Filtro espacial de las sombras por rayos, despues de la acumulacion temporal
+// (rt_shadow_temporal.comp), solo en la penumbra.
+//
+// Con un rayo por luz y pixel, lo acumulado (~10 frames) aun tiene grano en
+// la penumbra. Aqui cada luz de cada pixel se promedia con la misma luz de los
+// vecinos de la misma superficie dentro de un disco cuyo radio es la mitad del
+// ancho de su penumbra en pantalla (lo calcula la temporal: diametro de la
+// bombilla * (receptor -> lo que tapa) / (lo que tapa -> luz), de la distancia
+// de impacto que guarda rt_shadows.comp). Asi una penumbra ancha (luz grande,
+// objeto alto) sale suave y sin grano, y el pie de un objeto (penumbra de
+// menos de un pixel) solo se suaviza lo minimo (kMinRadius, sigma de 1 px):
+// la sombra de contacto queda nitida.
+//
+// Lee la historia (la copia de lo acumulado sin filtrar: lo filtrado no se
+// realimenta frame a frame) y escribe lo que lee la iluminacion (binding 25)
+// solo donde filtra; en lo demas ya esta lo acumulado. De paso guarda la
+// profundidad lineal de este frame, la que el filtro temporal del siguiente
+// compara con la historia (disoclusion).
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform CameraBuffer {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    vec4 position;
+} camera;
+
+layout(set = 0, binding = 1) uniform sampler2D g_depth;
+layout(set = 0, binding = 2) uniform sampler2D g_normal;
+layout(set = 0, binding = 3) uniform usampler2D in_mask;    // lo acumulado (sin filtrar)
+layout(set = 0, binding = 4) uniform sampler2D penumbra;    // radio por luz / kMaxRadius
+layout(set = 0, binding = 5, rgba16ui) uniform writeonly uimage2D out_mask;
+layout(set = 0, binding = 6, r32f) uniform writeonly image2D out_depth;
+
+const int kSlots = 4;
+const float kMaxRadius = 16.0;  // igual que rt_shadow_temporal.comp
+const int kTaps = 16;
+const float kMinRadius = 2.0;
+
+float linearDepth(float depth) {
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
+}
+
+vec3 decodeNormal(vec2 e) {
+    vec3 n = vec3(e.x, 1.0 - abs(e.x) - abs(e.y), e.y);
+    float t = max(-n.y, 0.0);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.z += n.z >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
+vec3 worldFromDepth(vec2 uv, float depth) {
+    vec4 world = camera.inverse_view_projection * vec4(uv * 2.0 - 1.0, depth, 1.0);
+    return world.xyz / world.w;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(out_mask);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+
+    float depth = texelFetch(g_depth, pixel, 0).r;
+    if (depth >= 1.0) {
+        imageStore(out_depth, pixel, vec4(0.0));
+        return;
+    }
+    float center_z = linearDepth(depth);
+    imageStore(out_depth, pixel, vec4(center_z));
+
+    uvec4 center = texelFetch(in_mask, pixel, 0);
+    vec4 radii = texelFetch(penumbra, pixel, 0) * kMaxRadius;
+    int ids[kSlots];
+    float max_radius = 0.0;
+    for (int k = 0; k < kSlots; ++k) {
+        ids[k] = int(center[k] >> 10u) - 1;
+        // Lo que no esta del todo al sol ni del todo a la sombra (lo acumulado,
+        // estable) se filtra al menos con kMinRadius: el borde exterior de la
+        // penumbra, donde casi ningun rayo sale tapado y el radio estimado es
+        // casi 0, era lo que mas parpadeaba.
+        uint v = center[k] & 1023u;
+        if (v != 0u && v != 1023u) radii[k] = max(radii[k], kMinRadius);
+        if (ids[k] < 0) radii[k] = 0.0;
+        max_radius = max(max_radius, radii[k]);
+    }
+    // Penumbra de menos de un pixel (o ninguna): ya esta lo acumulado.
+    if (max_radius < 1.0) {
+        return;
+    }
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec3 center_position = worldFromDepth(uv, depth);
+    vec3 center_normal = decodeNormal(texelFetch(g_normal, pixel, 0).rg);
+    float plane_tolerance = 0.01 + 0.004 * center_z;
+
+    float sum[kSlots];
+    float weight[kSlots];
+    float inverse_two_sigma2[kSlots];
+    for (int k = 0; k < kSlots; ++k) {
+        sum[k] = float(center[k] & 1023u) / 1023.0;
+        weight[k] = 1.0;
+        // Gaussiana de sigma = la mitad del radio.
+        float sigma = max(radii[k] * 0.5, 0.5);
+        inverse_two_sigma2[k] = 1.0 / (2.0 * sigma * sigma);
+    }
+
+    // Disco de Vogel (espiral aurea) con un giro fijo por pixel (ruido de
+    // gradiente entrelazado): sin patron repetido y sin que cambie entre
+    // frames (no anade parpadeo).
+    float rotation = 6.2831853 * fract(52.9829189 * fract(dot(vec2(pixel), vec2(0.06711056, 0.00583715))));
+    for (int i = 0; i < kTaps; ++i) {
+        float r = max_radius * sqrt((float(i) + 0.5) / float(kTaps));
+        float angle = float(i) * 2.3999632 + rotation;
+        vec2 offset = vec2(cos(angle), sin(angle)) * r;
+        ivec2 q = pixel + ivec2(round(offset));
+        if (q == pixel || any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, size))) continue;
+        float qd = texelFetch(g_depth, q, 0).r;
+        if (qd >= 1.0) continue;
+        // Misma superficie: cerca del plano de este punto y normal parecida.
+        vec3 qp = worldFromDepth((vec2(q) + 0.5) / vec2(size), qd);
+        if (abs(dot(qp - center_position, center_normal)) > plane_tolerance) continue;
+        if (dot(decodeNormal(texelFetch(g_normal, q, 0).rg), center_normal) < 0.85) continue;
+        uvec4 h = texelFetch(in_mask, q, 0);
+        float distance2 = dot(offset, offset);
+        for (int c = 0; c < kSlots; ++c) {
+            int id = int(h[c] >> 10u) - 1;
+            if (id < 0) continue;
+            for (int k = 0; k < kSlots; ++k) {
+                if (ids[k] == id && radii[k] >= 1.0) {
+                    float w = exp(-distance2 * inverse_two_sigma2[k]);
+                    sum[k] += float(h[c] & 1023u) / 1023.0 * w;
+                    weight[k] += w;
+                }
+            }
+        }
+    }
+
+    uvec4 result = center;
+    for (int k = 0; k < kSlots; ++k) {
+        if (ids[k] < 0 || radii[k] < 1.0) continue;
+        uint quantized = uint(clamp(sum[k] / weight[k], 0.0, 1.0) * 1023.0 + 0.5);
+        result[k] = (uint(ids[k] + 1) << 10u) | quantized;
+    }
+    imageStore(out_mask, pixel, result);
+}

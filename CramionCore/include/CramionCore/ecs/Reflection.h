@@ -20,6 +20,8 @@
 #include <functional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace cramion::ecs {
@@ -172,6 +174,12 @@ struct ComponentType {
     // las entidades que lo tienen en vez de preguntar `has` a todas (el
     // historial de deshacer compara asi el mundo entero).
     const entt::sparse_set* (*pool)(const World&) = nullptr;
+    // El componente de la entidad (nullptr si no lo tiene) y su tamano: la
+    // animacion por claves escribe directamente en sus campos (por su
+    // desplazamiento en bytes) sin pasar por reflect cada frame. El puntero
+    // vale hasta el siguiente cambio de su pool (anadir o quitar uno).
+    void* (*get)(World&, entt::entity) = nullptr;
+    std::size_t size = 0;
 };
 
 // Todos los tipos de componente registrados, en orden de registro (el del
@@ -189,10 +197,19 @@ public:
 
     const std::vector<ComponentType>& types() const { return types_; }
     const ComponentType* find(std::string_view name) const;
+    // Indice en types() (-1 si no existe).
+    int indexOf(std::string_view name) const;
 
 private:
     ComponentRegistry() = default;
     std::vector<ComponentType> types_;
+    // Nombre -> indice en types_ (antes, find comparaba el texto con los ~120
+    // tipos uno a uno).
+    struct NameHash {
+        using is_transparent = void;
+        std::size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
+    };
+    std::unordered_map<std::string, std::size_t, NameHash, std::equal_to<>> index_;
 };
 
 // Registra los componentes del motor (idempotente). Lo llama instance().

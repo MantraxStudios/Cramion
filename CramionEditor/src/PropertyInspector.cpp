@@ -537,12 +537,15 @@ bool ImGuiPropertyVisitor::visible(const ecs::Meta& meta) const {
 // Etiqueta a la izquierda (gris, blanca al pasar el raton; recortada con
 // "..." si no cabe) y control a la derecha. Devuelve true siempre (el
 // control va a continuacion con su ID oculto).
-bool ImGuiPropertyVisitor::label(const ecs::Meta& meta) {
+bool ImGuiPropertyVisitor::label(const ecs::Meta& meta, bool animatable) {
     const float column = labelWidth();
     const float start_x = ImGui::GetCursorPosX();
     const ImVec2 pos = ImGui::GetCursorScreenPos();
-    const float max_w = std::max(column - start_x - ImGui::GetStyle().ItemSpacing.x, 10.0f);
     const float h = ImGui::GetFrameHeight();
+    beginKeyframeRow(meta, animatable, pos, ImVec2(pos.x - start_x + column - ImGui::GetStyle().ItemSpacing.x, pos.y + h));
+    // Con rombo de clave, el texto le deja sitio.
+    const float diamond = key_row_.active && key_row_.state > 0 ? h * 0.7f : 0.0f;
+    const float max_w = std::max(column - start_x - ImGui::GetStyle().ItemSpacing.x - diamond, 10.0f);
     ImGui::PushID(meta.key);
     ImGui::Dummy(ImVec2(max_w, h));
     ImGui::PopID();
@@ -564,6 +567,81 @@ bool ImGuiPropertyVisitor::label(const ecs::Meta& meta) {
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::PushID(meta.key);
     return true;
+}
+
+// --- Fotogramas clave (como Blender) ---
+// Campo verde si la propiedad esta animada y amarillo si tiene clave en el
+// fotograma actual; rombo al final de la etiqueta. Con el raton en la fila,
+// I inserta una clave y el clic derecho abre el menu de claves.
+
+namespace {
+constexpr ImU32 kAnimatedBg = IM_COL32(56, 98, 56, 255);
+constexpr ImU32 kKeyedBg = IM_COL32(122, 112, 36, 255);
+constexpr ImU32 kKeyDiamond = IM_COL32(240, 215, 80, 255);
+constexpr ImU32 kAnimatedDiamond = IM_COL32(150, 210, 120, 255);
+
+ImU32 brighten(ImU32 c, int amount) {
+    const auto ch = [&](int shift) { return std::min(255, static_cast<int>((c >> shift) & 0xFF) + amount); };
+    return IM_COL32(ch(IM_COL32_R_SHIFT), ch(IM_COL32_G_SHIFT), ch(IM_COL32_B_SHIFT), 255);
+}
+}  // namespace
+
+void ImGuiPropertyVisitor::beginKeyframeRow(const ecs::Meta& meta, bool animatable, ImVec2 row_min, ImVec2 label_max) {
+    key_row_ = {};
+    if (keyframe_hook_ == nullptr || !animatable || !keyframe_hook_->state) return;
+    key_row_.active = true;
+    key_row_.path = pathOf(meta.key);
+    key_row_.state = keyframe_hook_->state(key_row_.path);
+    key_row_.row_min = row_min;
+    key_row_.label_max = label_max;
+    if (key_row_.state > 0) {
+        const ImU32 bg = key_row_.state == 2 ? kKeyedBg : kAnimatedBg;
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, bg);
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, brighten(bg, 22));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, brighten(bg, 40));
+        key_row_.colors = 3;
+    }
+}
+
+void ImGuiPropertyVisitor::endKeyframeRow() {
+    if (!key_row_.active) return;
+    if (key_row_.colors > 0) ImGui::PopStyleColor(key_row_.colors);
+    const float h = ImGui::GetFrameHeight();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    if (key_row_.state > 0) {
+        const float r = h * 0.24f;
+        const ImVec2 c(key_row_.label_max.x - r - 2.0f, key_row_.row_min.y + h * 0.5f);
+        const ImVec2 pts[4] = {{c.x, c.y - r}, {c.x + r, c.y}, {c.x, c.y + r}, {c.x - r, c.y}};
+        if (key_row_.state == 2) draw->AddConvexPolyFilled(pts, 4, kKeyDiamond);
+        else draw->AddPolyline(pts, 4, kAnimatedDiamond, ImDrawFlags_Closed, 1.5f);
+    }
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const ImVec2 window_min = ImGui::GetWindowPos();
+    const float window_max_x = window_min.x + ImGui::GetWindowWidth();
+    const bool row_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+                             mouse.y >= key_row_.row_min.y && mouse.y < key_row_.row_min.y + h &&
+                             mouse.x >= window_min.x && mouse.x < window_max_x;
+    if (row_hovered && !ImGui::IsAnyItemActive() && !ImGui::GetIO().WantTextInput && !ImGui::GetIO().KeyCtrl &&
+        ImGui::IsKeyPressed(ImGuiKey_I, false)) {
+        keyframe_hook_->action = ImGui::GetIO().KeyAlt ? KeyframeHook::Action::Delete : KeyframeHook::Action::Insert;
+        keyframe_hook_->path = key_row_.path;
+    }
+    if (row_hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) ImGui::OpenPopup("##keyframe");
+    if (ImGui::BeginPopup("##keyframe")) {
+        const auto request = [&](KeyframeHook::Action action) {
+            keyframe_hook_->action = action;
+            keyframe_hook_->path = key_row_.path;
+        };
+        if (ImGui::MenuItem("Insertar fotograma clave", "I")) request(KeyframeHook::Action::Insert);
+        ImGui::BeginDisabled(key_row_.state != 2);
+        if (ImGui::MenuItem("Borrar fotograma clave", "Alt+I")) request(KeyframeHook::Action::Delete);
+        ImGui::EndDisabled();
+        ImGui::BeginDisabled(key_row_.state == 0);
+        if (ImGui::MenuItem("Borrar animacion")) request(KeyframeHook::Action::Clear);
+        ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
+    key_row_ = {};
 }
 
 void ImGuiPropertyVisitor::finishItem() {
@@ -659,7 +737,7 @@ void ImGuiPropertyVisitor::endGroup() {
 bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, float& value, const ecs::FloatRange& range) {
     if (!visible(meta)) return false;
     const char* format = mixed(meta.key) ? kMixed : range.format;
-    label(meta);
+    label(meta, true);
     bool changed = false;
     const bool limited = range.max > range.min;
     if (range.slider && limited) {
@@ -669,6 +747,7 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, float& value, const ecs:
                                    limited ? range.max : 0.0f, format,
                                    limited ? ImGuiSliderFlags_AlwaysClamp : 0);
     }
+    endKeyframeRow();
     finishItem();
     if (changed) {
         FieldValue v = makeValue(FieldValue::Kind::Float);
@@ -681,9 +760,10 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, float& value, const ecs:
 bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, int& value, int min, int max) {
     if (!visible(meta)) return false;
     const char* format = mixed(meta.key) ? kMixed : "%d";
-    label(meta);
+    label(meta, true);
     const bool changed = max > min ? ImGui::SliderInt("##v", &value, min, max, format)
                                    : ImGui::DragInt("##v", &value, 0.1f, 0, 0, format);
+    endKeyframeRow();
     finishItem();
     if (changed) {
         FieldValue v = makeValue(FieldValue::Kind::Int);
@@ -696,13 +776,14 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, int& value, int min, int
 bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, bool& value) {
     if (!visible(meta)) return false;
     const bool is_mixed = mixed(meta.key) != 0;
-    label(meta);
+    label(meta, true);
     ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, is_mixed);
     const bool changed = ImGui::Checkbox("##v", &value);
     ImGui::PopItemFlag();
     if (changed) {
         edit_finished_ = true;  // un clic es una accion completa
     }
+    endKeyframeRow();
     ImGui::PopID();
     if (changed) {
         FieldValue v = makeValue(FieldValue::Kind::Bool);
@@ -761,7 +842,7 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, std::string& value) {
 bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, core::Vec3& value, ecs::Vec3Kind kind) {
     if (!visible(meta)) return false;
     const int mixed_axes = mixed(meta.key);
-    label(meta);
+    label(meta, true);
     bool changed = false;
     int axes = 0x7;
     switch (kind) {
@@ -796,6 +877,7 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, core::Vec3& value, ecs::
             changed = dragAxes(&value.x, 3, 0.02f, 0.0f, 0.0f, "%.3f", mixed_axes, axes);
             break;
     }
+    endKeyframeRow();
     ImGui::PopID();
     if (changed) {
         FieldValue v = makeValue(FieldValue::Kind::Vec3);
@@ -809,9 +891,10 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, core::Vec3& value, ecs::
 bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, core::Vec2& value, float speed) {
     if (!visible(meta)) return false;
     const int mixed_axes = mixed(meta.key);
-    label(meta);
+    label(meta, true);
     int axes = 0x3;
     const bool changed = dragAxes(&value.x, 2, speed, 0.0f, 0.0f, "%.3f", mixed_axes, axes);
+    endKeyframeRow();
     ImGui::PopID();
     if (changed) {
         FieldValue v = makeValue(FieldValue::Kind::Vec2);
@@ -826,7 +909,7 @@ bool ImGuiPropertyVisitor::enumeration(const ecs::Meta& meta, int& value,
                                        std::span<const char* const> names) {
     if (!visible(meta)) return false;
     const bool is_mixed = mixed(meta.key) != 0;
-    label(meta);
+    label(meta, true);
     bool changed = false;
     const char* preview =
         is_mixed ? kMixed
@@ -841,6 +924,7 @@ bool ImGuiPropertyVisitor::enumeration(const ecs::Meta& meta, int& value,
         }
         ImGui::EndCombo();
     }
+    endKeyframeRow();
     ImGui::PopID();
     if (changed) {
         FieldValue v = makeValue(FieldValue::Kind::Enum);

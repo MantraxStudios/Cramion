@@ -53,6 +53,7 @@ void EditorApp::dispatchUiEvents() {
                     {"entity", nlohmann::json::parse(cpp_scripts_.entityJson(e.source))},
                     {"position", {{"$v", {e.position.x, e.position.y, 0.0f}}}},
                     {"button", e.button},
+                    {"wheel", e.number},
                     {"other", e.other.valid() ? nlohmann::json::parse(cpp_scripts_.entityJson(e.other)) : nlohmann::json()}};
                 cpp_scripts_.sendMessage(e.target, e.method, v.dump());
                 break;

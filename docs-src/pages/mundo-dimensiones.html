@@ -1,0 +1,54 @@
+<p>
+  Un mundo de bloques (<code>VoxelWorld</code>) tiene varias <strong class="text-white">dimensiones</strong>: la
+  superficie de siempre y otras con su propio generador y su propia carpeta de guardado dentro del mundo. El juego
+  viaja entre ellas en caliente (por ejemplo al cruzar un portal): el motor guarda la actual, descarga sus chunks,
+  cambia de generador y vuelve a cargar alrededor del jugador en los hilos de fondo, sin parar el juego.
+</p>
+
+<h3 id="lista">Las dimensiones</h3>
+<table>
+  <thead><tr><th>name</th><th>label</th><th>Qué hay</th></tr></thead>
+  <tbody>
+    <tr><td><code>superficie</code></td><td>Overworld</td><td>El generador del <code>VoxelWorld</code> (Clásico o Aventura).</td></tr>
+    <tr><td><code>abismo</code></td><td>The Abyss</td><td>Cavernas enormes de basalto con techo de estalactitas y agujeros al cielo, mares y ríos de lava (la lava da luz), islas y orillas de obsidiana, columnas gigantes, arcos de roca, hongos de fuego y fortalezas en ruinas.</td></tr>
+    <tr><td><code>cielo</code></td><td>Skyrealm</td><td>Islas flotantes de muchos tamaños sobre un mar de nubes y el vacío, arroyos que caen en cascada, árboles dorados, flores y cristales.</td></tr>
+    <tr><td><code>cristal</code></td><td>Crystal Wilds</td><td>Colinas de musgo brillante con lagos, racimos y monolitos de cristales de colores que dan luz y hongos gigantes luminosos; noche eterna.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="api">API</h3>
+<table>
+  <tbody>
+    <tr><td><code>Voxel.dimension()</code></td><td>La actual (texto). Al crear un mundo, <code>"superficie"</code>; <code>loadWorld</code> vuelve a la que se guardó.</td></tr>
+    <tr><td><code>Voxel.dimensions()</code></td><td>Lista de <code>{name, label, generator, sky}</code>.</td></tr>
+    <tr><td><code>Voxel.setDimension(name, ambiente = true)</code></td><td>Cambia de dimensión. <code>false</code> si no existe o no hay mundo. Con <code>ambiente</code>, el motor aplica el cielo de la dimensión (abajo); con <code>false</code> no toca la escena.</td></tr>
+    <tr><td><code>Voxel.spawnPoint(cerca?)</code></td><td>Un sitio seguro (los pies) en la dimensión actual cerca de un punto, o de quien mira: suelo sólido con dos bloques de aire encima y sin lava al lado. En el abismo, el suelo de la caverna; en el cielo, sobre una isla. No hace falta que esté cargado.</td></tr>
+  </tbody>
+</table>
+<pre><code>// Al cruzar un portal (en el script del jugador)
+if (Voxel::setDimension("abismo").asBool()) {
+    entity().setPosition(Voxel::spawnPoint().asVec3());
+}</code></pre>
+<p>
+  Guardado: la superficie sigue en <code>&lt;mundo&gt;/chunks</code>; las demás en
+  <code>&lt;mundo&gt;/dimensions/&lt;name&gt;/chunks</code>. En un mundo sin nombre lo construido en cada dimensión se
+  conserva en memoria al ir y volver. <code>surfaceHeight</code> da el suelo de la dimensión (en el abismo, el de la
+  caverna; en el cielo, la isla más alta o <code>-1</code> sobre el vacío). En el cielo, quien cae por debajo de las
+  nubes (y &lt; 20) cae al vacío: el juego decide qué pasa.
+</p>
+
+<h3 id="ambiente">Ambiente de cada dimensión</h3>
+<p>Con <code>ambiente = true</code> el motor cambia la escena así y, al volver a la superficie, deja todo como estaba:</p>
+<table>
+  <thead><tr><th></th><th>Hora</th><th>Clima</th><th>Nubes</th><th>Sol</th><th>Niebla</th><th>Mar del motor</th></tr></thead>
+  <tbody>
+    <tr><td><code>abismo</code></td><td>18.9 (luz roja)</td><td>Despejado, sin clima al azar</td><td>no</td><td>(1, 0.45, 0.25) x0.55</td><td>0.010 / caída 0.004</td><td>apagado</td></tr>
+    <tr><td><code>cielo</code></td><td>10.5</td><td>Despejado</td><td>sí (30 %)</td><td>(1, 0.96, 0.88) x1.1</td><td>0.0012 / 0.02</td><td>apagado</td></tr>
+    <tr><td><code>cristal</code></td><td>0.0 (noche)</td><td>Despejado</td><td>no</td><td>(0.55, 0.62, 1) x0.4</td><td>0.004 / 0.03</td><td>encendido, más oscuro</td></tr>
+  </tbody>
+</table>
+<p>
+  Toca el primer <code>Environment</code> (hora, clima; la hora no avanza), el primer <code>Sky</code>, la luz
+  direccional, el <code>PostProcessing</code> global (niebla) y los <code>WaterBody</code> de tipo océano. El script
+  puede cambiar cualquiera después con su API de siempre.
+</p>

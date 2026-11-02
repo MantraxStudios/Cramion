@@ -2,16 +2,21 @@
 
 // Filtro espacial de los reflejos por rayos (despues de
 // rt_reflection_temporal.comp): transformada "a trous" con bordes guiada por
-// la varianza (como la GI, gi_atrous.comp), con nucleo 5x5 separado por
-// `step` pixeles (1 y 2: cubre 9x9 con 50 lecturas).
+// la varianza (como la GI, gi_atrous.comp, SVGF), con nucleo 5x5 separado por
+// `step` pixeles (1, 2, 4 y 8: cubre hasta 61x61).
 //
 // La diferencia con la GI es el tamano: un reflejo solo debe emborronarse lo
 // que emborrona su rugosidad. Cada muestra pesa ademas una gaussiana en
-// pantalla de radio proporcional a la rugosidad del pixel: en un espejo el
-// filtro no hace nada; en una superficie satinada junta los vecinos y se lleva
-// el grano que el tiempo no quito (zonas recien destapadas, objetos que se
-// mueven). Solo se mezclan pixeles de la misma superficie (profundidad,
-// normal y rugosidad parecidas) y luminancias dentro del ruido esperado.
+// pantalla cuyo radio es lo que mide el lobulo de la rugosidad en pantalla:
+// distancia al impacto * tan(lobulo) / tamano del pixel a esta distancia (un
+// reflejo de algo cercano es nitido aunque la superficie sea satinada; el de
+// algo lejano, borroso), con un tope proporcional a la rugosidad. Antes era
+// rugosidad * 18 px fijo con dos pasadas. Con poca historia (recien
+// destapado, un objeto que se mueve) el radio crece ("history fix" de NRD): el
+// tiempo aun no quito el grano. En un espejo el filtro no hace nada. Solo se
+// mezclan pixeles de la misma superficie (profundidad, normal y rugosidad
+// parecidas) y luminancias dentro del ruido esperado, con la varianza
+// prefiltrada 3x3 (SVGF).
 //
 // Entrada y salida: rgb = reflejo, a = varianza de lo acumulado (el ruido que
 // le queda). En la ultima pasada (`last`) el alfa pasa a ser la confianza que
@@ -32,6 +37,7 @@ layout(set = 0, binding = 1) uniform sampler2D g_depth;
 layout(set = 0, binding = 2) uniform sampler2D g_normal;  // b = rugosidad
 layout(set = 0, binding = 3) uniform sampler2D in_color;  // rgb, a = varianza
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D out_color;
+layout(set = 0, binding = 5) uniform sampler2D aux;       // x = distancia al impacto (mediana), y = frames
 
 layout(push_constant) uniform PushConstants {
     int step;
@@ -42,6 +48,8 @@ layout(push_constant) uniform PushConstants {
 
 const float kMaxRoughness = 0.65;  // igual que rt_reflections.comp
 const float kSigmaLuminance = 4.0;
+// Radio maximo del filtro por unidad de rugosidad (pixeles): 0.65 -> ~21 px.
+const float kRadiusPerRoughness = 32.0;
 
 float luminance(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -90,17 +98,45 @@ void main() {
         imageStore(out_color, pixel, vec4(center.rgb, push.last != 0 ? center_alpha : center.a));
         return;
     }
-    // Radio en pantalla que corresponde a la rugosidad (pixeles). Si ni el
-    // vecino mas cercano de esta pasada pesa, tampoco hay nada que hacer.
-    float radius = max(roughness * 18.0, 0.35);
+    float center_depth = linearDepth(raw_depth);
+
+    // Radio en pantalla (pixeles) del lobulo de la rugosidad: lo que abre el
+    // lobulo (tan ~ 1.5 alfa, alfa = rugosidad^2) a la distancia del impacto,
+    // dividido por lo que mide un pixel a esta distancia. Tope: rugosidad *
+    // kRadiusPerRoughness. Con poca historia, hacia el tope (history fix).
+    // Si ni el vecino mas cercano de esta pasada pesa, nada que hacer.
+    vec2 aux_sample = texelFetch(aux, pixel, 0).xy;
+    float frames = max(aux_sample.y, 1.0);
+    float pixel_world = 2.0 * center_depth / (abs(camera.projection[1][1]) * float(size.y));
+    float lobe_tan = 1.5 * roughness * roughness;
+    float max_radius = roughness * kRadiusPerRoughness;
+    float radius = min(aux_sample.x * lobe_tan / max(pixel_world, 1e-6), max_radius);
+    radius = max(radius, max_radius * clamp(1.0 - (frames - 1.0) / 3.0, 0.0, 1.0));
+    radius = max(radius, 0.35);
     float inverse_two_radius2 = 1.0 / (2.0 * radius * radius);
     if (exp(-float(push.step * push.step) * inverse_two_radius2) < 0.01) {
         imageStore(out_color, pixel, vec4(center.rgb, push.last != 0 ? center_alpha : center.a));
         return;
     }
 
-    float center_depth = linearDepth(raw_depth);
     vec3 center_normal = decodeNormal(normal_sample.rg);
+
+    // Varianza prefiltrada 3x3 (gaussiana, SVGF): la de un pixel suelto es
+    // ruidosa y el peso de luminancia salia a saltos.
+    {
+        const float kGauss[2] = float[](0.25, 0.125);
+        float variance_sum = 0.0;
+        float gauss_sum = 0.0;
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                ivec2 q = clamp(pixel + ivec2(x, y), ivec2(0), size - 1);
+                float g = kGauss[abs(x)] * kGauss[abs(y)];
+                variance_sum += texelFetch(in_color, q, 0).a * g;
+                gauss_sum += g;
+            }
+        }
+        deviation = sqrt(max(variance_sum / gauss_sum, 0.0));
+    }
 
     // Pendiente de la profundidad (un suelo en rasante cambia mucho de un
     // pixel al siguiente sin ser un borde).

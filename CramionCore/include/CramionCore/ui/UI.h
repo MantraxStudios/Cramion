@@ -253,6 +253,8 @@ struct EventTrigger {
     Uuid target{};               // objeto cuyo script recibe los eventos (vacio = este)
     std::string on_hover;        // el raton entra
     std::string on_exit;         // el raton sale
+    std::string on_click;        // pulsar y soltar el boton izquierdo encima (sin arrastrar)
+    std::string on_scroll;       // rueda del raton encima (el valor llega en "wheel"; sube a su padre con on_scroll)
     std::string on_right_click;  // pulsar y soltar el boton derecho encima
     std::string on_double_click;
     std::string on_drag_begin;   // se pulsa encima y el raton se mueve drag_threshold pixeles
@@ -486,6 +488,7 @@ private:
     bool ignore_enter_ = false;  // focus() desde un script: ese Enter no envia
     entt::entity hover_trigger_ = entt::null;
     entt::entity right_target_ = entt::null;
+    entt::entity left_target_ = entt::null;  // on_click: donde se pulso el izquierdo
     entt::entity drag_source_ = entt::null;
     bool drag_active_ = false;
     core::Vec2 drag_start_{};

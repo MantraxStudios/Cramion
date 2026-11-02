@@ -536,7 +536,7 @@ void buildVoxel(project::ProjectInfo& project) {
     ecs::Entity world = b.world.create("Mundo de bloques");
     const voxel::VoxelWorld& settings = world.add<voxel::VoxelWorld>();
     ecs::Entity sea = b.world.create("Mar", world);
-    sea.add<water::WaterBody>() = water::oceanPreset();
+    sea.add<water::WaterBody>() = water::voxelSeaPreset();
     sea.setWorldPosition(Vec3{0.0f, std::round(settings.sea_level) - 0.1f, 0.0f});
 
     // La camara es el jugador (primera persona); sus botones llaman a su script.

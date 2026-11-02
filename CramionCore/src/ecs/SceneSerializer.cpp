@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -482,6 +483,209 @@ std::string assembleScene(const SceneHeader& header, std::span<const std::string
     }
     out += "]}";
     return out;
+}
+
+// --- Carga en segundo plano (Scene.loadAsync) --------------------------------
+
+std::shared_ptr<const ParsedEntities> parseSceneText(const std::string& text, SceneHeader* header, std::string* error) {
+    auto parsed = std::make_shared<ParsedEntities>();
+    parsed->root = json::parse(text, nullptr, false);
+    json& root = parsed->root;
+    if (root.is_discarded() || !root.is_object()) {
+        if (error) *error = "JSON no valido";
+        return nullptr;
+    }
+    if (root.value("format", std::string{}) != "CramionScene") {
+        if (error) *error = "no es una escena de Cramion";
+        return nullptr;
+    }
+    migrateScene(root, root.value("version", 0));
+    if (const auto it = root.find("entities"); it == root.end() || !it->is_array()) root["entities"] = json::array();
+    if (header != nullptr) {
+        header->uuid = Uuid::parse(root.value("uuid", std::string{}));
+        header->name = root.value("name", std::string{"Escena"});
+        header->origin = DVec3{};
+        if (const auto it = root.find("origin"); it != root.end() && it->is_array() && it->size() == 3 &&
+                                                 (*it)[0].is_number() && (*it)[1].is_number() && (*it)[2].is_number()) {
+            header->origin = DVec3{(*it)[0].get<double>(), (*it)[1].get<double>(), (*it)[2].get<double>()};
+        }
+    }
+    return parsed;
+}
+
+std::size_t parsedEntityCount(const ParsedEntities& parsed) {
+    const auto it = parsed.root.find("entities");
+    return it != parsed.root.end() && it->is_array() ? it->size() : 0;
+}
+
+std::vector<Uuid> parsedSceneModels(const ParsedEntities& parsed) {
+    std::vector<Uuid> out;
+    const auto it = parsed.root.find("entities");
+    if (it == parsed.root.end() || !it->is_array()) return out;
+    std::unordered_set<Uuid> seen;
+    for (const json& record : *it) {
+        if (!record.is_object() || record.value("static_batched", false)) continue;
+        const auto components = record.find("components");
+        if (components == record.end() || !components->is_object()) continue;
+        const auto renderer = components->find("MeshRenderer");
+        if (renderer == components->end() || !renderer->is_object()) continue;
+        const auto model = renderer->find("model");
+        if (model == renderer->end() || !model->is_string()) continue;
+        const Uuid id = Uuid::parse(model->get<std::string>());
+        if (id.valid() && seen.insert(id).second) out.push_back(id);
+    }
+    return out;
+}
+
+struct SceneEntityBuilder::State {
+    std::shared_ptr<const ParsedEntities> parsed;
+    const json* records = nullptr;
+    std::size_t next = 0;
+    std::size_t total = 0;
+    std::size_t created = 0;
+    bool hidden = true;
+    core::Vec3 offset{};
+    bool finished = false;
+    std::unordered_map<std::string, entt::entity> by_uuid;  // UUID del archivo -> creada
+    std::unordered_set<std::string> skipped;                // no recreadas (y sus hijos)
+    std::unordered_map<Uuid, Uuid> refs;                    // UUID del archivo -> UUID nuevo (choques)
+    std::vector<entt::entity> built;
+    std::vector<entt::entity> roots;
+    std::vector<bool> root_active;  // el estado que dice la escena
+    bool activated = false;
+};
+
+SceneEntityBuilder::SceneEntityBuilder(std::shared_ptr<const ParsedEntities> parsed, bool hidden, const core::Vec3& root_offset)
+    : state_(std::make_unique<State>()) {
+    State& s = *state_;
+    s.parsed = std::move(parsed);
+    s.hidden = hidden;
+    s.offset = root_offset;
+    if (s.parsed) {
+        const auto it = s.parsed->root.find("entities");
+        if (it != s.parsed->root.end() && it->is_array()) {
+            s.records = &*it;
+            s.total = it->size();
+        }
+    }
+}
+
+SceneEntityBuilder::~SceneEntityBuilder() = default;
+
+bool SceneEntityBuilder::done() const { return state_->finished; }
+std::size_t SceneEntityBuilder::created() const { return state_->created; }
+const std::vector<entt::entity>& SceneEntityBuilder::roots() const { return state_->roots; }
+float SceneEntityBuilder::progress() const {
+    const State& s = *state_;
+    if (s.finished || s.total == 0) return 1.0f;
+    return static_cast<float>(static_cast<double>(s.next) / static_cast<double>(s.total));
+}
+
+bool SceneEntityBuilder::step(World& world, double budget_ms) {
+    State& s = *state_;
+    if (s.finished) return true;
+    const auto started = std::chrono::steady_clock::now();
+    const auto over = [&] {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() >= budget_ms;
+    };
+    bool first = true;
+    const bool move_roots = s.offset.x != 0.0f || s.offset.y != 0.0f || s.offset.z != 0.0f;
+    while (s.records != nullptr && s.next < s.total) {
+        if (!first && over()) return false;
+        first = false;
+        const json& record = (*s.records)[s.next++];
+        if (!record.is_object()) continue;
+        const std::string uuid_text = record.value("uuid", std::string{});
+        Entity parent;
+        if (const auto p = record.find("parent"); p != record.end() && p->is_string()) {
+            const std::string parent_text = p->get<std::string>();
+            if (s.skipped.count(parent_text) != 0) {
+                s.skipped.insert(uuid_text);  // hijo de uno que no se recreo
+                continue;
+            }
+            // Solo dentro de la escena (padres antes que hijos): nunca cuelga
+            // de algo de la escena que se va.
+            if (const auto found = s.by_uuid.find(parent_text); found != s.by_uuid.end() && world.valid(found->second)) {
+                parent = world.wrap(found->second);
+            }
+        }
+        Uuid uuid = Uuid::parse(uuid_text);
+        if (uuid.valid()) {
+            if (const Entity existing = world.find(uuid); existing.valid()) {
+                Entity top = existing;
+                while (top.parent().valid()) top = top.parent();
+                if (top.get<EntityInfo>().dont_destroy_on_load) {
+                    // El objeto persistente ya esta (cargar otra vez la escena del
+                    // GameManager): no se duplica.
+                    s.skipped.insert(uuid_text);
+                    continue;
+                }
+                const Uuid fresh = Uuid::generate();
+                s.refs[uuid] = fresh;
+                uuid = fresh;
+            }
+        }
+        Entity e = world.create(record.value("name", std::string{"GameObject"}), parent, uuid);
+        EntityInfo& info = e.get<EntityInfo>();
+        const bool active = record.value("active", true);
+        const bool is_root = !parent.valid();
+        info.active = (s.hidden && is_root) ? false : active;
+        info.tag = record.value("tag", std::string{});
+        info.layer = record.value("layer", 0);
+        info.is_static = record.value("static", false);
+        info.static_batched = record.value("static_batched", false);
+        s.by_uuid[uuid_text] = e.handle();
+        s.built.push_back(e.handle());
+        ++s.created;
+        if (is_root) {
+            s.roots.push_back(e.handle());
+            s.root_active.push_back(active);
+        }
+        if (const auto it = record.find("components"); it != record.end() && it->is_object()) {
+            for (const auto& [name, data] : it->items()) {
+                const ComponentType* type = ComponentRegistry::instance().find(name);
+                if (type == nullptr) {
+                    std::cerr << "[Escena] Componente desconocido \"" << name << "\" en " << e.name() << ": se ignora\n";
+                    continue;
+                }
+                type->add(world, e.handle());
+                detail::JsonReader reader(data);
+                type->reflect(world, e.handle(), reader);
+            }
+        }
+        if (is_root && move_roots) e.setLocalPosition(e.localPosition() + s.offset);
+    }
+    // Las referencias a las entidades que chocaron, a sus copias nuevas.
+    if (!s.refs.empty()) {
+        for (const entt::entity h : s.built) {
+            if (world.valid(h)) world.remapEntityRefs(world.wrap(h), s.refs);
+        }
+    }
+    s.finished = true;
+    return true;
+}
+
+void SceneEntityBuilder::activate(World& world) {
+    State& s = *state_;
+    if (s.activated) return;
+    s.activated = true;
+    if (!s.hidden) return;
+    for (std::size_t i = 0; i < s.roots.size(); ++i) {
+        if (world.valid(s.roots[i]) && s.root_active[i]) world.wrap(s.roots[i]).setActive(true);
+    }
+}
+
+void SceneEntityBuilder::cancel(World& world) {
+    State& s = *state_;
+    for (const entt::entity h : s.roots) {
+        if (world.valid(h)) world.destroy(world.wrap(h));
+    }
+    s.roots.clear();
+    s.root_active.clear();
+    s.built.clear();
+    s.by_uuid.clear();
+    s.finished = true;
+    s.activated = true;
 }
 
 }  // namespace cramion::ecs
