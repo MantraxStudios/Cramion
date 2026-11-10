@@ -281,6 +281,29 @@ int main(int argc, char** argv) {
         std::error_code dll_error;
         if (std::filesystem::exists(game_dll, dll_error)) cpp_scripts.usePrebuilt(game_dll);
     }
+#else
+    {
+        // Linux: no hay DLL de Windows; los scripts de C++ del juego se compilan aqui al arrancar (clang del
+        // sistema + sdk/ junto al ejecutable) solo si cambiaron, en la carpeta de datos del servidor.
+        std::error_code so_error;
+        const std::filesystem::path so_folder = dataFolder("Servers") / (project->name + "_scripts");
+        std::filesystem::create_directories(so_folder, so_error);
+        cpp_scripts.setBuildFolder(so_folder);
+        if (cpp_scripts.hasSources() && (cpp_scripts.dll().empty() || !cpp_scripts.upToDate())) {
+            std::cout << "[Servidor] Compilando los scripts de C++ del juego..." << std::endl;
+            const scripting::CppCompileResult r = cpp_scripts.compile();
+            if (r.ok) {
+                std::cout << "[Servidor] Scripts compilados en " << r.seconds << " s" << std::endl;
+                cpp_scripts.setBuildFolder(so_folder);  // carga la .so mas nueva
+            } else {
+                for (const auto& e : r.errors)
+                    std::cerr << "[Servidor] Error de script: " << e.file << ":" << e.line << " " << e.message << "\n";
+            }
+        }
+        const std::filesystem::path game_so = exeFolder() / "scripts" / "game_scripts.so";
+        if (cpp_scripts.dll().empty() && std::filesystem::exists(game_so, so_error)) cpp_scripts.usePrebuilt(game_so);
+        if (cpp_scripts.dll().empty()) std::cerr << "[Servidor] AVISO: sin scripts de C++ del juego\n";
+    }
 #endif
     {
         std::string loc_error;
@@ -316,6 +339,22 @@ int main(int argc, char** argv) {
     }
 
     ecs::World world;
+    // CIERRE-SEGURO: se destruye antes que el mundo y para los scripts de C++ con
+    // el mundo vivo si se sale por una excepcion o un return temprano.
+    struct ParadaScripts {
+        scripting::ScriptSystem& lua;
+        scripting::CppScriptSystem& cpp;
+        ~ParadaScripts() {
+            try {
+                lua.stop();
+            } catch (...) {
+            }
+            try {
+                cpp.stop();
+            } catch (...) {
+            }
+        }
+    } parada_scripts{scripts, cpp_scripts};
     bool hosted = false;
     // Fuentes de carga del servidor (World Partition y teselas de terreno):
     // una por jugador conectado (donde esta su objeto de red) mas el punto de

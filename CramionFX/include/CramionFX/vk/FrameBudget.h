@@ -195,7 +195,9 @@ public:
     // Suelo de renderScale() (renderScaleFloor; 0 = sin suelo). Solo se baja
     // de el si el frame lleva mas de 3 s por encima de 1.5 veces el objetivo
     // (una GPU que no llega ni de lejos), hasta que vuelva a subirla.
-    void setRenderScaleFloor(float factor);
+    // `hard`: el suelo no se levanta aunque la GPU no llegue (movil: por debajo
+    // la imagen ya no se distingue).
+    void setRenderScaleFloor(float factor, bool hard = false);
     bool renderScaleFloorLifted() const { return floor_lifted_; }
 
     // --- Estado (interfaz, MCP) ---
@@ -244,6 +246,7 @@ private:
     float render_scale_floor_ = 0.0f;
     float far_over_seconds_ = 0.0f;
     bool floor_lifted_ = false;
+    bool render_scale_floor_hard_ = false;
     float render_scale_changed_at_ = -1000.0f;
     float reset_at_ = -1000.0f;  // clock_ del ultimo reinicio entero
 

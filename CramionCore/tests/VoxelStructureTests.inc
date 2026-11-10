@@ -12,6 +12,35 @@ std::uint64_t chunkHash(const ChunkData& c) {
     return h;
 }
 
+// Huella del plan de una region (piezas, bloques, calles, aplanados y puntos):
+// sirve para comprobar que la capital (region 0,0) no cambia ni un bloque.
+std::uint64_t planFingerprint(const RegionPlan& plan) {
+    std::uint64_t h = 1469598103934665603ull;
+    const auto add = [&](std::int64_t v) { h = (h ^ static_cast<std::uint64_t>(v)) * 1099511628211ull; };
+    const auto addf = [&](float f) { add(static_cast<std::int64_t>(std::lround(f * 64.0f))); };
+    const auto adds = [&](const std::string& s) {
+        for (char c : s) add(c);
+        add(0x7F);
+    };
+    for (const Structure& s : plan.structures) {
+        adds(s.info.type);
+        adds(s.info.name);
+        add(s.min_x), add(s.min_y), add(s.min_z), add(s.max_x), add(s.max_y), add(s.max_z);
+        for (const Terraform& t : s.terraforms) add(t.cx), add(t.cz), addf(t.inner), addf(t.outer), add(t.base), add(t.surface), add(t.under);
+        for (const Road& r : s.roads) addf(r.x0), addf(r.z0), addf(r.x1), addf(r.z1), addf(r.half_width), add(r.surface), add(r.alt);
+        for (const Piece& p : s.pieces) {
+            add(p.x), add(p.y), add(p.z), add(p.rot), add(p.plan->w), add(p.plan->h), add(p.plan->d);
+            for (BlockId b : p.plan->cells) add(b == kKeep ? 255 : b);  // IDS16: kKeep era 255 (las huellas no cambian)
+        }
+        for (const StructurePoint& p : s.info.points) {
+            adds(p.kind);
+            adds(p.tag);
+            addf(p.position.x), addf(p.position.y), addf(p.position.z);
+        }
+    }
+    return h;
+}
+
 int countPoints(const StructureInfo& s, const std::string& kind) {
     return static_cast<int>(std::count_if(s.points.begin(), s.points.end(), [&](const StructurePoint& p) { return p.kind == kind; }));
 }
@@ -59,6 +88,15 @@ void testStructures() {
         std::snprintf(what, sizeof what, "semilla %d: la capital Kettlecrown en el origen", seed);
         check(capital != nullptr, what);
         if (capital == nullptr) continue;
+        // Kettlecrown no cambia ni un bloque con los asentamientos nuevos (huellas de
+        // antes de anadirlos; si se cambia la capital a proposito, actualizarlas).
+        const std::uint64_t print = planFingerprint(*gen.structures()->region(0, 0));
+        // 09/11 (1.0.28): huellas renovadas. Las de antes ya no valian desde antes de CIUDADES-GRANDES (fallaba igual); los
+        // BLOQUES de la capital son los de la base de CIUDADES-GRANDES (huella sin puntos igual: 8d6ca8b36fb606ea,
+        // 1f5581451193e578, e18ba8cceabc3225); solo cambian los puntos (punto "chimenea" de las herrerias, para el humo).
+        const std::uint64_t expected = seed == 1234 ? 0x7fb46d921d9c5e87ull : (seed == 777 ? 0x30718e6213f36fbcull : 0x8fbb0825af31b432ull);
+        std::printf("    semilla %d: huella del plan de la capital %016llx\n", seed, static_cast<unsigned long long>(print));
+        check(print == expected, "la capital Kettlecrown sigue igual bloque a bloque (huella del plan)");
         std::printf("    semilla %d: %d npc, %d mercaderes, %d camas, %d cofres, plan %.1f ms, caja %.0f x %.0f\n", seed,
                     countPoints(*capital, "npc"), countPoints(*capital, "mercader"), countPoints(*capital, "cama"),
                     countPoints(*capital, "cofre"), plan_ms, static_cast<double>(capital->max.x - capital->min.x),
@@ -206,6 +244,132 @@ void testStructures() {
     check(has_tower && countPoints(tower, "npc") >= 1, "torres de mago con su mago");
     check(has_ruin && countPoints(ruin, "cofre") >= 1, "ruinas con cofre");
 
+    // --- Asentamientos nuevos: castillos reales, estilos de aldea, plazas hostiles y caminos ---
+    {
+        const Structures* st = gen.structures();
+        std::map<std::string, int> types;
+        std::map<std::string, int> styles;  // aldeas por estilo (segun el bloque de las paredes)
+        int castles = 0, region_roads = 0, regions = 0, joined = 0, boundary_ends = 0;
+        double plan_ms = 0.0;
+        const int kR = 12;
+        for (int rz = -kR; rz <= kR; ++rz)
+            for (int rx = -kR; rx <= kR; ++rx) {
+                const auto t0 = std::chrono::steady_clock::now();
+                const auto plan = st->region(rx, rz);
+                plan_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                ++regions;
+                region_roads += static_cast<int>(plan->roads.size());
+                for (const Structure& s : plan->structures) {
+                    ++types[s.info.type];
+                    if (s.info.type == "ciudad" && s.info.name != "Kettlecrown") {
+                        bool throne = false;
+                        for (const StructurePoint& p : s.info.points) throne = throne || (p.kind == "npc" && p.tag == "rey");
+                        castles += throne ? 1 : 0;
+                    }
+                    if (s.info.type != "aldea") continue;
+                    int tree = 0, pond = 0, pier = 0;
+                    for (const Piece& p : s.pieces) {
+                        if (p.plan->w == 15 && p.plan->d == 15 && p.plan->h == 22) ++tree;  // arbol mayor
+                        if (p.plan->w == 7 && p.plan->d == 7 && p.plan->h == 3) ++pond;     // charcas del pantano
+                        if (p.plan->w == 5 && p.plan->h == 13) ++pier;                        // muelle
+                    }
+                    ++styles[tree ? "elfica" : (pond ? "pantano" : "otras")];
+                    if (pier) ++styles["con muelle"];
+                }
+                // Caminos que tocan un borde: la region de al lado tiene uno en el mismo punto.
+                for (const Road& r : plan->roads) {
+                    const float ex[2] = {r.x0, r.x1}, ez[2] = {r.z0, r.z1};
+                    for (int k = 0; k < 2; ++k) {
+                        const int bx = static_cast<int>(std::lround(ex[k])), bz = static_cast<int>(std::lround(ez[k]));
+                        const bool on_x = (bx + kRegionSize / 2) % kRegionSize == 0 && std::abs(ex[k] - static_cast<float>(bx)) < 0.01f;
+                        const bool on_z = (bz + kRegionSize / 2) % kRegionSize == 0 && std::abs(ez[k] - static_cast<float>(bz)) < 0.01f;
+                        if (!on_x && !on_z) continue;
+                        const int nrx = on_x ? (bx < rx * kRegionSize ? rx - 1 : rx + 1) : rx;
+                        const int nrz = on_z ? (bz < rz * kRegionSize ? rz - 1 : rz + 1) : rz;
+                        if (std::abs(nrx) > kR || std::abs(nrz) > kR) continue;
+                        ++boundary_ends;
+                        bool found = false;
+                        for (const Road& o : st->region(nrx, nrz)->roads)
+                            found = found || (std::abs(o.x0 - ex[k]) < 0.01f && std::abs(o.z0 - ez[k]) < 0.01f);
+                        joined += found ? 1 : 0;
+                    }
+                }
+            }
+        std::printf("    %d regiones (%.1f ms de plan de media):", regions, plan_ms / regions);
+        for (const auto& [k, v] : types) std::printf(" %s %d,", k.c_str(), v);
+        std::printf("\n    castillos con rey %d; aldeas:", castles);
+        for (const auto& [k, v] : styles) std::printf(" %s %d,", k.c_str(), v);
+        std::printf("\n    caminos entre regiones: %d tramos, %d de %d bordes siguen en la region de al lado\n", region_roads, joined,
+                    boundary_ends);
+        check(types["fuerte"] >= 1 && types["campamento"] >= 1 && types["castillo_maldito"] >= 1 && types["ciudad_maldita"] >= 1 &&
+                  types["torre_culto"] >= 1,
+              "plazas hostiles de todos los tipos (fuerte, campamento, castillo maldito, ciudad maldita, torre del culto)");
+        check(castles >= 3, "castillos y ciudades con salon del trono y rey");
+        check(styles["elfica"] >= 1, "aldeas elficas con su arbol mayor");
+        check(styles["pantano"] >= 1, "aldeas del pantano (casas sobre pilotes y charcas)");
+        check(styles["con muelle"] >= 1, "aldeas de la costa con muelle");
+        check(region_roads > 20 && boundary_ends > 0 && joined * 100 >= boundary_ends * 70, "caminos que siguen de una region a la de al lado");
+        // Las plazas hostiles tienen guarnicion, jefe y cofres, y nada amigo (sin aldeanos).
+        for (const char* type : {"fuerte", "campamento", "castillo_maldito", "ciudad_maldita", "torre_culto"}) {
+            StructureInfo h;
+            if (!findStructure(gen, type, h, kR)) continue;
+            std::string boss;
+            for (const auto& p : h.points)
+                if (p.kind == "jefe") boss = p.tag;
+            std::printf("    %s \"%s\" nivel %d: %d spawners, %d cofres, jefe %s, caja %.0f x %.0f x %.0f\n", type, h.name.c_str(), h.level,
+                        countPoints(h, "spawner"), countPoints(h, "cofre"), boss.c_str(), static_cast<double>(h.max.x - h.min.x),
+                        static_cast<double>(h.max.y - h.min.y), static_cast<double>(h.max.z - h.min.z));
+            char what[160];
+            std::snprintf(what, sizeof what, "%s: guarnicion (>= 4 spawners), un jefe, cofres y sin aldeanos", type);
+            check(countPoints(h, "spawner") >= 4 && countPoints(h, "jefe") == 1 && countPoints(h, "cofre") >= 1 && countPoints(h, "npc") == 0 &&
+                      !boss.empty(),
+                  what);
+            // Estampado: tiempo de los chunks de la plaza y bloques del plano en su sitio.
+            double total = 0.0, worst = 0.0;
+            int n = 0;
+            for (int cz = static_cast<int>(std::floor(h.min.z / kChunkSize)); cz <= static_cast<int>(std::floor(h.max.z / kChunkSize)); ++cz)
+                for (int cx = static_cast<int>(std::floor(h.min.x / kChunkSize)); cx <= static_cast<int>(std::floor(h.max.x / kChunkSize)); ++cx) {
+                    ChunkData c;
+                    c.cx = cx;
+                    c.cz = cz;
+                    const auto t = std::chrono::steady_clock::now();
+                    gen.generate(c);
+                    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+                    total += ms;
+                    worst = std::max(worst, ms);
+                    ++n;
+                }
+            std::printf("      %d chunks: %.2f ms de media (peor %.2f)\n", n, total / std::max(1, n), worst);
+            check(n > 0 && total / n < 4.0, "los chunks de una plaza hostil se generan rapido");
+        }
+        // Las aldeas y ciudades amigas: las plazas hostiles quedan lejos. CIUDADES-GRANDES: tambien las metropolis
+        // (RegionPlan::shared), los castillos en colinas y los santuarios; y estos, lejos de todo lo demas.
+        int too_close = 0, overlap = 0;
+        const auto hostile = [](const std::string& t) {
+            return t == "fuerte" || t == "campamento" || t == "castillo_maldito" || t == "ciudad_maldita" || t == "torre_culto";
+        };
+        for (int rz = -kR; rz <= kR; ++rz)
+            for (int rx = -kR; rx <= kR; ++rx) {
+                const auto plan = st->region(rx, rz);
+                std::vector<const Structure*> all;
+                plan->forEach([&](const Structure& s) { all.push_back(&s); });
+                for (const Structure* a : all) {
+                    const bool friendly = a->info.type == "aldea" || a->info.type == "ciudad" || a->info.type == "castillo" ||
+                                          a->info.type == "santuario";
+                    for (const Structure* b : all) {
+                        if (a == b) continue;
+                        const float d = std::hypot(a->clear_x - b->clear_x, a->clear_z - b->clear_z);
+                        if (friendly && hostile(b->info.type) && d < a->clear_radius + b->clear_radius + 30.0f) ++too_close;
+                        const bool fresh = a->info.type == "castillo" || a->info.type == "santuario" || a->info.type == "ciudad";
+                        if (fresh && a < b && d < a->clear_radius + b->clear_radius && (a->info.type != "ciudad" || b->info.type == "castillo" ||
+                                                                                        b->info.type == "santuario")) ++overlap;
+                    }
+                }
+            }
+        check(too_close == 0, "ninguna plaza hostil pegada a una aldea o ciudad");
+        check(overlap == 0, "CIUDADES-GRANDES: castillos y santuarios sin pisar otra estructura");
+    }
+
     // --- La API del sistema (coordenadas locales) ---
     {
         ecs::World world;
@@ -259,6 +423,82 @@ void testStructures() {
                     total / n, worst, plain / m);
         check(total / n < 3.0, "un chunk dentro de la capital en menos de 3 ms de media");
     }
+}
+
+// --- Agua dentro de las piezas (CRAMION_STRUCT_WATER=1): censo -------------------------
+// Agua de mundo (no la de pozos/fuentes, PoolWater) dentro de las cajas de las
+// piezas de aldeas, ciudades y castillos, y en lo aplanado por encima del suelo.
+int structureWaterReport(bool verbose, const std::vector<int>& seeds = {1234, 777, 20260925, 42, 9001}, int radius = 4) {
+    int total = 0;
+    for (int seed : seeds) {
+        const Generator gen(seed, 62, VoxelGenerator::Adventure);
+        std::map<std::pair<int, int>, std::shared_ptr<ChunkData>> cache;
+        const auto chunkAt = [&](int x, int z) -> const ChunkData& {
+            const int cx = static_cast<int>(std::floor(static_cast<float>(x) / kChunkSize)), cz = static_cast<int>(std::floor(static_cast<float>(z) / kChunkSize));
+            auto& slot = cache[{cx, cz}];
+            if (!slot) {
+                slot = std::make_shared<ChunkData>();
+                slot->cx = cx;
+                slot->cz = cz;
+                gen.generate(*slot);
+            }
+            return *slot;
+        };
+        const auto blockAt = [&](int x, int y, int z) {
+            const ChunkData& c = chunkAt(x, z);
+            return c.get(x - c.cx * kChunkSize, y, z - c.cz * kChunkSize);
+        };
+        int seed_bad = 0, structures_seen = 0;
+        for (int rz = -radius; rz <= radius; ++rz)
+            for (int rx = -radius; rx <= radius; ++rx) {
+                for (const Structure& s : gen.structures()->region(rx, rz)->structures) {
+                    const std::string& t = s.info.type;
+                    if (t.find("mazmorra") != std::string::npos || t == "ruina" || t == "portal") continue;
+                    ++structures_seen;
+                    int bad = 0, keep = 0, falling = 0;
+                    int ex = 0, ey = 0, ez = 0;
+                    for (const Piece& p : s.pieces) {
+                        const Blueprint& bp = *p.plan;
+                        for (int wz = p.min_z; wz <= p.max_z; ++wz)
+                            for (int wx = p.min_x; wx <= p.max_x; ++wx) {
+                                const int dx = wx - p.x, dz = wz - p.z;
+                                int lx = 0, lz = 0;
+                                switch (p.rot & 3) {
+                                    case 0: lx = dx; lz = dz; break;
+                                    case 1: lz = bp.d - 1 - dx; lx = dz; break;
+                                    case 2: lx = bp.w - 1 - dx; lz = bp.d - 1 - dz; break;
+                                    default: lz = dx; lx = bp.w - 1 - dz; break;
+                                }
+                                for (int ly = 0; ly < bp.h; ++ly) {
+                                    const int y = p.y + ly;
+                                    if (y < 1 || y >= kWorldHeight) continue;
+                                    const BlockId b = blockAt(wx, y, wz);
+                                    if (!block::isWater(b) && b != block::FallingWater) continue;
+                                    const BlockId cell = bp.cells[bp.index(lx, ly, lz)];
+                                    if (cell == kKeep && y <= gen.seaLevel()) continue;  // el mar fuera del plano (bajo los muelles)
+                                    ++bad;
+                                    keep += cell == kKeep ? 1 : 0;
+                                    falling += b == block::FallingWater ? 1 : 0;
+                                    ex = wx, ey = y, ez = wz;
+                                    if (std::getenv("CRAMION_STRUCT_WATER_CELLS"))
+                                        std::printf("      %d %d %d id %d pieza %dx%dx%d en (%d,%d,%d) ly %d abajo %d natural %d\n", wx, y, wz, b, bp.w, bp.h,
+                                                    bp.d, p.x, p.y, p.z, ly, ly > 0 ? bp.cells[bp.index(lx, ly - 1, lz)] : -1,
+                                                    gen.adventureColumn(wx, wz).height);
+                                }
+                            }
+                    }
+                    if (bad > 0) {
+                        ++seed_bad;
+                        total += bad;
+                        if (verbose)
+                            std::printf("    semilla %d region (%d,%d) %s '%s' base %.0f: %d celdas de agua en piezas (%d en kKeep, %d cascada), p.ej. %d %d %d\n",
+                                        seed, rx, rz, t.c_str(), s.info.name.c_str(), static_cast<double>(s.info.center.y), bad, keep, falling, ex, ey, ez);
+                    }
+                }
+            }
+        if (verbose) std::printf("  semilla %d: %d estructuras, %d con agua\n", seed, structures_seen, seed_bad);
+    }
+    return total;
 }
 
 // --- Volcado para ver el aspecto (CRAMION_STRUCT_DUMP=<carpeta>) -------------------------
@@ -353,6 +593,37 @@ void dumpStructuresForRender() {
         const int y0 = static_cast<int>(v.center.y) - 8;
         dumpBox(gen, folder, "tower", static_cast<int>(v.min.x) - 20, static_cast<int>(v.min.z) - 20, static_cast<int>(v.max.x) + 20,
                 static_cast<int>(v.max.z) + 20, y0, y0 + 64);
+    }
+    // Asentamientos nuevos: una de cada (castillo real, plazas hostiles).
+    for (const char* type : {"fuerte", "campamento", "castillo_maldito", "ciudad_maldita", "torre_culto"}) {
+        if (!findStructure(gen, type, v, 12)) continue;
+        const int y0 = static_cast<int>(v.center.y) - 6;
+        dumpBox(gen, folder, type, static_cast<int>(v.min.x) - 8, static_cast<int>(v.min.z) - 8, static_cast<int>(v.max.x) + 8,
+                static_cast<int>(v.max.z) + 8, y0, y0 + 50);
+    }
+    {
+        bool castle = false, elf = false, swamp = false;
+        for (int r = 1; r <= 12 && !(castle && elf && swamp); ++r)
+            for (int rz = -r; rz <= r; ++rz)
+                for (int rx = -r; rx <= r; ++rx) {
+                    if (std::max(std::abs(rx), std::abs(rz)) != r) continue;
+                    for (const Structure& s : gen.structures()->region(rx, rz)->structures) {
+                        bool is_castle = false, is_elf = false, is_swamp = false;
+                        for (const Piece& p : s.pieces) {
+                            is_castle = is_castle || (s.info.type == "ciudad" && p.plan->w == 51);
+                            is_elf = is_elf || (p.plan->w == 15 && p.plan->d == 15 && p.plan->h == 22);
+                            is_swamp = is_swamp || (s.info.type == "aldea" && p.plan->w == 7 && p.plan->d == 7 && p.plan->h == 3);
+                        }
+                        const char* name = nullptr;
+                        if (is_castle && !castle) castle = true, name = "castle";
+                        else if (is_elf && !elf) elf = true, name = "village_elven";
+                        else if (is_swamp && !swamp) swamp = true, name = "village_swamp";
+                        if (name == nullptr) continue;
+                        const int y0 = static_cast<int>(s.info.center.y) - 10;
+                        dumpBox(gen, folder, name, static_cast<int>(s.info.min.x) - 12, static_cast<int>(s.info.min.z) - 12,
+                                static_cast<int>(s.info.max.x) + 12, static_cast<int>(s.info.max.z) + 12, y0, y0 + 60);
+                    }
+                }
     }
     // Otras aldeas de otros estilos (nieve, desierto, playa) si las hay cerca.
     bool done[8] = {};

@@ -43,6 +43,13 @@ struct GraphicsSettings {
     float target_fps = 60.0f;
     // Mapa de sombras del sol por cascada; 0 = segun el perfil de hardware.
     std::int32_t shadow_resolution = 0;
+    // Alcance de las sombras del sol en metros (40..500); 0 = segun el perfil de hardware (60/80/100).
+    float shadow_distance = 0.0f;
+    // Alcance en ALTURA de las sombras del sol (64..512 m): cuanto por encima
+    // (hacia el sol) se buscan objetos que tapan en las cascadas, y la ventana
+    // vertical de la ocupacion de voxeles de los rayos. 0 = automatico (320 m:
+    // islas flotantes y montanas). Mas alto = algo mas de coste de GPU.
+    float shadow_height = 0.0f;
     // Lado maximo de las texturas de los modelos; 0 = segun el perfil de
     // hardware. Se aplica a lo que se carga despues (reabrir la escena).
     std::int32_t texture_max_size = 0;

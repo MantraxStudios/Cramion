@@ -562,6 +562,32 @@ void testFloatingOrigin() {
     check(real.x == 5000.0 && real.y == 10.0 && real.z == -3000.0, "misma posicion real (doble precision)");
     check(child.localPosition().x == 1.0f, "los hijos no cambian (son relativos al padre)");
 
+    // Camara alta (editor volando a 600 m) alejandose en horizontal: la altura
+    // no se desplaza (antes el origen quedaba en y = 1024: niebla total, gris).
+    {
+        ecs::World high;
+        const std::optional<Vec3> o = ecs::updateFloatingOrigin(high, Vec3{3000.0f, 600.0f, 100.0f});
+        check(o && o->x == 3072.0f && o->y == 0.0f && o->z == 0.0f && high.origin().y == 0.0,
+              "solo se desplaza el eje que paso del umbral (la altura no)");
+        // Un origen alto de antes (escena guardada asi) vuelve a 0 cerca del suelo.
+        high.setOrigin(ecs::DVec3{3072.0, 1024.0, 0.0});
+        const std::optional<Vec3> back = ecs::updateFloatingOrigin(high, Vec3{0.0f, -950.0f, 0.0f});
+        check(back && back->y == -1024.0f && back->x == 0.0f && high.origin().y == 0.0 && high.origin().x == 3072.0,
+              "un origen en altura vuelve a y = 0");
+        // Cerca del centro real el origen vuelve a 0 (con margen: no oscila en el borde).
+        check(!ecs::updateFloatingOrigin(high, Vec3{-1500.0f, 70.0f, 0.0f}), "a 1572 m del centro aun no vuelve");
+        const std::optional<Vec3> step = ecs::updateFloatingOrigin(high, Vec3{-2500.0f, 70.0f, 0.0f});
+        check(step && step->x == -2048.0f && high.origin().x == 1024.0, "volviendo: un paso");
+        const std::optional<Vec3> home = ecs::updateFloatingOrigin(high, Vec3{-500.0f, 70.0f, 0.0f});
+        check(home && home->x == -1024.0f && high.origin().x == 0.0 && high.origin().y == 0.0,
+              "de vuelta al centro: origen (0, 0, 0)");
+        // Muy lejos (1000 km): el origen sigue la camara y la y local sigue siendo la altura.
+        high.setOrigin(ecs::DVec3{1000448.0, 0.0, -999424.0});
+        const std::optional<Vec3> lejos = ecs::updateFloatingOrigin(high, Vec3{2100.0f, 80.0f, -2100.0f});
+        check(lejos && high.origin().x == 1002496.0 && high.origin().y == 0.0 && high.origin().z == -1001472.0,
+              "a 1000 km tambien (pasos exactos, y = 0)");
+    }
+
     ecs::World copy;
     ecs::deserializeWorld(copy, ecs::serializeWorld(world));
     const ecs::Entity far_copy = copy.findByName("Lejos");

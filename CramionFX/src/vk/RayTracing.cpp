@@ -783,6 +783,39 @@ struct RayTracing::Resources {
     // Texturas que caben en el set de la escena (array fijo, partially bound).
     std::uint32_t max_textures = 0;
 
+    // --- Ocupacion de los voxeles (VoxelOccupancy): set 0, bindings 11 y 12 ---
+    // Sin bloques, un buffer de ceros (cabecera inactiva). Cada set de frame se
+    // reescribe antes de su siguiente uso cuando cambian los buffers.
+    DeviceBuffer voxel_dummy;
+    vk::Buffer voxel_info{};
+    vk::Buffer voxel_cells{};
+    std::uint64_t voxel_revision = 1;
+    std::array<std::uint64_t, kMaxFramesInFlight> voxel_written{};
+
+    void writeVoxelSets(std::uint32_t frame) {
+        if (device == nullptr || frame >= kMaxFramesInFlight) return;
+        const vk::Buffer info = voxel_info ? voxel_info : *voxel_dummy.buffer;
+        const vk::Buffer cells = voxel_cells ? voxel_cells : *voxel_dummy.buffer;
+        const vk::DescriptorBufferInfo info_buffer{info, 0, VK_WHOLE_SIZE};
+        const vk::DescriptorBufferInfo cell_buffer{cells, 0, VK_WHOLE_SIZE};
+        std::vector<vk::WriteDescriptorSet> writes;
+        for (std::uint32_t pass = 0; pass < kPassCount; ++pass) {
+            const vk::DescriptorSet set = *frame_sets[frame * kPassCount + pass];
+            vk::WriteDescriptorSet w{};
+            w.dstSet = set;
+            w.descriptorCount = 1;
+            w.descriptorType = vk::DescriptorType::eStorageBuffer;
+            w.dstBinding = 11;
+            w.pBufferInfo = &info_buffer;
+            writes.push_back(w);
+            w.dstBinding = 12;
+            w.pBufferInfo = &cell_buffer;
+            writes.push_back(w);
+        }
+        device->handle().updateDescriptorSets(writes, nullptr);
+        voxel_written[frame] = voxel_revision;
+    }
+
     // Layout del set de la escena (fijo: no depende del numero de texturas).
     void ensureLayouts(const VulkanDevice& device) {
         if (*scene_layout != nullptr) return;
@@ -1804,16 +1837,18 @@ void RayTracing::create(const VulkanDevice& device) {
     using Type = vk::DescriptorType;
     // 7, 8, 9: albedo y material del G-buffer y la acumulacion (path tracing).
     // 10: el modelo de sombreado de Disney del G-buffer.
-    const std::array<Type, 11> frame_types = {
+    // 11, 12: la ocupacion de los voxeles (VoxelOccupancy: etiquetas y celdas).
+    const std::array<Type, 13> frame_types = {
         Type::eUniformBuffer,        Type::eCombinedImageSampler, Type::eCombinedImageSampler,
         Type::eCombinedImageSampler, Type::eStorageImage,         Type::eUniformBuffer,
         Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler,
-        Type::eStorageImage,         Type::eCombinedImageSampler};
+        Type::eStorageImage,         Type::eCombinedImageSampler, Type::eStorageBuffer,
+        Type::eStorageBuffer};
     // Con pipeline de rayos, los sets tambien los leen el raygen y el any-hit.
     if (device.rayTracingPipelineSupported()) {
         r.stages |= vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eAnyHitKHR;
     }
-    std::array<vk::DescriptorSetLayoutBinding, 11> frame_bindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 13> frame_bindings{};
     for (std::uint32_t i = 0; i < frame_bindings.size(); ++i) {
         frame_bindings[i].binding = i;
         frame_bindings[i].descriptorType = frame_types[i];
@@ -1825,10 +1860,11 @@ void RayTracing::create(const VulkanDevice& device) {
     r.frame_layout = vk::raii::DescriptorSetLayout(device.handle(), frame_layout_info);
 
     constexpr std::uint32_t kFrameSets = kMaxFramesInFlight * kPassCount;
-    const std::array<vk::DescriptorPoolSize, 3> frame_sizes = {
+    const std::array<vk::DescriptorPoolSize, 4> frame_sizes = {
         vk::DescriptorPoolSize{Type::eUniformBuffer, kFrameSets * 2},
         vk::DescriptorPoolSize{Type::eCombinedImageSampler, kFrameSets * 7},
-        vk::DescriptorPoolSize{Type::eStorageImage, kFrameSets * 2}};
+        vk::DescriptorPoolSize{Type::eStorageImage, kFrameSets * 2},
+        vk::DescriptorPoolSize{Type::eStorageBuffer, kFrameSets * 2}};
     vk::DescriptorPoolCreateInfo frame_pool_info{};
     frame_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     frame_pool_info.maxSets = kFrameSets;
@@ -1840,6 +1876,11 @@ void RayTracing::create(const VulkanDevice& device) {
     alloc.descriptorPool = *r.frame_pool;
     alloc.setSetLayouts(layouts);
     r.frame_sets = vk::raii::DescriptorSets(device.handle(), alloc);
+    // Ocupacion de voxeles vacia hasta que haya bloques (cabecera a cero = inactiva).
+    {
+        const std::array<std::uint8_t, 256> zeros{};
+        r.voxel_dummy = createBuffer(device, zeros.size(), vk::BufferUsageFlagBits::eStorageBuffer, true, zeros.data());
+    }
 
     // Texturas de los materiales: con mips y repeticion (UV fuera de [0, 1]).
     vk::SamplerCreateInfo sampler_info{};
@@ -2868,6 +2909,8 @@ void RayTracing::recordUpdates(const vk::raii::CommandBuffer& cmd, std::uint32_t
     // (y lo que se retiro en el: buffers que crecieron, scratch de BLAS).
     r.staging[slot].clear();
     r.retired_blas[slot].clear();
+    // La ocupacion de los voxeles cambio de buffers: el set de este hueco.
+    if (r.voxel_written[slot] != r.voxel_revision) r.writeVoxelSets(slot);
 
     // --- BLAS de streaming ya medidas: a su tamano compactado ---
     if (!r.pending_compactions.empty()) r.compactPending(cmd, slot);
@@ -3092,6 +3135,16 @@ void RayTracing::updateFrameSet(const VulkanDevice& device, std::uint32_t frame_
         writes[10].pImageInfo = &shading;
         device.handle().updateDescriptorSets(writes, nullptr);
     }
+    r.writeVoxelSets(frame_index);
+}
+
+void RayTracing::setVoxelGrid(vk::Buffer info, vk::Buffer cells) {
+    if (resources_ == nullptr) return;
+    Resources& r = *resources_;
+    if (r.voxel_info == info && r.voxel_cells == cells) return;
+    r.voxel_info = info;
+    r.voxel_cells = cells;
+    ++r.voxel_revision;  // cada set de frame se reescribe en su recordUpdates
 }
 
 bool RayTracing::serActive() const {

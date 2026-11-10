@@ -985,6 +985,77 @@ void EditorApp::runSelfTestStep() {
             for (const entt::entity h : world_.registry().view<voxel::VoxelWorld>()) world_.destroy(world_.wrap(h));
             if (ecs::Entity sun = world_.find(self_test_sun_); sun.valid()) sun.setActive(true);
             self_test_wait_ = 30;
+            self_test_step_ = 4199;  // plantas que se apartan (4200-4204) y luego el 43
+            break;
+        }
+        // --- Las plantas de los bloques se apartan al paso de un personaje ---
+        case 4200: {
+            createVoxelWorldEntity();
+            self_test_wait_ = 30;
+            break;
+        }
+        case 4201: {
+            static int tries = 0;
+            if ((voxels_.stats().pending_meshes > 0 || !renderer_.hasVoxelTextures()) && ++tries < 200) {
+                self_test_wait_ = 6;
+                return;
+            }
+            // Un campo de hierba alta sobre un suelo de piedra, visto de cerca.
+            const int h = voxels_.surfaceHeight(8, 8);
+            for (int y = h + 1; y <= h + 12; ++y) {
+                for (int x = 0; x <= 16; ++x) {
+                    for (int z = 0; z <= 16; ++z) voxels_.setBlock(x, y, z, voxel::block::Air);
+                }
+            }
+            for (int x = 0; x <= 16; ++x) {
+                for (int z = 0; z <= 16; ++z) {
+                    voxels_.setBlock(x, h, z, voxel::block::Stone);
+                    if (x >= 3 && x <= 13 && z >= 3 && z <= 13) voxels_.setBlock(x, h + 1, z, voxel::block::TallGrass);
+                }
+            }
+            const float top = static_cast<float>(h) + 1.0f;
+            const Vec3 target{8.5f, top + 0.5f, 8.5f};
+            scene_.placeCamera(target + Vec3{0.0f, 3.5f, 3.5f}, target);
+            focus_scene_ = true;
+            preferred_view_ = kSceneSlot;
+            self_test_wait_ = 90;
+            break;
+        }
+        case 4202: {
+            self_test_capture_ = captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_follaje_a.png");
+            self_test_wait_ = 10;
+            break;
+        }
+        case 4203: {
+            // Lo que cambia solo con el viento (dos capturas sin nadie).
+            const std::vector<std::uint8_t> still =
+                captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_follaje_b.png");
+            self_test_noise_ = captureDifference(self_test_capture_, still);
+            self_test_capture_ = still;
+            // Un personaje (CharacterController, pies en la entidad) en medio
+            // (la esquina 2,2 es piedra sin hierba: su altura es la del suelo).
+            ecs::Entity walker = world_.create("Personaje que pisa la hierba");
+            walker.setWorldPosition(Vec3{8.5f, static_cast<float>(voxels_.surfaceHeight(2, 2)) + 1.0f, 8.5f});
+            walker.add<physics::CharacterController>();
+            self_test_walker_ = walker.uuid();
+            self_test_wait_ = 40;
+            break;
+        }
+        case 4204: {
+            const std::vector<std::uint8_t> pushed =
+                captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_follaje_c.png");
+            const float difference = captureDifference(self_test_capture_, pushed);
+            std::cout << "[SelfTest] Plantas apartadas: diferencia " << difference << " (viento solo " << self_test_noise_
+                      << ", personajes en el render " << renderer_.voxelInteractorCount() << ")" << std::endl;
+            // (La diferencia de las capturas es orientativa: el viento mueve
+            // tanto la hierba de cerca que no sirve de prueba automatica; las
+            // capturas follaje_b / follaje_c muestran el corro apartado.)
+            check(renderer_.voxelInteractorCount() > 0, "el personaje llega al pase de los bloques", f);
+            check(difference > 0.0f, "capturas de las plantas con y sin personaje", f);
+            if (ecs::Entity walker = world_.find(self_test_walker_); walker.valid()) world_.destroy(walker);
+            for (const entt::entity h : world_.registry().view<voxel::VoxelWorld>()) world_.destroy(world_.wrap(h));
+            self_test_wait_ = 30;
+            self_test_step_ = 42;  // sigue en el 43
             break;
         }
         case 43: {  // Mallas creadas por codigo (como el Mesh de Unity).

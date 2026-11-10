@@ -86,6 +86,16 @@ public:
     std::string externalDataPath() const;
     std::string obbPath() const;
 
+    // --- Teclado en pantalla (IME) ---
+    // Lo muestra u oculta (un EditText invisible por JNI, en el hilo de la
+    // interfaz). Lo escrito llega como TextInput, Borrar como Backspace e Intro
+    // como Enter (KeyPressed + KeyReleased). `password`: teclado de contrasena.
+    void showSoftKeyboard(bool show, bool password = false);
+    // Alto del teclado en pantalla en pixeles de la imagen (0 = oculto). Se
+    // pregunta a Android (WindowInsets.Type.ime / getWindowVisibleDisplayFrame):
+    // cuesta una llamada JNI, no cada frame.
+    float softKeyboardHeight();
+
     // Uso interno de los callbacks de la glue.
     void handleCommand(int32_t command);
     int32_t handleInput(const void* event);
@@ -93,6 +103,13 @@ public:
 private:
     void dispatch(Event& event);
     void refreshSize();
+    // El caracter de una tecla (KeyEvent.getUnicodeChar por JNI); 0 si no tiene.
+    uint32_t unicodeChar(const void* key_event);
+    // Engancha el hilo de la interfaz (callbacks de la glue) para el IME.
+    static void installUiHooks();
+    // Lo que escribio el IME desde el ultimo frame (en pumpEvents).
+    void pumpSoftKeyboard();
+    bool keyboard_wanted_ = false;
 
     EventCallback callback_;
     ANativeWindow* window_ = nullptr;

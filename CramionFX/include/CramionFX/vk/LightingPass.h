@@ -55,6 +55,10 @@ public:
 
     const vk::raii::Pipeline& pipeline() const { return pipeline_; }
     const vk::raii::Pipeline& pipeline(bool lite) const { return lite && *lite_pipeline_ ? lite_pipeline_ : pipeline_; }
+    // Movil en Baja: la minima (lighting.frag con kMobile). La de siempre si no se pudo crear.
+    const vk::raii::Pipeline& mobilePipeline() const { return *mobile_pipeline_ ? mobile_pipeline_ : pipeline(true); }
+    // UNLIT: la del modo Unlit del juego (lighting_unlit.frag). La del movil si no se pudo crear.
+    const vk::raii::Pipeline& unlitPipeline() const { return *unlit_pipeline_ ? unlit_pipeline_ : mobilePipeline(); }
     // El binding existe en el layout (en el modo compatible faltan algunos).
     bool hasBinding(std::uint32_t binding) const;
     const vk::raii::PipelineLayout& layout() const { return pipeline_layout_; }
@@ -69,6 +73,8 @@ private:
     vk::raii::PipelineLayout pipeline_layout_{nullptr};
     vk::raii::Pipeline pipeline_{nullptr};
     vk::raii::Pipeline lite_pipeline_{nullptr};
+    vk::raii::Pipeline mobile_pipeline_{nullptr};
+    vk::raii::Pipeline unlit_pipeline_{nullptr};  // UNLIT
     bool compat_ = false;
 };
 

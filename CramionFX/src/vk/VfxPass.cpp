@@ -1325,7 +1325,18 @@ bool VfxPass::prepare(std::uint32_t frame, const VfxView& view, bool simulate) {
 
     // --- Efectos, bloques y puntos ---
     // (Los de la clase: sin reservar memoria en cada frame y vista.)
-    instance_scratch_.assign(sizeof(InstanceGpu) * kMaxInstances, 0);
+    // Solo hasta la ranura mas alta en uso (o la que se escribio la ultima vez
+    // en este hueco, para dejar a cero las que se liberaron): antes se
+    // borraban y subian las 256 (300 KB por frame, notable en un movil).
+    std::uint32_t used_slots = 0;
+    for (const auto& entry : slots_) {
+        if (entry.second.capacity > 0) used_slots = std::max(used_slots, entry.second.index + 1);
+    }
+    used_slots = std::min(used_slots, kMaxInstances);
+    if (instance_written_.size() != frames_) instance_written_.assign(frames_, kMaxInstances);
+    const std::uint32_t write_slots = std::max(used_slots, instance_written_[frame]);
+    instance_written_[frame] = used_slots;
+    instance_scratch_.assign(sizeof(InstanceGpu) * write_slots, 0);
     std::vector<VfxBlock>& block_data = block_scratch_;
     std::vector<core::Vec4>& point_data = point_scratch_;
     block_data.clear();
@@ -1492,7 +1503,9 @@ bool VfxPass::prepare(std::uint32_t frame, const VfxView& view, bool simulate) {
         g.tint = d.tint;
         g.emissive = core::Vec4{d.emissive, std::clamp(d.distortion, 0.0f, kVfxMaxDistortionPixels)};
         if (d.distortion_height) g.mesh0.w = 1.0f;
-        std::memcpy(instance_scratch_.data() + sizeof(InstanceGpu) * slot.index, &g, sizeof(InstanceGpu));
+        if (slot.index < write_slots) {
+            std::memcpy(instance_scratch_.data() + sizeof(InstanceGpu) * slot.index, &g, sizeof(InstanceGpu));
+        }
         capacity_total += slot.capacity;
         ++effects;
         // Se dibujan las que ya tienen contadores validos (o los tendran tras
@@ -1518,7 +1531,7 @@ bool VfxPass::prepare(std::uint32_t frame, const VfxView& view, bool simulate) {
             }
         }
     }
-    instance_buf_[frame].write(instance_scratch_.data(), instance_scratch_.size());
+    if (!instance_scratch_.empty()) instance_buf_[frame].write(instance_scratch_.data(), instance_scratch_.size());
     if (!block_data.empty()) block_buf_[frame].write(block_data.data(), sizeof(VfxBlock) * block_data.size());
     if (!point_data.empty()) point_buf_[frame].write(point_data.data(), sizeof(core::Vec4) * point_data.size());
     if (light_params && frame < light_buf_.size()) {

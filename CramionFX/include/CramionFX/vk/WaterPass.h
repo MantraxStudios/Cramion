@@ -117,6 +117,8 @@ public:
     // Calidad Baja (iluminacion ligera): el reflejo en pantalla del agua con
     // 12 pasos y 3 de afinado en vez de 32 y 6 (water.frag, ocean.w).
     void setLowQuality(bool low) { low_quality_ = low; }
+    // Movil en Baja: sin reflejos por pantalla (water.frag: solo el cielo/entorno).
+    void setLowestQuality(bool lowest) { lowest_quality_ = lowest; }
 
     // Cada frame (sus buffers ya no los usa la GPU): parametros y mallas.
     void prepare(std::uint32_t frame);
@@ -214,6 +216,7 @@ private:
     std::vector<WaterBodyDesc> bodies_;
     float time_ = 0.0f;
     bool low_quality_ = false;
+    bool lowest_quality_ = false;
 };
 
 }  // namespace cramion::gfx

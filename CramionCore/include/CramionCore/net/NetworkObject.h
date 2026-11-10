@@ -56,6 +56,15 @@ struct NetworkObject {
     float since_sent = 0.0f;
     core::Vec3 last_position{};
     core::Quat last_rotation{};
+    // SEGUIMIENTO-RED: retraso real de lo que llega (hora local - hora del dueno pasada a local) y separacion entre
+    // envios, medias moviles: el bufer se alarga solo si la red va a saltos (wifi, movil) en vez de quedarse sin
+    // datos y saltar.
+    float lag_avg = 0.0f;
+    float lag_dev = 0.0f;
+    float interval_avg = 0.05f;
+    bool has_stats = false;
+    bool has_shown = false;          // ya se dibujo al menos una vez (para suavizar las correcciones)
+    float current_delay = -1.0f;     // retraso del bufer en uso (se acerca despacio al que hace falta)
 
     void reflect(ecs::PropertyVisitor& v);
 };

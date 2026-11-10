@@ -217,8 +217,21 @@ vec3 directLight(Surface s, vec3 v) {
 
 // Material de un punto de impacto de un rayo (sin normal map).
 Surface hitSurface(RtHit hit, float lod) {
-    RtMaterial material = rt_materials[hit.material];
     Surface s;
+    // Un bloque (voxel_occupancy.glsl): su color de la ocupacion, rugoso.
+    if (isVoxelHit(hit)) {
+        s.position = hit.position;
+        s.normal = hit.normal;
+        s.geometric = hit.normal;
+        s.albedo = voxelAlbedo(hit.material & 255u);
+        s.metallic = 0.0;
+        s.roughness = 0.9;
+        s.reflectance = 0.04;
+        s.model = standardShading();
+        s.emission = vec3(0.0);
+        return s;
+    }
+    RtMaterial material = rt_materials[hit.material];
     s.position = hit.position;
     s.normal = hit.normal;
     s.geometric = hit.normal;

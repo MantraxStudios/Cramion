@@ -35,6 +35,11 @@ struct PointLight {
     bool cast_shadows = true;
     float shadow_strength = 1.0f;  // cuanto oscurece su sombra (0..1)
     float source_radius = 0.05f;   // tamano de la bombilla (m): penumbra de las sombras por rayos
+    // true: no ilumina las mallas de voxeles (lighting.frag las reconoce por el
+    // G-buffer). Para las luces de los bloques que dan luz (BlockLights): los
+    // voxeles ya llevan esa luz propagada por celdas, que no atraviesa paredes;
+    // la puntual, sin sombra, si (y ademas la sumaba dos veces).
+    bool skip_voxels = false;
 };
 
 // Foco: luz puntual limitada a un cono. Entre el angulo interior y el exterior

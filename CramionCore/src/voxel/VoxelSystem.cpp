@@ -14,8 +14,11 @@
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/water/Water.h"
 #include "VoxelInternal.h"
+#include "FarTerrain.h"
 #include "VoxelDimensions.h"
 #include "Structures.h"
+#include "BlockLights.h"
+#include "Rails.h"
 
 #include <CramionFX/vk/VulkanRenderer.h>
 
@@ -63,19 +66,43 @@ std::string safeName(const std::string& name) {
 }
 std::filesystem::path fromUtf8(const std::string& s) { return std::filesystem::path(std::u8string(s.begin(), s.end())); }
 
-// Chunk guardado: "CRVX" + version + pares (cuantos u16, bloque u8).
-bool writeChunkFile(const std::filesystem::path& file, const ChunkData& chunk) {
-    std::vector<std::uint8_t> bytes = {'C', 'R', 'V', 'X', 1};
-    const std::vector<BlockId>& b = chunk.blocks;
+// Chunk guardado: "CRVX" + version + tramos. IDS16: version 2 = (cuantos u16, bloque u16), little endian; la
+// version 1 (la de antes, bloque u8) se sigue leyendo: los mundos viejos cargan igual. Siempre se escribe la 2.
+constexpr std::uint8_t kChunkFileVersion = 2;
+
+// Tramos (cuantos u16, bloque u16) de todas las celdas de la columna.
+void encodeRuns(const ChunkData& chunk, std::vector<std::uint8_t>& bytes) {
+    // Siempre las kChunkCells celdas (lo recortado de arriba es aire).
+    const std::size_t n = static_cast<std::size_t>(kChunkCells);
     std::size_t i = 0;
-    while (i < b.size()) {
+    while (i < n) {
+        const BlockId id = chunk.at(i);
         std::size_t run = 1;
-        while (i + run < b.size() && b[i + run] == b[i] && run < 65535) ++run;
+        while (i + run < n && chunk.at(i + run) == id && run < 65535) ++run;
         bytes.push_back(static_cast<std::uint8_t>(run & 0xFF));
         bytes.push_back(static_cast<std::uint8_t>(run >> 8));
-        bytes.push_back(b[i]);
+        bytes.push_back(static_cast<std::uint8_t>(id & 0xFF));
+        bytes.push_back(static_cast<std::uint8_t>(id >> 8));
         i += run;
     }
+}
+// Lee tramos desde `first`: `id_bytes` 1 (version 1) o 2 (version 2). Los ids sin bloque (>= Count) pasan a aire.
+bool decodeRuns(const std::vector<std::uint8_t>& bytes, std::size_t first, int id_bytes, ChunkData& chunk) {
+    const std::size_t step = 2 + static_cast<std::size_t>(id_bytes);
+    std::size_t out = 0;
+    for (std::size_t i = first; i + step <= bytes.size() && out < chunk.blocks.size(); i += step) {
+        const std::size_t run = static_cast<std::size_t>(bytes[i]) | (static_cast<std::size_t>(bytes[i + 1]) << 8);
+        unsigned raw = bytes[i + 2];
+        if (id_bytes == 2) raw |= static_cast<unsigned>(bytes[i + 3]) << 8;
+        const BlockId id = raw < block::Count ? static_cast<BlockId>(raw) : block::Air;
+        for (std::size_t k = 0; k < run && out < chunk.blocks.size(); ++k) chunk.blocks[out++] = id;
+    }
+    return out == chunk.blocks.size();
+}
+
+bool writeChunkFile(const std::filesystem::path& file, const ChunkData& chunk) {
+    std::vector<std::uint8_t> bytes = {'C', 'R', 'V', 'X', kChunkFileVersion};
+    encodeRuns(chunk, bytes);
     std::error_code error;
     std::filesystem::create_directories(file.parent_path(), error);
     const std::filesystem::path temp = std::filesystem::path(file).concat(".tmp");
@@ -94,39 +121,20 @@ bool readChunkFile(const std::filesystem::path& file, ChunkData& chunk) {
     if (!in) return false;
     std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     if (bytes.size() < 5 || bytes[0] != 'C' || bytes[1] != 'R' || bytes[2] != 'V' || bytes[3] != 'X') return false;
-    std::size_t out = 0;
-    for (std::size_t i = 5; i + 2 < bytes.size() + 0 && out < chunk.blocks.size(); i += 3) {
-        const std::size_t run = static_cast<std::size_t>(bytes[i]) | (static_cast<std::size_t>(bytes[i + 1]) << 8);
-        const BlockId id = bytes[i + 2] < block::Count ? bytes[i + 2] : block::Air;
-        for (std::size_t k = 0; k < run && out < chunk.blocks.size(); ++k) chunk.blocks[out++] = id;
-    }
-    return out == chunk.blocks.size();
+    if (bytes[4] == 1) return decodeRuns(bytes, 5, 1, chunk);  // 8 bits (mundos de antes de IDS16)
+    if (bytes[4] == 2) return decodeRuns(bytes, 5, 2, chunk);
+    return false;  // version futura: se queda lo generado
 }
 
 // Lo mismo en memoria (dimensiones de un mundo sin nombre: lo construido en
 // cada una se conserva al ir y volver, aunque no se guarde en disco).
+// (solo en memoria de este proceso: siempre tramos de 16 bits)
 std::vector<std::uint8_t> encodeChunk(const ChunkData& chunk) {
     std::vector<std::uint8_t> bytes;
-    const std::vector<BlockId>& b = chunk.blocks;
-    for (std::size_t i = 0; i < b.size();) {
-        std::size_t run = 1;
-        while (i + run < b.size() && b[i + run] == b[i] && run < 65535) ++run;
-        bytes.push_back(static_cast<std::uint8_t>(run & 0xFF));
-        bytes.push_back(static_cast<std::uint8_t>(run >> 8));
-        bytes.push_back(b[i]);
-        i += run;
-    }
+    encodeRuns(chunk, bytes);
     return bytes;
 }
-bool decodeChunk(const std::vector<std::uint8_t>& bytes, ChunkData& chunk) {
-    std::size_t out = 0;
-    for (std::size_t i = 0; i + 2 < bytes.size() && out < chunk.blocks.size(); i += 3) {
-        const std::size_t run = static_cast<std::size_t>(bytes[i]) | (static_cast<std::size_t>(bytes[i + 1]) << 8);
-        const BlockId id = bytes[i + 2] < block::Count ? bytes[i + 2] : block::Air;
-        for (std::size_t k = 0; k < run && out < chunk.blocks.size(); ++k) chunk.blocks[out++] = id;
-    }
-    return out == chunk.blocks.size();
-}
+bool decodeChunk(const std::vector<std::uint8_t>& bytes, ChunkData& chunk) { return decodeRuns(bytes, 0, 2, chunk); }
 
 }  // namespace
 
@@ -154,12 +162,29 @@ struct VoxelSystem::Impl {
     bool has_viewer = false;
     BlockListener listener;
     physics::PhysicsSystem* physics = nullptr;
+    // Senales de arcanita (Rails.h): solo los circuitos que cambian, a 10 Hz. Lo que la simulacion cambia
+    // (versiones encendidas) no la vuelve a despertar (signal_applying).
+    rail::SignalSim signals;
+    bool signal_applying = false;
+    rail::SignalSim::World signal_world;
+    const rail::SignalSim::World& signalWorld() {
+        if (!signal_world.get) {
+            signal_world.get = [this](int x, int y, int z) { return getBlock(x, y, z); };
+            signal_world.set = [this](int x, int y, int z, BlockId id) {
+                signal_applying = true;
+                setBlockInternal(x, y, z, id, false);
+                signal_applying = false;
+            };
+        }
+        return signal_world;
+    }
 
     // --- Dimensiones (setDimension) ---
     std::string dimension = kSurfaceDimension;
     // Mundo sin nombre: chunks cambiados de cada dimension (encodeChunk).
     std::unordered_map<std::string, std::unordered_map<std::int64_t, std::shared_ptr<const std::vector<std::uint8_t>>>> memory_chunks;
     ecs::World* scene = nullptr;  // la de start(): su ambiente cambia con la dimension
+    entt::entity world_entity = entt::null;  // la del VoxelWorld (distancias en vivo, update)
     bool ambience = true;
     AmbienceSnapshot ambience_snapshot;
     VoxelGenerator profile() const { return dimensionGenerator(dimension, settings.generator); }
@@ -180,18 +205,38 @@ struct VoxelSystem::Impl {
         std::array<std::uint32_t, kSectionCount> version{};   // sube al ensuciarse
         std::array<std::uint32_t, kSectionCount> in_flight{};  // version que se esta mallando (0 = nada)
         std::array<bool, kSectionCount> meshed{};
+        // MALLAS-DETALLE: nivel de adornos con el que se mallo cada seccion y lo que le cambia (MeshTierFlags).
+        std::array<std::uint8_t, kSectionCount> mesh_tier{};
+        std::array<std::uint8_t, kSectionCount> tier_flags{};
         std::array<bool, kSectionCount> uploaded{};             // hay algo en el renderizador
         std::array<bool, kSectionCount> water_uploaded{};       // hay agua en el renderizador
         bool ever_meshed = false;
         int top = kWorldHeight - 1;  // el bloque no-aire mas alto (encima: aire con cielo 15)
         std::array<bool, kSectionCount> collision_built{};  // la malla de colision esta al dia
         std::array<bool, kSectionCount> has_collider{};     // hay cuerpo en la fisica
+        // Luces reales de los bloques (BlockLights.h): la cache se rehace si cambian.
+        std::uint64_t light_serial = 0;  // unico por carga de la columna
+        std::uint32_t light_edits = 0;   // sube al poner o quitar un bloque que da luz
     };
+    std::uint64_t light_serials = 0;
+    BlockLightCache block_lights;
     std::unordered_map<std::int64_t, std::unique_ptr<Chunk>> chunks;
     // La luz y las consultas piden muchas celdas seguidas del mismo chunk.
     mutable std::int64_t cached_key = 0;
     mutable Chunk* cached_chunk = nullptr;
     std::unordered_set<std::int64_t> generating;
+    // Celdas ocultas solo en el dibujo (setBlockHidden: puertas que el juego anima), en coordenadas
+    // absolutas. La copia para mallar (snapshot) las pone como aire; los datos no cambian.
+    std::unordered_map<std::int64_t, std::array<int, 3>> hidden_cells;
+    // Las vuelve a mostrar todas (cambio de origen: el juego vuelve a buscar sus puertas).
+    void showHiddenCells() {
+        for (const auto& [key, p] : hidden_cells) markDirty(p[0], p[1], p[2]);
+        hidden_cells.clear();
+    }
+    static std::int64_t hiddenKey(int x, int y, int z) {
+        return (static_cast<std::int64_t>(x & 0x3FFFFF) << 42) | (static_cast<std::int64_t>(z & 0x3FFFFF) << 20) |
+               static_cast<std::int64_t>(y & 0xFFFFF);
+    }
 
     // --- Hilos ---
     struct Job {
@@ -214,6 +259,8 @@ struct VoxelSystem::Impl {
         std::vector<std::uint32_t> vertices;
         std::vector<std::uint32_t> water;  // caras del agua (pase del agua)
         float milliseconds = 0.0f;
+        std::uint8_t mesh_tier = 2;   // MALLAS-DETALLE
+        std::uint8_t tier_flags = 0;
     };
     std::vector<std::thread> workers;
     std::mutex mutex;
@@ -236,8 +283,60 @@ struct VoxelSystem::Impl {
     bool textures_uploaded = false;
     std::string textures_signature;
     float time = 0.0f;
+    // Personajes que apartan las plantas (noteFoliageInteractor): pies, radio
+    // y cuando se vieron; syncRenderer los pasa al render y quita los viejos.
+    struct FoliageNote {
+        Vec3 feet;
+        float radius = 0.4f;
+        float time = 0.0f;
+        std::uint64_t frame = 0;  // syncRenderer en que se apunto
+    };
+    std::vector<FoliageNote> foliage_notes;
+    std::uint64_t foliage_frame = 0;
+    std::mutex foliage_mutex;
     float last_chunk_ms = 0.0f;
     float last_mesh_ms = 0.0f;
+
+    // --- Terreno lejano (FarTerrain.h; CVar voxel.far.Distance) ---
+    FarTerrain far_terrain;
+    // La paleta (color medio de cada bloque) la calcula la tarea de las texturas.
+    std::shared_ptr<std::shared_ptr<FarPalette>> far_palette_slot;
+    std::vector<FarTerrain::Update> far_updates;
+    float far_hole = 0.0f;  // radio (bloques) de los chunks de verdad ya dibujados
+    int far_hole_frame = 0;
+
+    // Radio (bloques) alrededor del centro del chunk de quien mira donde todos
+    // los chunks estan ya mallados: ahi el VoxelPass no dibuja lo lejano.
+    float readyRadius() const {
+        const int r = renderRadius();
+        int first_missing = (r + 1) * (r + 1);  // d^2 del chunk sin mallar mas cercano
+        for (int dz = -r; dz <= r; ++dz) {
+            for (int dx = -r; dx <= r; ++dx) {
+                const int d2 = dx * dx + dz * dz;
+                if (d2 > r * r || d2 >= first_missing) continue;
+                const Chunk* c = chunkAt(viewer_cx + dx, viewer_cz + dz);
+                bool ready = c != nullptr && c->ever_meshed;
+                for (int s = 0; s < kSectionCount && ready; ++s) ready = c->meshed[static_cast<std::size_t>(s)];
+                if (!ready) first_missing = d2;
+            }
+        }
+        // Chunks listos hasta k (k^2 < first_missing). Un punto a menos de
+        // 16 k - 12 del centro cae en un chunk cuyo centro esta a <= 16 k.
+        int k = static_cast<int>(std::floor(std::sqrt(static_cast<float>(first_missing))));
+        if (k * k >= first_missing) --k;
+        k = std::min(k, r);
+        return k <= 0 ? 0.0f : static_cast<float>(k * kChunkSize - 12);
+    }
+
+    void updateFar() {
+        if (clear_renderer) return;  // syncRenderer lo reinicia con el mundo nuevo
+        if (far_terrain.generator() != generator.get()) far_terrain.reset(generator);
+        if (++far_hole_frame >= 4) {
+            far_hole_frame = 0;
+            far_hole = readyRadius();
+        }
+        far_terrain.update(viewer, static_cast<float>(renderRadius() * kChunkSize), FarTerrain::currentSettings());
+    }
 
     // Agua que corre (como Minecraft): celdas por revisar en el proximo paso
     // (cada 0.25 s), sin repetir.
@@ -287,8 +386,10 @@ struct VoxelSystem::Impl {
                 job.generator->generate(*r.chunk);  // tambien da los tintes
                 if (!job.saved.empty() && readChunkFile(job.saved, *r.chunk)) r.chunk->modified = true;
                 if (job.saved_bytes && decodeChunk(*job.saved_bytes, *r.chunk)) r.chunk->modified = true;
+                r.chunk->trimAir();  // IDS16: sin el aire de arriba (VoxelInternal.h ChunkData)
             } else {
-                meshSection(*job.snapshot, r.vertices, &r.water);
+                r.mesh_tier = job.snapshot->mesh_tier;  // MALLAS-DETALLE
+                meshSection(*job.snapshot, r.vertices, &r.water, &r.tier_flags);
             }
             r.milliseconds = static_cast<float>(msSince(start));
             std::lock_guard lock(mutex);
@@ -331,7 +432,7 @@ struct VoxelSystem::Impl {
         if (y >= kWorldHeight) return block::Air;
         const Chunk* c = chunkOf(x, z);
         if (c == nullptr) return block::Air;
-        return c->data.blocks[static_cast<std::size_t>(cellIndex(floorMod(x, kChunkSize), y, floorMod(z, kChunkSize)))];
+        return c->data.at(static_cast<std::size_t>(cellIndex(floorMod(x, kChunkSize), y, floorMod(z, kChunkSize))));
     }
     std::uint8_t getLight(int x, int y, int z) const {
         if (y >= kWorldHeight) return 0xF0;
@@ -454,7 +555,7 @@ struct VoxelSystem::Impl {
         chunk.top = 0;
         for (int y = kWorldHeight - 1; y > 0 && chunk.top == 0; --y) {
             for (int i = 0; i < kChunkSize * kChunkSize; ++i) {
-                if (d.blocks[static_cast<std::size_t>(i + y * kChunkSize * kChunkSize)] != block::Air) {
+                if (d.at(static_cast<std::size_t>(i + y * kChunkSize * kChunkSize)) != block::Air) {
                     chunk.top = y;
                     break;
                 }
@@ -550,6 +651,7 @@ struct VoxelSystem::Impl {
     void insertChunk(std::unique_ptr<ChunkData> data) {
         auto chunk = std::make_unique<Chunk>();
         chunk->data = std::move(*data);
+        chunk->light_serial = ++light_serials;
         for (int s = 0; s < kSectionCount; ++s) {
             chunk->dirty[static_cast<std::size_t>(s)] = true;
             chunk->version[static_cast<std::size_t>(s)] = 1;
@@ -558,6 +660,7 @@ struct VoxelSystem::Impl {
         Chunk& ref = *chunk;
         chunks[chunkKey(cx, cz)] = std::move(chunk);
         lightNewChunk(ref);
+        signals.chunkLoaded(cx, cz, ref.data.blocks);  // sus circuitos se revisan (lo encendido se recalcula)
         for (const auto& o : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}}) {
             if (Chunk* n = chunkAt(cx + o.first, cz + o.second)) n->collision_built.fill(false);
         }
@@ -651,8 +754,12 @@ struct VoxelSystem::Impl {
                         light = 0;
                     } else if (wy < kWorldHeight && c != nullptr) {
                         const std::size_t i = static_cast<std::size_t>(cellIndex(lx, wy, lz));
-                        id = c->data.blocks[i];
+                        id = c->data.at(i);
                         light = c->data.light[i];
+                        if (!hidden_cells.empty() && id != block::Air &&
+                            hidden_cells.count(hiddenKey(x0 + x, wy, z0 + z)) != 0) {
+                            id = block::Air;  // oculta solo en el dibujo
+                        }
                     }
                     const std::size_t si = static_cast<std::size_t>(SectionSnapshot::index(x, y, z));
                     s->blocks[si] = id;
@@ -713,6 +820,8 @@ struct VoxelSystem::Impl {
                 last_mesh_ms = r.milliseconds;
                 c->meshed[s] = true;
                 c->ever_meshed = true;
+                c->mesh_tier[s] = r.mesh_tier;  // MALLAS-DETALLE
+                c->tier_flags[s] = r.tier_flags;
                 c->uploaded[s] = !r.vertices.empty();
                 const Vec3 origin{static_cast<float>(r.cx * kChunkSize), static_cast<float>(r.sy * kChunkSize),
                                   static_cast<float>(r.cz * kChunkSize)};
@@ -729,8 +838,51 @@ struct VoxelSystem::Impl {
         }
     }
 
+    // MALLAS-DETALLE: distancia (m) de quien mira al punto mas cercano de la seccion y su nivel de adornos.
+    float sectionDistance(int cx, int sy, int cz) const {
+        const auto axis = [](float v, float lo) { return std::max({lo - v, 0.0f, v - (lo + static_cast<float>(kChunkSize))}); };
+        const float dx = axis(viewer.x, static_cast<float>(cx * kChunkSize));
+        const float dy = axis(viewer.y, static_cast<float>(sy * kChunkSize));
+        const float dz = axis(viewer.z, static_cast<float>(cz * kChunkSize));
+        return std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    int last_detail_level = -1;
+    std::array<int, 3> last_detail_section{-1000000, -1000000, -1000000};
+    // Al cambiar de seccion quien mira (o la CVar voxel.mesh.Detail): las secciones malladas con otro nivel que
+    // el que les toca se vuelven a mallar (la malla vieja sigue hasta que llega la nueva). Con 8 m de margen al
+    // bajar de nivel, para no rehacerlas yendo y viniendo por el borde; solo si el nivel cambia algo en ellas.
+    void refreshMeshTiers() {
+        const int level = meshDetailLevel();
+        const std::array<int, 3> here{viewer_cx, floorDiv(static_cast<int>(std::floor(viewer.y)), kChunkSize), viewer_cz};
+        if (level == last_detail_level && here == last_detail_section) return;
+        const bool level_changed = level != last_detail_level;
+        last_detail_level = level;
+        last_detail_section = here;
+        for (const auto& [key, chunk] : chunks) {
+            if (!inRenderRadius(chunk->data.cx, chunk->data.cz)) continue;
+            for (int sy = 0; sy < kSectionCount; ++sy) {
+                const std::size_t s = static_cast<std::size_t>(sy);
+                if (!chunk->meshed[s] || chunk->dirty[s] || chunk->in_flight[s] != 0) continue;
+                const int have = chunk->mesh_tier[s];
+                const float d = sectionDistance(chunk->data.cx, sy, chunk->data.cz);
+                const int want = meshTierFor(level, d);
+                if (want == have) continue;
+                // Menos detalle: solo pasado el margen (si el cambio de nivel no lo pide ya).
+                if (want < have && !level_changed && meshTierFor(level, std::max(d - 8.0f, 0.0f)) >= have) continue;
+                // Adornos: cambian entre cualquier par de niveles; la luz plana, solo con el nivel 0.
+                const std::uint8_t flags = chunk->tier_flags[s];
+                const bool decor = (flags & kTierDecor) != 0;
+                const bool faces = (flags & kTierFaces) != 0 && std::min(want, have) == 0;
+                if (!decor && !faces) continue;
+                chunk->dirty[s] = true;
+                ++chunk->version[s];
+            }
+        }
+    }
+
     void stream(double budget_ms) {
         if (!active || !generator || !has_viewer) return;
+        refreshMeshTiers();  // MALLAS-DETALLE
         const int radius = renderRadius();
         // +2: un chunk del borde (tambien en diagonal, a radius + 1.41) tiene
         // cargados sus 8 vecinos y se puede mallar.
@@ -821,6 +973,7 @@ struct VoxelSystem::Impl {
                 }
                 continue;
             }
+            snap->mesh_tier = static_cast<std::uint8_t>(meshTierFor(meshDetailLevel(), sectionDistance(c.cx, c.sy, c.cz)));
             Job job;
             job.kind = 1;
             job.cx = c.cx;
@@ -860,7 +1013,7 @@ struct VoxelSystem::Impl {
         if (p.y < 1 || p.y >= kWorldHeight - 1 || chunkOf(p.x, p.z) == nullptr) return;
         const BlockId id = getBlock(p.x, p.y, p.z);
         const int level = block::waterLevel(id);
-        if (level == 0) return;
+        if (level == 0 || block::isAquatic(id)) return;  // fuente, o planta que ya esta dentro del agua
         const BlockDef& def = blockDef(id);
         if (level < 0 && id != block::Air && !(def.shape == BlockShape::Cross && def.replaceable)) return;
         int target = 99;
@@ -908,11 +1061,12 @@ struct VoxelSystem::Impl {
         if (y < 0 || y >= kWorldHeight) return false;
         Chunk* c = chunkOf(x, z);
         if (c == nullptr) return false;
-        BlockId& cell = c->data.blocks[static_cast<std::size_t>(cellIndex(floorMod(x, kChunkSize), y, floorMod(z, kChunkSize)))];
-        const BlockId before = cell;
+        const std::size_t cell = static_cast<std::size_t>(cellIndex(floorMod(x, kChunkSize), y, floorMod(z, kChunkSize)));
+        const BlockId before = c->data.at(cell);
         if (before == id) return true;
         (void)by_player;
-        cell = id;
+        if (blockDef(before).light > 0 || blockDef(id).light > 0) ++c->light_edits;  // BlockLights.h
+        c->data.set(cell, id);  // IDS16: crece si estaba recortado
         c->data.modified = true;
         if (id != block::Air) c->top = std::max(c->top, y);
         dirtyCollision(x, y, z);
@@ -945,6 +1099,7 @@ struct VoxelSystem::Impl {
             if (above.shape == BlockShape::Cross && !blockDef(id).solid) setBlockInternal(x, y + 1, z, block::Air, false);
         }
         if (listener) listener(BlockPos{x - ox, y - oy, z - oz}, before, id);
+        if (!signal_applying) signals.blockChanged(signalWorld(), x, y, z, before, id);
         // El agua de alrededor fluye si se abrio un hueco (o se quito su fuente).
         wakeWater(x, y, z, before);
         return true;
@@ -998,14 +1153,19 @@ struct VoxelSystem::Impl {
         if (active && has_viewer) {
             const int x = static_cast<int>(std::floor(viewer.x)), z = static_cast<int>(std::floor(viewer.z));
             int y = static_cast<int>(std::floor(viewer.y));
-            if (chunkOf(x, z) != nullptr && block::isWater(getBlock(x, y, z))) {
+            // AGUA-PLANTAS: entre algas, hierba marina y corales (isAquatic) tambien se esta bajo el agua: con
+            // isWater, al meter la camara en una planta se iba la niebla/tinte del agua (water::setUnderwaterOverride
+            // y Voxel.inWater ya usaban isWet).
+            if (chunkOf(x, z) != nullptr && block::isWet(getBlock(x, y, z))) {
                 inside = true;
-                while (y + 1 < kWorldHeight && block::isWater(getBlock(x, y + 1, z))) ++y;
+                while (y + 1 < kWorldHeight && block::isWet(getBlock(x, y + 1, z))) ++y;
                 // La luz del cielo sobre la superficie (el agua la va quitando hacia abajo:
                 // la de la camara dejaria negro el fondo del mar).
                 sky = static_cast<float>(std::max(channel(x, y + 1, z, true), channel(x, y, z, true))) / 15.0f;
                 const BlockId up = getBlock(x, y + 1, z);
-                const int top = blockDef(up).opaque ? 16 : waterHeight16(block::waterLevel(getBlock(x, y, z)));
+                const BlockId top_block = getBlock(x, y, z);  // AGUA-PLANTAS: una planta arriba = agua llena
+                const int top = blockDef(up).opaque ? 16
+                                                    : waterHeight16(block::waterLevel(block::isAquatic(top_block) ? block::Water : top_block));
                 surface = static_cast<float>(y) + static_cast<float>(top) / 16.0f - static_cast<float>(oy);
             }
         }
@@ -1034,7 +1194,8 @@ struct VoxelSystem::Impl {
 
     bool solidAt(int x, int y, int z) const {
         const BlockDef& def = blockDef(getBlock(x, y, z));
-        return def.solid && def.shape == BlockShape::Cube;
+        // COLISION-MODELOS: las vallas, sillas, mesas... van aparte con sus cajas (collisionTriangles).
+        return def.solid && def.shape == BlockShape::Cube && !hasModelCollision(def);
     }
 
     // Caras expuestas de los bloques solidos de la seccion, fusionadas en
@@ -1100,6 +1261,43 @@ struct VoxelSystem::Impl {
                 }
             }
         }
+        // COLISION-MODELOS: los bloques con modelo propio chocan con sus piezas (cajas cerradas).
+        const auto at = [this](int bx, int by, int bz) { return getBlock(bx, by, bz); };
+        ModelBoxes boxes{};
+        for (int ly = 0; ly < kChunkSize; ++ly) {
+            for (int lz = 0; lz < kChunkSize; ++lz) {
+                for (int lx = 0; lx < kChunkSize; ++lx) {
+                    const int wx = base[0] + lx, wy = base[1] + ly, wz = base[2] + lz;
+                    const BlockId id = getBlock(wx, wy, wz);
+                    if (!hasModelCollision(blockDef(id))) continue;
+                    const int count = modelCollisionBoxes(id, at, wx, wy, wz, boxes);
+                    for (int i = 0; i < count; ++i) {
+                        const ModelBox& mb = boxes[static_cast<std::size_t>(i)];
+                        const float lo[3] = {lx + mb.lo[0] / 16.0f, ly + mb.lo[1] / 16.0f, lz + mb.lo[2] / 16.0f};
+                        const float hi[3] = {lx + mb.hi[0] / 16.0f, ly + mb.hi[1] / 16.0f, lz + mb.hi[2] / 16.0f};
+                        for (int d = 0; d < 3; ++d) {
+                            const int u = (d + 1) % 3, v = (d + 2) % 3;
+                            for (const int sign : {1, -1}) {
+                                const auto corner = [&](float a, float b) {
+                                    float q[3];
+                                    q[d] = sign > 0 ? hi[d] : lo[d];
+                                    q[u] = a;
+                                    q[v] = b;
+                                    return Vec3{q[0], q[1], q[2]};
+                                };
+                                const Vec3 q0 = corner(lo[u], lo[v]), q1 = corner(hi[u], lo[v]), q2 = corner(hi[u], hi[v]),
+                                           q3 = corner(lo[u], hi[v]);
+                                if (sign > 0) {
+                                    out.insert(out.end(), {q0, q1, q2, q0, q2, q3});
+                                } else {
+                                    out.insert(out.end(), {q0, q2, q1, q0, q3, q2});
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     int collisionRadius() const { return std::clamp(settings.collision_distance, 1, renderRadius()); }
@@ -1159,6 +1357,7 @@ struct VoxelSystem::Impl {
     // ------------------------------------------------------------ mundos
     void resetWorld(int new_seed) {
         ++epoch;
+        hidden_cells.clear();
         {
             std::lock_guard lock(mutex);
             jobs.clear();
@@ -1168,6 +1367,7 @@ struct VoxelSystem::Impl {
         }
         forgetCachedChunk();
         chunks.clear();
+        signals.clear();
         generating.clear();
         section_updates.clear();
         water_flow.clear();
@@ -1178,6 +1378,7 @@ struct VoxelSystem::Impl {
                                                 profile());  // el de la dimension actual
         made->setVegetation(settings.tree_density, settings.clearings);
         made->setCaveEntrances(settings.cave_entrances);
+        if (const int layer = deepLayerOf(dimension); layer > 0) made->setDeepLayer(layer);  // capas del Reino Profundo
         generator = std::move(made);
     }
 
@@ -1226,6 +1427,7 @@ void VoxelSystem::start(ecs::World& world) {
         const ecs::Entity e = world.wrap(h);
         if (!e.activeInHierarchy()) continue;
         d.settings = e.get<VoxelWorld>();
+        d.world_entity = h;
         d.scene_trees = {d.settings.tree_density, d.settings.clearings};
         d.scene_caves = d.settings.cave_entrances;
         d.active = true;
@@ -1243,12 +1445,34 @@ void VoxelSystem::start(ecs::World& world) {
     d.resetWorld(d.settings.seed);
     // Bajo el agua solo si la camara esta en un bloque de agua de verdad.
     Impl* impl = &d;
-    water::setUnderwaterOverride([impl](const Vec3& camera) {
+    // En el bloque de la superficie el agua no llena la celda (14/16, menos si corre): se compara con la altura
+    // real de la superficie, con histeresis (+-6 cm) para que el efecto no parpadee al moverse junto a ella.
+    water::setUnderwaterOverride([impl, dentro = 0](const Vec3& camera) mutable {
         if (!impl->active) return -1;
         const int x = static_cast<int>(std::floor(camera.x)) + impl->ox, y = static_cast<int>(std::floor(camera.y)) + impl->oy,
                   z = static_cast<int>(std::floor(camera.z)) + impl->oz;
         if (impl->chunkOf(x, z) == nullptr) return -1;
-        return block::isWater(impl->getBlock(x, y, z)) ? 1 : 0;
+        const BlockId b = impl->getBlock(x, y, z);
+        float superficie = -1.0f;  // altura (en bloques) del agua dentro de esta celda; <0 = seca
+        if (block::isWet(b)) {     // tambien entre las algas
+            const BlockId arriba = impl->getBlock(x, y + 1, z);
+            if (block::isWet(arriba) || blockDef(arriba).opaque) {
+                superficie = 1.0f;
+            } else {
+                const int nivel = block::waterLevel(block::isAquatic(b) ? block::Water : b);
+                superficie = static_cast<float>(waterHeight16(nivel < 0 ? 0 : nivel)) / 16.0f;
+            }
+        }
+        const float fy = camera.y + static_cast<float>(impl->oy) - static_cast<float>(y);  // 0..1 dentro de la celda
+        constexpr float kMargen = 0.06f;
+        if (superficie < 0.0f) {
+            dentro = 0;
+        } else if (superficie >= 1.0f) {
+            dentro = 1;
+        } else {
+            dentro = fy < superficie + (dentro ? kMargen : -kMargen) ? 1 : 0;
+        }
+        return dentro;
     });
 }
 
@@ -1260,6 +1484,7 @@ void VoxelSystem::stop() {
     d.world_name.clear();
     // La escena (y su ambiente) es de quien la cree: no se toca al parar.
     d.scene = nullptr;
+    d.world_entity = entt::null;
     d.ambience_snapshot = AmbienceSnapshot{};
     d.resetDimensions();
     d.resetWorld(d.seed);
@@ -1278,10 +1503,20 @@ void VoxelSystem::update(float delta_seconds, const Vec3& viewer) {
     d.viewer_cx = floorDiv(static_cast<int>(std::floor(viewer.x)) + d.ox, kChunkSize);
     d.viewer_cz = floorDiv(static_cast<int>(std::floor(viewer.z)) + d.oz, kChunkSize);
     d.has_viewer = true;
+    // Distancia de dibujado y de colision en vivo (un script la baja en el
+    // movil o desde las opciones): antes solo se leia al empezar.
+    if (d.scene != nullptr && d.scene->registry().valid(d.world_entity)) {
+        if (const VoxelWorld* w = d.scene->registry().try_get<VoxelWorld>(d.world_entity)) {
+            d.settings.render_distance = w->render_distance;
+            d.settings.collision_distance = w->collision_distance;
+        }
+    }
     d.collect(6.0);
     d.flowWater(delta_seconds);
+    d.signals.update(delta_seconds, d.signalWorld());
     d.stream(3.0);
     d.updateCollision(2.0);
+    d.updateFar();
 }
 
 void VoxelSystem::syncRenderer(gfx::VulkanRenderer& renderer) {
@@ -1289,17 +1524,24 @@ void VoxelSystem::syncRenderer(gfx::VulkanRenderer& renderer) {
     if (d.clear_renderer) {
         renderer.clearVoxelSections();
         d.clear_renderer = false;
+        // Lo lejano tambien se ha ido: se rehace (del disco, rapido) con el mundo de ahora.
+        d.far_terrain.reset(d.active ? d.generator : nullptr);
+        d.far_updates.clear();
     }
     if (!d.active) {
         d.section_updates.clear();
         renderer.setVoxelWater(gfx::GpuWaterBody{}, false, false);
+        renderer.setVoxelInteractors({});
         return;
     }
     // Texturas: se generan en otro hilo la primera vez (o si cambia la carpeta).
     const std::filesystem::path folder = d.settings.textures.empty() ? std::filesystem::path{} : d.assets_root / fromUtf8(d.settings.textures);
     const std::uint32_t size = std::bit_ceil(static_cast<std::uint32_t>(std::clamp(d.settings.texture_size, 16, 1024)));
     const bool flat = d.settings.flat_colors;
-    const std::string signature = folder.string() + "|" + std::to_string(size) + (flat ? "|liso" : "");
+    // PAQUETES-TEXTURAS: el paquete del jugador (encima de la carpeta del juego); cambiarlo o recargar rehace todo.
+    const std::filesystem::path pack = texturePackFolder();
+    const std::string signature = folder.string() + "|" + std::to_string(size) + (flat ? "|liso" : "") + "|" +
+                                  pack.string() + "|" + std::to_string(texturePackGeneration());
     renderer.setVoxelFlatColors(flat);
     if (signature != d.textures_signature && !d.textures_future.valid()) {
         d.textures_signature = signature;
@@ -1307,15 +1549,20 @@ void VoxelSystem::syncRenderer(gfx::VulkanRenderer& renderer) {
         // sistema nuevo cada una). La promesa lleva el resultado al futuro.
         auto promise = std::make_shared<std::promise<std::vector<gfx::VoxelTextureLayer>>>();
         d.textures_future = promise->get_future();
+        auto palette_slot = std::make_shared<std::shared_ptr<FarPalette>>();
+        d.far_palette_slot = palette_slot;
         jobs::schedule(
-            [promise, folder, size, flat]() {
+            [promise, palette_slot, folder, pack, size, flat]() {
                 try {
                     const auto& names = textureNames();
                     std::vector<gfx::VoxelTextureLayer> layers(names.size());
                     // Una textura por trozo; quien espera ayuda (parallelFor).
                     jobs::parallelFor(names.size(), 1, [&](std::size_t begin, std::size_t end) {
-                        for (std::size_t i = begin; i < end; ++i) buildTexture(names[i], size, folder, layers[i], flat);
+                        for (std::size_t i = begin; i < end; ++i) buildTexture(names[i], size, folder, pack, layers[i], flat);
                     });
+                    // Color medio de cada bloque para el terreno lejano (antes del
+                    // set_value: el futuro listo ya lo deja escrito).
+                    *palette_slot = buildFarPalette(layers);
                     promise->set_value(std::move(layers));
                 } catch (...) {
                     promise->set_exception(std::current_exception());
@@ -1333,6 +1580,8 @@ void VoxelSystem::syncRenderer(gfx::VulkanRenderer& renderer) {
         }
         if (!layers.empty()) renderer.setVoxelTextures(size, layers);
         d.textures_uploaded = true;
+        if (d.far_palette_slot && *d.far_palette_slot) d.far_terrain.setPalette(*d.far_palette_slot);
+        d.far_palette_slot.reset();
     }
     for (Impl::SectionUpdate& u : d.section_updates) {
         if (u.vertices.empty()) {
@@ -1347,8 +1596,72 @@ void VoxelSystem::syncRenderer(gfx::VulkanRenderer& renderer) {
         }
     }
     d.section_updates.clear();
+    // Terreno lejano: lo quitado y, con un presupuesto por frame, las mallas nuevas.
+    d.far_terrain.takeUpdates(d.far_updates, 1536u * 1024u);
+    const Vec3 offset{static_cast<float>(d.ox), static_cast<float>(d.oy), static_cast<float>(d.oz)};
+    for (FarTerrain::Update& u : d.far_updates) {
+        if (u.vertices.empty()) {
+            renderer.removeVoxelFarSection(u.key);
+        } else {
+            renderer.setVoxelFarSection(u.key, u.origin - offset, u.scale, u.vertices.data(),
+                                        static_cast<std::uint32_t>(u.vertices.size() / 2));
+        }
+    }
+    d.far_updates.clear();
+    const Vec3 hole{static_cast<float>(d.viewer_cx * kChunkSize + kChunkSize / 2), 0.0f,
+                    static_cast<float>(d.viewer_cz * kChunkSize + kChunkSize / 2)};
+    renderer.setVoxelFarHole(hole - offset, d.has_viewer ? d.far_hole : 0.0f, FarTerrain::currentSettings().distance);
     renderer.setVoxelTime(d.time);
+    // Lo que aparta las plantas: lo apuntado hace menos de un momento (los que
+    // se mueven a saltos, como las criaturas lejanas que esperan turno para
+    // moverse, no parpadean). El render los junta y los suaviza (VoxelPass).
+    {
+        std::lock_guard<std::mutex> lock(d.foliage_mutex);
+        const float now = d.time;
+        std::erase_if(d.foliage_notes, [now](const Impl::FoliageNote& n) { return now - n.time > 0.25f; });
+        std::vector<core::Vec4> spheres;
+        spheres.reserve(d.foliage_notes.size());
+        for (const Impl::FoliageNote& n : d.foliage_notes) spheres.push_back(core::Vec4{n.feet.x, n.feet.y, n.feet.z, n.radius});
+        renderer.setVoxelInteractors(spheres);
+        ++d.foliage_frame;
+    }
     d.syncWaterLook(renderer);
+}
+
+void VoxelSystem::noteFoliageInteractor(const Vec3& feet, float radius) {
+    Impl& d = *impl_;
+    if (!d.active || !std::isfinite(feet.x) || !std::isfinite(feet.y) || !std::isfinite(feet.z)) return;
+    radius = std::clamp(std::isfinite(radius) ? radius : 0.4f, 0.1f, 3.0f);
+    std::lock_guard<std::mutex> lock(d.foliage_mutex);
+    // El mismo de antes si estaba cerca y aun no se apunto en este frame
+    // (si no, es otro: dos criaturas juntas no se pisan).
+    for (Impl::FoliageNote& n : d.foliage_notes) {
+        if (n.frame == d.foliage_frame) continue;
+        const float dx = n.feet.x - feet.x, dz = n.feet.z - feet.z;
+        if (dx * dx + dz * dz < 1.0f && std::abs(n.feet.y - feet.y) < 1.5f) {
+            n = Impl::FoliageNote{feet, radius, d.time, d.foliage_frame};
+            return;
+        }
+    }
+    if (d.foliage_notes.size() >= 128) return;  // (de sobra: el render se queda con los 16 mas cercanos)
+    d.foliage_notes.push_back(Impl::FoliageNote{feet, radius, d.time, d.foliage_frame});
+}
+
+void VoxelSystem::appendBlockLights(const Vec3& eye, std::vector<scene::PointLight>& out) {
+    Impl& d = *impl_;
+    if (!d.active) return;
+    const Vec3 origin{static_cast<float>(d.ox), static_cast<float>(d.oy), static_cast<float>(d.oz)};
+    d.block_lights.collect(eye + origin, origin,
+                           [&d](int cx, int cz, BlockLightCache::Column& column) {
+                               const Impl::Chunk* c = d.chunkAt(cx, cz);
+                               if (c == nullptr) return false;
+                               column.data = &c->data;
+                               column.serial = c->light_serial;
+                               column.edits = c->light_edits;
+                               column.top = c->top;
+                               return true;
+                           },
+                           d.time, out);
 }
 
 void VoxelSystem::waitUntilReady(const Vec3& center, int radius_chunks, float timeout_seconds) {
@@ -1493,6 +1806,79 @@ bool VoxelSystem::setBlock(int x, int y, int z, BlockId id) {
     Impl& d = *impl_;
     return d.setBlockInternal(x + d.ox, y + d.oy, z + d.oz, id, true);
 }
+void VoxelSystem::setBlockHidden(int x, int y, int z, bool hidden) {
+    Impl& d = *impl_;
+    const int ax = x + d.ox, ay = y + d.oy, az = z + d.oz;
+    if (ay < 0 || ay >= kWorldHeight) return;
+    const std::int64_t key = Impl::hiddenKey(ax, ay, az);
+    const bool changed = hidden ? d.hidden_cells.emplace(key, std::array<int, 3>{ax, ay, az}).second
+                                : d.hidden_cells.erase(key) != 0;
+    if (changed) d.markDirty(ax, ay, az);  // solo se vuelve a mallar (sin luz ni colision)
+}
+void VoxelSystem::showHiddenBlocks() { impl_->showHiddenCells(); }
+bool VoxelSystem::railAt(int x, int y, int z, int& mask, int& up) const {
+    const Impl& d = *impl_;
+    const auto at = [&](int bx, int by, int bz) { return d.getBlock(bx, by, bz); };
+    const int ax = x + d.ox, ay = y + d.oy, az = z + d.oz;
+    if (!block::isRail(at(ax, ay, az))) return false;
+    const rail::RailShape r = rail::railShape(at, ax, ay, az);
+    mask = r.mask;
+    up = r.up;
+    return true;
+}
+int VoxelSystem::signalPower(int x, int y, int z) const {
+    const Impl& d = *impl_;
+    return d.signals.power(x + d.ox, y + d.oy, z + d.oz);
+}
+void VoxelSystem::setSignalInput(int x, int y, int z, bool on) {
+    Impl& d = *impl_;
+    d.signals.setInput(x + d.ox, y + d.oy, z + d.oz, on);
+}
+std::vector<BlockPos> VoxelSystem::findBlocks(const Vec3& center, int radius, BlockId id, int max) const {
+    const Impl& d = *impl_;
+    std::vector<BlockPos> out;
+    radius = std::clamp(radius, 0, 48);
+    const int cx = static_cast<int>(std::floor(center.x)) + d.ox, cy = static_cast<int>(std::floor(center.y)) + d.oy;
+    const int cz = static_cast<int>(std::floor(center.z)) + d.oz;
+    for (int y = std::max(0, cy - radius); y <= std::min(kWorldHeight - 1, cy + radius); ++y)
+        for (int z = cz - radius; z <= cz + radius; ++z)
+            for (int x = cx - radius; x <= cx + radius; ++x) {
+                if (d.getBlock(x, y, z) != id) continue;
+                out.push_back(BlockPos{x - d.ox, y - d.oy, z - d.oz});
+                if (static_cast<int>(out.size()) >= max) return out;
+            }
+    return out;
+}
+// VFX-VIVO: como findBlocks pero con varios tipos a la vez; la columna (x, z) busca su chunk una vez.
+std::vector<VoxelSystem::FoundBlock> VoxelSystem::findBlocksAny(const Vec3& center, int radius, const std::vector<bool>& wanted,
+                                                              int maxPerId, int max) const {
+    const Impl& d = *impl_;
+    std::vector<FoundBlock> out;
+    radius = std::clamp(radius, 0, 48);
+    const int cx = static_cast<int>(std::floor(center.x)) + d.ox, cy = static_cast<int>(std::floor(center.y)) + d.oy;
+    const int cz = static_cast<int>(std::floor(center.z)) + d.oz;
+    const int y0 = std::max(0, cy - radius), y1 = std::min(kWorldHeight - 1, cy + radius);
+    std::vector<int> per(wanted.size(), 0);
+    for (int z = cz - radius; z <= cz + radius; ++z)
+        for (int x = cx - radius; x <= cx + radius; ++x) {
+            const Impl::Chunk* c = d.chunkOf(x, z);
+            if (c == nullptr) continue;
+            const int lx = floorMod(x, kChunkSize), lz = floorMod(z, kChunkSize);
+            for (int y = y0; y <= y1; ++y) {
+                const BlockId id = c->data.at(static_cast<std::size_t>(cellIndex(lx, y, lz)));
+                if (id == block::Air || id >= wanted.size() || !wanted[id]) continue;
+                if (maxPerId > 0 && per[id] >= maxPerId) continue;
+                ++per[id];
+                out.push_back(FoundBlock{BlockPos{x - d.ox, y - d.oy, z - d.oz}, id});
+                if (static_cast<int>(out.size()) >= max) return out;
+            }
+        }
+    return out;
+}
+bool VoxelSystem::isBlockHidden(int x, int y, int z) const {
+    const Impl& d = *impl_;
+    return d.hidden_cells.count(Impl::hiddenKey(x + d.ox, y + d.oy, z + d.oz)) != 0;
+}
 int VoxelSystem::skyLight(int x, int y, int z) const {
     const Impl& d = *impl_;
     return d.getLight(x + d.ox, y + d.oy, z + d.oz) >> 4;
@@ -1523,33 +1909,63 @@ void structureToLocal(StructureInfo& s, const Vec3& offset) {
 
 std::vector<StructureInfo> VoxelSystem::structuresNear(const Vec3& position, float radius) const {
     const Impl& d = *impl_;
-    if (!d.generator || d.generator->structures() == nullptr) return {};
+    if (!d.generator) return {};
     const Vec3 offset{static_cast<float>(d.ox), static_cast<float>(d.oy), static_cast<float>(d.oz)};
     const Vec3 p = position + offset;
-    std::vector<StructureInfo> list = d.generator->structures()->nearby(p.x, p.y, p.z, radius);
+    std::vector<StructureInfo> list;
+    if (d.generator->structures() != nullptr) list = d.generator->structures()->nearby(p.x, p.y, p.z, radius);
+    // Simas abisales (superficie) y lo del Reino Profundo (GeneratorDeep.cpp).
+    for (StructureInfo& s : d.generator->deepStructuresNear(p.x, p.y, p.z, radius)) list.push_back(std::move(s));
     for (StructureInfo& s : list) structureToLocal(s, offset);
     return list;
 }
 
+std::vector<GeneratedChest> VoxelSystem::structureChests(const Vec3& min, const Vec3& max) const {
+    // CIUDADES-GRANDES: cofres de botin del generador (coordenadas absolutas en x, y, z y key).
+    const Impl& d = *impl_;
+    if (!d.generator || d.generator->structures() == nullptr) return {};
+    const Vec3 offset{static_cast<float>(d.ox), static_cast<float>(d.oy), static_cast<float>(d.oz)};
+    const Vec3 a = min + offset, b = max + offset;
+    const int x0 = static_cast<int>(std::floor(std::min(a.x, b.x))), x1 = static_cast<int>(std::floor(std::max(a.x, b.x)));
+    const int z0 = static_cast<int>(std::floor(std::min(a.z, b.z))), z1 = static_cast<int>(std::floor(std::max(a.z, b.z)));
+    const float y0 = std::min(a.y, b.y), y1 = std::max(a.y, b.y);
+    std::vector<GeneratedChest> out;
+    for (GeneratedChest& c : d.generator->structures()->chests(x0, z0, x1, z1)) {
+        if (static_cast<float>(c.y) + 0.5f < y0 || static_cast<float>(c.y) + 0.5f > y1) continue;
+        c.position = Vec3{static_cast<float>(c.x) + 0.5f, static_cast<float>(c.y), static_cast<float>(c.z) + 0.5f} - offset;
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
 bool VoxelSystem::structureAt(const Vec3& position, StructureInfo& out) const {
     const Impl& d = *impl_;
-    if (!d.generator || d.generator->structures() == nullptr) return false;
+    if (!d.generator) return false;
     const Vec3 offset{static_cast<float>(d.ox), static_cast<float>(d.oy), static_cast<float>(d.oz)};
     const Vec3 p = position + offset;
-    if (!d.generator->structures()->at(p.x, p.y, p.z, out)) return false;
+    const bool found = (d.generator->structures() != nullptr && d.generator->structures()->at(p.x, p.y, p.z, out)) ||
+                       d.generator->deepStructureAt(p.x, p.y, p.z, out);
+    if (!found) return false;
     structureToLocal(out, offset);
     return true;
 }
 void VoxelSystem::shiftOrigin(const Vec3& offset) {
     Impl& d = *impl_;
+    d.showHiddenCells();  // las puertas ocultas (dibujo) iban en las coordenadas de antes del juego
     d.ox += static_cast<int>(std::lround(offset.x));
     d.oy += static_cast<int>(std::lround(offset.y));
     d.oz += static_cast<int>(std::lround(offset.z));
     // Los chunks ya subidos los mueve el renderizador (shiftOrigin) y sus
     // colisiones la fisica; lo que este en cola se convierte al mandarlo.
+    std::lock_guard<std::mutex> lock(d.foliage_mutex);
+    for (Impl::FoliageNote& n : d.foliage_notes) n.feet = n.feet - offset;
 }
 bool VoxelSystem::inWater(const Vec3& p) const {
-    return block::isWater(getBlock(static_cast<int>(std::floor(p.x)), static_cast<int>(std::floor(p.y)), static_cast<int>(std::floor(p.z))));
+    return block::isWet(getBlock(static_cast<int>(std::floor(p.x)), static_cast<int>(std::floor(p.y)), static_cast<int>(std::floor(p.z))));
+}
+int VoxelSystem::oceanDepth(int x, int z) const {
+    const Impl& d = *impl_;
+    return d.generator ? d.generator->oceanDepth(x + d.ox, z + d.oz) : 0;
 }
 int VoxelSystem::waterLevel(int x, int z) const {
     const Impl& d = *impl_;
@@ -1580,13 +1996,71 @@ VoxelHit VoxelSystem::raycast(const Vec3& origin, const Vec3& direction, float m
         const BlockId id = getBlock(x, y, z);
         const BlockDef& def = blockDef(id);
         if (def.shape != BlockShape::Air && def.shape != BlockShape::Liquid) {
-            hit.hit = true;
-            hit.block = BlockPos{x, y, z};
-            hit.normal = normal;
-            hit.id = id;
-            hit.distance = t;
-            hit.point = origin + dir * t;
-            return hit;
+            const Vec3 cell{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+            // COLISION-MODELOS: valla, silla, mesa... el rayo tiene que tocar una de sus piezas (si pasa
+            // por un hueco sigue hasta el bloque de detras) y la caja es la de sus piezas.
+            ModelBoxes boxes{};
+            const int count = hasModelCollision(def)
+                                  ? modelCollisionBoxes(id, [this](int bx, int by, int bz) { return getBlock(bx, by, bz); }, x, y, z, boxes)
+                                  : 0;
+            if (count > 0) {
+                float best = 1e30f;
+                BlockPos best_normal = normal;
+                Vec3 lo_all{1e30f, 1e30f, 1e30f}, hi_all{-1e30f, -1e30f, -1e30f};
+                const float o[3] = {origin.x, origin.y, origin.z}, dd[3] = {dir.x, dir.y, dir.z};
+                for (int i = 0; i < count; ++i) {
+                    const ModelBox& mb = boxes[static_cast<std::size_t>(i)];
+                    const float lo[3] = {cell.x + mb.lo[0] / 16.0f, cell.y + mb.lo[1] / 16.0f, cell.z + mb.lo[2] / 16.0f};
+                    const float hi[3] = {cell.x + mb.hi[0] / 16.0f, cell.y + mb.hi[1] / 16.0f, cell.z + mb.hi[2] / 16.0f};
+                    lo_all = Vec3{std::min(lo_all.x, lo[0]), std::min(lo_all.y, lo[1]), std::min(lo_all.z, lo[2])};
+                    hi_all = Vec3{std::max(hi_all.x, hi[0]), std::max(hi_all.y, hi[1]), std::max(hi_all.z, hi[2])};
+                    float t0 = 0.0f, t1 = 1e30f;
+                    int axis = -1;
+                    bool miss = false;
+                    for (int k = 0; k < 3 && !miss; ++k) {
+                        if (std::abs(dd[k]) < 1e-9f) {
+                            miss = o[k] < lo[k] || o[k] > hi[k];
+                            continue;
+                        }
+                        float a = (lo[k] - o[k]) / dd[k], b = (hi[k] - o[k]) / dd[k];
+                        if (a > b) std::swap(a, b);
+                        if (a > t0) {
+                            t0 = a;
+                            axis = k;
+                        }
+                        t1 = std::min(t1, b);
+                        miss = t0 > t1;
+                    }
+                    if (miss || t0 >= best) continue;
+                    best = t0;
+                    if (axis >= 0) {
+                        int nn[3] = {0, 0, 0};
+                        nn[axis] = dd[axis] > 0 ? -1 : 1;
+                        best_normal = BlockPos{nn[0], nn[1], nn[2]};
+                    }
+                }
+                if (best <= max_distance && best < 1e29f) {
+                    hit.hit = true;
+                    hit.block = BlockPos{x, y, z};
+                    hit.normal = best_normal;
+                    hit.id = id;
+                    hit.distance = best;
+                    hit.point = origin + dir * best;
+                    hit.box_min = lo_all;
+                    hit.box_max = hi_all;
+                    return hit;
+                }
+            } else {
+                hit.hit = true;
+                hit.block = BlockPos{x, y, z};
+                hit.normal = normal;
+                hit.id = id;
+                hit.distance = t;
+                hit.point = origin + dir * t;
+                hit.box_min = cell;
+                hit.box_max = cell + Vec3{1.0f, 1.0f, 1.0f};
+                return hit;
+            }
         }
         if (!isLoaded(x, z)) break;
         if (t_x < t_y && t_x < t_z) {
@@ -1617,7 +2091,20 @@ bool VoxelSystem::boxCollides(const Vec3& c, const Vec3& h) const {
         for (int z = z0; z <= z1; ++z) {
             for (int x = x0; x <= x1; ++x) {
                 if (!isLoaded(x, z) && y + impl_->oy >= 0 && y + impl_->oy < kWorldHeight) return true;  // sin cargar: pared
-                if (blockDef(getBlock(x, y, z)).solid) return true;
+                const BlockId id = getBlock(x, y, z);
+                const BlockDef& def = blockDef(id);
+                if (!def.solid) continue;
+                if (!hasModelCollision(def)) return true;
+                // COLISION-MODELOS: valla, silla, mesa... solo sus piezas.
+                ModelBoxes boxes{};
+                const int count = modelCollisionBoxes(id, [this](int bx, int by, int bz) { return getBlock(bx, by, bz); }, x, y, z, boxes);
+                for (int i = 0; i < count; ++i) {
+                    const ModelBox& mb = boxes[static_cast<std::size_t>(i)];
+                    if (c.x + h.x > x + mb.lo[0] / 16.0f && c.x - h.x < x + mb.hi[0] / 16.0f && c.y + h.y > y + mb.lo[1] / 16.0f &&
+                        c.y - h.y < y + mb.hi[1] / 16.0f && c.z + h.z > z + mb.lo[2] / 16.0f && c.z - h.z < z + mb.hi[2] / 16.0f) {
+                        return true;
+                    }
+                }
             }
         }
     }
@@ -1644,14 +2131,25 @@ VoxelSystem::MoveResult VoxelSystem::moveBox(const Vec3& center, const Vec3& hal
             // Pegarse a la cara del bloque.
             float& coord = axis == 0 ? r.position.x : (axis == 1 ? r.position.y : r.position.z);
             const float extent = axis == 0 ? half.x : (axis == 1 ? half.y : half.z);
+            const float before = coord;
             if (amount > 0) {
                 coord = std::floor(coord + extent + amount) - extent - 1e-3f;
             } else {
                 coord = std::floor(coord - extent + amount) + 1.0f + extent + 1e-3f;
             }
-            if (boxCollides(r.position, half)) {
-                // No cabe pegado: se queda donde estaba en este eje.
-                coord = axis == 0 ? (moved.x - amount) : (axis == 1 ? (moved.y - amount) : (moved.z - amount));
+            // COLISION-MODELOS: con piezas finas (vallas, sillas...) el borde de la celda puede quedar
+            // detras (volveria hacia atras) o dentro de otra pieza: se busca el tramo libre (biseccion).
+            const bool backwards = amount > 0 ? coord < before : coord > before;
+            if (backwards || boxCollides(r.position, half)) {
+                float lo = 0.0f, hi = 1.0f;
+                for (int k = 0; k < 10; ++k) {
+                    const float mid = 0.5f * (lo + hi);
+                    coord = before + amount * mid;
+                    if (boxCollides(r.position, half)) hi = mid;
+                    else lo = mid;
+                }
+                // Si ni el primer trozo cabe, se queda donde estaba en este eje.
+                coord = before + amount * lo;
             }
             if (axis == 1) {
                 if (amount < 0) r.on_ground = true;
@@ -1721,6 +2219,15 @@ VoxelStats VoxelSystem::stats() const {
     }
     s.last_chunk_ms = d.last_chunk_ms;
     s.last_mesh_ms = d.last_mesh_ms;
+    const FarTerrain::Stats fs = d.far_terrain.stats();
+    s.far_tiles = fs.tiles;
+    s.far_ready = fs.ready;
+    s.far_pending = fs.pending;
+    s.far_quads = fs.quads;
+    s.far_last_tile_ms = fs.last_tile_ms;
+    s.far_from_cache = fs.from_cache;
+    s.far_generated = fs.generated;
+    s.far_hole = d.far_hole;
     return s;
 }
 
@@ -1754,7 +2261,7 @@ bool goodGround(BlockId id) {
 }
 // Se puede estar dentro: no choca y no es liquido.
 bool freeCell(BlockId id) {
-    return !blockDef(id).solid && id != block::Lava && !block::isWater(id) && id != block::FallingWater;
+    return !blockDef(id).solid && id != block::Lava && !block::isWet(id) && id != block::FallingWater;
 }
 }  // namespace
 
@@ -1769,9 +2276,9 @@ Vec3 VoxelSystem::spawnPoint(const Vec3& around) const {
     if (!d.generator) return around;
     const int ax = static_cast<int>(std::floor(around.x)) + d.ox, az = static_cast<int>(std::floor(around.z)) + d.oz;
     const int ccx = floorDiv(ax, kChunkSize), ccz = floorDiv(az, kChunkSize);
-    const bool abyss = d.generator->profile() == VoxelGenerator::Abyss;
-    // En el abismo, dentro de la caverna (no sobre el techo).
-    const int y_cap = abyss ? 140 : kWorldHeight - 3;
+    // En el abismo y en el Reino Profundo, dentro de la caverna (de abajo arriba, no sobre el techo).
+    const bool abyss = d.generator->profile() == VoxelGenerator::Abyss || d.generator->profile() == VoxelGenerator::Deep;
+    const int y_cap = d.generator->profile() == VoxelGenerator::Abyss ? 140 : kWorldHeight - 3;
     const auto mem = d.memory_chunks.find(d.dimension);
     ChunkData temp;
     for (int ring = 0; ring <= 6; ++ring) {

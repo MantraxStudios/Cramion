@@ -242,17 +242,30 @@ vec3 lensFlare(vec2 uv) {
     // de voxeles iluminada (al atardecer, con el sol justo detras) bastaba
     // para encender el destello encima de ella. Las nubes no escriben
     // profundidad: las tapa el brillo, como antes.
+    // Horizonz: 17 muestras en dos anillos sobre el disco del sol (corregidas
+    // por el aspecto) en vez de 5 en una cruz de 0.004: con tan pocas, una
+    // rendija entre hojas o el borde de un bloque dejaba pasar el destello
+    // entero por encima del terreno. Fuera de la pantalla no hay muestras
+    // fiables (se leia el borde, a menudo cielo): se cuenta como tapado.
     float visible = 0.0;
     float sky = 0.0;
-    for (int i = 0; i < 5; ++i) {
-        vec2 o = i == 0 ? vec2(0.0) : vec2(i == 1 ? 0.004 : (i == 2 ? -0.004 : 0.0), i == 3 ? 0.004 : (i == 4 ? -0.004 : 0.0));
-        vec2 p = clamp(sun + o, vec2(0.0), vec2(1.0));
+    const int kSunSamples = 17;
+    for (int i = 0; i < kSunSamples; ++i) {
+        float ring_r = i == 0 ? 0.0 : (i <= 8 ? 0.006 : 0.013);
+        float ang = float(i) * 0.785398 + (i > 8 ? 0.392699 : 0.0);
+        vec2 o = vec2(cos(ang) / max(settings.flare.y, 1e-3), sin(ang)) * ring_r;
+        vec2 p = sun + o;
+        if (any(lessThan(p, vec2(0.0))) || any(greaterThan(p, vec2(1.0)))) {
+            continue;
+        }
         float open_sky = textureLod(g_depth, p, 0.0).r >= 1.0 ? 1.0 : 0.0;
         sky += open_sky;
-        visible += luminance(textureLod(scene_color, p, 0.0).rgb) * open_sky;
+        visible += min(luminance(textureLod(scene_color, p, 0.0).rgb), 40.0) * open_sky;
     }
-    visible = clamp(visible / 5.0 / 20.0, 0.0, 1.0) * (sky / 5.0);
-    if (visible <= 0.0) {
+    float sky_frac = sky / float(kSunSamples);
+    // Con el sol medio tapado el destello cae deprisa (al cuadrado).
+    visible = clamp(visible / float(kSunSamples) / 20.0, 0.0, 1.0) * sky_frac * sky_frac;
+    if (visible <= 0.001) {
         return vec3(0.0);
     }
 
@@ -274,12 +287,14 @@ vec3 lensFlare(vec2 uv) {
     float ring = length(to_center);
     float halo = smoothstep(0.30, 0.34, ring) * (1.0 - smoothstep(0.34, 0.40, ring));
     halo *= max(dot(normalize(to_center + 1e-5), normalize(-axis * aspect + 1e-5)), 0.0);
-    result += vec3(0.7, 0.8, 1.0) * halo * 0.08;
-    // Estrella en el sol: rayos horizontal y vertical y un brillo.
+    result += vec3(0.7, 0.8, 1.0) * halo * 0.035;
+    // Estrella en el sol: rayos horizontal y vertical y un brillo. Antes los
+    // rayos cruzaban la pantalla entera (exp(-3x)) por encima de todo; ahora
+    // se apagan a ~1/4 de pantalla.
     vec2 ds = (uv - sun) * aspect;
-    float glow = exp(-length(ds) * 18.0);
-    float streak = exp(-abs(ds.y) * 400.0) * exp(-abs(ds.x) * 3.0) + exp(-abs(ds.x) * 400.0) * exp(-abs(ds.y) * 6.0) * 0.4;
-    result += vec3(1.0, 0.9, 0.75) * (glow * 0.6 + streak * 0.5);
+    float glow = exp(-length(ds) * 22.0);
+    float streak = exp(-abs(ds.y) * 400.0) * exp(-abs(ds.x) * 11.0) + exp(-abs(ds.x) * 400.0) * exp(-abs(ds.y) * 16.0) * 0.4;
+    result += vec3(1.0, 0.9, 0.75) * (glow * 0.6 + streak * 0.35);
     return result * amount * visible;
 }
 
@@ -328,7 +343,9 @@ void main() {
     // (Tambien leen el bloom: con destellos el bloom se graba aunque este
     // apagado; sin ellos no se toca.)
     if (settings.lens.y * settings.flare.x > 0.0) {
-        color += lensFlare(uv) * luminance(textureLod(bloom, settings.lens.zw, 0.0).rgb / kBloomLevels + vec3(4.0));
+        // Horizonz: con tope. El bloom en el disco del sol vale miles y, sin
+        // tope, el halo y los rayos salian blancos y opacos sobre la escena.
+        color += lensFlare(uv) * min(luminance(textureLod(bloom, settings.lens.zw, 0.0).rgb / kBloomLevels + vec3(4.0)), 16.0);
     }
 
     // --- Vision nocturna (antes de la exposicion: depende de la luz real) ---

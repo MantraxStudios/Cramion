@@ -74,8 +74,24 @@ std::uint16_t packTint(float r, float g, float b) {
 Generator::Generator(int seed, int sea_level, VoxelGenerator profile) : seed_(seed), sea_(sea_level), profile_(profile) {
     std::array<int, 256> p{};
     std::iota(p.begin(), p.end(), 0);
+    // Barajado PORTABLE (antes std::shuffle): std::shuffle no esta especificado y cada libreria estandar baraja
+    // distinto (MSVC, libstdc++ de Linux y libc++ de Android): con la misma semilla cada plataforma generaba OTRO
+    // terreno y online los jugadores se veian volando o enterrados. Esto reproduce exactamente el algoritmo de MSVC
+    // (_Random_shuffle1 + _Rng_from_urng con mt19937), asi el terreno de Windows no cambia y Linux / Android pasan
+    // a ser identicos. mt19937 si esta especificado por el estandar.
     std::mt19937 rng(static_cast<std::uint32_t>(seed));
-    std::shuffle(p.begin(), p.end(), rng);
+    for (std::uint64_t t = 1; t < p.size(); ++t) {
+        const std::uint64_t index = t + 1, mask = 0xFFFFFFFFull;
+        std::uint64_t off = 0;
+        for (;;) {
+            const std::uint64_t r = static_cast<std::uint32_t>(rng());
+            if (r / index < mask / index || mask % index == index - 1) {
+                off = r % index;
+                break;
+            }
+        }
+        if (off != t) std::swap(p[static_cast<std::size_t>(t)], p[static_cast<std::size_t>(off)]);
+    }
     for (int i = 0; i < 512; ++i) perm_[static_cast<std::size_t>(i)] = p[static_cast<std::size_t>(i & 255)];
     // Aldeas, ciudades y mazmorras: solo en la superficie de Aventura.
     if (profile_ == VoxelGenerator::Adventure) {
@@ -85,6 +101,9 @@ Generator::Generator(int seed, int sea_level, VoxelGenerator profile) : seed_(se
         entrances_ = std::make_shared<EntranceCache>();
         structures_ = std::make_shared<Structures>(*this);
     }
+    // Reino Profundo (GeneratorDeep.cpp): las simas abisales de la superficie y lo de abajo.
+    if (profile_ == VoxelGenerator::Adventure || profile_ == VoxelGenerator::Deep) deep_cache_ = makeDeepCache();
+    if (profile_ == VoxelGenerator::Deep) surface_ = std::make_shared<Generator>(seed, sea_level, VoxelGenerator::Adventure);
 }
 
 int Generator::waterLevel(int x, int z) const {
@@ -226,6 +245,8 @@ int Generator::terrainHeight(int x, int z) const {
     if (profile_ == VoxelGenerator::Abyss || profile_ == VoxelGenerator::Sky || profile_ == VoxelGenerator::Crystal) {
         return dimensionHeight(x, z);
     }
+    // Reino Profundo: todo esta bajo el techo (el "suelo" para el juego es el techo: enCueva).
+    if (profile_ == VoxelGenerator::Deep) return kWorldHeight - 4;
     if (profile_ == VoxelGenerator::Adventure) {
         const int h = adventureColumn(x, z).height;
         return structures_ ? structures_->groundHeight(x, z, h) : h;  // terreno aplanado bajo aldeas y ciudades
@@ -241,6 +262,7 @@ void Generator::generate(ChunkData& chunk) const {
     if (profile_ == VoxelGenerator::Abyss) return generateAbyss(chunk);
     if (profile_ == VoxelGenerator::Sky) return generateSky(chunk);
     if (profile_ == VoxelGenerator::Crystal) return generateCrystal(chunk);
+    if (profile_ == VoxelGenerator::Deep) return generateDeep(chunk);
     const int x0 = chunk.cx * kChunkSize;
     const int z0 = chunk.cz * kChunkSize;
     std::array<Column, kChunkSize * kChunkSize> columns{};
@@ -336,6 +358,7 @@ void Generator::generate(ChunkData& chunk) const {
                             if (y < 16 && r < 0.18f) id = block::DiamondOre;
                             else if (y < 32 && r < 0.3f) id = block::GoldOre;
                             else if (y < 24 && r < 0.26f) id = block::CrystalOre;
+                            else if (arcanite_ore_ && y < 40 && r > 0.9f) id = block::ArcaniteOre;  // senales (Rails.h)
                             else if (y < 64 && r < 0.55f) id = block::IronOre;
                             else if (y >= 40 && y < 110 && r > 0.72f) id = block::CopperOre;
                             else if (y < 128) id = block::CoalOre;

@@ -410,6 +410,81 @@ void registerVoxel(Runtime& rt) {
         const int id = blockOf(c.arg(3));
         return rt.voxels != nullptr && validBlock(id) && rt.voxels->setBlock(x, y, z, static_cast<voxel::BlockId>(id));
     }, {"x, y, z, \"stone\"", "pone o quita un bloque", "bool"});
+    // Solo el dibujo (puertas que el juego anima): no cambia el bloque ni se guarda ni va por red.
+    n.function("Voxel.setHidden", [&rt](api::Call& c) -> api::Value {
+        const int x = cell(c.number(0)), y = cell(c.number(1)), z = cell(c.number(2));
+        if (rt.voxels == nullptr) return false;
+        rt.voxels->setBlockHidden(x, y, z, c.boolean(3, true));
+        return true;
+    }, {"x, y, z, true", "oculta (o vuelve a mostrar) un bloque solo en el dibujo", "bool"});
+    n.function("Voxel.isHidden", [&rt](api::Call& c) -> api::Value {
+        const int x = cell(c.number(0)), y = cell(c.number(1)), z = cell(c.number(2));
+        return rt.voxels != nullptr && rt.voxels->isBlockHidden(x, y, z);
+    }, {"x, y, z", "esta oculto en el dibujo (setHidden)", "bool"});
+    n.function("Voxel.showAllHidden", [&rt](api::Call&) -> api::Value {
+        if (rt.voxels == nullptr) return false;
+        rt.voxels->showHiddenBlocks();
+        return true;
+    }, {"", "vuelve a dibujar todos los bloques ocultos con setHidden", "bool"});
+    // --- Rieles y senales de arcanita (voxel/Rails.h) ---
+    n.function("Voxel.railInfo", [&rt](api::Call& c) -> api::Value {
+        const int x = cell(c.number(0)), y = cell(c.number(1)), z = cell(c.number(2));
+        int mask = 0, up = -1;
+        if (rt.voxels == nullptr || !rt.voxels->railAt(x, y, z, mask, up)) return api::Value{};
+        api::Value t = api::Value::object();
+        t.set("mask", mask);
+        t.set("up", up);
+        t.set("id", static_cast<int>(rt.voxels->getBlock(x, y, z)));
+        return t;
+    }, {"x, y, z", "via en la celda: mask (bit 0 +X, 1 -X, 2 +Z, 3 -Z), up (rampa hacia 0..3 o -1) e id; nil si no hay via",
+        "objeto o nil"});
+    n.function("Voxel.signal", [&rt](api::Call& c) -> api::Value {
+        const int x = cell(c.number(0)), y = cell(c.number(1)), z = cell(c.number(2));
+        return rt.voxels != nullptr ? rt.voxels->signalPower(x, y, z) : 0;
+    }, {"x, y, z", "senal de arcanita de la celda (0..15)", "numero"});
+    n.function("Voxel.setSignalInput", [&rt](api::Call& c) -> api::Value {
+        const int x = cell(c.number(0)), y = cell(c.number(1)), z = cell(c.number(2));
+        if (rt.voxels == nullptr) return false;
+        rt.voxels->setSignalInput(x, y, z, c.boolean(3, true));
+        return true;
+    }, {"x, y, z, true", "algo encima de una placa de presion o via detectora (refrescar cada 0.1-0.2 s; caduca a los 0.35 s)",
+        "bool"});
+    n.function("Voxel.findBlocks", [&rt](api::Call& c) {
+        api::Value::Array out;
+        const int id = blockOf(c.arg(2));
+        if (rt.voxels == nullptr || !validBlock(id) || id == 0) return api::Value(std::move(out));
+        const int radius = static_cast<int>(c.number(1, 8.0));
+        const int max = static_cast<int>(c.number(3, 64.0));
+        for (const voxel::BlockPos& p : rt.voxels->findBlocks(c.vec3(0), radius, static_cast<voxel::BlockId>(id), max)) {
+            out.push_back(api::Value(blockVec(p)));
+        }
+        return api::Value(std::move(out));
+    }, {"pos, radio, \"rail\", max", "celdas con ese bloque en el cubo (radio <= 48)", "lista de Vec3"});
+    // VFX-VIVO: varios tipos en una pasada. Devuelve una lista plana {x, y, z, id, x, y, z, id, ...}.
+    n.function("Voxel.findBlocksAny", [&rt](api::Call& c) {
+        api::Value::Array out;
+        if (rt.voxels == nullptr || !c.arg(2).isArray()) return api::Value(std::move(out));
+        std::vector<bool> wanted(voxel::block::Count, false);
+        bool any = false;
+        for (const api::Value& v : c.arg(2).items()) {
+            const int id = blockOf(v);
+            if (!validBlock(id) || id == 0) continue;
+            wanted[static_cast<std::size_t>(id)] = true;
+            any = true;
+        }
+        if (!any) return api::Value(std::move(out));
+        const int radius = static_cast<int>(c.number(1, 8.0));
+        const int perId = static_cast<int>(c.number(3, 64.0));
+        const int max = static_cast<int>(c.number(4, 2048.0));
+        for (const voxel::VoxelSystem::FoundBlock& f : rt.voxels->findBlocksAny(c.vec3(0), radius, wanted, perId, max)) {
+            out.push_back(api::Value(static_cast<double>(f.pos.x)));
+            out.push_back(api::Value(static_cast<double>(f.pos.y)));
+            out.push_back(api::Value(static_cast<double>(f.pos.z)));
+            out.push_back(api::Value(static_cast<double>(f.id)));
+        }
+        return api::Value(std::move(out));
+    }, {"pos, radio, {\"torch\", \"lava\", ...}, maxPorTipo, max", "celdas de varios bloques en el cubo (radio <= 48), en una pasada",
+        "lista plana {x, y, z, id, ...}"});
     n.function("Voxel.blockId", [](api::Call& c) -> api::Value {
         return static_cast<int>(voxel::blockId(c.string(0)));
     }, {"\"stone\"", "numero de un bloque", "numero"});
@@ -426,13 +501,16 @@ void registerVoxel(Runtime& rt) {
         t.set("name", def.name);
         t.set("label", def.label);
         t.set("solid", def.solid);
+        t.set("opaque", def.opaque);
         t.set("placeable", def.placeable);
         t.set("replaceable", def.replaceable);
         t.set("hardness", def.hardness);
         t.set("drop", def.drop != 0 ? static_cast<int>(def.drop) : id);
         t.set("light", static_cast<int>(def.light));
+        t.set("top", def.top);    // texturas (Textures/Bloques/<nombre>.png): el temblor al picar las usa
+        t.set("side", def.side);
         return t;
-    }, {"\"stone\"", "{name, label, solid, hardness...}", "objeto"});
+    }, {"\"stone\"", "{name, label, solid, hardness, top, side...}", "objeto"});
     n.function("Voxel.blockColor", [&rt](api::Call& c) -> api::Value {
         const int id = blockOf(c.arg(0));
         return rt.voxels != nullptr && validBlock(id) ? rt.voxels->blockColor(static_cast<voxel::BlockId>(id))
@@ -446,6 +524,50 @@ void registerVoxel(Runtime& rt) {
         const int x = cell(c.number(0)), z = cell(c.number(1));
         return rt.voxels != nullptr ? rt.voxels->waterLevel(x, z) : 0;
     }, {"x, z", "primer bloque por encima del agua de la columna (mar o lago; 0 = sin agua)", "numero"});
+    // Oceanos hondos: cuanta agua de mar hay sobre el suelo (segun el generador, sin cargar).
+    n.function("Voxel.oceanDepth", [&rt](api::Call& c) -> api::Value {
+        const int x = cell(c.number(0)), z = cell(c.number(1));
+        return rt.voxels != nullptr ? rt.voxels->oceanDepth(x, z) : 0;
+    }, {"x, z", "bloques de mar sobre el suelo (0 = tierra, lago o rio; oceano hondo 30..57)", "numero"});
+    n.function("Voxel.isDeepOcean", [&rt](api::Call& c) -> api::Value {
+        const int x = cell(c.number(0)), z = cell(c.number(1));
+        const int min_depth = c.has(2) ? static_cast<int>(c.integer(2)) : 24;
+        return rt.voxels != nullptr && rt.voxels->oceanDepth(x, z) >= min_depth;
+    }, {"x, z, minimo = 24", "hay al menos `minimo` bloques de mar sobre el suelo?", "bool"});
+    // El punto de oceano hondo mas cercano (rejilla de 16 m hasta `radio`): para soltar
+    // criaturas marinas. {pos = Vec3 a media agua, surface, floor, depth} o nil.
+    n.function("Voxel.findDeepOcean", [&rt](api::Call& c) -> api::Value {
+        const Vec3 from = c.vec3(0);
+        const int radius = std::clamp(static_cast<int>(c.number(1, 512.0)), 16, 4096);
+        const int min_depth = c.has(2) ? static_cast<int>(c.integer(2)) : 24;
+        if (rt.voxels == nullptr) return api::Value{};
+        constexpr int kStep = 16;
+        const int cx = cell(from.x), cz = cell(from.z);
+        for (int ring = 0; ring * kStep <= radius; ++ring) {
+            int best = -1, bx = 0, bz = 0;
+            float best_d = 1e30f;
+            for (int dz = -ring; dz <= ring; ++dz) {
+                for (int dx = -ring; dx <= ring; ++dx) {
+                    if (std::max(std::abs(dx), std::abs(dz)) != ring) continue;  // solo el borde del anillo
+                    const int x = cx + dx * kStep, z = cz + dz * kStep;
+                    const int depth = rt.voxels->oceanDepth(x, z);
+                    if (depth < min_depth) continue;
+                    const float d = static_cast<float>(dx * dx + dz * dz);
+                    if (d < best_d) best_d = d, best = depth, bx = x, bz = z;
+                }
+            }
+            if (best < 0) continue;
+            const int surface = rt.voxels->waterLevel(bx, bz);  // primer bloque por encima del agua
+            const int floor_y = surface - 1 - best;
+            api::Value t = api::Value::object();
+            t.set("pos", Vec3{static_cast<float>(bx) + 0.5f, static_cast<float>(floor_y + 1 + best / 2), static_cast<float>(bz) + 0.5f});
+            t.set("surface", surface);
+            t.set("floor", floor_y);
+            t.set("depth", best);
+            return t;
+        }
+        return api::Value{};
+    }, {"Vec3, radio = 512, minimo = 24", "nil o {pos (a media agua), surface, floor, depth}", "objeto o nil"});
     n.function("Voxel.isWater", [](api::Call& c) -> api::Value {
         const int id = blockOf(c.arg(0));
         return validBlock(id) && voxel::block::isWater(static_cast<voxel::BlockId>(id));
@@ -454,6 +576,20 @@ void registerVoxel(Runtime& rt) {
         const Vec3 p = c.vec3(0);
         return rt.voxels != nullptr && rt.voxels->isReady(cell(p.x), cell(p.z));
     }, {"Vec3", "ya esta generado?", "bool"});
+    n.function("Voxel.farStats", [&rt](api::Call&) -> api::Value {
+        if (rt.voxels == nullptr) return api::Value{};
+        const voxel::VoxelStats st = rt.voxels->stats();
+        api::Value t = api::Value::object();
+        t.set("tiles", st.far_tiles);
+        t.set("ready", st.far_ready);
+        t.set("pending", st.far_pending);
+        t.set("quads", static_cast<double>(st.far_quads));
+        t.set("last_tile_ms", st.far_last_tile_ms);
+        t.set("from_cache", st.far_from_cache);
+        t.set("generated", st.far_generated);
+        t.set("hole", st.far_hole);
+        return t;
+    }, {"", "terreno lejano (CVar voxel.far.Distance): teselas, listas, pendientes, caras, radio de los chunks de verdad", "tabla"});
     n.function("Voxel.inWater", [&rt](api::Call& c) -> api::Value {
         const Vec3 p = c.vec3(0);
         return rt.voxels != nullptr && rt.voxels->inWater(p);
@@ -480,8 +616,11 @@ void registerVoxel(Runtime& rt) {
         t.set("id", static_cast<int>(hit.id));
         t.set("point", hit.point);
         t.set("distance", hit.distance);
+        // COLISION-MODELOS: la caja de lo tocado (celda entera, o las piezas de una valla, silla...).
+        t.set("boxMin", hit.box_min);
+        t.set("boxMax", hit.box_max);
         return t;
-    }, {"origen, direccion, distancia", "nil o {block, normal, id, point, distance}", "objeto o nil"});
+    }, {"origen, direccion, distancia", "nil o {block, normal, id, point, distance, boxMin, boxMax}", "objeto o nil"});
     // Mueve una caja (centro, semiejes) contra los bloques. Cuatro resultados
     // (posicion, enSuelo, techo, pared): una lista.
     n.function("Voxel.moveBox", [&rt](api::Call& c) {
@@ -490,8 +629,22 @@ void registerVoxel(Runtime& rt) {
         const Vec3 delta = c.vec3(2);
         if (rt.voxels == nullptr) return api::Value(api::Value::Array{center + delta, false, false, false});
         const voxel::VoxelSystem::MoveResult r = rt.voxels->moveBox(center, half, delta);
+        // Lo que anda por el mundo de bloques aparta las plantas por donde
+        // pasa (los pies de la caja; las cajas enormes no son personajes).
+        if (half.y > 0.05f && half.y < 4.0f && std::max(half.x, half.z) < 3.0f) {
+            rt.voxels->noteFoliageInteractor(r.position - Vec3{0.0f, half.y, 0.0f}, std::max(half.x, half.z));
+        }
         return api::Value(api::Value::Array{r.position, r.on_ground, r.hit_ceiling, r.hit_wall});
     }, {"centro, semiejes, delta", "posicion, enSuelo, techo, pared", "lista {Vec3, bool, bool, bool}"});
+    // Algo que aparta plantas y hojas a ras de suelo este frame (pies, radio):
+    // lo que no se mueve con Voxel.moveBox (copias de red, animaciones...).
+    // Hay que llamarla cada frame mientras este (dura 0.25 s).
+    n.function("Voxel.pushFoliage", [&rt](api::Call& c) -> api::Value {
+        if (rt.voxels == nullptr) return false;
+        const float radius = static_cast<float>(c.number(1, 0.4));
+        rt.voxels->noteFoliageInteractor(c.vec3(0), radius);
+        return true;
+    }, {"pies, radio", "aparta las plantas alrededor este frame", "bool"});
     n.function("Voxel.boxCollides", [&rt](api::Call& c) -> api::Value {
         const Vec3 center = c.vec3(0);
         const Vec3 half = c.vec3(1);
@@ -545,6 +698,42 @@ void registerVoxel(Runtime& rt) {
         const std::string fallback = c.string(1, "");
         return rt.voxels != nullptr ? rt.voxels->meta(key, fallback) : fallback;
     }, {"\"clave\", \"\"", "lee un dato", "texto"});
+    // PAQUETES-TEXTURAS: paquetes de texturas de bloques del jugador (solo visuales; no pasan por la red).
+    n.function("Voxel.texturePacks", [](api::Call&) {
+        api::Value::Array out;
+        for (const voxel::TexturePackInfo& p : voxel::listTexturePacks()) {
+            api::Value t = api::Value::object();
+            const auto u8 = [](const std::filesystem::path& f) {
+                const std::u8string s = f.u8string();
+                return std::string(s.begin(), s.end());
+            };
+            t.set("id", p.id);
+            t.set("name", p.name);
+            t.set("author", p.author);
+            t.set("version", p.version);
+            t.set("description", p.description);
+            t.set("folder", u8(p.folder));
+            t.set("icon", u8(p.icon));
+            t.set("textures", p.textures);
+            out.push_back(std::move(t));
+        }
+        return api::Value(std::move(out));
+    }, {"", "paquetes de texturas encontrados", "lista de {id, name, author, version, description, folder, icon, textures}"});
+    n.function("Voxel.texturePacksFolder", [](api::Call&) -> api::Value {
+        const auto roots = voxel::texturePackRoots();
+        if (roots.empty()) return std::string();
+        const std::u8string s = roots.front().u8string();
+        return std::string(s.begin(), s.end());
+    }, {"", "carpeta donde el jugador pone sus paquetes de texturas", "texto"});
+    n.function("Voxel.setTexturePack", [](api::Call& c) -> api::Value {
+        return voxel::setTexturePack(c.string(0, ""));
+    }, {"\"id\"", "usa ese paquete de texturas (\"\" = las del juego); se aplica sin reiniciar", "bool"});
+    n.function("Voxel.texturePack", [](api::Call&) -> api::Value { return voxel::texturePack(); },
+               {"", "id del paquete de texturas en uso (\"\" = ninguno)", "texto"});
+    n.function("Voxel.reloadTextures", [](api::Call&) -> api::Value {
+        voxel::reloadTextures();
+        return true;
+    }, {"", "vuelve a leer las texturas de bloques del disco", "bool"});
     // --- Estructuras (aldeas, ciudades, mazmorras, ruinas, torres, portales) ---
     n.function("Voxel.structuresNear", [&rt](api::Call& c) {
         api::Value::Array out;
@@ -560,6 +749,26 @@ void registerVoxel(Runtime& rt) {
         if (rt.voxels == nullptr || !rt.voxels->structureAt(c.vec3(0), s)) return api::Value{};
         return structureValue(s, true);
     }, {"pos", "la estructura que contiene el punto (room = sala de la mazmorra o -1)", "objeto o nil"});
+    // CIUDADES-GRANDES: cofres de botin que puso el generador (bloque chest).
+    n.function("Voxel.structureChests", [&rt](api::Call& c) {
+        api::Value::Array out;
+        if (rt.voxels == nullptr) return api::Value(std::move(out));
+        for (const voxel::GeneratedChest& g : rt.voxels->structureChests(c.vec3(0), c.vec3(1))) {
+            api::Value t = api::Value::object();
+            t.set("x", g.x);
+            t.set("y", g.y);
+            t.set("z", g.z);
+            t.set("pos", g.position);
+            t.set("tier", g.tier);
+            t.set("table", g.table);
+            t.set("structure", static_cast<double>(g.structure));
+            t.set("dimension", g.dimension);
+            t.set("key", g.key);
+            out.push_back(std::move(t));
+        }
+        return api::Value(std::move(out));
+    }, {"min, max", "cofres de botin generados en la caja (celda absoluta x y z, pos local, tier 1..4, table, structure, dimension, key)",
+        "lista de {x, y, z, pos, tier, table, structure, dimension, key}"});
     // --- Dimensiones (superficie, abismo, cielo, cristal) ---
     n.function("Voxel.dimension", [&rt](api::Call&) -> api::Value {
         return rt.voxels != nullptr && rt.voxels->active() ? rt.voxels->dimension() : std::string("superficie");

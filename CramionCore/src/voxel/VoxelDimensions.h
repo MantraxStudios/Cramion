@@ -24,6 +24,10 @@ inline constexpr const char* kSurfaceDimension = "superficie";
 // la superficie (el del VoxelWorld o el del mundo guardado).
 const DimensionInfo* findDimension(const std::string& name);
 VoxelGenerator dimensionGenerator(const std::string& name, VoxelGenerator surface);
+// Capa del Reino Profundo de una dimension: "profundo" 1, "profundo2".."profundo8" 2..8; 0 si no es.
+int deepLayerOf(const std::string& name);
+// Y al reves: la dimension de la capa (1 -> "profundo").
+std::string deepLayerName(int layer);
 
 // Lo que habia en la escena antes de salir de la superficie.
 struct AmbienceSnapshot {

@@ -9,7 +9,8 @@
 //     El depth clamp deja que lo de delante del plano cercano proyecte, asi
 //     que solo se miran x e y.
 //   - De espaldas a la luz (su cono de normales entero mira hacia donde van
-//     los rayos): fuera, SOLO en mallas cerradas. Ahi la cara que mira a la
+//     los rayos): fuera, SOLO en mallas cerradas y si la CPU lo pide (bit 0,
+//     encendido por defecto; CRAMION_SHADOW_CONE_CULL=0 lo apaga). Ahi la cara que mira a la
 //     luz ya deja la misma profundidad (el mapa guarda la mas cercana); en un
 //     plano suelto (hojas, carteles) no hay otra cara y se quedaria sin sombra.
 

@@ -263,6 +263,10 @@ public:
     void callMethod(ecs::Entity target, const std::string& method, float value);
     void callMethod(ecs::Entity target, const std::string& method, const std::string& value);
     void callMethod(ecs::Entity target, const std::string& method, bool value);
+    // false: callMethod solo va a los Visual Scripts. Para quien entrega los
+    // eventos de la interfaz a los scripts de C++ por su cuenta (con la
+    // posicion del puntero): si no, les llegaban dos veces, la segunda sin datos.
+    void setCallMethodToCpp(bool enabled);
 
     // Consola: llamadas a la API ("Audio.playOneShot('clic.wav')",
     // "Time.timeScale = 0.5", "Scene.find('Jugador'):translate(Vec3(0,1,0))").

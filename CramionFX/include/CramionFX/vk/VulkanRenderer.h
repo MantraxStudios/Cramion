@@ -345,6 +345,7 @@ public:
     std::uint32_t maxTextureAnisotropy() const;
     // Objetos de menos de un pixel que no se dibujaron el ultimo frame.
     std::uint32_t culledSmallActors() const { return culled_small_; }
+    std::uint32_t culledFarActors() const { return culled_far_; }  // NOCHE-PERF
     // Luces locales que fueron por clusteres el ultimo frame de pantalla (las
     // que tocan la vista y no caben entre las 32 puntuales y 8 focos principales).
     std::uint32_t clusteredLights() const { return cluster_light_count_; }
@@ -396,6 +397,19 @@ public:
     // Con iluminacion horneada y trazado de rayos: las sondas se actualizan
     // en tiempo real (`per_frame` cada frame), asi siguen a la hora del dia, a
     // las luces y a lo que se mueve. Sin rayos se quedan como se hornearon.
+    // Pruebas de rendimiento (CVar render.debug.Skip): mascara de lo que no se
+    // dibuja (1 voxeles, 2 actores animados, 4 iluminacion, 8 escenario,
+    // 16 terreno, 32 vegetacion, 64 agua/vidrio/liquidos, 128 particulas/VFX).
+    void setDebugSkip(std::uint32_t mask) { debug_skip_ = mask; }
+    // NOCHE-PERF: en el movil (perfil movil), los actores cuyo borde queda mas
+    // lejos que esto (m) no se dibujan ni dan sombra (CVar render.mobile.ActorDistance;
+    // el juego la pone a la distancia de los bloques: mas alla no hay suelo). 0 = todos.
+    void setMobileActorDistance(float meters) { mobile_actor_distance_ = std::max(meters, 0.0f); }
+    // MALLAS-DETALLE: detalle de los actores (CVar render.actors.Detail; 0 Bajo, 1 Medio, 2 Alto = como siempre).
+    // Bajo: las piezas que se ven de menos de 3 px (ojos, ribetes y adornos de los personajes de cubos lejanos) no
+    // se dibujan ni dan sombra; Medio: menos de 1.5 px, con su sombra. Con histeresis, como el corte de siempre.
+    void setActorDetail(int level) { actor_detail_ = std::clamp(level, 0, 2); }
+    int actorDetail() const { return actor_detail_; }
     void setDynamicProbes(bool enabled, std::uint32_t per_frame) {
         dynamic_probes_ = enabled;
         dynamic_probes_per_frame_ = std::clamp<std::uint32_t>(per_frame, 16, 8192);
@@ -443,6 +457,21 @@ public:
         // Modo compatible (VulkanCompat.h): su iluminacion no tiene luz
         // volumetrica (16 texturas por shader), asi que no se calcula.
         if (device_.compatMode()) p.volumetric_light = false;
+        if (game_unlit_) {
+            // UNLIT: nada de lo que la iluminacion minima no lee ni de los efectos caros de pantalla.
+            p.ambient_occlusion = false;
+            p.global_illumination = false;
+            p.reflections = false;
+            p.contact_shadows = false;
+            p.volumetric_light = false;
+            p.light_shafts = false;
+            p.bloom = false;
+            p.lens_flare = 0.0f;
+            p.motion_blur = false;
+            p.depth_of_field = false;
+            p.chromatic_aberration = 0.0f;
+            p.film_grain = 0.0f;
+        }
         if (mobile_level_ < 0 || mobile_level_ >= 3) return p;
         p.motion_blur = false;
         p.depth_of_field = false;
@@ -455,6 +484,13 @@ public:
         }
         if (mobile_level_ == 0) {
             p.ambient_occlusion = false;
+            // Sin bloom: con el, la cadena corta de FSR 1 (composicion a la
+            // resolucion interna) no se puede usar y todo el post-proceso iba
+            // a la resolucion de pantalla (bloom + composicion: 17 ms en una
+            // Mali-G52).
+            p.bloom = false;
+            // (El FXAA lo decide el juego: opcion Anti-Aliasing, apagada por
+            // defecto en el movil.)
             p.lens_flare = 0.0f;
             p.chromatic_aberration = 0.0f;
             p.film_grain = 0.0f;
@@ -473,6 +509,17 @@ public:
     void clearLiteLightingForced() { lite_lighting_forced_ = -1; }
     // -1 = lo decide el presupuesto, 0 = completa, 1 = ligera.
     int liteLightingForced() const { return lite_lighting_forced_; }
+    // UNLIT: modo de dibujo del juego para equipos de gama ultra baja (Graphics "draw_mode" = "unlit",
+    // CVar render.Unlit). El color de los materiales con una luz minima (lighting_unlit.frag: ambiente
+    // del cielo, Lambert del sol sin sombras, la luz de los bloques que va en el vertice y la emision).
+    // No se calculan: sombras del sol (cascadas) ni de las luces locales, SSAO, GI (SSGI, sondas,
+    // horneada), trazado de rayos y path tracing, reflejos (SSR, sonda de reflexion), nubes
+    // volumetricas y su sombra, luz volumetrica, oclusion del cielo, bloom, rayos de luz, desenfoques
+    // ni escaladores temporales (TAA, FSR 3, DLSS: FSR 1 si se escala). El cielo y el IBL se rehacen
+    // 1 de cada 30 frames; el agua y los bloques, en su calidad minima. Al momento, en cualquier vista
+    // menos los modos de depuracion de la vista Escena del editor (Unlit, Wireframe, lightmaps).
+    void setGameUnlit(bool unlit);
+    bool gameUnlit() const { return game_unlit_; }
     bool liteLighting() const {
         if (lite_lighting_forced_ >= 0) return lite_lighting_forced_ != 0;
         return !budget_suspended_ && budget_.enabled() && budget_.level(Lever::Lighting) > 0;
@@ -516,6 +563,7 @@ public:
         float uniforms_ms = 0.0f;
         float record_ms = 0.0f;      // grabar los comandos
         float submit_ms = 0.0f;      // enviar y presentar
+        float present_ms = 0.0f;     // de submit_ms, lo que tarda presentKHR
         float upload_ms = 0.0f;      // uploadModels / uploadModel (subir mallas y texturas)
         int uploads = 0;
         // Dentro de actors_ms (para atribuir los tirones): streaming de la
@@ -665,7 +713,7 @@ public:
     bool rayTracingSupported() const { return device_.rayTracingSupported(); }
     // Se esta trazando de verdad este frame (soportado, activado y listo).
     bool rayTracingActive() const {
-        return rt_enabled_ && device_.rayTracingSupported() && ray_tracing_.ready();
+        return rt_enabled_ && !game_unlit_ && device_.rayTracingSupported() && ray_tracing_.ready();  // UNLIT
     }
     // Hace falta la escena de rayos (trazado o path tracing pedidos). Si no,
     // no se construye nada: ni BLAS, ni TLAS, ni cache.
@@ -682,7 +730,7 @@ public:
     }
     bool pathTracingEnabled() const { return path_tracing_; }
     bool pathTracingActive() const {
-        return path_tracing_ && device_.rayTracingSupported() && ray_tracing_.ready();
+        return path_tracing_ && !game_unlit_ && device_.rayTracingSupported() && ray_tracing_.ready();  // UNLIT
     }
     // Esta vista la pinta entera el path tracing (todo lo que no es cielo): el
     // SSAO, la GI, los reflejos y las sombras por rayos se sobrescribirian, asi
@@ -936,8 +984,12 @@ public:
     std::size_t gpuAsyncInFlight() const { return device_.asyncInFlight(); }
     void destroyTerrain(std::uint32_t id);
     void setTerrainDesc(std::uint32_t id, const TerrainDesc& desc) { terrain_pass_.setDesc(id, desc); }
-    // Lo que aparta la hierba: xyz = centro, w = radio (hasta 32).
-    void setGrassInteractors(const std::vector<core::Vec4>& spheres) { terrain_pass_.setGrassInteractors(spheres); }
+    // Lo que aparta la hierba: xyz = centro, w = radio (hasta 32). Tambien
+    // aparta las plantas de los voxeles (VoxelPass::setInteractors).
+    void setGrassInteractors(const std::vector<core::Vec4>& spheres) {
+        terrain_pass_.setGrassInteractors(spheres);
+        voxel_pass_.setInteractors(VoxelPass::kInteractorsScene, spheres);
+    }
     // Agua (oceano, lagos, rios): los cuerpos de este frame y el reloj de sus olas.
     void setWaterBodies(const std::vector<WaterBodyDesc>& bodies, float time, int underwater = -1) {
         water_pass_.setBodies(bodies, time, underwater);
@@ -980,10 +1032,30 @@ public:
         rain_map_voxels_dirty_ = true;
     }
     void setVoxelTime(float seconds) { voxel_pass_.setTime(seconds); }
+    // Lo que se mueve por el mundo de bloques (Voxel.moveBox, Voxel.pushFoliage):
+    // aparta plantas y hojas a ras de suelo. xyz = pies, w = radio.
+    void setVoxelInteractors(const std::vector<core::Vec4>& spheres) {
+        voxel_pass_.setInteractors(VoxelPass::kInteractorsVoxels, spheres);
+    }
     // Estilo de color liso (VoxelWorld::flat_colors): variacion de color por bloque.
     void setVoxelFlatColors(bool flat) { voxel_pass_.setFlatColors(flat); }
     void setVoxelsVisible(bool visible) { voxel_pass_.setVisible(visible); }
     VoxelStats voxelStats() const { return voxel_pass_.stats(); }
+    // Plantas de los bloques (hierba, flores: cruces con recorte) solo hasta
+    // esta distancia (m); 0 = todas (CVar voxel.PlantDistance).
+    void setVoxelPlantDistance(float meters) { voxel_pass_.setPlantDistance(meters); }
+    // TESELADO: relieve teselado de los bloques cercanos (VoxelPass::setTessellation; CVars voxel.tess.*). Se
+    // aplica en el frame (apagado en el perfil movil y sin tessellationShader).
+    void setVoxelTessellation(bool enabled, float distance, float depth, float density) {
+        voxel_tess_enabled_ = enabled;
+        voxel_tess_distance_ = distance;
+        voxel_tess_depth_ = depth;
+        voxel_tess_density_ = density;
+    }
+    bool voxelTessellationSupported() const { return voxel_pass_.tessellationSupported(); }
+    bool hasVoxelSections() const { return !voxel_pass_.empty(); }
+    // Personajes que apartan las plantas en el ultimo frame (pruebas).
+    std::uint32_t voxelInteractorCount() const { return voxel_pass_.interactorCount(); }
     // Agua de bloques: sus caras por seccion (formato de water_voxel.vert; se
     // dibujan en el pase del agua) y su aspecto (un GpuWaterBody de tipo 3;
     // camera_inside = la camara esta en un bloque de agua: bajo el agua).
@@ -992,6 +1064,16 @@ public:
         voxel_pass_.setWaterSection(key, origin, vertices, vertex_count);
     }
     void removeVoxelWaterSection(std::uint64_t key) { voxel_pass_.removeWaterSection(key); }
+    // Terreno lejano de los voxeles (VoxelPass::setFarSection, estilo Distant
+    // Horizons): no toca las sombras cacheadas ni el mapa de lluvia.
+    void setVoxelFarSection(std::uint64_t key, const core::Vec3& origin, float scale, const std::uint32_t* vertices,
+                            std::uint32_t vertex_count) {
+        voxel_pass_.setFarSection(key, origin, scale, vertices, vertex_count);
+    }
+    void removeVoxelFarSection(std::uint64_t key) { voxel_pass_.removeFarSection(key); }
+    void setVoxelFarHole(const core::Vec3& center, float radius, float fade_end = 0.0f) {
+        voxel_pass_.setFarHole(center, radius, fade_end);
+    }
     void setVoxelWater(const GpuWaterBody& look, bool enabled, bool camera_inside) {
         water_pass_.setVoxelWater(look, enabled, camera_inside);
     }
@@ -1389,6 +1471,7 @@ private:
     void recordBloomPass(const vk::raii::CommandBuffer& cmd);
     void recordLightShaftPass(const vk::raii::CommandBuffer& cmd);
     void recordAutoExposurePass(const vk::raii::CommandBuffer& cmd);
+    void recordAutoExposurePass(const vk::raii::CommandBuffer& cmd, const vk::raii::DescriptorSet& histogram_set, vk::Extent2D extent);
     void recordCompositePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Contorno de seleccion sobre la imagen compuesta (si hay seleccion).
     void recordOutlinePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
@@ -1561,6 +1644,7 @@ private:
     std::vector<vk::raii::DescriptorSet> early_composite_sets_;
     std::vector<vk::raii::DescriptorSet> early_easu_sets_;
     std::vector<vk::raii::DescriptorSet> early_rcas_sets_;
+    std::vector<vk::raii::DescriptorSet> early_histogram_sets_;  // auto-exposicion de la cadena corta
     bool early_post_active_ = false;  // este frame va por la cadena corta
     VulkanImage output_depth_{};
     bool output_depth_blit_ = false;
@@ -1681,6 +1765,11 @@ private:
     // Sondas dinamicas (DDGI): las de los volumenes horneados se actualizan
     // con rayos, unas pocas por frame (rt_probes.comp).
     bool dynamic_probes_ = false;
+    std::uint32_t debug_skip_ = 0;
+    float mobile_actor_distance_ = 0.0f;  // NOCHE-PERF (setMobileActorDistance)
+    int actor_detail_ = 2;                // MALLAS-DETALLE (setActorDetail)
+    std::uint32_t culled_detail_shadows_ = 0;  // MALLAS-DETALLE: piezas diminutas sin sombra este frame
+    std::uint32_t culled_far_ = 0;        // NOCHE-PERF: actores fuera por distancia (movil) este frame
     std::uint32_t dynamic_probes_per_frame_ = 256;
     std::uint32_t dynamic_probe_cursor_ = 0;
     std::uint32_t baked_probe_count_ = 0;
@@ -1933,7 +2022,17 @@ private:
         std::uint32_t lod_fade_from = 0;
         float lod_fade = 1.0f;
         std::uint32_t lod_fade_slot = UINT32_MAX;
+        // Rigido mas pequeno que el umbral en pantalla (culled_small_): la
+        // camara no lo dibuja (los lotes de la GPU ya lo saltaban; esto es
+        // para drawCpuActors en el modo compatible). Su sombra sigue.
+        bool tiny = false;
     };
+    // drawCpuActors (modo compatible): rigidos ordenados por (modelo, LOD,
+    // disolucion) y sus submallas visibles, reutilizados de frame en frame.
+    std::vector<std::uint32_t> cpu_rigid_order_;
+    std::vector<std::uint32_t> cpu_rigid_visible_;
+    std::vector<std::uint32_t> cpu_rigid_visible_first_;
+    std::vector<std::uint8_t> cpu_rigid_material_done_;
     std::vector<ActorDraw> actor_draws_;
     // Fundidos de LOD en curso (vista principal), por identidad del actor.
     struct LodFade {
@@ -2127,7 +2226,9 @@ private:
     }
     const vk::raii::Pipeline& meshGeometryPipeline() const {
         if (mesh_pipeline_override_ != nullptr) return *mesh_pipeline_override_;
-        return wire_gbuffer_ ? skinned_pass_.geometryWirePipeline() : skinned_pass_.geometryPipeline();
+        return wire_gbuffer_     ? skinned_pass_.geometryWirePipeline()
+               : mobile_level_ == 0 ? skinned_pass_.geometryLitePipeline()
+                                    : skinned_pass_.geometryPipeline();
     }
     void recordWireOverlayPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     struct RenderTextureSlot {
@@ -2281,11 +2382,16 @@ private:
     std::optional<PickResult> pick_result_;
     TerrainPass terrain_pass_{};
     VoxelPass voxel_pass_{};
+    bool voxel_tess_enabled_ = true;  // TESELADO (setVoxelTessellation)
+    float voxel_tess_distance_ = 24.0f;
+    float voxel_tess_depth_ = 0.1f;
+    float voxel_tess_density_ = 16.0f;
     FoliagePass foliage_pass_{};
     FluidPass fluid_pass_{};
     VfxPass vfx_pass_{};
     WaterPass water_pass_{};
     core::Vec3 camera_position_{};
+    bool camera_orthographic_ = false;  // la de camera_position_ (VoxelPass::setFaceCulling)
     ParticleDrawList particles_;
     ParticlePass particle_pass_{};
     SpriteDrawList sprites_;
@@ -2750,7 +2856,12 @@ private:
     bool output_depth_ready_ = false;
     bool sun_shadows_ = true;
     float sun_shadow_strength_ = 1.0f;
-    bool sunShadows() const { return shadows_enabled_ && sun_shadows_; }
+    bool sunShadows() const { return shadowsOn() && sun_shadows_; }
+    // UNLIT: sombras de verdad en este modo (en Unlit ni cascadas ni luces locales).
+    bool shadowsOn() const { return shadows_enabled_ && !game_unlit_; }
+    bool game_unlit_ = false;  // UNLIT (setGameUnlit)
+    // UNLIT: este dibujo usa la iluminacion minima (no en los modos de depuracion de la vista Escena).
+    bool unlitLightingNow() const { return game_unlit_ && drawModeNow() == SceneDrawMode::Lit && lightmapDebugView() == 0; }
     // Las cascadas del sol tienen quien las lea. Con el sol horneado entero
     // la iluminacion de lo opaco no las mira (su luz y su sombra van en la GI
     // horneada), pero el agua, el vidrio, la luz volumetrica y los fluidos si:
@@ -2770,7 +2881,8 @@ private:
     // fotografiado y con algo de cobertura (a 0 el rayo recorria la capa para
     // nada).
     bool cloudsActive() const {
-        return clouds_enabled_ && clouds_allowed_ && !environmentActive() && cloud_settings_.coverage > 0.0f;
+        return clouds_enabled_ && clouds_allowed_ && !game_unlit_ && !environmentActive() &&  // UNLIT
+               cloud_settings_.coverage > 0.0f;
     }
     // Mapa de sombra de las nubes: con la palanca Clouds al maximo se rehace
     // cada N frames en la vista principal. Centro del ultimo dibujado (el que

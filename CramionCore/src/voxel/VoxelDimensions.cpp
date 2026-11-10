@@ -8,24 +8,37 @@
 //   abismo      18.9   despejado*    no     (1.00 0.45 0.25) x0.55     0.010 / 0.004 (roja)      apagado
 //   cielo       10.5   despejado*    si     (1.00 0.96 0.88) x1.10     0.0012 / 0.02             apagado
 //   cristal      0.0   despejado*    no     (0.55 0.62 1.00) x0.40     0.004 / 0.03              encendido, oscuro
+//   profundo     0.0   despejado*    no     (0.45 0.55 0.80) x0.15     0.016 / 0.002 (oscura)    apagado
+//   profundo2..8 lo mismo con el color de cada capa (hongos, mares, cristal, reino, magma, hueco, raiz)
+//               y algo mas de niebla cuanto mas hondo.
 //   (*) sin clima al azar ni lluvia; la hora no avanza.
 
 #include "VoxelDimensions.h"
 
 #include "CramionCore/ecs/World.h"
 
+#include <algorithm>
 #include <array>
 
 namespace cramion::voxel {
 
 namespace {
 
-const std::array<DimensionInfo, 4>& table() {
-    static const std::array<DimensionInfo, 4> list = {{
+const std::array<DimensionInfo, 12>& table() {
+    static const std::array<DimensionInfo, 12> list = {{
         {"superficie", "Overworld", "superficie", "day"},
         {"abismo", "The Cinderdeep", "abismo", "abyss"},
         {"cielo", "The Driftreach", "cielo", "skyrealm"},
         {"cristal", "Glimmerwood", "cristal", "night"},
+        {"profundo", "The Sunless Deep", "profundo", "night"},
+        // Capas hondas del Reino Profundo (GeneratorDeep.cpp, Generator::setDeepLayer).
+        {"profundo2", "The Fungal Caverns", "profundo", "night"},
+        {"profundo3", "The Drowned Halls", "profundo", "night"},
+        {"profundo4", "The Crystal Depths", "profundo", "night"},
+        {"profundo5", "The Delver Kingdom", "profundo", "night"},
+        {"profundo6", "The Magma Roots", "profundo", "night"},
+        {"profundo7", "The Hollow", "profundo", "night"},
+        {"profundo8", "The Root Heart", "profundo", "night"},
     }};
     return list;
 }
@@ -57,6 +70,18 @@ Preset presetFor(const std::string& dimension) {
         p.sun_scale = 1.1f;
         p.fog = 0.0012f;
         p.fog_falloff = 0.02f;
+    } else if (const int layer = deepLayerOf(dimension); layer > 0) {
+        // Bajo tierra: noche cerrada, casi sin sol (el techo tapa el cielo) y niebla oscura que
+        // esconde los techos lejanos; la luz la ponen los bloques (glifos, hongos, lava, faroles).
+        // Cada capa con su color (lo poco que queda de "sol" tine la penumbra).
+        static constexpr core::Vec3 kTone[9] = {{0.45f, 0.55f, 0.80f}, {0.45f, 0.55f, 0.80f}, {0.55f, 0.45f, 0.85f},
+                                                {0.30f, 0.60f, 0.75f}, {0.55f, 0.65f, 1.00f}, {0.80f, 0.62f, 0.40f},
+                                                {1.00f, 0.42f, 0.22f}, {0.62f, 0.60f, 0.78f}, {1.00f, 0.38f, 0.42f}};
+        p.hours = 0.0f;
+        p.sun_color = kTone[layer];
+        p.sun_scale = 0.15f;
+        p.fog = 0.016f + 0.0012f * static_cast<float>(layer - 1);
+        p.fog_falloff = 0.002f;
     } else {  // cristal
         p.hours = 0.0f;
         p.sun_color = {0.55f, 0.62f, 1.0f};
@@ -129,6 +154,17 @@ const std::vector<DimensionInfo>& dimensions() {
     return list;
 }
 
+int deepLayerOf(const std::string& name) {
+    if (name == "profundo") return 1;
+    if (name.size() == 9 && name.rfind("profundo", 0) == 0 && name[8] >= '2' && name[8] <= '8') return name[8] - '0';
+    return 0;
+}
+
+std::string deepLayerName(int layer) {
+    if (layer <= 1) return "profundo";
+    return "profundo" + std::to_string(std::min(layer, 8));
+}
+
 const DimensionInfo* findDimension(const std::string& name) {
     for (const DimensionInfo& d : table()) {
         if (d.name == name) return &d;
@@ -140,6 +176,7 @@ VoxelGenerator dimensionGenerator(const std::string& name, VoxelGenerator surfac
     if (name == "abismo") return VoxelGenerator::Abyss;
     if (name == "cielo") return VoxelGenerator::Sky;
     if (name == "cristal") return VoxelGenerator::Crystal;
+    if (deepLayerOf(name) > 0) return VoxelGenerator::Deep;  // las ocho capas
     return surface;
 }
 

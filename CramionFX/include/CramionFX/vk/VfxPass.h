@@ -722,6 +722,8 @@ private:
     std::vector<SortJob> sort_scratch_;
     // Lo que prepare() junta cada frame (sin reservar memoria cada vez).
     std::vector<std::uint8_t> instance_scratch_;
+    // Ranuras escritas la ultima vez en el buffer de instancias de cada hueco.
+    std::vector<std::uint32_t> instance_written_;
     std::vector<VfxBlock> block_scratch_;
     std::vector<core::Vec4> point_scratch_;
 

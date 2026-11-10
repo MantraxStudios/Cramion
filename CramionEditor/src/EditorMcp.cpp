@@ -1985,7 +1985,13 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         for (const gfx::GpuTiming& t : a.renderer_.gpuProfiler().timings()) {
             passes.push_back(json{{"pass", t.name}, {"ms", t.milliseconds}});
         }
+        const gfx::VoxelStats vs = a.renderer_.voxelStats();
+        const json voxels{{"sections", vs.sections},           {"visible", vs.visible},
+                          {"quads", vs.quads},                 {"far_sections", vs.far_sections},
+                          {"far_quads", vs.far_quads},         {"enclosed_sections", vs.enclosed_sections},
+                          {"enclosed_quads", vs.enclosed_quads}, {"pending_uploads", vs.pending_uploads}};
         return json{{"fps", a.profiler_overlay_.fps()},
+                    {"voxels", voxels},
                     {"cpu_ms", a.profiler_overlay_.cpuMilliseconds()},
                     {"gpu_ms", a.renderer_.gpuProfiler().totalMilliseconds()},
                     {"gpu_passes", passes},

@@ -128,6 +128,14 @@ public:
     const vk::raii::Pipeline& geometryOpaquePipeline() const {
         return *geometry_opaque_pipeline_ ? geometry_opaque_pipeline_ : geometry_pipeline_;
     }
+    // Ligeras (movil en Baja): skinned.frag con kSurfaceLite (gbuffer_surface.glsl:
+    // sin lluvia, nieve, fuego ni otono). Las de siempre si no se pudieron crear.
+    const vk::raii::Pipeline& geometryLitePipeline() const {
+        return *geometry_lite_pipeline_ ? geometry_lite_pipeline_ : geometry_pipeline_;
+    }
+    const vk::raii::Pipeline& geometryOpaqueLitePipeline() const {
+        return *geometry_opaque_lite_pipeline_ ? geometry_opaque_lite_pipeline_ : geometryOpaquePipeline();
+    }
     // Wireframe: la misma geometria en lineas (G-buffer). Sin soporte de la
     // GPU, la normal.
     const vk::raii::Pipeline& geometryWirePipeline() const {
@@ -228,7 +236,7 @@ private:
                                              GeometryVariant variant = GeometryVariant::Fill,
                                              const vk::raii::ShaderModule* tess_control = nullptr,
                                              const vk::raii::ShaderModule* tess_evaluation = nullptr,
-                                             bool alpha_cutout = true) const;
+                                             bool alpha_cutout = true, bool lite = false) const;
     void createGlassPipeline(const VulkanDevice& device, vk::Format color_format,
                              vk::Format depth_format);
     vk::raii::Pipeline createOutlinePipeline(const VulkanDevice& device, vk::Format depth_format,
@@ -265,6 +273,8 @@ private:
     vk::raii::PipelineLayout geometry_layout_{nullptr};
     vk::raii::Pipeline geometry_pipeline_{nullptr};
     vk::raii::Pipeline geometry_opaque_pipeline_{nullptr};
+    vk::raii::Pipeline geometry_lite_pipeline_{nullptr};
+    vk::raii::Pipeline geometry_opaque_lite_pipeline_{nullptr};
     vk::raii::Pipeline geometry_wire_pipeline_{nullptr};
     vk::raii::Pipeline wire_overlay_pipeline_{nullptr};
     vk::Format hdr_format_ = vk::Format::eUndefined;

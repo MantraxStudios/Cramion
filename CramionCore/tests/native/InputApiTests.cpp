@@ -173,6 +173,107 @@ void testTouchAndGamepad() {
           "setTouchButton por su texto");
     check(!t.call("Input.setTouchButton", {Value("Nada"), Value(true)}).truthy() && t.logged("no hay un boton tactil"),
           "setTouchButton de un boton que no existe: false y aviso");
+
+    // Colocados en dp desde una esquina, stick flotante y correr empujandolo.
+    tc.setScreen(2000.0f, 800.0f, 2.0f);  // 1000 x 400 dp: unit() = 2 px por dp
+    check(t.call("Input.placeTouchButton", {Value("Atacar"), Value("Mouse0"), Value(1), Value(1), Value(-100), Value(-90),
+                                            Value(44), Value(1)})
+              .truthy(),
+          "placeTouchButton crea el boton");
+    const dm::TouchButton& atk = tc.layout().buttons.back();
+    check(atk.anchored && !atk.visible && approx(tc.buttonCenterX(atk), 1800.0) && approx(tc.buttonCenterY(atk), 620.0) &&
+              approx(tc.buttonRadius(atk), 88.0),
+          "placeTouchButton: centro y radio en dp desde la esquina");
+    check(t.call("Input.setTouchButtonText", {Value("Atacar"), Value("ATK")}).truthy() && tc.layout().buttons.back().text == "ATK",
+          "setTouchButtonText");
+    t.call("Input.setTouchControls", {Value(true)});
+    t.call("Input.setTouchJoystick", {Value(true)});
+    t.call("Input.setTouchButton", {Value("Atacar"), Value(true)});
+    t.call("Input.setTouchStick", {Value(50), Value("LeftShift")});
+    std::vector<dm::Event> out;
+    dm::Event d;
+    d.type = dm::EventType::TouchBegan;
+    d.touchId = 1;
+    d.mouseX = 20.0f;  // pegado al borde: el stick no se recoloca (no camina al apoyar)
+    d.mouseY = 600.0f;
+    tc.onEvent(d, 0.0, out);
+    check(tc.stick().active && tc.stickX() == 0.0f && tc.stickY() == 0.0f, "stick flotante: aparece bajo el dedo, quieto");
+    d.type = dm::EventType::TouchMoved;
+    d.mouseX = 20.0f + 100.0f * 1.4f;  // 1.4 radios a la derecha (radio = 100 px)
+    tc.onEvent(d, 0.1, out);
+    bool shift = false;
+    for (const dm::Event& e : out) shift = shift || (e.type == dm::EventType::KeyPressed && e.key == dm::Key::LeftShift);
+    check(approx(tc.stickX(), 1.0) && tc.stick().sprint && shift, "empujar el stick mas alla del aro corre (LeftShift)");
+    dm::Event b;
+    b.type = dm::EventType::TouchBegan;
+    b.touchId = 2;
+    b.mouseX = 1800.0f;
+    b.mouseY = 620.0f;
+    out.clear();
+    tc.onEvent(b, 0.2, out);
+    check(out.size() == 1 && out[0].type == dm::EventType::MouseButtonPressed && out[0].touchId == dm::kTouchButtonEventId &&
+              tc.stick().active,
+          "boton con otro dedo a la vez (marcado para que no haga clic en la interfaz)");
+    out.clear();
+    tc.releaseAll(out);
+    check(!tc.stick().sprint && tc.stickX() == 0.0f, "releaseAll suelta el stick y correr");
+
+    // Arrastrar desde Atacar gira la camara sin soltarlo (pasado el umbral, sin salto).
+    t.call("Input.setTouchLook", {Value(true)});
+    b.touchId = 3;
+    b.type = dm::EventType::TouchBegan;
+    out.clear();
+    tc.onEvent(b, 1.0, out);
+    b.type = dm::EventType::TouchMoved;
+    b.mouseX = 1800.0f - 40.0f;  // 20 dp: pasa el umbral (12 dp), aun no gira
+    tc.onEvent(b, 1.1, out);
+    b.mouseX = 1800.0f - 60.0f;
+    tc.onEvent(b, 1.2, out);
+    float look = 0.0f;
+    bool released = false;
+    for (const dm::Event& e : out) {
+        if (e.type == dm::EventType::MouseRawMoved) look += e.deltaX;
+        released = released || e.type == dm::EventType::MouseButtonReleased;
+    }
+    check(look < 0.0f && !released && tc.buttonDown(tc.layout().buttons.size() - 1),
+          "arrastrar desde Atacar gira la camara y Atacar sigue pulsado");
+    out.clear();
+    tc.releaseAll(out);
+
+    // Editor: arrastrar mueve y ancla a la esquina mas cercana; Done avisa; la disposicion va y viene en texto.
+    t.call("Input.setTouchEditMode", {Value(true)});
+    check(t.call("Input.touchEditMode").truthy(), "setTouchEditMode");
+    b.touchId = 4;
+    b.type = dm::EventType::TouchBegan;
+    b.mouseX = 1800.0f;
+    b.mouseY = 620.0f;
+    out.clear();
+    tc.onEvent(b, 2.0, out);
+    b.type = dm::EventType::TouchMoved;
+    b.mouseX = 300.0f;  // a la izquierda, arriba
+    b.mouseY = 200.0f;
+    tc.onEvent(b, 2.1, out);
+    b.type = dm::EventType::TouchEnded;
+    tc.onEvent(b, 2.2, out);
+    const dm::TouchButton& moved = tc.layout().buttons.back();
+    check(out.empty() && moved.anchor_x == 0.0f && moved.anchor_y == 0.0f && approx(tc.buttonCenterX(moved), 300.0) &&
+              approx(tc.buttonCenterY(moved), 200.0),
+          "editor: arrastrar mueve el boton (sin pulsarlo) y lo ancla arriba a la izquierda");
+    const std::string saved = t.call("Input.getTouchLayout").asString();
+    const dm::TouchControls::EditItem done = tc.editPanel().back();
+    b.type = dm::EventType::TouchBegan;
+    b.touchId = 5;
+    b.mouseX = (done.x0 + done.x1) * 0.5f;
+    b.mouseY = (done.y0 + done.y1) * 0.5f;
+    tc.onEvent(b, 3.0, out);
+    check(!tc.editMode() && t.call("Input.takeTouchEditEvent").asString() == "done" &&
+              t.call("Input.takeTouchEditEvent").asString().empty(),
+          "editor: Done lo cierra y avisa una vez");
+    b.type = dm::EventType::TouchEnded;
+    tc.onEvent(b, 3.1, out);
+    t.call("Input.placeTouchButton", {Value("Atacar"), Value("Mouse0"), Value(1), Value(1), Value(-100), Value(-90), Value(44)});
+    t.call("Input.setTouchLayout", {Value(saved)});
+    check(approx(tc.buttonCenterX(tc.layout().buttons.back()), 300.0), "getTouchLayout / setTouchLayout");
     t.scripts.setTouchControls(nullptr);
 }
 

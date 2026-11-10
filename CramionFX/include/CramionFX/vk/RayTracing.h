@@ -233,6 +233,10 @@ public:
 
     void updateFrameSet(const VulkanDevice& device, std::uint32_t frame_index,
                         const FrameInputs& inputs);
+    // Ocupacion de los voxeles (VoxelOccupancy: etiquetas y celdas) que ven
+    // todos los rayos (set 0, bindings 11 y 12). Nulos = sin bloques. Los sets
+    // de cada frame se reescriben en su siguiente recordUpdates.
+    void setVoxelGrid(vk::Buffer info, vk::Buffer cells);
 
     // Todo listo para trazar este frame (escena subida y TLAS construida o
     // por construir en recordUpdates).

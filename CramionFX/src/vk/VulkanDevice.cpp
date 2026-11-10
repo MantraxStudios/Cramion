@@ -433,7 +433,35 @@ void VulkanDevice::createLogicalDevice() {
     }
     // Diagnostico (CRAMION_GPU_CHECKPOINTS=1): en que pase iba la GPU cuando
     // se perdio el dispositivo (ErrorDeviceLost no da mas pistas).
-    if (std::getenv("CRAMION_GPU_CHECKPOINTS") != nullptr) {
+    // GPU-DIAG: tambien solas si este PC tuvo una perdida del dispositivo hace
+    // menos de 7 dias (hay un DeviceLost-*.txt reciente en Cramion/Crashes):
+    // el siguiente cuelgue ya dice en que pase iba. CRAMION_GPU_CHECKPOINTS=0
+    // las apaga siempre. Coste: una marca por pase (despreciable).
+    const char* checkpoints_env = std::getenv("CRAMION_GPU_CHECKPOINTS");
+    bool want_checkpoints = checkpoints_env != nullptr && std::string_view(checkpoints_env) != "0";
+    if (checkpoints_env == nullptr) {
+        try {
+            const char* local = std::getenv("LOCALAPPDATA");
+            const std::filesystem::path folder =
+                (local != nullptr && *local != '\0') ? std::filesystem::path(local) / "Cramion" / "Crashes"
+                                                     : std::filesystem::path{};
+            std::error_code error;
+            if (!folder.empty() && std::filesystem::is_directory(folder, error)) {
+                const auto now = std::filesystem::file_time_type::clock::now();
+                for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
+                    const std::string name = entry.path().filename().string();
+                    if (name.rfind("DeviceLost-", 0) != 0) continue;
+                    const auto when = entry.last_write_time(error);
+                    if (!error && now - when < std::chrono::hours(24 * 7)) {
+                        want_checkpoints = true;
+                        break;
+                    }
+                }
+            }
+        } catch (const std::exception&) {
+        }
+    }
+    if (want_checkpoints) {
         for (const vk::ExtensionProperties& extension : physical_device_.enumerateDeviceExtensionProperties()) {
             if (std::string_view(extension.extensionName.data()) == VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME) {
                 checkpoints_enabled_ = true;

@@ -29,6 +29,12 @@ AF4 FsrEasuBF(AF2 p) { return textureGather(source, p, 2); }
 #include "ffx_fsr1.h"
 
 void main() {
+    // con3.w = 1: escalado bilineal (movil en Baja: EASU costaba 14 ms en una
+    // Mali-G52 a 720p; el RCAS de despues sigue dando la nitidez).
+    if (push.con3.w != 0u) {
+        out_color = vec4(texture(source, v_uv).rgb, 1.0);
+        return;
+    }
     AF3 color;
     FsrEasuF(color, AU2(gl_FragCoord.xy), push.con0, push.con1, push.con2, push.con3);
     out_color = vec4(clamp(color, vec3(0.0), vec3(1.0)), 1.0);

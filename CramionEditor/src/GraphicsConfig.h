@@ -45,6 +45,12 @@ bool saveGraphicsIni(const std::filesystem::path& file, const gfx::VulkanRendere
 // Calidades rapidas: 0 Baja, 1 Media, 2 Alta, 3 Ultra.
 const std::vector<std::string>& qualityPresetNames();
 void applyQualityPreset(gfx::VulkanRenderer& renderer, int level);
+// El preset en el movil (Android): applyQualityPreset + perfil movil del
+// renderizador, sin trazado de rayos, nubes desde Alta, FSR 1 en Baja y Media
+// (post-proceso a la resolucion interna) y en Baja sin sombras del sol (en una
+// Mali-G52 las cascadas de un mundo de voxeles eran 30 ms). Tambien cuando el
+// juego llama a Graphics.setQuality en el movil.
+void applyMobileQualityPreset(gfx::VulkanRenderer& renderer, int level);
 
 // Modo de la ventana del juego (game.ini / Graphics.ini del jugador).
 //   Maximized:  ventana con marco, maximizada (el area de trabajo).

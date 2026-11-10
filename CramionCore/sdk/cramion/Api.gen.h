@@ -3093,6 +3093,27 @@ template <typename... Mas>
 inline Value dimensions(Mas&&... mas) {
     return detail::api("Voxel.dimensions", Values{Value(std::forward<Mas>(mas))...});
 }
+/// Voxel.farStats()
+/// terreno lejano (CVar voxel.far.Distance): teselas, listas, pendientes, caras, radio de los chunks de verdad
+/// Devuelve: tabla
+template <typename... Mas>
+inline Value farStats(Mas&&... mas) {
+    return detail::api("Voxel.farStats", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Voxel.findBlocks(pos, radio, "rail", max)
+/// celdas con ese bloque en el cubo (radio <= 48)
+/// Devuelve: lista de Vec3
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value findBlocks(const T0& pos = {}, const T1& radio = {}, const T2& texto = {}, const T3& max_ = {}) {
+    return detail::api("Voxel.findBlocks", Values{Value(pos), Value(radio), Value(texto), Value(max_)});
+}
+/// Voxel.findDeepOcean(Vec3, radio = 512, minimo = 24)
+/// nil o {pos (a media agua), surface, floor, depth}
+/// Devuelve: objeto o nil
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value findDeepOcean(const T0& vec = {}, const T1& radio = {}, const T2& minimo = {}) {
+    return detail::api("Voxel.findDeepOcean", Values{Value(vec), Value(radio), Value(minimo)});
+}
 /// Voxel.getBlock(x, y, z)
 /// numero del bloque (0 = aire)
 /// Devuelve: numero
@@ -3127,6 +3148,20 @@ inline Value inWater(const T0& vec = {}) {
 template <typename... Mas>
 inline Value isActive(Mas&&... mas) {
     return detail::api("Voxel.isActive", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Voxel.isDeepOcean(x, z, minimo = 24)
+/// hay al menos `minimo` bloques de mar sobre el suelo?
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value isDeepOcean(const T0& x = {}, const T1& z = {}, const T2& minimo = {}) {
+    return detail::api("Voxel.isDeepOcean", Values{Value(x), Value(z), Value(minimo)});
+}
+/// Voxel.isHidden(x, y, z)
+/// esta oculto en el dibujo (setHidden)
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value isHidden(const T0& x = {}, const T1& y = {}, const T2& z = {}) {
+    return detail::api("Voxel.isHidden", Values{Value(x), Value(y), Value(z)});
 }
 /// Voxel.isReady(Vec3)
 /// ya esta generado?
@@ -3170,6 +3205,27 @@ template <typename T0 = Value, typename T1 = Value>
 inline Value newWorld(const T0& texto = {}, const T1& semilla = {}) {
     return detail::api("Voxel.newWorld", Values{Value(texto), Value(semilla)});
 }
+/// Voxel.oceanDepth(x, z)
+/// bloques de mar sobre el suelo (0 = tierra, lago o rio; oceano hondo 30..57)
+/// Devuelve: numero
+template <typename T0 = Value, typename T1 = Value>
+inline Value oceanDepth(const T0& x = {}, const T1& z = {}) {
+    return detail::api("Voxel.oceanDepth", Values{Value(x), Value(z)});
+}
+/// Voxel.pushFoliage(pies, radio)
+/// aparta las plantas alrededor este frame
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value pushFoliage(const T0& pies = {}, const T1& radio = {}) {
+    return detail::api("Voxel.pushFoliage", Values{Value(pies), Value(radio)});
+}
+/// Voxel.railInfo(x, y, z)
+/// via en la celda: mask (bit 0 +X, 1 -X, 2 +Z, 3 -Z), up (rampa hacia 0..3 o -1) e id; nil si no hay via
+/// Devuelve: objeto o nil
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value railInfo(const T0& x = {}, const T1& y = {}, const T2& z = {}) {
+    return detail::api("Voxel.railInfo", Values{Value(x), Value(y), Value(z)});
+}
 /// Voxel.raycast(origen, direccion, distancia)
 /// nil o {block, normal, id, point, distance}
 /// Devuelve: objeto o nil
@@ -3205,11 +3261,39 @@ template <typename T0 = Value, typename T1 = Value>
 inline Value setDimension(const T0& texto = {}, const T1& arg = {}) {
     return detail::api("Voxel.setDimension", Values{Value(texto), Value(arg)});
 }
+/// Voxel.setHidden(x, y, z, true)
+/// oculta (o vuelve a mostrar) un bloque solo en el dibujo
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value setHidden(const T0& x = {}, const T1& y = {}, const T2& z = {}, const T3& activar = {}) {
+    return detail::api("Voxel.setHidden", Values{Value(x), Value(y), Value(z), Value(activar)});
+}
 /// Voxel.setMeta("clave", "texto")
 /// dato guardado con el mundo
 template <typename T0 = Value, typename T1 = Value>
 inline Value setMeta(const T0& texto = {}, const T1& texto2 = {}) {
     return detail::api("Voxel.setMeta", Values{Value(texto), Value(texto2)});
+}
+/// Voxel.setSignalInput(x, y, z, true)
+/// algo encima de una placa de presion o via detectora (refrescar cada 0.1-0.2 s; caduca a los 0.35 s)
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value setSignalInput(const T0& x = {}, const T1& y = {}, const T2& z = {}, const T3& activar = {}) {
+    return detail::api("Voxel.setSignalInput", Values{Value(x), Value(y), Value(z), Value(activar)});
+}
+/// Voxel.showAllHidden()
+/// vuelve a dibujar todos los bloques ocultos con setHidden
+/// Devuelve: bool
+template <typename... Mas>
+inline Value showAllHidden(Mas&&... mas) {
+    return detail::api("Voxel.showAllHidden", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Voxel.signal(x, y, z)
+/// senal de arcanita de la celda (0..15)
+/// Devuelve: numero
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value signal(const T0& x = {}, const T1& y = {}, const T2& z = {}) {
+    return detail::api("Voxel.signal", Values{Value(x), Value(y), Value(z)});
 }
 /// Voxel.skyLight(x, y, z)
 /// luz del cielo 0..15
@@ -3231,6 +3315,13 @@ inline Value spawnPoint(const T0& arg = {}) {
 template <typename T0 = Value>
 inline Value structureAt(const T0& pos = {}) {
     return detail::api("Voxel.structureAt", Values{Value(pos)});
+}
+/// Voxel.structureChests(min, max)
+/// cofres de botin generados en la caja (celda absoluta x y z, pos local, tier 1..4, table, structure, dimension, key)
+/// Devuelve: lista de {x, y, z, pos, tier, table, structure, dimension, key}
+template <typename T0 = Value, typename T1 = Value>
+inline Value structureChests(const T0& min = {}, const T1& max = {}) {
+    return detail::api("Voxel.structureChests", Values{Value(min), Value(max)});
 }
 /// Voxel.structuresNear(pos, radio)
 /// estructuras cuya caja toca la esfera

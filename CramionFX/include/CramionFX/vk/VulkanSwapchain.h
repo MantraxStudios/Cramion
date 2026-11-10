@@ -47,13 +47,16 @@ public:
     bool isValid() const { return *swapchain_ != VK_NULL_HANDLE; }
 
 private:
-    void create(std::uint32_t width, std::uint32_t height);
+    // false si la superficie no tiene area (ventana minimizada): no se crea
+    // nada, pero el formato queda elegido (las pipelines lo necesitan).
+    bool create(std::uint32_t width, std::uint32_t height);
     void createImageViews();
 
     static vk::SurfaceFormatKHR chooseSurfaceFormat(
         const std::vector<vk::SurfaceFormatKHR>& available);
     vk::PresentModeKHR choosePresentMode(const std::vector<vk::PresentModeKHR>& available) const;
     bool vsync_ = false;
+    bool zero_area_logged_ = false;  // aviso de "minimizada": una vez por episodio
     static vk::Extent2D chooseExtent(const vk::SurfaceCapabilitiesKHR& capabilities,
                                      std::uint32_t width, std::uint32_t height);
 

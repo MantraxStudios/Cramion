@@ -443,6 +443,7 @@ void UiSystem::reset() {
     events_.clear();
     pressed_ = dragging_ = focused_ = entt::null;
     open_dropdown_ = scroll_drag_ = entt::null;
+    list_drag_ = list_drag_moved_ = false;
     last_time_ = -1.0f;
     capturing_mouse_ = false;
     ui_buttons_ = {false, false, false};
@@ -526,7 +527,7 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
         // La raiz es toda la vista en unidades del Canvas: las anclas van a
         // los bordes de la vista (no a los de la resolucion de referencia).
         const float scale = canvasScale(canvas_entity.get<Canvas>(), width, height);
-        const UiRect root{0.0f, 0.0f, width / scale, height / scale};
+        const UiRect root{0.0f, -view_offset_y_ / scale, width / scale, height / scale};
         layoutCanvas(world, canvas_entity, root, scale, laid_);
     }
     // El campo con el foco se oculto (setActive(false) suyo o de un padre),
@@ -554,6 +555,7 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             if (d == nullptr || !d->open || !rectOf(open_dropdown_, box)) {
                 if (d != nullptr) d->open = false;
                 open_dropdown_ = entt::null;
+                list_drag_ = false;
             } else {
                 const int count = static_cast<int>(d->options.size());
                 const int visible = std::clamp(d->max_visible, 1, std::max(count, 1));
@@ -568,25 +570,55 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
                                                     static_cast<float>(std::max(count - visible, 0)));
                     }
                 }
-                if (input.mouse_pressed) {
+                const float max_scroll = static_cast<float>(std::max(count - visible, 0));
+                const float item_h = std::max(box.h, 1.0f);
+                // Pulsar en la lista no elige todavia: se arrastra con el dedo (o el
+                // raton) y elige al soltar sin haberse movido, como en el movil.
+                if (input.mouse_pressed && over_list) {
                     consumed = true;
-                    if (over_list) {
-                        const int index = static_cast<int>(std::floor((input.mouse_y - list.y) / std::max(box.h, 1.0f) + d->list_scroll));
-                        if (index >= 0 && index < count) {
-                            d->value = index;
-                            if (!d->on_change.empty()) {
-                                ecs::Entity src = world.wrap(open_dropdown_);
-                                UiEvent ev;
-                                ev.source = src;
-                                ev.target = targetOf(world, src, d->target);
-                                ev.method = d->on_change;
-                                ev.kind = UiEvent::Kind::Number;
-                                ev.number = static_cast<float>(index + 1);
-                                ev.text = d->options[static_cast<std::size_t>(index)];
-                                events_.push_back(ev);
-                            }
+                    list_drag_ = true;
+                    list_drag_moved_ = false;
+                    list_drag_start_y_ = list_drag_last_y_ = input.mouse_y;
+                }
+                int pick_index = -1;
+                if (list_drag_) {
+                    consumed = true;
+                    capturing_mouse_ = true;
+                    const float dy = input.mouse_y - list_drag_last_y_;
+                    list_drag_last_y_ = input.mouse_y;
+                    if (std::abs(input.mouse_y - list_drag_start_y_) > std::max(item_h * 0.3f, 8.0f)) list_drag_moved_ = true;
+                    if (list_drag_moved_ && max_scroll > 0.0f) {
+                        d->list_scroll = std::clamp(d->list_scroll - dy / item_h, 0.0f, max_scroll);
+                    }
+                    if (input.mouse_released || !input.mouse_down) {
+                        list_drag_ = false;
+                        if (!list_drag_moved_ && over_list) {
+                            pick_index = static_cast<int>(std::floor((input.mouse_y - list.y) / item_h + d->list_scroll));
+                            if (pick_index < 0 || pick_index >= count) pick_index = -2;  // fuera: solo cerrar
                         }
                     }
+                } else if (input.mouse_pressed) {
+                    list_drag_ = false;
+                    pick_index = -2;  // pulsar fuera de la lista: cerrarla
+                }
+                if (pick_index != -1) {
+                    consumed = true;
+                    const int index = pick_index;
+                    if (index >= 0 && index < count) {
+                        d->value = index;
+                        if (!d->on_change.empty()) {
+                            ecs::Entity src = world.wrap(open_dropdown_);
+                            UiEvent ev;
+                            ev.source = src;
+                            ev.target = targetOf(world, src, d->target);
+                            ev.method = d->on_change;
+                            ev.kind = UiEvent::Kind::Number;
+                            ev.number = static_cast<float>(index + 1);
+                            ev.text = d->options[static_cast<std::size_t>(index)];
+                            events_.push_back(ev);
+                        }
+                    }
+                    list_drag_ = false;
                     d->open = false;
                     open_dropdown_ = entt::null;
                     pressed_ = entt::null;
@@ -644,7 +676,9 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
         if (input.mouse_pressed && !consumed && scroll_under != entt::null && !trigger_drags &&
             (hovered == entt::null || !world.wrap(hovered).has<Slider>())) {
             scroll_drag_ = scroll_under;
-            scroll_drag_last_ = Vec2{input.mouse_x, input.mouse_y};
+            scroll_drag_last_ = scroll_drag_start_ = Vec2{input.mouse_x, input.mouse_y};
+            scroll_drag_moved_ = false;
+            if (ScrollView* sv = world.registry().try_get<ScrollView>(scroll_under)) sv->velocity = Vec2{};  // el dedo la para
         }
         if (scroll_drag_ != entt::null) {
             ScrollView* sv = world.registry().valid(scroll_drag_) ? world.registry().try_get<ScrollView>(scroll_drag_) : nullptr;
@@ -652,15 +686,34 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             if (sv == nullptr || !input.mouse_down) {
                 scroll_drag_ = entt::null;
             } else {
-                const Vec2 delta{(input.mouse_x - scroll_drag_last_.x) / sc, (input.mouse_y - scroll_drag_last_.y) / sc};
-                scroll_drag_last_ = Vec2{input.mouse_x, input.mouse_y};
-                if (sv->horizontal) sv->scroll.x -= delta.x;
-                if (sv->vertical) sv->scroll.y -= delta.y;
-                if (dt > 0.0f) {
-                    sv->velocity = Vec2{sv->horizontal ? -delta.x / dt : 0.0f, sv->vertical ? -delta.y / dt : 0.0f};
+                // Umbral de arrastre (pixeles de pantalla, como el "touch slop" de
+                // Android): hasta pasarlo es un toque sobre lo de dentro y no
+                // desplaza; al pasarlo desplaza y ya no hay clic ni slider.
+                if (!scroll_drag_moved_) {
+                    const float tx = input.mouse_x - scroll_drag_start_.x;
+                    const float ty = input.mouse_y - scroll_drag_start_.y;
+                    const float along = sv->vertical && !sv->horizontal ? std::abs(ty)
+                                        : sv->horizontal && !sv->vertical ? std::abs(tx)
+                                                                          : std::abs(tx) + std::abs(ty);
+                    if (along > 10.0f) {
+                        scroll_drag_moved_ = true;
+                        scroll_drag_last_ = Vec2{input.mouse_x, input.mouse_y};
+                        pressed_ = entt::null;
+                        dragging_ = entt::null;
+                    }
                 }
-                // Si el dedo se movio, no es un clic sobre un boton de dentro.
-                if (std::abs(delta.x) + std::abs(delta.y) > 2.0f && pressed_ != entt::null) pressed_ = entt::null;
+                if (scroll_drag_moved_) {
+                    const Vec2 delta{(input.mouse_x - scroll_drag_last_.x) / sc, (input.mouse_y - scroll_drag_last_.y) / sc};
+                    scroll_drag_last_ = Vec2{input.mouse_x, input.mouse_y};
+                    if (sv->horizontal) sv->scroll.x -= delta.x;
+                    if (sv->vertical) sv->scroll.y -= delta.y;
+                    if (dt > 0.0f) {
+                        // Suavizada: un frame sin evento de movimiento (el toque llega
+                        // a trompicones) ya no deja la inercia a cero al soltar.
+                        const Vec2 v{sv->horizontal ? -delta.x / dt : 0.0f, sv->vertical ? -delta.y / dt : 0.0f};
+                        sv->velocity = Vec2{sv->velocity.x * 0.4f + v.x * 0.6f, sv->velocity.y * 0.4f + v.y * 0.6f};
+                    }
+                }
             }
         }
         if (input.mouse_pressed && !consumed) {
@@ -712,6 +765,7 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
     } else {
         pressed_ = dragging_ = focused_ = entt::null;
         scroll_drag_ = entt::null;
+        list_drag_ = false;
         hover_trigger_ = right_target_ = drag_source_ = entt::null;
         drag_active_ = false;
     }
@@ -1448,6 +1502,20 @@ void UiSystem::buildDraw(ecs::World& world, const std::vector<Laid>& laid, const
                     t.clipped = true;
                     t.clip = list;
                     overlay.push_back(t);
+                }
+                // Hay mas opciones que las visibles: barra a la derecha (en el movil
+                // no hay rueda y sin ella no se sabe que la lista baja).
+                if (count > visible) {
+                    const float frac = static_cast<float>(visible) / static_cast<float>(count);
+                    const float max_scroll = static_cast<float>(count - visible);
+                    const float bar_h = std::max(list.h * frac, 12.0f * s);
+                    const float pos = std::clamp(d->list_scroll / std::max(max_scroll, 1e-3f), 0.0f, 1.0f);
+                    UiDrawCommand bar;
+                    bar.rect = UiRect{list.x + list.w - 5.0f * s, list.y + (list.h - bar_h) * pos, 3.0f * s, bar_h};
+                    bar.color = rgba(d->text_color, 0.45f);
+                    bar.radius = 1.5f * s;
+                    bar.entity = l.entity;
+                    overlay.push_back(bar);
                 }
             }
         }

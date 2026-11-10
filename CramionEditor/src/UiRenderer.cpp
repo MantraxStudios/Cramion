@@ -69,6 +69,8 @@ void shear(ImDrawList* draw, int first, float baseline, float amount) {
 }
 
 void drawPiece(ImDrawList* draw, const Piece& p, ImVec2 pos, float outline, ImU32 outline_color, bool shadow) {
+    // Origen en pixel entero: las fuentes pixel art no se emborronan entre dos pixeles.
+    pos = ImVec2(std::floor(pos.x + 0.5f), std::floor(pos.y + 0.5f));
     const char* begin = p.text.c_str();
     const char* end = begin + p.text.size();
     const float baseline = pos.y + p.size * 0.8f;
@@ -80,9 +82,21 @@ void drawPiece(ImDrawList* draw, const Piece& p, ImVec2 pos, float outline, ImU3
     };
     // La sombra se desvanece con el texto (antes quedaba opaca con alpha 0).
     const ImU32 shadow_alpha = ((p.color >> IM_COL32_A_SHIFT) & 0xFFu) * 170u / 255u;
-    if (shadow) emit(ImVec2(pos.x + p.size * 0.06f, pos.y + p.size * 0.06f), IM_COL32(0, 0, 0, shadow_alpha));
-    if (outline > 0.0f) {
-        const int steps = outline > 2.5f ? 16 : 8;
+    // Sombra y contorno finos con desplazamientos de pixel entero (un contorno de 1-2 px en circulo caia
+    // en medios pixeles en las diagonales y emborronaba las fuentes pixel art).
+    if (shadow) {
+        const float d = std::max(1.0f, std::round(p.size * 0.06f));
+        emit(ImVec2(pos.x + d, pos.y + d), IM_COL32(0, 0, 0, shadow_alpha));
+    }
+    if (outline > 0.0f && outline <= 2.5f) {
+        const float o = std::max(1.0f, std::round(outline));
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dx != 0 || dy != 0) emit(ImVec2(pos.x + dx * o, pos.y + dy * o), outline_color);
+            }
+        }
+    } else if (outline > 0.0f) {
+        const int steps = 16;
         for (int k = 0; k < steps; ++k) {
             const float a = static_cast<float>(k) / static_cast<float>(steps) * 6.2831853f;
             emit(ImVec2(pos.x + std::cos(a) * outline, pos.y + std::sin(a) * outline), outline_color);
@@ -306,8 +320,11 @@ void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCom
                     if (c.h_align == 2) x += c.rect.w - text_size.x;
                     if (c.v_align == 1) y += (c.rect.h - text_size.y) * 0.5f;
                     if (c.v_align == 2) y += c.rect.h - text_size.y;
+                    x = std::floor(x + 0.5f);
+                    y = std::floor(y + 0.5f);
                     if (c.shadow) {
-                        draw->AddText(regular, size, ImVec2(x + size * 0.06f, y + size * 0.06f), IM_COL32(0, 0, 0, static_cast<int>(170.0f * std::clamp(c.color.w, 0.0f, 1.0f))),
+                        const float d = std::max(1.0f, std::round(size * 0.06f));
+                        draw->AddText(regular, size, ImVec2(x + d, y + d), IM_COL32(0, 0, 0, static_cast<int>(170.0f * std::clamp(c.color.w, 0.0f, 1.0f))),
                                       c.text.c_str(), nullptr, wrap);
                     }
                     draw->AddText(regular, size, ImVec2(x, y), color, c.text.c_str(), nullptr, wrap);

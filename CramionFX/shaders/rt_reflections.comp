@@ -101,6 +101,7 @@ void main() {
     // El origen, separado a lo largo de la cara real (no del normal map).
     vec3 geometric = gbufferGeometricNormal(pixel, position, normal);
     vec3 origin = position + geometric * gbufferRayBias(distance_to_camera, 0.01);
+    origin = voxelLiftOrigin(origin, geometric);  // TESELADO: el relieve hundido no se tapa a si mismo
     // Que el rayo no salga hacia dentro de la cara real (normal map muy
     // inclinado): se tuerce hasta su plano.
     float below = dot(direction, geometric);

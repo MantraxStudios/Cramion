@@ -598,6 +598,23 @@ void NetworkSession::send(const std::string& name, const NetValue& value, std::u
     }
 }
 
+void NetworkSession::sendFast(const std::string& name, const NetValue& value, std::uint32_t target) {
+    if (!connected()) return;
+    std::string data;
+    put8(data, kUser);
+    put32(data, local_id_);
+    put32(data, target);
+    putStr(data, name);
+    encodeValue(data, value);
+    if (role_ == NetRole::Client) {
+        if (target != local_id_) sendRaw(kServerId, data, false);
+    } else if (target == kEveryone) {
+        broadcastRaw(data, false);
+    } else if (target != kServerId) {
+        sendRaw(target, data, false);
+    }
+}
+
 std::uint32_t NetworkSession::spawn(const std::string& prefab, const NetPosition& position, const core::Quat& rotation,
                                     std::uint32_t owner) {
     if (role_ != NetRole::Server) return 0;

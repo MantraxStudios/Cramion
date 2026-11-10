@@ -15,6 +15,7 @@
 #include <CramionCore/spline/Spline.h>
 #include <CramionCore/cvar/CVar.h>
 #include <CramionCore/profiling/Profiler.h>
+#include <CramionCore/scripting/NativeApi.h>
 #include "EditorApp.h"
 
 #include "BlenderUi.h"
@@ -256,6 +257,9 @@ void EditorApp::enterPlay() {
         scripts_.setSceneName(std::string(stem.begin(), stem.end()));
     }
     platformEnterPlay();  // Steam (si el proyecto lo usa) antes de Awake
+    // Game.isEditor(): los scripts saben que es el Play del editor (el
+    // reproductor y el servidor no lo ponen: herramientas de depuracion fuera).
+    scripts_.nativeApi().set("Game.editor", scripting::api::Value(true));
     scripts_.start(world_);
     startCppScripts();  // los de C++, en su proceso aparte
     // VR: el casco marca el ritmo (xrWaitFrame); la ventana sin vsync
@@ -301,6 +305,7 @@ void EditorApp::exitPlay() {
     // Prefs...) llaman a la API, que falla si scripts_ ya no esta en marcha.
     stopCppScripts();
     scripts_.stop();
+    voxel::setTexturePack("");  // PAQUETES-TEXTURAS: el paquete elegido en Play no se queda en el editor
     scripts_.unmountDataPacks();  // lo montado en Play (DataPack.load) sale del proyecto
     scripts_.shutdownNetwork();  // salir de Play cierra la partida en red
     video_.stop();  // ANTES que el audio: suelta sus voces de stream

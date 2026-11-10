@@ -46,7 +46,12 @@ bool traceBounce(vec3 origin, vec3 direction, float max_distance, out RtHit hit)
     }
     reorderThreadEXT(hit_object, key, 16u);
 
-    if (!hitObjectIsHitEXT(hit_object)) {
+    // Los bloques (no estan en la TLAS), hasta el impacto del hit object.
+    bool found = hitObjectIsHitEXT(hit_object);
+    if (voxelHitBefore(origin, direction, found ? hitObjectGetRayTMaxEXT(hit_object) : max_distance, kMaskAll, hit)) {
+        return true;
+    }
+    if (!found) {
         return false;
     }
     hitObjectGetAttributesEXT(hit_object, 0);

@@ -104,7 +104,8 @@ bool VulkanRenderer::skyMapWanted() const {
     const SceneDrawMode mode = drawModeNow();
     // Con la iluminacion ligera (lighting.frag, kLite) no se lee: se dibujaba
     // igual, y es el camino de las GPU de gama baja (sin rayos).
-    return sky_occlusion_enabled_ && !rayTracingActive() && !liteLighting() && mode != SceneDrawMode::Unlit &&
+    return sky_occlusion_enabled_ && !game_unlit_ && !rayTracingActive() && !liteLighting() &&  // UNLIT
+           mode != SceneDrawMode::Unlit &&
            mode != SceneDrawMode::Wireframe && *sky_map_scene_.handle() != nullptr;
 }
 
@@ -212,6 +213,11 @@ void VulkanRenderer::recordSkyMap(const vk::raii::CommandBuffer& cmd, std::uint3
         if (everything) {
             foliage_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], sky_map_view_projection_);
             recordActorShadows(cmd, frame_index, sky_map_view_projection_);
+            // Los bloques tambien tapan el cielo (techos de cuevas y casas):
+            // sin esto, lo que no es voxel dentro de una cueva recibia todo el
+            // cielo sin rayos. Los voxeles mismos no lo leen (lighting.frag:
+            // ya llevan su luz del cielo propagada por celdas).
+            voxel_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], sky_map_view_projection_);
         }
         compat::endRendering(cmd);
 

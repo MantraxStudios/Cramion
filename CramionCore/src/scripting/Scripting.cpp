@@ -712,10 +712,14 @@ void sendEvent(ScriptSystem::Impl& d, ecs::Entity target, const std::string& met
     if (!target.valid()) return;
     for (const auto& fn : d.hooks.event) fn(target, method, arg);
     // Y a los scripts de C++ del objeto (Script::onMessage).
-    if (d.message_listener) d.message_listener(target, method, d.native.toJson(arg).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+    if (d.message_listener && d.call_method_to_cpp) {
+        d.message_listener(target, method, d.native.toJson(arg).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+    }
 }
 
 }  // namespace
+
+void ScriptSystem::setCallMethodToCpp(bool enabled) { impl_->call_method_to_cpp = enabled; }
 
 void ScriptSystem::callMethod(ecs::Entity target, const std::string& method, ecs::Entity source) {
     sendEvent(*impl_, target, method, impl_->entityValue(source));

@@ -772,6 +772,52 @@ int main() {
         s.max = 1.0f;
     }
     scripts.stop();
+
+    // Movil: la lista abierta de un desplegable se arrastra con el dedo (antes
+    // solo con la rueda) y elige al soltar sin haberse movido.
+    std::printf("Tactil: lista del desplegable\n");
+    {
+        ecs::World w2;
+        ecs::Entity c2 = w2.create("Canvas");
+        c2.add<ui::Canvas>().reference = core::Vec2{960, 540};
+        ecs::Entity list_entity = w2.create("Lista", c2);
+        list_entity.add<ui::RectTransform>().size = core::Vec2{300, 40};
+        ui::Dropdown& dd2 = list_entity.add<ui::Dropdown>();
+        dd2.options = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"};
+        dd2.max_visible = 4;
+        ui::UiSystem sys2;
+        float t = 0.0f;
+        ui::UiInput touch;
+        sys2.update(w2, 960, 540, touch, true, t);
+        ui::UiRect box;
+        check(sys2.rectOf(list_entity.handle(), box) && near(box.h, 40.0f), "desplegable de 40 px de alto");
+        const auto tap = [&](float x, float y) {
+            touch = ui::UiInput{};
+            touch.mouse_x = x; touch.mouse_y = y; touch.mouse_pressed = true; touch.mouse_down = true;
+            sys2.update(w2, 960, 540, touch, true, t += 0.016f);
+            touch.mouse_pressed = false; touch.mouse_down = false; touch.mouse_released = true;
+            sys2.update(w2, 960, 540, touch, true, t += 0.016f);
+        };
+        tap(box.x + 10.0f, box.y + box.h * 0.5f);
+        check(dd2.open, "toque: abre la lista");
+        const float lx = box.x + 20.0f;
+        const float ly = box.y + box.h * 2.5f;  // la segunda opcion visible
+        touch = ui::UiInput{};
+        touch.mouse_x = lx; touch.mouse_y = ly; touch.mouse_pressed = true; touch.mouse_down = true;
+        sys2.update(w2, 960, 540, touch, true, t += 0.016f);
+        check(dd2.open && dd2.value == 0, "pulsar en la lista todavia no elige");
+        for (int k = 1; k <= 4; ++k) {
+            touch = ui::UiInput{};
+            touch.mouse_x = lx; touch.mouse_y = ly - static_cast<float>(k) * box.h * 0.5f; touch.mouse_down = true;
+            sys2.update(w2, 960, 540, touch, true, t += 0.016f);
+        }
+        touch = ui::UiInput{};
+        touch.mouse_x = lx; touch.mouse_y = ly - 2.0f * box.h; touch.mouse_released = true;
+        sys2.update(w2, 960, 540, touch, true, t += 0.016f);
+        check(dd2.open && near(dd2.list_scroll, 2.0f) && dd2.value == 0, "arrastrar la lista la baja dos opciones sin elegir");
+        tap(lx, box.y + box.h * 1.5f);
+        check(!dd2.open && dd2.value == 2, "toque sin mover: elige (la tercera, tras bajar dos)");
+    }
     std::printf("\n%d fallos\n", failures);
     return failures == 0 ? 0 : 1;
 }

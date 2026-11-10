@@ -229,6 +229,11 @@ BackgroundDecision decideBackground(WindowPresence presence, bool allowed, bool 
     if (presence == WindowPresence::Foreground || !allowed || prefs.mode == BackgroundMode::Unlimited) return d;
     d.throttle = true;
     d.frame_ms = 1000.0f / static_cast<float>(std::clamp(prefs.fps, 1, 60));
+    // VENTANA-OCULTA: minimizada no se dibuja ni con una IA por MCP (dibujar con la ventana oculta cerraba el editor).
+    if (presence == WindowPresence::Hidden) {
+        d.draw_scene = false;
+        return d;
+    }
     if (busy) return d;  // cargando o con una IA por MCP: la escena cada frame (limitado)
     if (presence == WindowPresence::Hidden) {
         d.draw_scene = false;  // no se ve

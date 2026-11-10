@@ -6,6 +6,17 @@
 #include "WinHttpCommon.h"
 #elif defined(__ANDROID__)
 #include <jni.h>
+#else
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <cstring>
+#include <tuple>
+#include <vector>
 #endif
 
 #include <algorithm>
@@ -333,19 +344,154 @@ HttpResponse httpRequest(const HttpRequest& request, const std::atomic<bool>* ca
     return response;
 }
 #elif !defined(__ANDROID__)
-// Escritorio sin WinHTTP (Linux, las pruebas): sin red. La peticion se valida
-// igual y vuelve con un error claro.
-HttpResponse httpRequest(const HttpRequest& request, const std::atomic<bool>*) {
+// Escritorio sin WinHTTP (Linux: el servidor dedicado, el editor y el player):
+// la peticion la hace el programa curl del sistema (sin shell: argumentos
+// directos). El cuerpo va por su entrada y la respuesta (-i: cabeceras +
+// cuerpo) sale por su salida. Sin curl, error claro.
+HttpResponse httpRequest(const HttpRequest& request, const std::atomic<bool>* cancel) {
     HttpResponse response;
+    const auto start = std::chrono::steady_clock::now();
+    const auto finish = [&](std::string error) {
+        response.error = std::move(error);
+        response.ok = false;
+        response.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        return response;
+    };
     UrlParts url;
     std::string error;
-    if (!crack(request.url, url, &error)) {
-        response.error = error;
-    } else if (!validMethod(request.method.empty() ? std::string("GET") : request.method)) {
-        response.error = "Metodo no valido: " + request.method;
-    } else {
-        response.error = "HTTP no disponible en esta plataforma";
+    if (!crack(request.url, url, &error)) return finish(error);
+    const std::string method = request.method.empty() ? std::string("GET") : request.method;
+    if (!validMethod(method)) return finish("Metodo no valido: " + method);
+    for (const auto& [name, value] : request.headers) {
+        if (!validHeader(name, value)) return finish("Cabecera no valida (sin saltos de linea ni caracteres raros): " + name);
     }
+
+    const int timeout_s = std::max(1, (request.timeout_ms + 999) / 1000);
+    std::vector<std::string> args{"curl", "-sS", "-i", "--http1.1", "--proto", "=http,https", "-X", method,
+                                  "--max-time", std::to_string(timeout_s), "--connect-timeout",
+                                  std::to_string(std::min(timeout_s, 10)), "-H", "Expect:"};
+    for (const auto& [name, value] : request.headers) {
+        args.push_back("-H");
+        args.push_back(name + ": " + value);
+    }
+    if (!request.body.empty() || method == "POST" || method == "PUT" || method == "PATCH") {
+        args.push_back("--data-binary");
+        args.push_back("@-");
+    }
+    args.push_back("--");
+    args.push_back(request.url);
+
+    int in_pipe[2], out_pipe[2], err_pipe[2];
+    if (pipe(in_pipe) != 0) return finish("HTTP: pipe fallo");
+    if (pipe(out_pipe) != 0) {
+        close(in_pipe[0]), close(in_pipe[1]);
+        return finish("HTTP: pipe fallo");
+    }
+    if (pipe(err_pipe) != 0) {
+        close(in_pipe[0]), close(in_pipe[1]), close(out_pipe[0]), close(out_pipe[1]);
+        return finish("HTTP: pipe fallo");
+    }
+    std::vector<char*> argv;
+    for (std::string& a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    const pid_t pid = fork();
+    if (pid < 0) {
+        for (int fd : {in_pipe[0], in_pipe[1], out_pipe[0], out_pipe[1], err_pipe[0], err_pipe[1]}) close(fd);
+        return finish("HTTP: no se pudo lanzar curl");
+    }
+    if (pid == 0) {
+        dup2(in_pipe[0], 0);
+        dup2(out_pipe[1], 1);
+        dup2(err_pipe[1], 2);
+        for (int fd : {in_pipe[0], in_pipe[1], out_pipe[0], out_pipe[1], err_pipe[0], err_pipe[1]}) close(fd);
+        execvp("curl", argv.data());
+        _exit(127);
+    }
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+    signal(SIGPIPE, SIG_IGN);
+    // Escribir el cuerpo y leer la salida a la vez (poll): sin bloqueos con cuerpos grandes.
+    std::size_t written = 0;
+    const std::string& body = request.body;
+    if (body.empty()) close(in_pipe[1]), in_pipe[1] = -1;
+    else fcntl(in_pipe[1], F_SETFL, fcntl(in_pipe[1], F_GETFL) | O_NONBLOCK);
+    std::string out, err_text;
+    bool out_open = true, err_open = true, too_big = false, cancelled = false;
+    char buf[65536];
+    while (out_open || err_open) {
+        if (cancel != nullptr && cancel->load()) {
+            cancelled = true;
+            kill(pid, SIGKILL);
+            break;
+        }
+        pollfd fds[3];
+        int n = 0, i_out = -1, i_err = -1, i_in = -1;
+        if (out_open) fds[i_out = n++] = {out_pipe[0], POLLIN, 0};
+        if (err_open) fds[i_err = n++] = {err_pipe[0], POLLIN, 0};
+        if (in_pipe[1] >= 0) fds[i_in = n++] = {in_pipe[1], POLLOUT, 0};
+        if (poll(fds, n, 200) < 0 && errno != EINTR) break;
+        if (i_in >= 0 && (fds[i_in].revents & (POLLOUT | POLLERR | POLLHUP))) {
+            const ssize_t w = write(in_pipe[1], body.data() + written, body.size() - written);
+            if (w > 0) written += static_cast<std::size_t>(w);
+            if (w < 0 && errno != EAGAIN) written = body.size();
+            if (written >= body.size()) close(in_pipe[1]), in_pipe[1] = -1;
+        }
+        for (const auto [idx, fd, dest, open] :
+             {std::tuple{i_out, out_pipe[0], &out, &out_open}, std::tuple{i_err, err_pipe[0], &err_text, &err_open}}) {
+            if (idx < 0 || !(fds[idx].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            const ssize_t r = read(fd, buf, sizeof(buf));
+            if (r > 0) dest->append(buf, static_cast<std::size_t>(r));
+            else if (r == 0 || errno != EINTR) *open = false;
+        }
+        if (out.size() > request.max_response_bytes + 65536) {
+            too_big = true;
+            kill(pid, SIGKILL);
+            break;
+        }
+    }
+    if (in_pipe[1] >= 0) close(in_pipe[1]);
+    close(out_pipe[0]);
+    close(err_pipe[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (cancelled) return finish("Cancelada");
+    if (too_big) return finish("Respuesta demasiado grande");
+    const int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (code == 127) return finish("HTTP: falta el programa curl (instala curl)");
+    if (code != 0) {
+        while (!err_text.empty() && (err_text.back() == '\n' || err_text.back() == '\r')) err_text.pop_back();
+        return finish("HTTP (curl " + std::to_string(code) + "): " + err_text);
+    }
+    // Cabeceras: puede haber varios bloques (100 Continue, redirecciones de proxy); vale el ultimo.
+    std::size_t pos = 0;
+    while (true) {
+        const std::size_t end = out.find("\r\n\r\n", pos);
+        if (end == std::string::npos || out.compare(pos, 5, "HTTP/") != 0) return finish("Respuesta HTTP no valida");
+        const std::string block = out.substr(pos, end - pos);
+        pos = end + 4;
+        const std::size_t sp = block.find(' ');
+        const int st = sp == std::string::npos ? 0 : std::atoi(block.c_str() + sp + 1);
+        if (st >= 100 && st < 200 && out.compare(pos, 5, "HTTP/") == 0) continue;
+        response.status = st;
+        response.headers.clear();
+        std::size_t line = block.find("\r\n");
+        while (line != std::string::npos) {
+            const std::size_t next = block.find("\r\n", line + 2);
+            const std::string h = block.substr(line + 2, (next == std::string::npos ? block.size() : next) - line - 2);
+            if (const std::size_t colon = h.find(':'); colon != std::string::npos) {
+                std::size_t v = colon + 1;
+                while (v < h.size() && h[v] == ' ') ++v;
+                response.headers.emplace_back(lower(h.substr(0, colon)), h.substr(v));
+            }
+            line = next;
+        }
+        break;
+    }
+    response.body = out.substr(pos);
+    if (response.body.size() > request.max_response_bytes) return finish("Respuesta demasiado grande");
+    response.ok = response.status >= 200 && response.status < 300;
+    response.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     return response;
 }
 #else

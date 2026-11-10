@@ -431,6 +431,114 @@ void registerDevices(Runtime& rt) {
             return api::Value(true);
         },
         {"\"Saltar\", true", "muestra u oculta un boton tactil por su texto", "bool"});
+    // Colocar en dp desde una esquina (el mismo tamano fisico en movil y
+    // tableta): ancla 0..1 (1,1 = abajo a la derecha), desplazamiento y radio
+    // en dp. Crea el boton si no existe (oculto hasta setTouchButton).
+    n.function(
+        "Input.placeTouchButton",
+        [&rt](api::Call& c) {
+            if (rt.touch_controls == nullptr) return api::Value(false);
+            dm::TouchButton b;
+            b.label = c.string(0);
+            b.action = c.string(1, "");
+            b.anchored = true;
+            b.anchor_x = static_cast<float>(std::clamp(c.number(2, 1.0), 0.0, 1.0));
+            b.anchor_y = static_cast<float>(std::clamp(c.number(3, 1.0), 0.0, 1.0));
+            b.offset_x = static_cast<float>(c.number(4, 0.0));
+            b.offset_y = static_cast<float>(c.number(5, 0.0));
+            b.radius_dp = static_cast<float>(std::clamp(c.number(6, 30.0), 8.0, 200.0));
+            b.style = static_cast<int>(c.integer(7, 0));
+            b.visible = false;
+            rt.touch_controls->placeButton(b);
+            return api::Value(true);
+        },
+        {"\"Atacar\", \"Mouse0\", 1, 1, -100, -90, 44, 1",
+         "coloca/crea un boton tactil: etiqueta, accion, ancla x/y (0..1), desplazamiento x/y y radio en dp, estilo (0 normal, "
+         "1 principal, 2 menu, 3 contextual)",
+         "bool"});
+    n.function(
+        "Input.setTouchButtonText",
+        [&rt](api::Call& c) {
+            if (rt.touch_controls == nullptr) return api::Value(false);
+            return api::Value(rt.touch_controls->setButtonText(c.string(0), c.string(1, "")));
+        },
+        {"\"Usar\", \"Montar\"", "texto que se dibuja en un boton tactil (vacio = su etiqueta)", "bool"});
+    n.function(
+        "Input.setTouchStick",
+        [&rt](api::Call& c) {
+            if (rt.touch_controls != nullptr) {
+                rt.touch_controls->setStick(static_cast<float>(c.number(0, 0.0)), c.string(1, ""));
+            }
+            return api::Value{};
+        },
+        {"60, \"LeftShift\"",
+         "joystick flotante de radio en dp (0 = el clasico); empujarlo mas alla del aro mantiene la tecla (correr)"});
+    n.function(
+        "Input.setTouchLookSensitivity",
+        [&rt](api::Call& c) {
+            if (rt.touch_controls != nullptr) rt.touch_controls->setLookSensitivity(static_cast<float>(c.number(0, 1.0)));
+            return api::Value{};
+        },
+        {"1.4", "sensibilidad de la camara al arrastrar"});
+    n.function(
+        "Input.setTouchButtonIcon",
+        [&rt](api::Call& c) {
+            if (rt.touch_controls == nullptr) return api::Value(false);
+            return api::Value(rt.touch_controls->setButtonIcon(c.string(0), c.string(1, "")));
+        },
+        {"\"Atacar\", \"UI/Pixel/Habilidades/slash.png\"", "imagen (de Assets) de un boton tactil; vacio = su texto", "bool"});
+    n.function(
+        "Input.setTouchButtonState",
+        [&rt](api::Call& c) {
+            if (rt.touch_controls == nullptr) return api::Value(false);
+            const double ring = std::clamp(c.number(4, 0.0), 0.0, 4294967295.0);
+            return api::Value(rt.touch_controls->setButtonState(c.string(0), static_cast<float>(c.number(1, 0.0)),
+                                                                c.string(2, ""), c.boolean(3, false),
+                                                                static_cast<std::uint32_t>(ring)));
+        },
+        {"\"1\", 0.5, \"3\", false, 0",
+         "estado de un boton tactil: recarga que falta (0..1), texto encima, apagado y color del aro (0xRRGGBBAA, 0 = normal)",
+         "bool"});
+    n.function(
+        "Input.setTouchOpacity",
+        [&rt](api::Call& c) {
+            if (rt.touch_controls != nullptr) rt.touch_controls->setOpacity(static_cast<float>(c.number(0, 0.6)));
+            return api::Value{};
+        },
+        {"0.6", "opacidad de los controles tactiles (0.05..1)"});
+    // Editor de la disposicion: el jugador arrastra los botones y los cambia
+    // de tamano (pellizco o - / +); Reset y Done se leen con
+    // takeTouchEditEvent. La disposicion va y viene como texto (Prefs).
+    n.function(
+        "Input.setTouchEditMode",
+        [&rt](api::Call& c) {
+            if (rt.touch_controls != nullptr) rt.touch_controls->setEditMode(c.boolean(0));
+            return api::Value{};
+        },
+        {"true", "abre o cierra el editor de los controles tactiles"});
+    n.function(
+        "Input.touchEditMode",
+        [&rt](api::Call&) { return api::Value(rt.touch_controls != nullptr && rt.touch_controls->editMode()); },
+        {"", "esta abierto el editor?", "bool"});
+    n.function(
+        "Input.takeTouchEditEvent",
+        [&rt](api::Call&) {
+            return api::Value(rt.touch_controls != nullptr ? rt.touch_controls->takeEditEvent() : std::string());
+        },
+        {"", "\"reset\", \"done\" o \"\" (cada aviso una vez)", "texto"});
+    n.function(
+        "Input.getTouchLayout",
+        [&rt](api::Call&) {
+            return api::Value(rt.touch_controls != nullptr ? rt.touch_controls->layoutString() : std::string());
+        },
+        {"", "la disposicion colocada en dp, en texto (para guardarla)", "texto"});
+    n.function(
+        "Input.setTouchLayout",
+        [&rt](api::Call& c) {
+            if (rt.touch_controls != nullptr) rt.touch_controls->setLayoutString(c.string(0, ""));
+            return api::Value{};
+        },
+        {"texto", "aplica una disposicion guardada con getTouchLayout"});
 }
 
 // --- Acciones y contextos (Enhanced Input; Archivo > Entrada del proyecto) ---

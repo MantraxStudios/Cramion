@@ -504,7 +504,11 @@ void main() {
     float detail_far = smoothstep(0.03, 0.25, footprint);
     float detail_strength = b.wind.w * (1.0 - detail_far) * (river ? 1.0 + rapids * 1.5 : 1.0);
     vec2 slope;
-    if (river) {
+    // Movil en Baja (water.ocean.w = 2): sin el detalle fino de las olas, ondas, causticas ni cielo de pantalla.
+    bool lowest = water.ocean.w > 1.5;
+    if (lowest) {
+        slope = vec2(0.0);
+    } else if (river) {
         // El rizado corre a lo largo (angulo 90 grados = +y del rio).
         float lost0 = 0.0;
         float lost1 = 0.0;
@@ -535,7 +539,7 @@ void main() {
     }
     lost_variance += detail_far * 0.004 * b.wind.w * b.wind.w;
     // Olas interactivas (salpicaduras y estelas).
-    vec2 ripple_slope = rippleSlope(v_world_position.xz);
+    vec2 ripple_slope = lowest ? vec2(0.0) : rippleSlope(v_world_position.xz);
     slope += ripple_slope;
     vec3 normal_up = normalize(vec3(wave_normal.x - slope.x, wave_normal.y, wave_normal.z - slope.y));
     if (voxel && !voxel_top) {
@@ -648,7 +652,7 @@ void main() {
     vec3 transmittance = exp(-extinction * thickness);
     vec3 in_scatter = b.deep.rgb * (sun_radiance * sun_height * shadow * 0.35 + ambient);
     // Causticas en el fondo poco profundo (la luz que las olas concentran).
-    if (refract_depth < 1.0 && b.look.z > 0.0) {
+    if (!lowest && refract_depth < 1.0 && b.look.z > 0.0) {
         // Perpendicular a la superficie, como vertical_depth (en cuesta, el
         // fondo de detras queda mas alto que el punto).
         float floor_depth = thickness * clamp(dot(view_direction, geometric), 0.0, 1.0);
@@ -687,7 +691,8 @@ void main() {
     vec3 view_position = (camera.view * vec4(v_world_position, 1.0)).xyz;
     vec3 view_ray = normalize(mat3(camera.view) * reflected);
     float toward_camera = smoothstep(0.2, 0.6, view_ray.z);
-    vec4 screen = toward_camera < 1.0 ? traceScreen(view_position + mat3(camera.view) * normal * 0.05, view_ray)
+    // water.ocean.w = 2: movil en Baja, sin reflejos por pantalla (solo cielo y entorno).
+    vec4 screen = toward_camera < 1.0 && water.ocean.w < 1.5 ? traceScreen(view_position + mat3(camera.view) * normal * 0.05, view_ray)
                                       : vec4(0.0);
     screen.a *= 1.0 - toward_camera;
     float lod = roughness * 6.0;
@@ -705,7 +710,7 @@ void main() {
     }
 #endif
     // El cielo de verdad (con nubes) si esa parte se ve en pantalla.
-    vec4 sky = screenSky(reflected);
+    vec4 sky = lowest ? vec4(0.0) : screenSky(reflected);
     fallback = mix(fallback, sky.rgb, sky.a * (1.0 - smoothstep(0.1, 0.4, roughness)));
     // Bajo tierra el cielo no se refleja (solo lo que se ve en pantalla).
     if (voxel) fallback *= max(voxel_sky_light, 0.03);

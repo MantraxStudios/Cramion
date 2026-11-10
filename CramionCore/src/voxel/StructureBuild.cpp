@@ -137,6 +137,26 @@ Palette paletteFor(const BuildContext& ctx, int variant) {
             p.beam = p.ridge = B::Timber;
             p.floor = variant % 2 == 0 ? B::DarkPlanks : B::OakPlanks;
             break;
+        case BuildStyle::Elven:
+            // Madera clara con vigas de abedul y cimiento de piedra musgosa.
+            p.found = B::MossyBricks;
+            p.wall_low = p.wall = B::ElderwoodPlanks;
+            p.beam = p.ridge = B::BirchLog;
+            p.floor = B::ElderwoodPlanks;
+            p.chimney = B::MossyBricks;
+            p.rug = B::RugBlue;
+            if (variant % 3 == 1) p.wall_low = B::BirchLog;
+            break;
+        case BuildStyle::Swamp:
+            // Tablones oscuros, troncos y paja (va sobre pilotes).
+            p.found = B::OakLog;
+            p.wall_low = B::DarkPlanks;
+            p.wall = variant % 2 == 0 ? B::DarkPlanks : B::OakPlanks;
+            p.beam = p.ridge = B::OakLog;
+            p.floor = B::DarkPlanks;
+            p.roof = B::Thatch;
+            p.chimney = B::Cobblestone;
+            break;
         default:
             if (variant % 3 == 1) p.wall_low = B::Cobblestone;
             if (variant % 5 == 4) p.wall_low = p.wall = B::OakPlanks;
@@ -153,6 +173,22 @@ struct Shell {
     int floors = 1;
     int top = 4;
     int door_x = 2;
+    int w = 1, d = 1;     // CIUDADES: largo interior de los muros (para saber donde hay ventana)
+    int lantern_x = -1;   // CIUDADES: columna del farol de la puerta (-1 = sin farol)
+    bool posts = true;
+    // CIUDADES: la celda de muro (x, z) tiene ventana (planta baja / pisos: filas base+2 y base+3).
+    bool windowAt(int x, int z) const {
+        const bool on_x = x == x0 || x == x1, on_z = z == z0 || z == z1;
+        if (on_x == on_z) return false;  // esquina o interior
+        const int along = on_z ? x - x0 : z - z0;
+        const int len = on_z ? w : d;
+        const bool post = posts && (along % 4 == 0 || along == len - 1);
+        return !post && along % 4 == 2 && along < len - 1;
+    }
+    // CIUDADES: una celda del interior pegada a una ventana (ahi no van muebles altos ni de 2 pisos).
+    bool besideWindow(int x, int z) const {
+        return windowAt(x - 1, z) || windowAt(x + 1, z) || windowAt(x, z - 1) || windowAt(x, z + 1);
+    }
     bool chimney = false;
     int chimney_x = 0, chimney_z = 0;
     bool stairs = false;
@@ -180,6 +216,9 @@ Shell houseShell(BuildContext& ctx, Reserve*& reserve_out, std::unique_ptr<Reser
     s.iz1 = s.z1 - 1;
     s.floors = floors;
     s.top = 4 * floors;
+    s.w = w;
+    s.d = d;
+    s.posts = p.posts;
     s.door_x = s.x0 + w / 2;
     if ((s.door_x - s.x0) % 4 == 0) ++s.door_x;
 
@@ -224,7 +263,15 @@ Shell houseShell(BuildContext& ctx, Reserve*& reserve_out, std::unique_ptr<Reser
     bp.set(s.door_x, 2, s.z0, B::Door);
     bp.set(s.door_x, 3, s.z0, p.beam);
     bp.set(s.door_x, 0, s.z0 - 1, p.found);
-    bp.set(s.door_x + 1, 3, s.z0 - 1, B::Lantern);
+    // CIUDADES: el farol junto a la puerta, del lado SIN ventana (antes siempre a la derecha: tapaba el cristal)
+    {
+        int lx = s.door_x + 1;
+        if (s.windowAt(lx, s.z0) || lx >= s.x1) lx = s.door_x - 1;
+        if (!s.windowAt(lx, s.z0) && lx > s.x0) {
+            bp.set(lx, 3, s.z0 - 1, B::Lantern);
+            s.lantern_x = lx;
+        }
+    }
     r.markColumn(s.door_x, 1, 3, s.iz0);
     r.markColumn(s.door_x - 1, 1, 2, s.iz0);
     r.markColumn(s.door_x + 1, 1, 2, s.iz0);
@@ -243,7 +290,7 @@ Shell houseShell(BuildContext& ctx, Reserve*& reserve_out, std::unique_ptr<Reser
         const BlockId cloth = ctx.rand(5) < 0.5f ? B::ClothBlue : (ctx.rand(6) < 0.5f ? B::ClothRed : B::ClothYellow);
         for (int x = s.door_x - 1; x <= s.door_x + 1; ++x) bp.set(x, 3, s.z0 - 1, cloth);
         bp.set(s.door_x + 1, 3, s.z0 - 1, cloth);
-        bp.set(s.door_x + 2, 2, s.z0 - 1, B::Lantern);
+        if (!s.windowAt(s.door_x + 2, s.z0) && s.door_x + 2 < s.x1) bp.set(s.door_x + 2, 2, s.z0 - 1, B::Lantern);  // CIUDADES
     } else {
         for (int k = 0;; ++k) {
             const int za = k, zb = D - 1 - k;
@@ -314,20 +361,31 @@ RoomSpots furnishLiving(BuildContext& ctx, const Shell& s, Reserve& r, int f, co
     for (int z = tz - 1; z <= tz + 1; ++z)
         for (int x = tx - 1; x <= tx + 1; ++x)
             if (bp.get(x, y - 1, z) == p.floor && x >= s.ix0 && x <= s.ix1 && z >= s.iz0 && z <= s.iz1) bp.set(x, y - 1, z, p.rug);
-    // Mesa con velas y sillas.
-    if (place(bp, r, tx, y, tz, B::Table)) bp.set(tx, y + 1, tz, B::Candles);
-    if (s.ix1 - s.ix0 >= 5) place(bp, r, tx + 1, y, tz, B::Table);
-    place(bp, r, tx - 1, y, tz, B::Chair);
-    place(bp, r, tx + (s.ix1 - s.ix0 >= 5 ? 2 : 1), y, tz, B::Chair);
-    place(bp, r, tx, y, tz + 1, B::Chair);
-    // Cocina en el muro de atras: horno, encimera, barril.
-    place(bp, r, s.ix0, y, s.iz1, B::Oven);
-    place(bp, r, s.ix0 + 1, y, s.iz1, B::Counter);
-    if (!place(bp, r, s.ix0 + 2, y, s.iz1, B::Barrel)) place(bp, r, s.ix0 + 1, y + 1, s.iz1, B::Barrel);
-    place(bp, r, s.ix0 + 1, y + 1, s.iz1, variant % 2 ? B::Shelf : B::Crate);
-    // Rincon de delante a la derecha: caja y estanteria.
+    // Mesa con velas y sillas (CIUDADES: las sillas solo si la mesa cabe, y no en las puertas / escaleras).
+    const bool mesa = place(bp, r, tx, y, tz, B::Table);
+    if (mesa) {
+        bp.set(tx, y + 1, tz, B::Candles);
+        if (s.ix1 - s.ix0 >= 5) place(bp, r, tx + 1, y, tz, B::Table);
+        place(bp, r, tx - 1, y, tz, B::Chair);
+        place(bp, r, tx + (s.ix1 - s.ix0 >= 5 ? 2 : 1), y, tz, B::Chair);
+        if (tz + 1 < s.iz1) place(bp, r, tx, y, tz + 1, B::Chair);
+    }
+    // Cocina en el muro de atras: horno, encimera y barril en las celdas que NO estan delante de una ventana.
+    {
+        static constexpr BlockId kCocina[3] = {B::Oven, B::Counter, B::Barrel};
+        int k = 0;
+        for (int x = s.ix0; x <= s.ix1 && k < 3; ++x) {
+            if (s.besideWindow(x, s.iz1)) continue;
+            if (place(bp, r, x, y, s.iz1, kCocina[k])) {
+                if (kCocina[k] == B::Counter) place(bp, r, x, y + 1, s.iz1, variant % 2 ? B::Shelf : B::Crate);
+                ++k;
+            }
+        }
+    }
+    // Rincon de delante a la derecha: caja y estanteria (la de 2 pisos, nunca contra una ventana).
     place(bp, r, s.ix1, y, s.iz0, variant % 2 ? B::Crate : B::Barrel);
-    if (place(bp, r, s.ix1, y, s.iz0 + 2, B::Bookshelf)) place(bp, r, s.ix1, y + 1, s.iz0 + 2, B::Bookshelf);
+    if (!s.besideWindow(s.ix1, s.iz0 + 2) && place(bp, r, s.ix1, y, s.iz0 + 2, B::Bookshelf))
+        place(bp, r, s.ix1, y + 1, s.iz0 + 2, B::Bookshelf);
     // Farol en el techo.
     place(bp, r, tx, y + 2, tz, B::Lantern);
     spots.npc_x = static_cast<float>(tx);
@@ -357,11 +415,20 @@ RoomSpots furnishBedroom(BuildContext& ctx, const Shell& s, Reserve& r, int f, c
             for (int x = cx - 1; x <= cx; ++x)
                 if (bp.get(x, y - 1, z) == p.floor) bp.set(x, y - 1, z, variant % 2 ? B::RugBlue : B::RugRed);
         // Armario (estanteria de 2) y baul en el fondo izquierdo.
-        if (place(bp, r, s.ix0 + 1, y, s.iz1, B::Bookshelf)) place(bp, r, s.ix0 + 1, y + 1, s.iz1, B::Bookshelf);
-        place(bp, r, s.ix0 + 2, y, s.iz1, B::Barrel);
-        // Escritorio junto a la ventana de delante.
-        if (place(bp, r, s.ix1, y, s.iz0, B::Table)) bp.set(s.ix1, y + 1, s.iz0, B::Candles);
-        place(bp, r, s.ix1 - 1, y, s.iz0, B::Chair);
+        // CIUDADES: el armario (2 de alto) en la primera celda del fondo que no tape una ventana
+        for (int x = s.ix0; x <= s.ix0 + 3 && x < s.ix1; ++x) {
+            if (s.besideWindow(x, s.iz1)) continue;
+            if (place(bp, r, x, y, s.iz1, B::Bookshelf)) {
+                place(bp, r, x, y + 1, s.iz1, B::Bookshelf);
+                place(bp, r, x + 1, y, s.iz1, B::Barrel);
+                break;
+            }
+        }
+        // Escritorio junto a la ventana de delante (la silla solo si hay escritorio).
+        if (place(bp, r, s.ix1, y, s.iz0, B::Table)) {
+            bp.set(s.ix1, y + 1, s.iz0, B::Candles);
+            place(bp, r, s.ix1 - 1, y, s.iz0, B::Chair);
+        }
         place(bp, r, cx, y + 2, cz, B::Lantern);
         spots.npc_x = static_cast<float>(cx);
         spots.npc_z = static_cast<float>(cz);
@@ -380,7 +447,7 @@ void house(BuildContext& ctx, int w, int d, int floors, const std::string& npc_t
     const Palette p = paletteFor(ctx, variant);
     Reserve* r = nullptr;
     std::unique_ptr<Reserve> holder;
-    const bool chimney = ctx.style != BuildStyle::Desert && ctx.style != BuildStyle::Beach ? true : ctx.rand(2) < 0.4f;
+    const bool chimney = ctx.style != BuildStyle::Desert && ctx.style != BuildStyle::Beach && ctx.style != BuildStyle::Swamp ? true : ctx.rand(2) < 0.4f;
     const Shell s = houseShell(ctx, r, holder, w, d, floors, p, chimney);
     const RoomSpots living = furnishLiving(ctx, s, *r, 0, p, variant);
     ctx.point("npc", living.npc_x, 1, living.npc_z, 2, npc_tag);
@@ -395,7 +462,7 @@ void house(BuildContext& ctx, int w, int d, int floors, const std::string& npc_t
         }
     }
     // Macetas de flores bajo las ventanas de la fachada (planta baja).
-    if (ctx.style == BuildStyle::Temperate || ctx.style == BuildStyle::City) {
+    if (ctx.style == BuildStyle::Temperate || ctx.style == BuildStyle::City || ctx.style == BuildStyle::Elven) {
         for (int x = s.x0 + 2; x < s.x1; x += 4) {
             if (x == s.door_x || ctx.rand(x, 9) < 0.35f) continue;
             ctx.bp.set(x, 1, s.z0 - 1, B::Bush);
@@ -421,7 +488,8 @@ void tavern(BuildContext& ctx) {
     for (int x = s.ix0 + 3; x <= s.ix1 - 1; ++x) place(bp, r, x, y, bar_z, B::Counter);
     for (int x = s.ix0 + 3; x <= s.ix1 - 1; x += 3) bp.set(x, y + 1, bar_z, B::Candles);
     for (int x = s.ix0 + 2; x <= s.ix1 - 1; ++x) {
-        if (place(bp, r, x, y, s.iz1, (x % 3 == 0) ? B::Shelf : B::Barrel)) place(bp, r, x, y + 1, s.iz1, x % 2 ? B::Barrel : B::Shelf);
+        if (place(bp, r, x, y, s.iz1, (x % 3 == 0) ? B::Shelf : B::Barrel) && !s.besideWindow(x, s.iz1))
+            place(bp, r, x, y + 1, s.iz1, x % 2 ? B::Barrel : B::Shelf);  // CIUDADES: no delante de las ventanas
     }
     const int keeper_x = (s.ix0 + 3 + s.ix1 - 1) / 2;
     ctx.point("npc", static_cast<float>(keeper_x), 1, static_cast<float>(bar_z + 1), 0, "tabernero");
@@ -464,8 +532,7 @@ void tavern(BuildContext& ctx) {
     for (int x = s.ix0 + 3; x <= s.ix1 - 2; x += 4) place(bp, r, x, y2 + 2, (s.iz0 + s.iz1) / 2, B::Lantern);
     for (int x = s.ix0 + 2; x <= s.ix1 - 1; ++x)
         if (bp.get(x, 4, (s.iz0 + s.iz1) / 2) == p.floor) bp.set(x, 4, (s.iz0 + s.iz1) / 2, B::RugBlue);
-    place(bp, r, s.ix1, y2, s.iz0, B::Table);
-    place(bp, r, s.ix1 - 1, y2, s.iz0, B::Chair);
+    if (place(bp, r, s.ix1, y2, s.iz0, B::Table)) place(bp, r, s.ix1 - 1, y2, s.iz0, B::Chair);  // CIUDADES
     ctx.point("npc", static_cast<float>(s.ix1 - 2), 5, static_cast<float>(s.iz0 + 1), 0, "aldeano");
 }
 
@@ -492,7 +559,8 @@ void smithy(BuildContext& ctx, bool city) {
     bp.set(ax, 1, az, B::Anvil);
     place(bp, r, s.ix1, 1, az, B::Barrel);
     for (int z = s.iz0 + 1; z <= s.iz1; ++z) {
-        if (place(bp, r, s.ix0, 1, z, z % 2 ? B::WeaponRack : B::Crate) && z % 2) place(bp, r, s.ix0, 2, z, B::WeaponRack);
+        if (place(bp, r, s.ix0, 1, z, z % 2 ? B::WeaponRack : B::Crate) && z % 2 && !s.besideWindow(s.ix0, z))
+            place(bp, r, s.ix0, 2, z, B::WeaponRack);  // CIUDADES: no tapa la ventana
     }
     for (int x = s.door_x + 1; x <= std::min(s.door_x + 3, s.ix1); ++x) place(bp, r, x, 1, s.iz0, B::Counter);
     place(bp, r, s.door_x - 2, 1, s.iz1, B::Chest);
@@ -507,6 +575,9 @@ void smithy(BuildContext& ctx, bool city) {
     ctx.point("npc", static_cast<float>(ax - 1), 1, static_cast<float>(az), 1, "herrero");
     ctx.point("mercader", static_cast<float>(s.door_x + 2), 1, static_cast<float>(s.iz0 + 1), 0, "armas");
     if (city) ctx.point("npc", static_cast<float>(s.ix0 + 1), 1, static_cast<float>(s.iz0 + 2), 3, "aprendiz");
+    // CIUDADES-GRANDES: la fragua no es un bloque de fuego: punto "chimenea" (boca) para el humo del juego.
+    const int ridge_y = p.flat ? s.top + 2 : s.top + (d + 2 - 1) / 2 + 2;
+    ctx.point("chimenea", static_cast<float>(s.chimney_x), static_cast<float>(ridge_y + 1), static_cast<float>(s.chimney_z), 0);
 }
 
 // --- Tienda -------------------------------------------------------------------------------
@@ -526,7 +597,7 @@ void shop(BuildContext& ctx, const std::string& kind) {
     bp.set(s.ix1, 2, cz, B::Candles);
     const BlockId display = kind == "pociones" ? B::Shelf : (kind == "armaduras" ? B::WeaponRack : B::Crate);
     for (int x = s.ix0 + 1; x <= s.ix1; ++x) {
-        if (place(bp, r, x, 1, s.iz1, x % 2 ? display : B::Barrel)) place(bp, r, x, 2, s.iz1, display);
+        if (place(bp, r, x, 1, s.iz1, x % 2 ? display : B::Barrel) && !s.besideWindow(x, s.iz1)) place(bp, r, x, 2, s.iz1, display);
     }
     place(bp, r, s.ix1, 1, s.iz1 - 1, B::Chest);
     place(bp, r, (s.ix0 + s.ix1) / 2 + 1, 3, s.iz0 + 1, B::Lantern);
@@ -534,7 +605,7 @@ void shop(BuildContext& ctx, const std::string& kind) {
     // Toldo y estandarte del color de la tienda.
     const BlockId cloth = kind == "pociones" ? B::ClothBlue : (kind == "armaduras" ? B::ClothRed : B::ClothYellow);
     for (int x = s.door_x - 2; x <= s.door_x + 2; ++x) {
-        if (x == s.door_x + 1) continue;  // el farol
+        if (x == s.lantern_x) continue;  // el farol (CIUDADES: a un lado u otro de la puerta)
         bp.set(x, 3, s.z0 - 1, (x % 2) ? cloth : B::ClothWhite);
     }
     // Arriba: dormitorio.
@@ -959,7 +1030,7 @@ void gatehouse(BuildContext& ctx, int width, int height, int wall_thickness) {
     ctx.point("npc", static_cast<float>(c + 2), 1, 0, 0, "guardia");
 }
 
-void castle(BuildContext& ctx, int w, int d) {
+void castle(BuildContext& ctx, int w, int d, bool vault) {
     const int g = 6;  // suelo del patio (el plano empieza 6 bajo tierra: mazmorra)
     const int keep_h = 11;
     ctx.bp = Blueprint(w, g + 34, d);
@@ -1285,6 +1356,27 @@ void castle(BuildContext& ctx, int w, int d) {
         for (int x = 2; x < w - 2; ++x)
             for (int y = g + 1; y <= g + 4; ++y)
                 if (bp.get(x, y, z) == kKeep) bp.set(x, y, z, B::Air);
+    // CIUDADES-GRANDES: camara del tesoro sellada bajo el patio oeste; se entra por un muro falso
+    // del calabozo (muro izquierdo del homenaje, al fondo).
+    if (vault) {
+        const int vz0 = std::min(kz0 + 8, kz1 - 7), vz1 = vz0 + 6;
+        for (int y = 0; y <= g - 1; ++y)
+            for (int z = vz0; z <= vz1; ++z)
+                for (int x = 1; x <= kx0; ++x) {
+                    const bool shell = x == 1 || x == kx0 || y == 0 || y == g - 1 || z == vz0 || z == vz1;
+                    bp.set(x, y, z, shell ? (ctx.rand(x, y, z + 77) < 0.3f ? B::MossyBricks : B::DungeonBricks) : B::Air);
+                }
+        bp.set(kx0, 1, vz0 + 3, B::SecretWall);
+        bp.set(kx0, 2, vz0 + 3, B::SecretWall);
+        for (int z = vz0 + 1; z < vz1; ++z) bp.set(2, 1, z, z % 2 ? B::GoldBlock : B::Barrel);
+        bp.set(4, 3, vz0 + 3, B::Lantern);
+        bp.set(3, 1, vz1 - 1, B::Chest);
+        ctx.point("cofre_botin", 3, 1, static_cast<float>(vz1 - 1), 0, "4:tesoro_real");
+        bp.set(3, 1, vz0 + 1, B::Chest);
+        ctx.point("cofre_botin", 3, 1, static_cast<float>(vz0 + 1), 2, "3:castillo");
+        bp.set(5, 1, vz0 + 1, B::LoreTablet);
+        ctx.point("nota", 5, 1, static_cast<float>(vz0 + 1), 2, "castillo");
+    }
     (void)r;
 }
 
@@ -1806,6 +1898,8 @@ void dungeonEntrance(BuildContext& ctx, int shaft_depth) {
     bp.set(c + 3, 1, c + 2, B::Cobweb);
     ctx.point("entrada", static_cast<float>(c - 1), 1, static_cast<float>(c - 3), 2, std::to_string(shaft_depth));
 }
+
+#include "StructureCityBuild.inc"  // CIUDADES-GRANDES
 
 }  // namespace build
 

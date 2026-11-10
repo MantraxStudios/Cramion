@@ -350,13 +350,14 @@ float FrameBudget::learnedSaving(Lever lever, std::uint8_t level) const {
     return level < kMaxLevels ? learned_[leverIndex(lever)][level] : -1.0f;
 }
 
-void FrameBudget::setRenderScaleFloor(float factor) {
+void FrameBudget::setRenderScaleFloor(float factor, bool hard) {
     render_scale_floor_ = std::isfinite(factor) ? std::clamp(factor, 0.0f, 1.0f) : 0.0f;
+    render_scale_floor_hard_ = hard;
 }
 
 float FrameBudget::scaleAt(std::uint8_t level) const {
     const float scale = kRenderScales[std::min<std::size_t>(level, kRenderScales.size() - 1)];
-    return floor_lifted_ ? scale : std::max(scale, render_scale_floor_);
+    return floor_lifted_ && !render_scale_floor_hard_ ? scale : std::max(scale, render_scale_floor_);
 }
 
 bool FrameBudget::renderScaleStepUseful(std::uint8_t level) const {

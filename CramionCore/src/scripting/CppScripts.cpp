@@ -87,6 +87,12 @@ cvar::CVar<bool> g_batch_calls("script.cpp.BatchCalls", true,
                                 "Enviar los eventos de cada fase (fixedUpdate, colisiones, start/update/lateUpdate) de todos "
                                 "los scripts en un solo mensaje al proceso (false: un mensaje por script y evento, para comparar)",
                                 cvar::Saved);
+// Perfil por clase: cada evento por separado y cronometrado; cada 5 s, al log
+// ("[Scripts] ...") las clases que mas tiempo se llevan y las fases (solo pruebas:
+// sin lotes cuesta algo mas).
+cvar::CVar<bool> g_profile("script.cpp.Profile", false,
+                           "Pruebas: medir el tiempo de cada clase de script (start/update/lateUpdate) y escribir las que mas "
+                           "tardan en el log cada 5 s");
 cvar::CVar<int> g_max_restarts("script.cpp.MaxRestarts", 20,
                                "Veces que se rearranca el proceso de scripts en una sesion de Play antes de rendirse",
                                cvar::Saved, 0, 1000);
@@ -197,7 +203,9 @@ std::wstring wide(const std::string& s) {
 }
 
 // Ejecuta un programa (oculto) y devuelve su salida y su codigo.
-int runProcess(const std::wstring& command, std::string& output, DWORD timeout_ms = 300000) {
+// 30 min: un proyecto grande (Horizonz, -O2 -g, ~45 archivos) tarda 7-9 min; con 5 min se mataba el compilador a
+// medias (codigo 1 sin errores en el registro) aunque el codigo estuviera bien.
+int runProcess(const std::wstring& command, std::string& output, DWORD timeout_ms = 1800000) {
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE read = nullptr, write = nullptr;
     if (!CreatePipe(&read, &write, &sa, 0)) return -1;
@@ -263,7 +271,7 @@ int highFd(int fd) {
 }
 
 // Ejecuta un programa (sin shell) y devuelve su salida (stdout + stderr) y su codigo.
-int runProcess(const std::vector<std::string>& args, std::string& output, int timeout_ms = 300000) {
+int runProcess(const std::vector<std::string>& args, std::string& output, int timeout_ms = 1800000) {
 #if defined(__ANDROID__) && __ANDROID_API__ < 28
     // En el movil no se compila nada (posix_spawn llega con Android 9): la
     // biblioteca de los scripts viene ya compilada en el APK.
@@ -1544,6 +1552,12 @@ struct CppScriptSystem::Impl {
     bool load_failed = false;
     std::uint64_t calls = 0;
     double frame_ms = 0.0;
+    // script.cpp.Profile: ms por clase y por fase desde el ultimo informe.
+    std::unordered_map<std::string, double> profile_ms;
+    double profile_phase_ms[4] = {0.0, 0.0, 0.0, 0.0};  // sync, fisica+callbacks, eventos, resto
+    int profile_frames = 0;
+    double profile_rpcs = 0.0;  // NOCHE-PERF: llamadas a la API que esperan respuesta (por frame en el informe)
+    std::chrono::steady_clock::time_point profile_since = std::chrono::steady_clock::now();
     float time = 0.0f;
     std::uint64_t frame = 0;
     float fixed_step = 1.0f / 60.0f;
@@ -1615,7 +1629,13 @@ struct CppScriptSystem::Impl {
         std::string message;
         // Juego exportado: la DLL en el mismo proceso; si no carga, el proceso aparte.
         if (in_process && g_in_process.get()) {
-            if (host.launchLocal(dll_path, g_next_serial++, message, classes, handler())) return true;
+            if (host.launchLocal(dll_path, g_next_serial++, message, classes, handler())) {
+                // NOCHE-PERF: que el log diga que modo se usa (A/B en el movil).
+                static bool told = false;
+                if (!told) std::cerr << "[C++] Scripts en el mismo proceso (" << utf8(dll_path.filename()) << ")" << std::endl;
+                told = true;
+                return true;
+            }
             std::cerr << "[C++] Scripts en el mismo proceso: " << message << " (se usa " << utf8(host_exe.filename()) << ")"
                       << std::endl;
             message.clear();
@@ -2423,6 +2443,15 @@ struct CppScriptSystem::Impl {
     void post(entt::entity h, const Instance& inst, proto::Event event, const proto::EventArgs& a) {
         if (!wants(inst, event)) return;  // la clase no lo sobrescribe: ni lote ni viaje
         ++posted;
+        if (g_profile.get()) {
+            auto it = instances.find(h);
+            if (it == instances.end() || !it->second.created) return;
+            const std::string cls = it->second.cls;
+            const auto t = std::chrono::steady_clock::now();
+            callEvent(h, it->second, event, a);
+            profile_ms[cls] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+            return;
+        }
         if (!g_batch_calls.get() || !batch_supported) {
             auto it = instances.find(h);
             if (it != instances.end() && it->second.created) callEvent(h, it->second, event, a);
@@ -3127,7 +3156,19 @@ void CppScriptSystem::compileAsync() {
     if (impl_->compiling.exchange(true)) return;
     if (impl_->compile_thread.joinable()) impl_->compile_thread.join();
     impl_->compile_thread = std::thread([this] {
-        CppCompileResult r = compile();
+        CppCompileResult r;
+        // COMPILA-SEGURO: una excepcion dentro del hilo mataba el editor (c0000409); ahora sale como error.
+        try {
+            r = compile();
+        } catch (const std::exception& e) {
+            r = CppCompileResult{};
+            r.log = std::string("excepcion al compilar: ") + e.what();
+            std::cerr << "[C++] " << r.log << std::endl;
+        } catch (...) {
+            r = CppCompileResult{};
+            r.log = "excepcion desconocida al compilar";
+            std::cerr << "[C++] " << r.log << std::endl;
+        }
         std::lock_guard lock(impl_->result_mutex);
         impl_->pending_result = std::move(r);
         impl_->compiling = false;
@@ -3317,9 +3358,18 @@ void CppScriptSystem::update(ecs::World& world, float delta_seconds) {
     d.calls = 0;
     d.time += delta_seconds;
     ++d.frame;
+    const bool profiling = g_profile.get();
+    const auto since = [](std::chrono::steady_clock::time_point t) {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+    };
+    auto tp = std::chrono::steady_clock::now();
     if (d.sync(world)) {
+        if (profiling) d.profile_phase_ms[0] += since(tp);
+        tp = std::chrono::steady_clock::now();
         d.dispatchPhysics();
         d.dispatchCallbacks();
+        if (profiling) d.profile_phase_ms[1] += since(tp);
+        tp = std::chrono::steady_clock::now();
         // Variables de red que llegaron (onNetVar).
         auto net_vars = std::move(d.net_vars);
         d.net_vars.clear();
@@ -3368,12 +3418,38 @@ void CppScriptSystem::update(ecs::World& world, float delta_seconds) {
             }
         }
         d.runBatch();
+        if (profiling) d.profile_phase_ms[2] += since(tp);
     } else {
         d.events.clear();
         d.callbacks.clear();
     }
+    tp = std::chrono::steady_clock::now();
     d.flushDestroys(world);
     d.frame_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (profiling) {
+        d.profile_phase_ms[3] += since(tp);
+        d.profile_rpcs += static_cast<double>(d.host.rpcs);  // NOCHE-PERF
+        ++d.profile_frames;
+        if (std::chrono::steady_clock::now() - d.profile_since > std::chrono::seconds(5) && d.profile_frames > 0) {
+            const double frames = static_cast<double>(d.profile_frames);
+            std::vector<std::pair<std::string, double>> top(d.profile_ms.begin(), d.profile_ms.end());
+            std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+            std::cout << "[Scripts] ms por frame: sync " << d.profile_phase_ms[0] / frames << ", fisica+callbacks "
+                      << d.profile_phase_ms[1] / frames << ", eventos " << d.profile_phase_ms[2] / frames << ", resto "
+                      << d.profile_phase_ms[3] / frames
+                      // NOCHE-PERF: viajes al motor por frame y donde corren (proceso aparte = cada viaje
+                      // cuesta dos cambios de contexto; en un movil, decenas de microsegundos).
+                      << ", rpc/frame " << static_cast<long long>(d.profile_rpcs / frames)
+                      << (d.host.local ? " (mismo proceso)" : " (proceso aparte)") << " | clases:";
+            for (std::size_t i = 0; i < top.size() && i < 15; ++i) std::cout << " " << top[i].first << " " << top[i].second / frames;
+            std::cout << std::endl;
+            d.profile_ms.clear();
+            for (double& v : d.profile_phase_ms) v = 0.0;
+            d.profile_frames = 0;
+            d.profile_rpcs = 0.0;  // NOCHE-PERF
+            d.profile_since = std::chrono::steady_clock::now();
+        }
+    }
 }
 
 const std::vector<ScriptError>& CppScriptSystem::errors() const { return impl_->errors; }

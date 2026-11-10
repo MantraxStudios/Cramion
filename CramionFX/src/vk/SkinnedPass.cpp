@@ -341,6 +341,10 @@ void SkinnedPass::createGeometryPipeline(const VulkanDevice& device, const GBuff
     geometry_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module);
     geometry_opaque_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module, GeometryVariant::Fill,
                                                       nullptr, nullptr, /*alpha_cutout=*/false);
+    geometry_lite_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module, GeometryVariant::Fill,
+                                                    nullptr, nullptr, /*alpha_cutout=*/true, /*lite=*/true);
+    geometry_opaque_lite_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module, GeometryVariant::Fill,
+                                                           nullptr, nullptr, /*alpha_cutout=*/false, /*lite=*/true);
     if (tessellation_) {
         const vk::raii::ShaderModule control_module = shaders::loadModule(device, "skinned.tesc.spv");
         const vk::raii::ShaderModule evaluation_module = shaders::loadModule(device, "skinned.tese.spv");
@@ -447,7 +451,7 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
                                                       GeometryVariant variant,
                                                       const vk::raii::ShaderModule* tess_control,
                                                       const vk::raii::ShaderModule* tess_evaluation,
-                                                      bool alpha_cutout) const {
+                                                      bool alpha_cutout, bool lite) const {
     const bool lines = variant != GeometryVariant::Fill;
     const bool overlay = variant == GeometryVariant::WireOverlay;
     const bool tessellated = tess_control != nullptr && tess_evaluation != nullptr;
@@ -457,14 +461,16 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
         stages.push_back(stage(vk::ShaderStageFlagBits::eTessellationEvaluation, *tess_evaluation));
     }
     stages.push_back(stage(vk::ShaderStageFlagBits::eFragment, fragment_module));
-    // skinned.frag: constant_id 0 = kAlphaCutout (false: sin discard).
-    const VkBool32 cutout_value = alpha_cutout ? VK_TRUE : VK_FALSE;
-    const vk::SpecializationMapEntry cutout_entry{0, 0, sizeof(VkBool32)};
+    // skinned.frag: constant_id 0 = kAlphaCutout (false: sin discard) y 9 =
+    // kSurfaceLite (gbuffer_surface.glsl, movil en Baja).
+    const std::array<VkBool32, 2> spec_values = {alpha_cutout ? VK_TRUE : VK_FALSE, lite ? VK_TRUE : VK_FALSE};
+    const std::array<vk::SpecializationMapEntry, 2> spec_entries = {
+        vk::SpecializationMapEntry{0, 0, sizeof(VkBool32)}, vk::SpecializationMapEntry{9, sizeof(VkBool32), sizeof(VkBool32)}};
     vk::SpecializationInfo cutout_info{};
-    cutout_info.setMapEntries(cutout_entry);
-    cutout_info.dataSize = sizeof(cutout_value);
-    cutout_info.pData = &cutout_value;
-    if (!alpha_cutout) stages.back().pSpecializationInfo = &cutout_info;
+    cutout_info.setMapEntries(spec_entries);
+    cutout_info.dataSize = sizeof(spec_values);
+    cutout_info.pData = spec_values.data();
+    if (!alpha_cutout || lite) stages.back().pSpecializationInfo = &cutout_info;
     // Triangulos como parches de 3 puntos de control para la teselacion.
     vk::PipelineTessellationStateCreateInfo tessellation_state{};
     tessellation_state.patchControlPoints = 3;
@@ -963,6 +969,8 @@ void SkinnedPass::destroy() {
     // destructor la libera al salir de main con el dispositivo ya destruido
     // (lee la tabla de funciones liberada: 0xc0000005 al cerrar el juego).
     geometry_opaque_pipeline_ = nullptr;
+    geometry_lite_pipeline_ = nullptr;
+    geometry_opaque_lite_pipeline_ = nullptr;
     geometry_wire_pipeline_ = nullptr;
     wire_overlay_pipeline_ = nullptr;
     geometry_layout_ = nullptr;

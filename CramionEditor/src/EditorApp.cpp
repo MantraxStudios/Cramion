@@ -185,6 +185,9 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     scripts_.setAssetsChangedCallback([this] { refreshDatabase(); });
     scripts_.setPrefsFile(project_.libraryFolder() / "Prefs.txt");  // Prefs en Play
     scripts_.setSaveFolder(project_.libraryFolder() / "Saves");     // Save.save en Play (EditorGameplay.cpp)
+    // PAQUETES-TEXTURAS: la misma carpeta que el juego exportado (%LOCALAPPDATA%/Cramion/Saves/<proyecto>/TexturePacks).
+    voxel::setTexturePackRoots({localDataFolder("Saves") / std::filesystem::path(std::u8string(project_.name.begin(), project_.name.end())) / "TexturePacks",
+                                project_.assetsFolder() / "TexturePacks"});
     loadLocalization();
     scripts_.setPhysics(&physics_);
     setupCppScripts();
@@ -1717,6 +1720,8 @@ void EditorApp::syncWorld(float delta_seconds, bool secondary) {
     options.render_textures = !secondary;
     // La segunda vista no avanza animaciones ni agua (ya lo hace la principal).
     sync_->sync(world_, scene_, renderer_, secondary ? 0.0f : delta_seconds, options);
+    // Luces reales de antorchas, farolas... (despues de sync, que rehace la lista).
+    voxels_.appendBlockLights(scene_.camera().position(), scene_.lights().points);
     if (!secondary) voxels_.syncRenderer(renderer_);
     addCpuSample(kCpuSync, millisecondsSince(t));
 
@@ -2544,6 +2549,34 @@ void EditorApp::drawRenderSettings() {
     ImGui::SeparatorText("Sombras");
     toggle("Activar sombras", r.shadowsEnabled(), &gfx::VulkanRenderer::setShadowsEnabled);
     toggle("Ver cascadas", r.cascadeDebug(), &gfx::VulkanRenderer::setCascadeDebug);
+    {
+        // Alcance de las sombras del sol: en horizontal (shadow_distance) y en
+        // altura (shadow_height), 0 = automatico. Se aplica al soltar.
+        gfx::GraphicsSettings g = r.graphicsSettings();
+        bool changed = false;
+        float distance = g.shadow_distance;
+        ImGui::SetNextItemWidth(-150.0f);
+        ImGui::SliderFloat("Distancia de sombras (m)", &distance, 0.0f, 500.0f, distance <= 0.0f ? "Auto" : "%.0f m");
+        ImGui::SetItemTooltip("0 = automático según el PC (40..500 m).");
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            g.shadow_distance = distance < 40.0f ? (distance < 20.0f ? 0.0f : 40.0f) : distance;
+            changed = true;
+        }
+        float height = g.shadow_height;
+        ImGui::SetNextItemWidth(-150.0f);
+        ImGui::SliderFloat("Altura de sombras (m)", &height, 0.0f, 512.0f, height <= 0.0f ? "Auto" : "%.0f m");
+        ImGui::SetItemTooltip(
+            "Cuánto por encima/debajo se buscan objetos que tapan el sol: sube para islas flotantes y montañas "
+            "(0 = automático, 64..512 m).");
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            g.shadow_height = height < 64.0f ? (height < 32.0f ? 0.0f : 64.0f) : height;
+            changed = true;
+        }
+        if (changed) {
+            r.setGraphicsSettings(g);
+            saveGraphicsSettings();
+        }
+    }
     ImGui::SeparatorText("Iluminación global");
     if (r.rayTracingSupported()) {
         toggle("Trazado de rayos (RTX)", r.rayTracingEnabled(), &gfx::VulkanRenderer::setRayTracingEnabled);

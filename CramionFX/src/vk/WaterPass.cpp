@@ -626,7 +626,7 @@ void WaterPass::prepare(std::uint32_t frame) {
         data.cascade_slope = spectrum_.slope_variance;
     }
     data.ocean = core::Vec4{spectrum_.choppiness, spectrum_.significant_height, static_cast<float>(kOceanLevels),
-                            low_quality_ ? 1.0f : 0.0f};
+                            lowest_quality_ ? 2.0f : low_quality_ ? 1.0f : 0.0f};
     if (ripple_size_ > 0 && frame < ripple_buffers_.size()) {
         ripple_buffers_[frame].write(ripples_.data(), sizeof(float) * ripple_size_ * ripple_size_);
     }

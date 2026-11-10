@@ -16,6 +16,7 @@
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/navigation/Navigation.h"
 #include "CramionCore/physics/PhysicsComponents.h"
+#include "CramionCore/net/NetworkObject.h"
 #include "CramionCore/vfx/VisualEffect.h"
 #include "CramionCore/spline/Spline.h"
 #include "CramionCore/gameplay/Accessibility.h"
@@ -54,6 +55,42 @@ cvar::CVar<bool> g_async_models("render.streaming.AsyncModels", true,
                                 "Leer los modelos en segundo plano: lo nuevo aparece al terminar de leerse, sin "
                                 "congelar el frame (apagado: se esperan, como antes)",
                                 cvar::Saved);
+cvar::CVar<float> g_plant_distance("voxel.PlantDistance", 0.0f,
+                                   "Plantas de los bloques (hierba, flores) solo hasta esta distancia (m); 0 = todas",
+                                   cvar::Saved, 0.0f, 1000.0f);
+// TESELADO: relieve teselado de los bloques cercanos (VoxelPass::setTessellation). Sin tessellationShader o en el
+// perfil movil no hace nada (queda el parallax).
+cvar::CVar<bool> g_voxel_tess("voxel.tess.Enabled", true,
+                              "Relieve teselado en las caras de los bloques cercanos (PC; en el movil siempre apagado)",
+                              cvar::Saved);
+cvar::CVar<float> g_voxel_tess_distance("voxel.tess.Distance", 24.0f,
+                                        "Hasta donde llega el relieve teselado de los bloques (m); mas lejos, parallax",
+                                        cvar::Saved, 0.0f, 128.0f);
+cvar::CVar<float> g_voxel_tess_depth("voxel.tess.Depth", 0.1f,
+                                     "Profundidad del relieve teselado de los bloques (bloques, hacia dentro; max 0.15)",
+                                     cvar::Saved, 0.0f, 0.15f);
+cvar::CVar<float> g_voxel_tess_density("voxel.tess.Density", 16.0f,
+                                       "Trozos por bloque del relieve teselado de cerca (1-64)", cvar::Saved, 1.0f,
+                                       64.0f);
+// UNLIT: modo de dibujo del juego para gama ultra baja (VulkanRenderer::setGameUnlit). Lo cambia
+// tambien Graphics.set("draw_mode", "unlit" | "lit") y se guarda en el Graphics.ini del jugador
+// (Graphics.save()); no en CVars.json: un Play del editor no debe dejar el juego exportado en Unlit.
+cvar::CVar<bool> g_game_unlit("render.Unlit", false,
+                              "Modo Unlit del juego (equipos de gama ultra baja): color de los materiales con una "
+                              "luz minima, sin sombras, SSAO, GI, reflejos, nubes volumetricas, bloom ni TAA");
+cvar::CVar<int> g_debug_skip("render.debug.Skip", 0,
+                             "Pruebas: lo que no se dibuja (mascara: 1 voxeles, 2 actores animados, 4 iluminacion, "
+                             "8 escenario, 16 terreno, 32 vegetacion, 64 agua/vidrio, 128 particulas/VFX)");
+// NOCHE-PERF: corte por distancia de los actores en el movil (solo con el perfil movil).
+cvar::CVar<float> g_mobile_actor_distance("render.mobile.ActorDistance", 0.0f,
+                                          "Movil: los actores (personajes, piezas, objetos) mas alla de esta distancia "
+                                          "(m, desde su borde) no se dibujan; 0 = todos. Sin efecto en PC",
+                                          cvar::None, 0.0f, 10000.0f);
+// MALLAS-DETALLE: detalle de los actores (VulkanRenderer::setActorDetail): 0 Bajo, 1 Medio, 2 Alto.
+cvar::CVar<int> g_actor_detail("render.actors.Detail", 2,
+                               "Detalle de los actores: 0 Bajo (las piezas de menos de 3 px no se dibujan ni dan sombra: "
+                               "ojos y adornos de los personajes lejanos), 1 Medio (menos de 1.5 px), 2 Alto (como siempre)",
+                               cvar::None, 0, 2);
 cvar::CVar<float> g_upload_ms("render.streaming.UploadMs", 4.0f,
                               "Milisegundos por frame para subir modelos nuevos a la GPU (al menos uno por frame)",
                               cvar::Saved, 0.5f, 100.0f);
@@ -3725,10 +3762,12 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
     terrain_gpu_stats_.preparing = preparing;
     // Lo que aparta la hierba: los cuerpos fisicos que se mueven y los
     // personajes cerca de la camara (hasta 32, los mas cercanos).
-    // Sin terreno no hay hierba que apartar: ni se buscan. Y solo se miran los
-    // cuerpos fisicos (antes, toda la escena subiendo por la jerarquia de cada
-    // objeto para saber si estaba activo).
-    if (alive.empty()) {
+    // Tambien apartan las plantas de los mundos de bloques (VoxelPass). Sin
+    // terreno ni bloques no hay nada que apartar: ni se buscan. Y solo se miran
+    // los cuerpos fisicos, los personajes y los objetos de red (antes, toda la
+    // escena subiendo por la jerarquia de cada objeto para saber si estaba
+    // activo).
+    if (alive.empty() && !renderer.hasVoxelSections()) {
         if (grass_interactors_sent_) renderer.setGrassInteractors({});
         grass_interactors_sent_ = false;
     } else {
@@ -3752,6 +3791,26 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
             const core::Vec3 p = e.worldPosition();
             if (core::length(p - eye) > 120.0f) continue;
             spheres.push_back(core::Vec4{p.x, p.y, p.z, radius});
+        }
+        // Personajes con CharacterController (la entidad esta en los pies) y
+        // objetos de red que siguen la posicion de su dueno: en un juego
+        // online, los demas jugadores (sin fisica propia en este cliente).
+        for (const entt::entity handle : world.registry().view<physics::CharacterController>()) {
+            const Entity e = world.wrap(handle);
+            if (e.has<physics::Rigidbody>() || !e.activeInHierarchy()) continue;  // ya esta arriba
+            const physics::CharacterController& cc = world.registry().get<physics::CharacterController>(handle);
+            const core::Vec3 p = e.worldPosition();
+            if (core::length(p - eye) > 120.0f) continue;
+            spheres.push_back(core::Vec4{p.x, p.y, p.z, std::clamp(cc.radius * 1.2f, 0.15f, 5.0f)});
+        }
+        for (const entt::entity handle : world.registry().view<net::NetworkObject>()) {
+            const net::NetworkObject& object = world.registry().get<net::NetworkObject>(handle);
+            if (!object.sync_transform || object.net_id == 0) continue;
+            const Entity e = world.wrap(handle);
+            if (e.has<physics::Rigidbody>() || e.has<physics::CharacterController>() || !e.activeInHierarchy()) continue;
+            const core::Vec3 p = e.worldPosition();
+            if (core::length(p - eye) > 120.0f) continue;
+            spheres.push_back(core::Vec4{p.x, p.y, p.z, 0.45f});
         }
         // Efectos con "Apartar hierba" (VisualEffect.grass_radius): sin fisica,
         // circulos de suelo e impactos a ras de suelo sin briznas encima.
@@ -3803,6 +3862,13 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
     releaseIdleModelMemory(scene, renderer);
     renderer.setTextureStreaming(g_texture_mips.get(), g_texture_bias.get());
     renderer.setDynamicProbes(g_dynamic_probes.get(), static_cast<std::uint32_t>(g_probes_per_frame.get()));
+    renderer.setDebugSkip(static_cast<std::uint32_t>(std::max(g_debug_skip.get(), 0)));
+    renderer.setGameUnlit(g_game_unlit.get());  // UNLIT
+    renderer.setMobileActorDistance(g_mobile_actor_distance.get());  // NOCHE-PERF
+    renderer.setActorDetail(g_actor_detail.get());  // MALLAS-DETALLE
+    renderer.setVoxelPlantDistance(g_plant_distance.get());
+    renderer.setVoxelTessellation(g_voxel_tess.get(), g_voxel_tess_distance.get(), g_voxel_tess_depth.get(),
+                                  g_voxel_tess_density.get());
     {
         gfx::VulkanRenderer::ReflectionProbeLimits probe_limits;
         probe_limits.face_interval = static_cast<std::uint32_t>(std::max(g_probe_face_interval.get(), 0));

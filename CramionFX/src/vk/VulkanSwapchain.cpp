@@ -35,11 +35,10 @@ bool VulkanSwapchain::recreate(std::uint32_t width, std::uint32_t height) {
     }
 
     device_->waitIdle();
-    create(width, height);
-    return true;
+    return create(width, height);
 }
 
-void VulkanSwapchain::create(std::uint32_t width, std::uint32_t height) {
+bool VulkanSwapchain::create(std::uint32_t width, std::uint32_t height) {
     const auto& physical = device_->physicalDevice();
     const vk::SurfaceKHR surface = *surface_->handle();
 
@@ -77,6 +76,20 @@ void VulkanSwapchain::create(std::uint32_t width, std::uint32_t height) {
         }
     }
 #endif
+    // Windows da currentExtent 0x0 con la ventana minimizada (p. ej. el juego
+    // arranca minimizado o lo minimizan mientras carga): no hay swapchain
+    // posible. Se deja invalida y se rehace cuando la ventana tenga area.
+    image_format_ = surface_format.format;
+    if (extent.width == 0 || extent.height == 0) {
+        image_views_.clear();
+        images_.clear();
+        swapchain_ = nullptr;
+        extent_ = vk::Extent2D{0, 0};
+        if (!zero_area_logged_) std::cout << "[Vulkan] Ventana sin area (minimizada): swapchain aplazada.\n";
+        zero_area_logged_ = true;
+        return false;
+    }
+    zero_area_logged_ = false;
     // Opaco si se puede (Android suele dar solo "heredado").
     vk::CompositeAlphaFlagBitsKHR alpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
     for (const vk::CompositeAlphaFlagBitsKHR candidate :
@@ -137,6 +150,7 @@ void VulkanSwapchain::create(std::uint32_t width, std::uint32_t height) {
     std::cout << "[Vulkan] Swapchain creada: " << extent_.width << "x" << extent_.height << ", "
               << images_.size() << " imagenes, formato " << vk::to_string(image_format_) << ", modo "
               << vk::to_string(present_mode) << "\n";
+    return true;
 }
 
 void VulkanSwapchain::createImageViews() {
@@ -202,7 +216,7 @@ vk::Extent2D VulkanSwapchain::chooseExtent(const vk::SurfaceCapabilitiesKHR& cap
                                            std::uint32_t width, std::uint32_t height) {
     // Si el driver fija el tamano, se respeta tal cual.
     if (capabilities.currentExtent.width != UINT32_MAX) {
-        return capabilities.currentExtent;
+        return capabilities.currentExtent;  // 0x0 = minimizada (create lo trata)
     }
 
     vk::Extent2D extent{width, height};

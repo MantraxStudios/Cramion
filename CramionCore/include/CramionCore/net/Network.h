@@ -189,6 +189,10 @@ public:
     // Mensaje a `target` (kEveryone = todos menos yo, kServerId = el servidor,
     // u otro id). Un cliente lo manda al servidor y este lo reenvia.
     void send(const std::string& name, const NetValue& value, std::uint32_t target = kEveryone);
+    // ENVIO-RAPIDO: igual pero por el canal rapido (no fiable): estados periodicos (criaturas, aldeanos) que el
+    // siguiente envio reemplaza; si se pierde uno no atasca a los fiables. Mantenerlo por debajo de ~1200 bytes
+    // (mas grande, ENet lo trocea como fiable).
+    void sendFast(const std::string& name, const NetValue& value, std::uint32_t target = kEveryone);
 
     // --- Objetos (el spawn y el despawn, solo el servidor) ---
     // Devuelve el id de red (0 si no es servidor). No genera evento local: el

@@ -400,6 +400,12 @@ public:
     // imagen que recibe el raton, un ScrollView o una lista abierta).
     bool pointerOverUi() const { return capturing_mouse_; }
     bool typing() const { return focused_ != entt::null; }
+    // El campo de texto con el foco (entt::null si no hay).
+    entt::entity focusedField() const { return focused_; }
+    // Sube los Canvas de pantalla `pixels` (moviles: que el teclado en
+    // pantalla no tape el campo con el foco). Dibujo y toques van juntos.
+    void setViewOffsetY(float pixels) { view_offset_y_ = pixels; }
+    float viewOffsetY() const { return view_offset_y_; }
     // Da el foco a un campo de texto (con el cursor al final) o se lo quita
     // (entt::null). false si no es un UIInputField que responde.
     bool focus(ecs::World& world, entt::entity field);
@@ -465,10 +471,19 @@ private:
     UiRect dropdownItemRect(const UiRect& box, const Dropdown& d, int i) const;
     float view_width_ = 0.0f;
     float view_height_ = 0.0f;
+    float view_offset_y_ = 0.0f;
     float last_time_ = -1.0f;
     entt::entity open_dropdown_ = entt::null;
     entt::entity scroll_drag_ = entt::null;
     core::Vec2 scroll_drag_last_{};
+    core::Vec2 scroll_drag_start_{};
+    bool scroll_drag_moved_ = false;  // paso el umbral: ya desplaza y no es un clic
+    // Lista abierta de un Dropdown pulsada: se arrastra con el dedo y elige al
+    // soltar sin haberse movido (al pulsar ya no elige: en el movil no se podia bajar).
+    bool list_drag_ = false;
+    bool list_drag_moved_ = false;
+    float list_drag_start_y_ = 0.0f;
+    float list_drag_last_y_ = 0.0f;
     void buildDraw(ecs::World& world, const std::vector<Laid>& laid, const DrawState& state, const UiInput& input,
                    bool interactive, float time, std::vector<UiDrawCommand>& out);
     ecs::Entity targetOf(ecs::World& world, ecs::Entity source, const Uuid& target) const;

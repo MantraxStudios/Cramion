@@ -20,6 +20,7 @@
 
 #include "VoxelInternal.h"
 
+#include <array>
 #include <cstdint>
 #include <list>
 #include <memory>
@@ -34,7 +35,7 @@ namespace cramion::voxel {
 // Lado de la region de planificacion (m). Las estructuras caben dentro.
 inline constexpr int kRegionSize = 384;
 // Celda de un plano que no cambia lo que hay (el terreno sigue).
-inline constexpr BlockId kKeep = 255;
+inline constexpr BlockId kKeep = 0xFFFF;  // IDS16: antes 255 (el ultimo id de 8 bits); ahora fuera de block::Count
 
 // Plano de una pieza en coordenadas locales (x ancho, y alto, z fondo; la
 // fachada mira a -z). Las celdas kKeep no tocan el mundo.
@@ -99,6 +100,16 @@ struct Road {
     float alt_chance = 0.2f;
 };
 
+// CIUDADES-GRANDES: tramo de muralla en cualquier angulo (las murallas redondas de las
+// metropolis y castillos). Se estampa por columna sobre el suelo de esa columna: macizo de
+// 2 * half de grueso y `height` de alto, adarve arriba y almenas por fuera (el lado
+// izquierdo de (x0, z0) -> (x1, z1) es el de fuera).
+struct WallLine {
+    float x0 = 0, z0 = 0, x1 = 0, z1 = 0;
+    int height = 10;
+    float half = 2.0f;
+};
+
 struct Structure {
     StructureInfo info;
     int min_x = 0, min_y = 0, min_z = 0, max_x = 0, max_y = 0, max_z = 0;
@@ -106,24 +117,61 @@ struct Structure {
     std::vector<Terraform> terraforms;
     std::vector<Road> roads;
     std::vector<Piece> pieces;
+    std::vector<WallLine> walls;  // CIUDADES-GRANDES: murallas en angulo (metropolis, castillos)
+    // CIUDADES-GRANDES: tapar las cuevas bajo lo aplanado (hasta 8 por debajo del suelo nuevo):
+    // si no, los suelos de las casas quedan colgando sobre una cueva o un barranco.
+    bool seal = false;
+    // CIUDADES-GRANDES: caja de las calles (para no mirar todas en blocksTrees) y entradas
+    // para los caminos entre regiones (las metropolis cruzan regiones).
+    float road_x0 = 0, road_z0 = 0, road_x1 = 0, road_z1 = 0;
+    std::vector<std::array<float, 2>> hubs;
     // Salas de la mazmorra (cajas en el mundo) para structureAt.
     struct Room {
         int x0, y0, z0, x1, y1, z1;
     };
     std::vector<Room> rooms;
+    // LADERAS: suelo propio por columna (aldeas en ladera, en vez de aplanar a una
+    // sola altura). Ventana de ground_n x ground_n desde (ground_x0, ground_z0):
+    // altura del suelo y que hay (GroundKind). Vacio = el aplanado de siempre.
+    enum GroundKind : std::uint8_t { GTerrain = 0, GRoad = 1, GStep = 2, GPad = 3, GPlaza = 4 };
+    int ground_x0 = 0, ground_z0 = 0, ground_n = 0;
+    std::vector<std::int16_t> ground;
+    std::vector<std::uint8_t> ground_kind;
+    bool groundAt(int x, int z, int& h, std::uint8_t* kind = nullptr) const {
+        const int i = x - ground_x0, j = z - ground_z0;
+        if (ground.empty() || i < 0 || j < 0 || i >= ground_n || j >= ground_n) return false;
+        const std::size_t k = static_cast<std::size_t>(i + j * ground_n);
+        h = ground[k];
+        if (kind) *kind = ground_kind[k];
+        return true;
+    }
 };
 
 struct RegionPlan {
     int rx = 0, rz = 0;
     std::vector<Structure> structures;
+    // CIUDADES-GRANDES: metropolis (de su celda de 3 x 3 regiones) que tocan esta region. La
+    // misma para todas las regiones que toca (no se copia).
+    std::vector<std::shared_ptr<const Structure>> shared;
+    template <typename Fn>
+    void forEach(Fn&& fn) const {
+        for (const Structure& s : structures) fn(s);
+        for (const auto& s : shared) fn(*s);
+    }
+    // Caminos entre asentamientos (de borde a borde de la region): se pintan
+    // fuera de las zonas aplanadas de las estructuras y no cuentan en sus cajas.
+    std::vector<Road> roads;
 };
 
 class Structures {
 public:
     explicit Structures(const Generator& generator, std::string dimension = "superficie");
 
-    // Estampa en el chunk recien generado lo que le toca.
-    void stamp(ChunkData& chunk) const;
+    // Estampa en el chunk recien generado lo que le toca. `heights` (opcional):
+    // altura del suelo natural de cada columna (x + z * 16); el suelo se busca
+    // desde un poco por encima (sin ella, desde arriba del todo: las islas
+    // flotantes de las tierras salvajes se tomarian por el suelo).
+    void stamp(ChunkData& chunk, const std::array<int, kChunkSize * kChunkSize>* heights = nullptr) const;
     // Sin arboles en (x, z): dentro de una aldea, ciudad, torre... `margin` (m):
     // ademas esa franja alrededor de su zona y de sus caminos (0 = lo de siempre).
     bool blocksTrees(int x, int z, float margin = 0.0f) const;
@@ -136,9 +184,17 @@ public:
     // El plan de una region (cacheado).
     std::shared_ptr<const RegionPlan> region(int rx, int rz) const;
     static int regionOf(int coordinate);
+    // CIUDADES-GRANDES: la metropolis de la celda (mi, mj) de 3 x 3 regiones (nullptr si no
+    // hay). La celda 0,0 (regiones -1..1, la capital) nunca tiene.
+    std::shared_ptr<const Structure> metropolis(int mi, int mj) const;
+    static int megaOf(int region);
+    // CIUDADES-GRANDES: cofres de botin generados (puntos "cofre_botin") en la caja (x, z
+    // absolutos, incluidos). Ver GeneratedChest.
+    std::vector<GeneratedChest> chests(int x0, int z0, int x1, int z1) const;
 
 private:
     std::shared_ptr<const RegionPlan> planRegion(int rx, int rz) const;
+    std::shared_ptr<const Structure> planMetropolis(int mi, int mj) const;
 
     const Generator& gen_;
     std::string dimension_;
@@ -146,12 +202,16 @@ private:
     // Plan de cada region (o el que se esta haciendo: los demas hilos esperan en vez de repetirlo).
     mutable std::unordered_map<std::int64_t, std::shared_future<std::shared_ptr<const RegionPlan>>> cache_;
     mutable std::list<std::int64_t> order_;  // para olvidar las mas viejas
+    mutable std::mutex metro_mutex_;
+    mutable std::unordered_map<std::int64_t, std::shared_future<std::shared_ptr<const Structure>>> metro_cache_;
+    mutable std::list<std::int64_t> metro_order_;
 };
 
 // --- Construccion (StructureBuild.cpp) ------------------------------------------------
 
 // Estilo de los edificios segun el bioma.
-enum class BuildStyle : int { Temperate = 0, Snow, Desert, Beach, City };
+// Elven: aldea del bosque (madera clara, tejas verdes); Swamp: casas sobre pilotes.
+enum class BuildStyle : int { Temperate = 0, Snow, Desert, Beach, City, Elven, Swamp };
 
 // Lo que necesitan los constructores: el plano, los puntos y un azar propio.
 struct BuildContext {
@@ -188,7 +248,7 @@ void bench(BuildContext& ctx);
 void wallSegment(BuildContext& ctx, int length, int height);
 void tower(BuildContext& ctx, int size, int height);
 void gatehouse(BuildContext& ctx, int width, int height, int wall_thickness);
-void castle(BuildContext& ctx, int w, int d);
+void castle(BuildContext& ctx, int w, int d, bool vault = false);  // CIUDADES-GRANDES: vault = camara sellada bajo el patio
 void pier(BuildContext& ctx, int length, int sea);
 // Sueltas.
 void wizardTower(BuildContext& ctx, int floors);
@@ -203,6 +263,69 @@ void corridor(BuildContext& ctx, int length, bool trap);
 // (con barandilla) y abajo con salida.
 void spiralShaft(BuildContext& ctx, int depth, BlockId wall);
 void dungeonEntrance(BuildContext& ctx, int shaft_depth);
+
+// --- Asentamientos nuevos (StructureSettlements.cpp) ---
+// Farola de calle (1 x 5 x 1, como lampPost) con los bloques de luz si existen.
+void streetLamp(BuildContext& ctx);
+// Antorchas altas cada `every` en el adarve de un plano de wallSegment ya hecho.
+void wallTorches(BuildContext& ctx, int every);
+// Estanque con juncos (pantano). El plano empieza en el suelo (y 0 = agua).
+void pond(BuildContext& ctx, int w, int d);
+// CIUDADES-AMPLIAS: jardin entre casas (seto, arbol, flores, bancos); la entrada mira a -z.
+void garden(BuildContext& ctx, int w, int d);
+// Arbol mayor de la plaza de las aldeas elficas (15 x 15), con farolillos y bancos.
+void greatTree(BuildContext& ctx);
+// Sube el plano ya construido `dy` sobre pilotes y le pone escalera delante
+// (el plano crece dy en alto y dy en fondo, por delante).
+void raise(BuildContext& ctx, int dy);
+// Plazas hostiles (un solo plano; la entrada mira a -z). Dejan puntos
+// "spawner" (tag = especie), "jefe" (tag = especie) y "cofre" (tag = calidad).
+void banditFort(BuildContext& ctx, int size, const std::string& grunt, const std::string& archer, const std::string& boss);
+void orcCamp(BuildContext& ctx, int radius, const std::string& grunt, const std::string& archer, const std::string& boss);
+void undeadCastle(BuildContext& ctx, int w, int d, const std::vector<std::string>& garrison, const std::string& boss);
+void cursedCity(BuildContext& ctx, int size, const std::vector<std::string>& garrison, const std::string& boss);
+void cultistTower(BuildContext& ctx, int floors, const std::string& minion, const std::string& boss);
+
+// --- CIUDADES-GRANDES (StructureCity.cpp): metropolis, castillos y misterios ---
+// Cofres de botin: bloque Chest + punto "cofre_botin" (tag "<nivel 1..4>:<tabla>"). Notas:
+// bloque LoreTablet + punto "nota" (tag = tema). Puzles: puntos "puzle" / "puzle_puerta".
+void lootChest(BuildContext& ctx, int x, int y, int z, int dir, int tier, const std::string& table);
+void loreNote(BuildContext& ctx, int x, int y, int z, int dir, const std::string& topic);
+// Catedral (W x D ~ 23 x 41) con dos campanarios, naves, cripta debajo (el plano empieza
+// kCryptDepth bajo el suelo) y un osario sellado tras un muro falso con un cofre.
+inline constexpr int kCryptDepth = 7;
+void cathedral(BuildContext& ctx);
+// Sede de gremio (15 x 13, 3 pisos); `guild` = "mercaderes" | "herreros" | "magos" | "ladrones"...
+// Detras de una estanteria falsa, una camara con cofre.
+void guildHall(BuildContext& ctx, const std::string& guild);
+// Casona noble con jardin cerrado (21 x 27): fuente, setos y estudio secreto.
+void manor(BuildContext& ctx);
+// Taller ("curtidor" | "carpintero" | "tejedor" | "alfarero"): planta abierta con su oficio.
+void workshop(BuildContext& ctx, const std::string& kind);
+// Cuartel (17 x 11, 2 pisos) y patio de armas (w x d, vallado, munecos y dianas).
+void barracks(BuildContext& ctx);
+void trainingYard(BuildContext& ctx, int w, int d);
+// Almacen del puerto (13 x 11).
+void warehouse(BuildContext& ctx);
+// Banco (13 x 12) con camara acorazada debajo (el plano empieza 6 bajo el suelo).
+void bank(BuildContext& ctx);
+// Huerto de frutales (w x d) y molino de viento (9 x 9).
+void orchard(BuildContext& ctx, int w, int d);
+void windmill(BuildContext& ctx);
+// Cementerio (w x d) con mausoleo y cripta debajo (el plano empieza 6 bajo el suelo).
+void graveyard(BuildContext& ctx, int w, int d);
+// Pozo seco con escalera de caracol hasta los tuneles (depth bajo el suelo; el plano empieza ahi).
+void dryWell(BuildContext& ctx, int depth);
+// Sala subterranea (iw x id por dentro, 4 de alto): "guarida" | "boveda" | "puzle" | "cripta".
+void undergroundRoom(BuildContext& ctx, int iw, int id, const std::string& kind, int tier);
+// Tunel subterraneo (3 de ancho) de `length` hacia +z.
+void tunnel(BuildContext& ctx, int length);
+// Santuario misterioso fuera de las ciudades (variant 0 circulo de piedras, 1 capilla en ruinas,
+// 2 obelisco de runas); cripta sellada debajo (el plano empieza 6 bajo el suelo).
+void shrine(BuildContext& ctx, int variant);
+// Casa adosada de ciudad con mas variedad (voladizo en los pisos de arriba, tejado a cuatro
+// aguas o buhardillas, a veces bodega con cofre). Ocupa (w + 2) x (d + 2).
+void townhouse(BuildContext& ctx, int w, int d, int floors, const std::string& npc_tag, int variant, bool cellar);
 }  // namespace build
 
 }  // namespace cramion::voxel

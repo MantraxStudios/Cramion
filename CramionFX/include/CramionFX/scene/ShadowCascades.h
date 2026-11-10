@@ -72,6 +72,12 @@ public:
     float shadowDistance() const { return shadow_distance_; }
     void setShadowDistance(float distance);
 
+    // Lo que se extiende cada cascada hacia el sol por detras de su caja (m):
+    // los objetos altos fuera de ella (islas flotantes, montanas) siguen
+    // tapando. GraphicsSettings::shadow_height.
+    float casterMargin() const { return caster_margin_; }
+    void setCasterMargin(float margin) { caster_margin_ = margin > 1.0f ? margin : 1.0f; }
+
     float distribution() const { return distribution_; }
     void setDistribution(float distribution);
 

@@ -70,6 +70,12 @@ layout(location = 4) out vec4 out_shading;
 #endif
 vec4 surface_shading = vec4(0.0);
 
+// Pipeline ligero (movil en Baja: VoxelPass y SkinnedPass lo crean con la
+// constante 9 = true): sin otono, fuego, lluvia, charcos, nieve ni
+// antialiasing especular. Con todo eso el shader necesitaba tantos registros
+// que una GPU de movil lo corria con pocos hilos a la vez.
+layout(constant_id = 9) const bool kSurfaceLite = false;
+
 // false: el objeto no recibe decals (MeshRenderer.receive_decals: los
 // personajes bajo el indicador de un area). Lo pone quien incluye antes de
 // writeSurface (skinned.frag y surface.frag, de su registro por instancia).
@@ -334,7 +340,7 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
     // --- Estacion (sistema de ambiente): lo verde amarillea y enrojece en
     // otono (hierba, hojas, capas de hierba del terreno). snow.w = 0 verde ..
     // 1 otono. Se conserva la luminancia: solo cambia el tono.
-    if (weather.snow.w > 0.0) {
+    if (!kSurfaceLite && weather.snow.w > 0.0) {
         vec3 c = albedo.rgb;
         float greenness = clamp((c.g - max(c.r, c.b)) / max(c.g, 0.02) * 3.0, 0.0, 1.0);
         if (greenness > 0.0) {
@@ -349,7 +355,7 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
     // --- Fuego: suelo, hierba y arboles quemados (fire_burn.glsl) ---
     // Carbon negro con manchas de ceniza gris, mate; y brasas que brillan
     // donde aun hay calor.
-    vec2 burn = fireBurnAt(world_position, weather.fire_zones);
+    vec2 burn = kSurfaceLite ? vec2(0.0) : fireBurnAt(world_position, weather.fire_zones);
     if (burn.x > 0.002 || burn.y > 0.002) {
         float ash = smoothstep(0.45, 0.8, rainValueNoise(world_position.xz * 0.9) * 0.7 +
                                               rainValueNoise(world_position.xz * 4.3) * 0.3);
@@ -363,7 +369,7 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
     }
 
     float flood = max(floodLevel(world_position.xz, weather.flood), decal_water);
-    if (weather.params.x > 0.0 || weather.params.y > 0.0 || flood > 0.0 || decal_wet > 0.0 || weather.snow.z > 0.0) {
+    if (!kSurfaceLite && (weather.params.x > 0.0 || weather.params.y > 0.0 || flood > 0.0 || decal_wet > 0.0 || weather.snow.z > 0.0)) {
         float exposed = rainExposure(world_position);
 
         // El agua se queda en lo horizontal; las paredes escurren.
@@ -425,7 +431,7 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
     // lo plano y las zonas altas de un ruido del mundo; con mas cobertura
     // llega a las pendientes. Blanca, rugosa, tapa el relieve fino del
     // material (mas cuanto mas gruesa) y tiene destellos de los cristales.
-    if (weather.snow.x > 0.0) {
+    if (!kSurfaceLite && weather.snow.x > 0.0) {
         float exposed_snow = rainExposure(world_position);
         float up = smoothstep(0.15, 0.85, n.y);
         float detail_up = mix(up, smoothstep(0.1, 0.9, normal.y), 0.35);
@@ -507,12 +513,14 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
     if (lightmap_debug > 0 && !lightmapped) emissive = vec3(0.0);
 
     // --- Antialiasing especular (Tokuyoshi 2019) ---
-    vec3 du = dFdx(aa_normal);
-    vec3 dv = dFdy(aa_normal);
-    float variance = kSpecularAaVariance * (dot(du, du) + dot(dv, dv));
-    float alpha = roughness * roughness;
-    float alpha2 = clamp(alpha * alpha + min(2.0 * variance, kSpecularAaThreshold), 0.0, 1.0);
-    roughness = clamp(sqrt(sqrt(alpha2)), 0.0, 1.0);
+    if (!kSurfaceLite) {
+        vec3 du = dFdx(aa_normal);
+        vec3 dv = dFdy(aa_normal);
+        float variance = kSpecularAaVariance * (dot(du, du) + dot(dv, dv));
+        float alpha = roughness * roughness;
+        float alpha2 = clamp(alpha * alpha + min(2.0 * variance, kSpecularAaThreshold), 0.0, 1.0);
+        roughness = clamp(sqrt(sqrt(alpha2)), 0.0, 1.0);
+    }
 
     out_albedo = vec4(albedo.rgb, occlusion);
     out_normal = vec4(encodeNormal(normal), roughness, reflectance);

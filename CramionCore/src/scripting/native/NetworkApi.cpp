@@ -309,6 +309,22 @@ void handleEvent(Runtime& rt, NetState& s, net::NetEvent& ev) {
             else n->clock_offset += std::min(offset - n->clock_offset, 0.002);
             n->has_offset = true;
             const double local_time = ev.time + n->clock_offset;
+            // SEGUIMIENTO-RED: cuanto llega tarde cada posicion (respecto a la mas rapida) y cada cuanto llegan.
+            {
+                const float lag = static_cast<float>(std::max(now - local_time, 0.0));
+                const float gap = n->snapshots.empty() ? n->interval_avg
+                                                       : static_cast<float>(std::clamp(local_time - n->snapshots.back().time, 0.0, 1.0));
+                if (!n->has_stats) {
+                    n->lag_avg = lag;
+                    n->lag_dev = 0.02f;
+                    n->has_stats = true;
+                } else {
+                    n->lag_dev += (std::abs(lag - n->lag_avg) - n->lag_dev) * 0.1f;
+                    n->lag_avg += (lag - n->lag_avg) * 0.1f;
+                }
+                // Separacion entre envios (quieto manda 1 por segundo: no cuenta)
+                if (gap > 0.0f && gap < 0.3f) n->interval_avg += (gap - n->interval_avg) * 0.1f;
+            }
             if (n->snapshots.empty() || local_time > n->snapshots.back().time) {
                 n->snapshots.push_back(net::NetworkObject::Snapshot{local_time, position, ev.rotation});
                 if (n->snapshots.size() > 32) n->snapshots.erase(n->snapshots.begin());
@@ -379,26 +395,50 @@ void pollNetwork(Runtime& rt, NetState& s, float dt) {
         if (n->interpolation == 1 && n->snapshots.size() >= 2) {
             // Interpolacion con bufer: el estado de hace `delay` segundos,
             // entre las dos posiciones recibidas que lo rodean.
-            const double render_time = rt.network->time() - std::max(n->interpolation_delay, 0.0f);
+            // SEGUIMIENTO-RED: el retraso crece solo lo que pida la red (llegadas a saltos, paquetes perdidos);
+            // antes, con 0,1 s fijos, un paquete tarde dejaba el bufer vacio: se paraba y luego saltaba.
+            const float need = n->interval_avg * 1.25f + n->lag_avg + 2.5f * n->lag_dev + 0.015f;
+            const float want = std::clamp(std::max(n->interpolation_delay, need), 0.0f, 0.4f);
+            if (n->current_delay < 0.0f) n->current_delay = want;
+            // Se alarga rapido (no quedarse sin datos) y se acorta despacio (sin acelerones visibles).
+            const float rate = want > n->current_delay ? 0.5f : 0.05f;
+            n->current_delay += std::clamp(want - n->current_delay, -rate * dt, rate * dt);
+            const double render_time = rt.network->time() - n->current_delay;
             const auto& snaps = n->snapshots;
+            Vec3 aim_p;
+            Quat aim_q;
             std::size_t k = 1;
             while (k < snaps.size() && snaps[k].time < render_time) ++k;
             if (k >= snaps.size()) {
-                // Sin datos tan nuevos: se queda en la ultima (o adelanta un poco).
+                // Sin datos tan nuevos: sigue con la velocidad un rato (0,25 s) y luego espera.
                 const auto& last = snaps.back();
-                const float ahead = static_cast<float>(std::min(render_time - last.time, 0.1));
-                e.setWorldPosition(last.position + n->target_velocity * std::max(ahead, 0.0f));
-                e.setLocalRotation(last.rotation);
+                const float ahead = static_cast<float>(std::min(render_time - last.time, 0.25));
+                aim_p = last.position + n->target_velocity * std::max(ahead, 0.0f);
+                aim_q = last.rotation;
             } else {
                 const auto& a = snaps[k - 1];
                 const auto& b = snaps[k];
                 const double span = b.time - a.time;
                 const float u = span > 1e-6 ? static_cast<float>(std::clamp((render_time - a.time) / span, 0.0, 1.0)) : 1.0f;
-                e.setWorldPosition(core::lerp(a.position, b.position, u));
-                e.setLocalRotation(core::slerp(a.rotation, b.rotation, u));
+                aim_p = core::lerp(a.position, b.position, u);
+                aim_q = core::slerp(a.rotation, b.rotation, u);
                 // Lo ya pasado sobra (deja uno para interpolar).
                 if (k >= 2) n->snapshots.erase(n->snapshots.begin(), n->snapshots.begin() + static_cast<std::ptrdiff_t>(k - 1));
             }
+            // Lo normal (movimiento continuo) va exacto; un salto (fin de una extrapolacion, correccion) se reparte
+            // en ~0,1 s en vez de verse como un teletransporte. Mas de 8 m: teletransporte de verdad.
+            const Vec3 current = e.worldPosition();
+            const float jump = core::length(aim_p - current);
+            const float step = core::length(n->target_velocity) * dt * 1.5f + 0.03f;
+            if (!n->has_shown || jump > 8.0f || jump <= step) {
+                e.setWorldPosition(aim_p);
+                e.setLocalRotation(aim_q);
+            } else {
+                const float t = 1.0f - std::exp(-18.0f * dt);
+                e.setWorldPosition(current + (aim_p - current) * t);
+                e.setLocalRotation(core::slerp(e.localRotation(), aim_q, std::max(t, 0.35f)));
+            }
+            n->has_shown = true;
             continue;
         }
         const Vec3 current = e.worldPosition();
@@ -572,6 +612,17 @@ void registerNetworkApi(Runtime& rt) {
         rt.network->send(name, toNet(rt, c.arg(1)), to);
         return api::Value(true);
     }, {"\"chat\", datos, destino", "mensaje (destino: nil = todos, \"server\" o un id)", "bool"});
+    // ENVIO-RAPIDO: como Network.send por el canal no fiable (estados que se repiten; < ~1200 bytes)
+    n.function("Network.sendFast", [&rt](api::Call& c) {
+        const std::string name = c.string(0);
+        if (!rt.network || !rt.network->connected()) return api::Value(false);
+        std::uint32_t to = net::kEveryone;
+        const api::Value& target = c.arg(2);
+        if (target.isNumber()) to = static_cast<std::uint32_t>(target.asNumber());
+        else if (target.isString() && target.asString() == "server") to = net::kServerId;
+        rt.network->sendFast(name, toNet(rt, c.arg(1)), to);
+        return api::Value(true);
+    }, {"\"estado\", datos, destino", "mensaje no fiable por el canal rapido (destino: nil = todos, \"server\" o un id)", "bool"});
     n.function("Network.on", [state](api::Call& c) {
         const std::string name = c.string(0);
         const api::Value& fn = c.function(1);

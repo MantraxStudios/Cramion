@@ -85,6 +85,9 @@ void EditorApp::setupCppScripts() {
     cpp_scripts_.setBuildFolder(project_.libraryFolder() / "CppScripts");
     cpp_scripts_.setPhysics(&physics_);
     cpp_scripts_.setScriptSystem(&scripts_);  // toda la API desde C++
+    // Los eventos de la interfaz llegan a los scripts de C++ con la posicion del
+    // puntero (ver el reparto de takeEvents): callMethod solo a los Visual Scripts.
+    scripts_.setCallMethodToCpp(false);
     cpp_scripts_.setAssetPathResolver([this](const Uuid& uuid) -> std::string {
         if (!database_) return {};
         const std::optional<assets::AssetInfo> info = database_->find(uuid);

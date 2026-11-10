@@ -119,6 +119,9 @@ struct ScriptSystem::Impl {
     // Para los scripts de C++ del objeto: mensajes (Send Message, eventos de
     // la interfaz...) y variables de red que llegan (OnNetVar).
     std::function<void(ecs::Entity, const std::string&, const std::string&)> message_listener;
+    // callMethod tambien al message_listener (false: quien llama ya avisa a los
+    // scripts de C++ con sus propios datos, como el reproductor con la interfaz).
+    bool call_method_to_cpp = true;
     std::function<void(ecs::Entity, const std::string&, const std::string&)> net_var_listener;
     // Antes de destruir cada objeto (onDestroy de los scripts de C++).
     std::function<void(ecs::Entity)> destroy_listener;

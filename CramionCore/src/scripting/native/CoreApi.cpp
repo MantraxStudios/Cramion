@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <memory>
 #include <random>
 #include <utility>
 
@@ -254,6 +255,14 @@ void registerGameAndProfiler(Runtime& rt) {
         rt.quit_request = true;
         return api::Value{};
     }, {"", "Cierra el juego (en el editor, sale de Play)"});
+    // Game.editor = true en el Play del editor (lo pone CramionEditor); false en
+    // el juego exportado y en CramionServer (p. ej. para las herramientas de depuracion).
+    auto editor = std::make_shared<bool>(false);
+    rt.native.property("Game", "editor", [editor](api::Call&) { return api::Value(*editor); },
+                       [editor](api::Call& c) { *editor = c.arg(0).truthy(); return api::Value{}; },
+                       {"", "true en el Play del editor (lo pone CramionEditor)", "bool"});
+    rt.native.function("Game.isEditor", [editor](api::Call&) { return api::Value(*editor); },
+                       {"", "true en el Play del editor; false en el juego exportado y el servidor", "bool"});
 
     // Insights desde los scripts: zonas propias, capturas y lo que cuesta cada cosa.
     rt.native.function("Profiler.begin", [](api::Call& c) {

@@ -4,7 +4,7 @@
 //
 //   cramion_dimension_preview <dimension> <salida.obj> [cx cz chunks y_corte semilla]
 //
-//   dimension  superficie | abismo | cielo | cristal
+//   dimension  superficie | abismo | cielo | cristal | profundo
 //   cx cz      chunk de la esquina (por defecto -4 -4)
 //   chunks     lado de la zona en chunks (por defecto 8)
 //   y_corte    no escribe nada por encima (el techo del abismo; 256 = nada)
@@ -70,6 +70,7 @@ int main(int argc, char** argv) {
     if (dim == "abismo") profile = VoxelGenerator::Abyss;
     else if (dim == "cielo") profile = VoxelGenerator::Sky;
     else if (dim == "cristal") profile = VoxelGenerator::Crystal;
+    else if (dim == "profundo") profile = VoxelGenerator::Deep;  // Reino Profundo (GeneratorDeep.cpp)
     const int cx0 = argc > 3 ? std::atoi(argv[3]) : -4;
     const int cz0 = argc > 4 ? std::atoi(argv[4]) : -4;
     const int n = argc > 5 ? std::atoi(argv[5]) : 8;

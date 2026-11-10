@@ -649,6 +649,11 @@ ImFont* ImGuiLayer::uiFont(const std::filesystem::path& file) {
             std::memcpy(data, bytes.data(), bytes.size());
             ImFontConfig config;
             config.FontDataOwnedByAtlas = true;
+            // Fuentes de juego: sin sobremuestreo y con el avance en pixel entero (las fuentes pixel art
+            // salen nitidas a tamanos enteros; las lisas apenas cambian).
+            config.OversampleH = 1;
+            config.OversampleV = 1;
+            config.PixelSnapH = true;
             font = ImGui::GetIO().Fonts->AddFontFromMemoryTTF(data, static_cast<int>(bytes.size()), 16.0f, &config);
             if (font == nullptr) std::cerr << "[UI] No se pudo leer la fuente " << key << "\n";
         }

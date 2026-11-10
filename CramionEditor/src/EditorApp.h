@@ -2649,6 +2649,8 @@ private:
     Uuid self_test_prefab_{};  // prefab de la prueba de espacios de trabajo
     Uuid self_test_sun_{};
     std::vector<std::uint8_t> self_test_capture_;
+    Uuid self_test_walker_{};      // personaje que aparta las plantas (4203-4204)
+    float self_test_noise_ = 0.0f;  // diferencia entre dos capturas solo por el viento
     std::size_t self_test_entities_ = 0;
 };
 

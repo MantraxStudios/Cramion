@@ -108,6 +108,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -361,6 +362,63 @@ bool installFromApk(const std::filesystem::path& root, std::string* error) {
     }
     std::ofstream(stamp) << apk_ini;
     return true;
+}
+#endif
+
+#if defined(__ANDROID__)
+// Pruebas en el movil: <almacenamiento externo de la app>/CVars.json (adb push
+// a /sdcard/Android/data/<paquete>/files/CVars.json) pisa las CVars al arrancar
+// y en vivo (se relee al cambiar, como mucho una vez por segundo). Sin el
+// archivo no hace nada.
+std::filesystem::path g_android_cvars_file;
+void pollAndroidCVars(bool force) {
+    if (g_android_cvars_file.empty()) return;
+    static std::filesystem::file_time_type last{};
+    static auto next_check = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (!force && now < next_check) return;
+    next_check = now + std::chrono::seconds(1);
+    std::error_code e;
+    const auto stamp = std::filesystem::last_write_time(g_android_cvars_file, e);
+    if (e || stamp == last) return;
+    last = stamp;
+    std::ifstream in(g_android_cvars_file, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    cvar::Registry::instance().loadJson(text);
+    std::cout << "[CVars] " << g_android_cvars_file.string() << ": " << text << std::endl;
+}
+// En que se va el "Render (CPU)" del movil: las fases de drawFrame sumadas
+// entre dos lineas de [Rendimiento] (linea [Render CPU]).
+gfx::VulkanRenderer::FrameTimings g_render_cpu;
+void addRenderTimings(const gfx::VulkanRenderer::FrameTimings& t) {
+    g_render_cpu.fence_wait_ms += t.fence_wait_ms;
+    g_render_cpu.actors_ms += t.actors_ms;
+    g_render_cpu.acquire_ms += t.acquire_ms;
+    g_render_cpu.uniforms_ms += t.uniforms_ms;
+    g_render_cpu.record_ms += t.record_ms;
+    g_render_cpu.submit_ms += t.submit_ms;
+    g_render_cpu.present_ms += t.present_ms;
+    g_render_cpu.upload_ms += t.upload_ms;
+    g_render_cpu.stream_ms += t.stream_ms;
+    g_render_cpu.culling_ms += t.culling_ms;
+    for (const auto& [name, ms] : t.passes) {
+        auto it = std::find_if(g_render_cpu.passes.begin(), g_render_cpu.passes.end(),
+                               [&](const auto& p) { return p.first == name; });
+        if (it == g_render_cpu.passes.end()) g_render_cpu.passes.emplace_back(name, ms);
+        else it->second += ms;
+    }
+}
+void printRenderTimings(double frames) {
+    auto& t = g_render_cpu;
+    const auto f = [&](float v) { return static_cast<double>(v) / frames; };
+    std::cout << "[Render CPU] ms por frame: espera " << f(t.fence_wait_ms) << ", actores " << f(t.actors_ms)
+              << " (streaming " << f(t.stream_ms) << ", culling " << f(t.culling_ms) << "), imagen " << f(t.acquire_ms)
+              << ", uniforms " << f(t.uniforms_ms) << ", grabar " << f(t.record_ms) << ", enviar " << f(t.submit_ms) << " (present " << f(t.present_ms) << ")"
+              << ", subidas " << f(t.upload_ms) << " | grabar pases:";
+    std::sort(t.passes.begin(), t.passes.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (std::size_t i = 0; i < t.passes.size() && i < 8; ++i) std::cout << " " << t.passes[i].first << " " << f(t.passes[i].second);
+    std::cout << std::endl;
+    t = {};
 }
 #endif
 
@@ -830,6 +888,9 @@ int runPlayer() {
         std::vector<dm::Event> synthesized;
         const auto feed = [&](dm::Event& e) {
             input.onEvent(e);
+            // Lo que pulsan los botones tactiles (Atacar = Mouse0...) es del
+            // juego: la interfaz no hace clic donde se toco por ultima vez.
+            if (e.touchId == dm::kTouchButtonEventId) return;
 #if defined(__linux__) && !defined(__ANDROID__)
             imgui.onEvent(e);
 #elif !defined(_WIN32)
@@ -935,14 +996,23 @@ int runPlayer() {
         {
             const std::string quality = readIniValue(ini, "android_quality");
             const int level = quality.empty() ? 0 : std::clamp(std::atoi(quality.c_str()), 0, 3);
-            editor::applyQualityPreset(renderer, level);
-            renderer.setRayTracingEnabled(false);
-            renderer.setMobileProfile(level);
-            // Las nubes volumetricas cuestan mucho en un movil: desde Alta. Con
-            // el tope del renderizador: setCloudsEnabled lo volvia a encender
-            // la escena en cada frame (componente Sky) y no duraba.
-            renderer.setCloudsAllowed(level >= 2);
+            editor::applyMobileQualityPreset(renderer, level);
             gfx::GraphicsSettings g = renderer.graphicsSettings();
+            // El Graphics.ini del proyecto es el del PC del autor (anisotropico
+            // 16x, sombras y texturas fijas, sesgo de mips...): en el movil
+            // mandaba sobre el perfil movil (en una Mali-G52, 16x y 4 cascadas
+            // de 100 m). Lo que depende del hardware vuelve a automatico (el
+            // del perfil movil); lo que el jugador guarde va encima.
+            g.texture_filtering = 0;
+            g.texture_max_size = 0;
+            g.shadow_resolution = 0;
+            g.shadow_distance = 0.0f;
+            g.shadow_height = 0.0f;
+            g.texture_lod_bias = 0.0f;
+            // Baja y Media: FSR 1 en vez de TAA. Con FSR 1 el post-proceso va a
+            // la resolucion interna (cadena corta) y la pantalla solo recibe el
+            // escalado: el TAA a 720p costaba 17 ms y la composicion 10.
+            if (level <= 1) g.upscaler = gfx::Upscaler::Fsr1;
             const int fps = std::atoi(readIniValue(ini, "android_fps").c_str());
             g.target_fps = static_cast<float>(fps >= 15 ? fps : 30);
             g.adaptive = true;
@@ -1045,10 +1115,16 @@ int runPlayer() {
         // la DLL compilada al exportar, en scripts/ junto al ejecutable.
         cvar::Registry::instance().setCheatsAllowed(false);
         cvar::Registry::instance().load(project->settingsFolder() / "CVars.json");
+#if defined(__ANDROID__)
+        pollAndroidCVars(true);
+#endif
         scripting::CppScriptSystem cpp_scripts;
         cpp_scripts.setAssetsRoot(project->assetsFolder());
         cpp_scripts.setPhysics(&physics);
         cpp_scripts.setScriptSystem(&scripts);  // toda la API desde C++
+        // Los eventos de la interfaz llegan a los scripts de C++ con la posicion del
+        // puntero (ver el reparto de takeEvents): callMethod solo a los Visual Scripts.
+        scripts.setCallMethodToCpp(false);
         cpp_scripts.setAssetPathResolver([&database, &project](const Uuid& uuid) -> std::string {
             const std::optional<assets::AssetInfo> info = database.find(uuid);
             if (!info || info->path.empty()) return {};
@@ -1093,6 +1169,14 @@ int runPlayer() {
                     cpp_scripts.usePrebuilt(libs / "libgame_scripts.so");
                 }
             }
+            // NOCHE-PERF: la .so de los scripts en el propio juego, como en Windows y
+            // Linux. Antes Android usaba siempre el proceso aislado: cada llamada a la
+            // API que espera respuesta era un viaje por socket + memoria compartida con
+            // dos cambios de contexto (en la Mali-G52/A55, decenas de microsegundos:
+            // ~26-34 ms de scripts por frame, contra ~1-1.7 ms en el PC). Si la .so no
+            // carga, se usa el proceso aislado; script.cpp.InProcess = false (CVars.json
+            // del almacenamiento externo) vuelve a el para comparar.
+            cpp_scripts.setInProcess(true);
         }
 #endif
         // Navegacion: ajustes del proyecto y la misma geometria que la fisica.
@@ -1261,6 +1345,28 @@ int runPlayer() {
         // interfaz (UiSystem::filterGameInput). Vive tanto como el bucle.
         dm::Input script_input;
         ecs::World world;
+        // CIERRE-SEGURO: si algo lanza una excepcion (p. ej. la GPU se pierde en
+        // drawFrame) el mundo se destruye antes que cpp_scripts (se declaro
+        // despues) y el onDestroy de los scripts pedia entidades de un registro
+        // ya destruido (ACCESS_VIOLATION en World::findByName). Este guardian se
+        // destruye ANTES que el mundo y para los scripts con el mundo vivo; en el
+        // cierre normal ya estan parados y no hace nada. Tambien ScriptSystem: sus
+        // ganchos de parada (AiApi: arboles de comportamiento) recorren el mundo
+        // si los scripts seguian en marcha (probado con CRAMION_SIMULATE_DEVICE_LOST).
+        struct ParadaScripts {
+            scripting::ScriptSystem& lua;
+            scripting::CppScriptSystem& cpp;
+            ~ParadaScripts() {
+                try {
+                    lua.stop();
+                } catch (...) {
+                }
+                try {
+                    cpp.stop();
+                } catch (...) {
+                }
+            }
+        } parada_scripts{scripts, cpp_scripts};
         // Un dedo sobre un boton de la interfaz la pulsa aunque caiga en el joystick.
         touch.setUiHitTest([&](float x, float y) { return game_ui.interactiveAt(world, x, y); });
 
@@ -1274,6 +1380,8 @@ int runPlayer() {
 
         // Datos guardados de los scripts (Prefs), por juego.
         scripts.setPrefsFile(editor::localDataFolder("Saves") / std::filesystem::path(exe_stem).concat(".prefs"));
+        // PAQUETES-TEXTURAS: los del jugador (%LOCALAPPDATA%/Cramion/Saves/<juego>/TexturePacks) y los que trae el juego.
+        voxel::setTexturePackRoots({editor::localDataFolder("Saves") / exe_stem / "TexturePacks", project->assetsFolder() / "TexturePacks"});
         // Partidas (Save.save): %APPDATA%/<juego>/saves en Windows.
         {
             const std::u8string game_u8 = exe_stem.u8string();
@@ -1719,26 +1827,228 @@ int runPlayer() {
             if (!layout.enabled || (!touch_platform && !input.touchScreen())) return;
             ImDrawList* fg = ImGui::GetForegroundDrawList();
             const auto alpha = [&](float k) { return static_cast<int>(std::clamp(layout.opacity * k, 0.0f, 1.0f) * 255.0f); };
+            // Las piezas de la interfaz pixelada del juego (Assets/UI/Pixel) y su fuente; mientras cargan (o sin
+            // ellas), circulos y la fuente de ImGui.
+            const std::filesystem::path ui_root = project ? project->assetsFolder() : std::filesystem::path();
+            ImFont* font = ui_root.empty() ? nullptr : imgui.uiFont(ui_root, "UI/Pixel/Fuentes/HorizonzPixel-Bold.ttf");
+            if (font == nullptr) font = ImGui::GetFont();
+            const auto sprite = [&](const std::string& rel) -> ImTextureID {
+                if (ui_root.empty() || rel.empty()) return ImTextureID{};
+                return imgui.uiImage(ui_root, rel);
+            };
+            // Texto con contorno oscuro (legible sobre cualquier fondo).
+            const auto outlined = [&](const std::string& t, ImVec2 center, float size, ImU32 col) {
+                const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, t.c_str());
+                const ImVec2 at{std::floor(center.x - ts.x * 0.5f), std::floor(center.y - ts.y * 0.5f)};
+                const ImU32 shadow = IM_COL32(0, 0, 0, (col >> IM_COL32_A_SHIFT) & 0xFF);
+                const float o = std::max(1.0f, size * 0.07f);
+                fg->AddText(font, size, ImVec2(at.x - o, at.y), shadow, t.c_str());
+                fg->AddText(font, size, ImVec2(at.x + o, at.y), shadow, t.c_str());
+                fg->AddText(font, size, ImVec2(at.x, at.y - o), shadow, t.c_str());
+                fg->AddText(font, size, ImVec2(at.x, at.y + o), shadow, t.c_str());
+                fg->AddText(font, size, at, col, t.c_str());
+            };
+            // Medallon: disco oscuro con borde dorado (el de la interfaz del juego).
+            const auto medallion = [&](ImVec2 c, float r, ImU32 tint) {
+                if (const ImTextureID t = sprite("UI/Pixel/medallon.png"); t != ImTextureID{}) {
+                    fg->AddImage(t, ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), ImVec2(0, 0), ImVec2(1, 1), tint);
+                } else {
+                    fg->AddCircleFilled(c, r, IM_COL32(30, 22, 18, (tint >> IM_COL32_A_SHIFT) & 0xFF), 40);
+                    fg->AddCircle(c, r, IM_COL32(205, 160, 70, (tint >> IM_COL32_A_SHIFT) & 0xFF), 40, std::max(2.0f, r * 0.08f));
+                }
+            };
+            // Barrido de recarga: la parte que falta, oscura, desde arriba en el sentido del reloj.
+            const auto sweep = [&](ImVec2 c, float r, float frac, ImU32 col) {
+                constexpr float kPi = 3.14159265f;
+                const float a0 = -kPi * 0.5f;
+                const float a1 = a0 + std::clamp(frac, 0.0f, 1.0f) * kPi * 2.0f;
+                for (float s0 = a0; s0 < a1 - 1e-3f; s0 += kPi * 0.5f) {
+                    const float s1 = std::min(s0 + kPi * 0.5f, a1);
+                    fg->PathLineTo(c);
+                    fg->PathArcTo(c, r, s0, s1, 10);
+                    fg->PathFillConvex(col);
+                }
+            };
+            const bool editing = touch.editMode();
+            if (editing) {
+                // Editor de la disposicion: el juego oscurecido debajo.
+                const ImVec2 d = ImGui::GetIO().DisplaySize;
+                fg->AddRectFilled(ImVec2(0, 0), d, IM_COL32(0, 0, 0, 110));
+            }
             if (layout.joystick) {
                 const dm::TouchControls::StickView s = touch.stick();
                 const ImVec2 base{s.base_x, s.base_y};
-                fg->AddCircleFilled(base, s.radius, IM_COL32(15, 17, 22, alpha(0.45f)), 48);
-                fg->AddCircle(base, s.radius, IM_COL32(255, 255, 255, alpha(0.55f)), 48, 2.0f);
-                fg->AddCircleFilled(ImVec2(s.knob_x, s.knob_y), s.radius * 0.42f,
-                                    IM_COL32(255, 255, 255, alpha(s.active ? 0.95f : 0.6f)), 32);
+                const float line = std::max(2.0f, s.radius * 0.05f);
+                // Flotante en reposo: solo una pista tenue de donde va el pulgar.
+                const float k = s.active || editing || layout.stick_radius_dp <= 0.0f ? 1.0f : 0.5f;
+                if (s.active && s.can_sprint) {
+                    // Aro de correr: empujar hasta aqui corre (dorado al correr).
+                    fg->AddCircle(base, s.sprint_radius,
+                                  s.sprint ? IM_COL32(255, 200, 70, alpha(1.4f)) : IM_COL32(240, 220, 170, alpha(0.3f)), 56,
+                                  s.sprint ? line * 1.6f : line * 0.6f);
+                }
+                // Base: disco oscuro translucido con el aro dorado de los orbes; pomo: un medallon.
+                fg->AddCircleFilled(base, s.radius * 0.96f, IM_COL32(20, 16, 14, alpha(0.55f * k)), 48);
+                if (const ImTextureID ring = sprite("UI/Pixel/orbe_marco.png"); ring != ImTextureID{}) {
+                    fg->AddImage(ring, ImVec2(base.x - s.radius, base.y - s.radius), ImVec2(base.x + s.radius, base.y + s.radius),
+                                 ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, alpha(1.2f * k)));
+                } else {
+                    fg->AddCircle(base, s.radius, IM_COL32(205, 160, 70, alpha(1.0f * k)), 48, line);
+                }
+                const float kr = s.radius * 0.46f;
+                medallion(ImVec2(s.knob_x, s.knob_y), kr,
+                          s.sprint ? IM_COL32(255, 225, 150, alpha(1.6f)) : IM_COL32(255, 255, 255, alpha((s.active ? 1.5f : 0.9f) * k)));
             }
             for (std::size_t i = 0; i < layout.buttons.size(); ++i) {
                 const dm::TouchButton& b = layout.buttons[i];
                 if (!b.visible) continue;
                 const ImVec2 c{touch.buttonCenterX(b), touch.buttonCenterY(b)};
-                const float r = touch.buttonRadius(b);
                 const bool down = touch.buttonDown(i);
-                fg->AddCircleFilled(c, r, down ? IM_COL32(90, 150, 255, alpha(0.9f)) : IM_COL32(15, 17, 22, alpha(0.5f)), 40);
-                fg->AddCircle(c, r, IM_COL32(255, 255, 255, alpha(0.7f)), 40, 2.0f);
-                const ImVec2 size = ImGui::CalcTextSize(b.label.c_str());
-                fg->AddText(ImVec2(c.x - size.x * 0.5f, c.y - size.y * 0.5f), IM_COL32(255, 255, 255, alpha(1.4f)), b.label.c_str());
+                const float r = touch.buttonRadius(b) * (down ? 0.92f : 1.0f);  // se hunde al pulsar
+                // Estilos: 0 normal, 1 principal (atacar), 2 menu, 3 contextual (resaltado en oro).
+                const float back = b.style == 2 ? 1.1f : 1.4f;
+                const int shade = down ? 170 : 255;  // pulsado: mas oscuro
+                medallion(c, r, IM_COL32(shade, shade, shade, alpha(back)));
+                // Icono: las fichas cuadradas de habilidades algo mayores; los glifos y objetos, dentro del aro.
+                const ImTextureID icon = sprite(b.icon);
+                if (icon != ImTextureID{}) {
+                    const bool tile = b.icon.find("/Habilidades/") != std::string::npos;
+                    const float h = r * (tile ? 0.66f : 0.6f);
+                    const int v = b.dim ? 110 : (down ? 190 : 255);
+                    fg->AddImage(icon, ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h), ImVec2(0, 0), ImVec2(1, 1),
+                                 IM_COL32(v, v, v, alpha(b.dim ? 1.1f : 1.7f)));
+                } else {
+                    const std::string& text = b.text.empty() ? b.label : b.text;
+                    float size = std::clamp(r * 0.62f, 10.0f, 44.0f);
+                    const float w = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text.c_str()).x;
+                    if (w > r * 1.5f) size *= r * 1.5f / w;
+                    outlined(text, c, size, IM_COL32(245, 230, 190, alpha(1.7f)));
+                }
+                if (b.cooldown > 0.001f) sweep(c, r * 0.86f, b.cooldown, IM_COL32(0, 0, 0, alpha(1.0f)));
+                // Aro: el que pide el juego (color de la clase, rojo sin recurso), o dorado vivo en los principales
+                // y contextuales.
+                ImU32 ring = 0;
+                if (b.ring != 0) {
+                    ring = IM_COL32((b.ring >> 24) & 0xFF, (b.ring >> 16) & 0xFF, (b.ring >> 8) & 0xFF, alpha(((b.ring & 0xFF) / 255.0f) * 1.6f));
+                } else if (b.style == 1 || b.style == 3) {
+                    ring = IM_COL32(255, 205, 90, alpha(b.style == 3 ? 1.6f : 1.2f));
+                }
+                if (ring != 0) fg->AddCircle(c, r * 0.97f, ring, 48, std::max(2.0f, r * (b.style == 3 ? 0.08f : 0.06f)));
+                if (!b.badge.empty()) {
+                    // Segundos de recarga (centro) o una cantidad (abajo a la derecha).
+                    if (b.cooldown > 0.001f) outlined(b.badge, c, std::clamp(r * 0.62f, 11.0f, 40.0f), IM_COL32(255, 255, 255, alpha(1.8f)));
+                    else outlined(b.badge, ImVec2(c.x + r * 0.62f, c.y + r * 0.62f), std::clamp(r * 0.42f, 10.0f, 28.0f),
+                                  b.dim ? IM_COL32(255, 110, 90, alpha(1.8f)) : IM_COL32(255, 245, 210, alpha(1.8f)));
+                }
+                // Contextuales y menus con icono: su nombre corto debajo.
+                if (icon != ImTextureID{} && (b.style == 3 || b.style == 2) && !b.text.empty()) {
+                    const float size = std::clamp(r * (b.style == 2 ? 0.44f : 0.38f), 10.0f, 26.0f);
+                    outlined(b.text, ImVec2(c.x, c.y + r + size * 0.55f), size,
+                             b.style == 3 ? IM_COL32(255, 220, 130, alpha(1.8f)) : IM_COL32(235, 225, 200, alpha(1.5f)));
+                }
+            }
+            if (editing) {
+                const float u = touch.unit();
+                // Lo elegido: aro amarillo (se arrastra; pellizco o - / + cambian el tamano).
+                const int sel = touch.editSelected();
+                if (sel == dm::TouchControls::kEditStick) {
+                    const dm::TouchControls::StickView s = touch.stick();
+                    fg->AddCircle(ImVec2(s.base_x, s.base_y), s.radius + 3.0f * u, IM_COL32(255, 220, 60, 255), 56, 3.0f * u);
+                } else if (sel >= 0 && static_cast<std::size_t>(sel) < layout.buttons.size()) {
+                    const dm::TouchButton& b = layout.buttons[static_cast<std::size_t>(sel)];
+                    fg->AddCircle(ImVec2(touch.buttonCenterX(b), touch.buttonCenterY(b)), touch.buttonRadius(b) + 3.0f * u,
+                                  IM_COL32(255, 220, 60, 255), 48, 3.0f * u);
+                }
+                // La barra de arriba (la maneja TouchControls) y una ayuda.
+                const float fs = std::clamp(16.0f * u, 13.0f, 40.0f);
+                float bottom = 0.0f;
+                for (const dm::TouchControls::EditItem& it : touch.editPanel()) {
+                    const bool done = it.label == "Done";
+                    fg->AddRectFilled(ImVec2(it.x0, it.y0), ImVec2(it.x1, it.y1),
+                                      done ? IM_COL32(60, 140, 70, 235) : IM_COL32(25, 28, 36, 235), 8.0f * u);
+                    fg->AddRect(ImVec2(it.x0, it.y0), ImVec2(it.x1, it.y1), IM_COL32(255, 255, 255, 200), 8.0f * u, 0, 2.0f);
+                    const float size = it.label.size() == 1 ? fs * 1.5f : fs;
+                    const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, it.label.c_str());
+                    fg->AddText(font, size, ImVec2((it.x0 + it.x1 - ts.x) * 0.5f, (it.y0 + it.y1 - ts.y) * 0.5f),
+                                IM_COL32(255, 255, 255, 255), it.label.c_str());
+                    bottom = it.y1;
+                }
+                const char* help = sel == -1 ? "Drag a control to move it. Select one to resize it (pinch or - / +)."
+                                             : "Drag to move. Pinch with a second finger or use - / + to resize.";
+                const ImVec2 hs = font->CalcTextSizeA(fs * 0.85f, FLT_MAX, 0.0f, help);
+                const ImVec2 hat{(ImGui::GetIO().DisplaySize.x - hs.x) * 0.5f, bottom + 8.0f * u};
+                fg->AddRectFilled(ImVec2(hat.x - 8.0f, hat.y - 4.0f), ImVec2(hat.x + hs.x + 8.0f, hat.y + hs.y + 4.0f),
+                                  IM_COL32(0, 0, 0, 170), 6.0f);
+                fg->AddText(font, fs * 0.85f, hat, IM_COL32(255, 235, 170, 255), help);
             }
         };
+
+#if defined(__ANDROID__)
+        // --- Teclado en pantalla (IME) ---
+        // Abierto mientras un campo de texto (UIInputField) tiene el foco y
+        // cerrado al perderlo (Intro, clic fuera, el script). Si el jugador lo
+        // cierra (Atras), el campo pierde el foco: tocarlo otra vez lo abre. La
+        // interfaz sube lo justo para que el teclado no tape el campo.
+        struct SoftKeyboard {
+            bool shown = false;      // pedido a Android
+            bool seen = false;       // ya se vio abierto (alto > 0)
+            bool retried = false;    // segundo intento si no aparecio
+            float height = 0.0f;     // pixeles de la imagen
+            float poll = 0.0f;       // segundos hasta preguntar el alto otra vez
+            float since_show = 0.0f;
+            float offset = 0.0f;     // lo que sube la interfaz
+            bool password = false;   // teclado de contrasena
+        } ime;
+        const auto update_soft_keyboard = [&](float dt) {
+            const bool typing = game_ui.typing();
+            bool password = false;
+            if (typing && world.registry().valid(game_ui.focusedField())) {
+                const ui::InputField* f = world.registry().try_get<ui::InputField>(game_ui.focusedField());
+                password = f != nullptr && f->password;
+            }
+            if (typing != ime.shown || (typing && password != ime.password)) {
+                window.showSoftKeyboard(typing, password);
+                ime.password = password;
+                std::cout << "[Juego] Teclado en pantalla: " << (typing ? "abrir" : "cerrar") << std::endl;
+                ime.shown = typing;
+                ime.seen = ime.retried = false;
+                ime.since_show = 0.0f;
+                ime.poll = 0.1f;
+            }
+            if (ime.shown) {
+                ime.since_show += dt;
+                ime.poll -= dt;
+                if (ime.poll <= 0.0f) {
+                    ime.poll = 0.15f;
+                    ime.height = window.softKeyboardHeight();
+                }
+                if (ime.height > 0.0f) {
+                    ime.seen = true;
+                } else if (ime.seen) {
+                    // Lo cerro el jugador: deja de escribir.
+                    game_ui.focus(world, entt::null);
+                } else if (!ime.retried && ime.since_show > 0.7f) {
+                    ime.retried = true;
+                    window.showSoftKeyboard(true, ime.password);
+                }
+            } else if (ime.height > 0.0f) {
+                ime.poll -= dt;
+                if (ime.poll <= 0.0f) {
+                    ime.poll = 0.15f;
+                    ime.height = window.softKeyboardHeight();
+                }
+            }
+            float target = 0.0f;
+            ui::UiRect r;
+            if (typing && ime.height > 0.0f && game_ui.rectOf(game_ui.focusedField(), r)) {
+                const float bottom = r.y + r.h + ime.offset;  // sin desplazar
+                const float visible = static_cast<float>(window.height()) - ime.height - 16.0f * window.density();
+                target = std::max(bottom - visible, 0.0f);
+            }
+            ime.offset = target;
+            game_ui.setViewOffsetY(target);
+        };
+#endif
 
         // --- Banner del motor mientras carga la escena inicial ---
         // Sigue el mismo que se ve desde que se abrio la ventana (sin fundido
@@ -2126,6 +2436,9 @@ int runPlayer() {
                 // Video: reloj, frame a la GPU y audio a sus voces (antes de sync.sync).
                 video.update(world, dt, dt);
                 voxels.update(dt, position);
+#if defined(__ANDROID__)
+                pollAndroidCVars(false);
+#endif
                 // Interfaz: toda la ventana.
                 const ui::UiInput ui_input = editor::uiInputFromImGui(ImVec2(0, 0), display, true, game_ui.typing());
                 {
@@ -2133,6 +2446,9 @@ int runPlayer() {
                     prof::Scope ui_zone("Interfaz (UiSystem)");
                     game_ui.update(world, display.x, display.y, ui_input, true, static_cast<float>(ImGui::GetTime()));
                 }
+#if defined(__ANDROID__)
+                update_soft_keyboard(dt);
+#endif
                 // UI en el mundo (Canvas en modo Mundo): con los rayos de las
                 // manos en VR; sus paneles los dibuja el render.
                 game_ui.updateWorld(world, xr_rig.uiPointers(), true, static_cast<float>(ImGui::GetTime()));
@@ -2201,6 +2517,8 @@ int runPlayer() {
             if (loaded && !scene_loading()) {
                 const auto t = std::chrono::steady_clock::now();
                 sync.sync(world, scene, renderer, running ? dt : 0.0f, sync_options);
+                // Luces reales de antorchas, farolas... (despues de sync, que rehace la lista).
+                voxels.appendBlockLights(scene.camera().position(), scene.lights().points);
                 sync_ms = ms_since(t);
                 renderer.setParticles(particles.drawList(scene.camera().position()));
                 // La camara (tras sync): distancia y vista de los efectos con tipo.
@@ -2218,6 +2536,9 @@ int runPlayer() {
                 renderer.setFrameRateCap(vr ? 0.0f : static_cast<float>(graphics_host.fpsLimit()));
                 renderer.drawFrame(scene);
                 render_ms = ms_since(t);
+#if defined(__ANDROID__)
+                addRenderTimings(renderer.takeFrameTimings());
+#endif
             }
             if (vr) renderer.xr().endFrame();
             run_seconds += clock_dt;
@@ -2261,14 +2582,42 @@ int runPlayer() {
                     const gfx::FrameBudget& budget = renderer.frameBudget();
                     const vk::Extent2D internal = renderer.renderExtent();
                     const vk::Extent2D output = renderer.sceneExtent();
+                    {
+                        // Entidades que no paran de crecer (un script que crea y
+                        // no borra): si suben 50 o mas en estos 5 s, los nombres
+                        // que mas se repiten. Sirve para encontrar la fuga.
+                        static std::size_t last_entities = 0;
+                        const auto& names = world.registry().view<ecs::NameComponent>();
+                        const std::size_t total = names.size();
+                        if (last_entities > 0 && total >= last_entities + 50) {
+                            std::unordered_map<std::string, int> count;
+                            for (const entt::entity h : names) ++count[world.registry().get<ecs::NameComponent>(h).name];
+                            std::vector<std::pair<std::string, int>> top(count.begin(), count.end());
+                            std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+                            std::cout << "[Entidades] " << total << " (+" << (total - last_entities) << " en 5 s); las que mas:";
+                            for (std::size_t i = 0; i < top.size() && i < 10; ++i) std::cout << " " << top[i].first << " x" << top[i].second;
+                            std::cout << "\n";
+                        }
+                        last_entities = total;
+                    }
+                    // Mundo de bloques: lo que dibujo el G-buffer (aparte: la
+                    // linea de [Rendimiento] la leen el editor y el MCP).
+                    if (const gfx::VoxelStats vs = renderer.voxelStats(); vs.sections > 0) {
+                        std::cout << "[Voxeles] " << vs.visible << " de " << vs.sections << " secciones visibles, "
+                                  << vs.drawn_quads << " quads dibujados (lejanos " << vs.drawn_far_quads << ") en "
+                                  << vs.draw_calls << " llamadas; en memoria " << (vs.quads - vs.far_quads) << " quads (sin los lejanos) por " << vs.block_faces << " caras de bloque"
+                                  << "; teselados " << vs.tessellated_quads << "\n";  // TESELADO
+                    }
                     std::cout << "[Rendimiento] " << static_cast<int>(std::lround(perf_frames / perf_seconds))
                               << " FPS | GPU " << renderer.gpuProfiler().totalMilliseconds() << " ms (media "
                               << budget.smoothedGpuMs() << ", objetivo " << budget.targetMilliseconds() << ") | "
                               << internal.width << "x" << internal.height << " -> " << output.width << "x"
                               << output.height << " | " << scene.actors().size() << " actores, "
                               << renderer.lodActors() << " con LOD, " << renderer.culledSmallActors()
-                              << " diminutos | sombras " << renderer.shadowResolution() << " (" << renderer.shadowDrawCalls()
+                              << " diminutos, " << renderer.culledFarActors() << " lejos"  // NOCHE-PERF
+                              << " | sombras " << renderer.shadowResolution() << " (" << renderer.shadowDrawCalls()
                               << " llamadas)";
+
                     std::uint64_t vram_used = 0;
                     std::uint64_t vram_budget = 0;
                     if (renderer.device().videoMemory(vram_used, vram_budget)) {
@@ -2305,6 +2654,9 @@ int runPlayer() {
                     std::cout << " | zonas:";
                     for (const prof::ZoneCost& z : prof::topZones(300, 8)) std::cout << " " << z.name << " " << z.self_ms;
                     std::cout << std::endl;
+#if defined(__ANDROID__)
+                    printRenderTimings(frames);
+#endif
                     perf_seconds = 0.0f;
                     perf_frames = 0;
                     perf_cpu_ms = 0.0;
@@ -2378,6 +2730,17 @@ int runPlayer() {
                       "de las texturas, usar menos modelos de alta resolucion (escaneos) o partir la escena.\n\n"
                       "Detalle: " + std::string(e.what());
         }
+        // CIERRE-SEGURO: la GPU dejo de responder (o se tomo como perdida tras el tope
+        // CRAMION_GPU_TIMEOUT_MS): se explica y se dice donde esta el informe.
+        if (message.find("DeviceLost") != std::string::npos || message.find("dispositivo perdido") != std::string::npos ||
+            message.find("CRAMION_GPU_TIMEOUT_MS") != std::string::npos) {
+            const gfx::VulkanDevice::DeviceLostReport report = gfx::VulkanDevice::deviceLostReport();
+            message = "La tarjeta grafica dejo de responder y el juego se tuvo que cerrar.\n\n"
+                      "Tu progreso guardado se conserva. Prueba a actualizar el driver de la GPU y, si usas OBS u "
+                      "otra superposicion (overlay), a cerrarla.\n\n"
+                      "Detalle: " + std::string(e.what());
+            if (!report.file.empty()) message += "\nInforme: " + report.file.string();
+        }
         showError(message);
         return EXIT_FAILURE;
     }
@@ -2417,6 +2780,9 @@ void android_main(android_app* app) {
     net::setJavaVM(app->activity->vm);
     const std::filesystem::path data = app->activity->internalDataPath != nullptr ? app->activity->internalDataPath : "/data/local/tmp";
     android::setDataRoot(data);
+    if (app->activity->externalDataPath != nullptr) {
+        g_android_cvars_file = std::filesystem::path(app->activity->externalDataPath) / "CVars.json";
+    }
     // temp_directory_path() (caches de modelos) dentro de la app.
     std::error_code e;
     std::filesystem::create_directories(data / "tmp", e);

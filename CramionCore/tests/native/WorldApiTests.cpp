@@ -156,6 +156,10 @@ void testVoxel() {
               info["solid"].truthy(),
           "Voxel.blockInfo(\"stone\")");
     check(t.call("Voxel.blockInfo", {Value(999)}).isNil(), "Voxel.blockInfo de un id que no existe: nil");
+    // IDS16: ids por encima de 255 (bloque de prueba 300).
+    check(t.call("Voxel.blockId", {Value("id_test_300")}).asNumber() == 300 &&
+              t.call("Voxel.blockInfo", {Value(300)})["name"].asString() == "id_test_300",
+          "Voxel.blockId / blockInfo con un id de 16 bits (300)");
     const Value color = t.call("Voxel.blockColor", {Value(1)});
     check(color.isVec3() && color.asVec3().x == 1.0f, "Voxel.blockColor sin mundo: blanco");
     check(t.call("Voxel.raycast", {Value(Vec3{0, 0, 0}), Value(Vec3{0, -1, 0})}).isNil(), "Voxel.raycast sin mundo: nil");

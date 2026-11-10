@@ -121,6 +121,9 @@ layout(std430, set = 1, binding = 8) buffer CacheKeys { uint cache_keys[]; };
 layout(std430, set = 1, binding = 9) buffer CacheAccum { CacheEntry cache_accum[]; };
 layout(std430, set = 1, binding = 10) buffer CacheResolved { vec4 cache_resolved[]; };
 
+// Los bloques (no estan en la TLAS): set 0, bindings 11 y 12.
+#include "voxel_occupancy.glsl"
+
 #include "rain_common.glsl"
 
 const float kPi = 3.14159265;
@@ -307,6 +310,33 @@ const uint kMaskNoShadow = 0x08u;  // rigidos sin sombra: los rayos de sombra no
 const uint kMaskCharacter = 0x10u;  // personajes animados (BLAS deformada cada frame)
 const uint kMaskAll = 0xFFu;
 
+// Material de un impacto en un bloque (voxel_occupancy.glsl): este bit mas
+// el codigo de color de la celda. No es un indice de rt_materials.
+const uint kVoxelMaterial = 0x80000000u;
+
+bool isVoxelHit(RtHit hit) {
+    return (hit.material & kVoxelMaterial) != 0u;
+}
+
+// El bloque mas cercano que `hit` (o que max_distance si no hay impacto): lo
+// sustituye. Los bloques cuentan como terreno (kMaskTerrain).
+bool voxelHitBefore(vec3 origin, vec3 direction, float max_distance, uint mask, inout RtHit hit) {
+    if ((mask & kMaskTerrain) == 0u || !voxelGridActive()) return false;
+    vec3 normal;
+    uint code;
+    float t = voxelTrace(origin, direction, max_distance, normal, code);
+    if (t < 0.0) return false;
+    hit.distance = t;
+    hit.direction = direction;
+    hit.position = origin + direction * t;
+    hit.normal = normal;
+    // Origen dentro del bloque: como una cara de atras (las sondas lo cuentan).
+    hit.front_face = t > 0.0;
+    hit.material = kVoxelMaterial | code;
+    hit.uv = vec2(0.0);
+    return true;
+}
+
 // Lanza un rayo y devuelve el primer impacto (con recorte por alfa). `mask`:
 // que instancias ve.
 bool traceRayMask(vec3 origin, vec3 direction, float max_distance, uint mask, out RtHit hit) {
@@ -320,7 +350,13 @@ bool traceRayMask(vec3 origin, vec3 direction, float max_distance, uint mask, ou
             rayQueryConfirmIntersectionEXT(query);
         }
     }
-    if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionTriangleEXT) {
+    bool found = rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionTriangleEXT;
+    // Los bloques, hasta lo que encontro la TLAS.
+    float limit = found ? rayQueryGetIntersectionTEXT(query, true) : max_distance;
+    if (voxelHitBefore(origin, direction, limit, mask, hit)) {
+        return true;
+    }
+    if (!found) {
         return false;
     }
     fillHit(rayQueryGetIntersectionInstanceCustomIndexEXT(query, true), rayQueryGetIntersectionGeometryIndexEXT(query, true),
@@ -383,7 +419,11 @@ bool unoccludedMask(vec3 origin, vec3 direction, float max_distance, uint mask) 
             rayQueryConfirmIntersectionEXT(query);
         }
     }
-    return rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT;
+    if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+        return false;
+    }
+    // Y los bloques (por las dos caras: tapan aunque el rayo salga de dentro).
+    return (mask & kMaskTerrain) == 0u || !voxelOccluded(origin, direction, max_distance);
 }
 
 // Rayo de sombra: no ve lo que no proyecta sombra (como los mapas de sombras).
@@ -537,17 +577,32 @@ vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
     }
 
     // --- Fuera de pantalla: se calcula ---
-    RtMaterial material = rt_materials[hit.material];
-    vec3 albedo = toLinear(textureLod(rt_textures[nonuniformEXT(material.albedo_texture)],
-                                      hit.uv, lod).rgb) *
-                  material.base_color.rgb;
+    // Un bloque: su color de la ocupacion, rugoso y sin emision.
+    bool voxel_hit = isVoxelHit(hit);
+    RtMaterial material;
+    vec3 albedo;
+    if (voxel_hit) {
+        material.base_color = vec4(1.0);
+        material.emissive = vec4(0.0);
+        material.params = vec4(0.0, 0.9, 0.0, 0.0);
+        material.albedo_texture = 0u;
+        material.metallic_roughness_texture = 0u;
+        material.emissive_texture = 0u;
+        material.flags = 0u;
+        material.uv_transform = vec4(1.0, 1.0, 0.0, 0.0);
+        albedo = voxelAlbedo(hit.material & 255u);
+    } else {
+        material = rt_materials[hit.material];
+        albedo = toLinear(textureLod(rt_textures[nonuniformEXT(material.albedo_texture)], hit.uv, lod).rgb) *
+                 material.base_color.rgb;
+    }
     vec3 n = hit.normal;
     vec3 origin = hit.position + n * 0.02;
     // Metalicidad y rugosidad de una sola lectura, y ninguna si el material
     // no es metalico y no hay agua (la rugosidad solo la usa la lluvia): con
     // factor 0 la textura no cambia nada.
     bool wet_surface = (lights.rain.x > 0.0 || lights.rain.y > 0.0 || lights.flood.z > 0.0) && n.y > 0.3;
-    vec4 metal_rough = material.params.x > 0.0 || wet_surface
+    vec4 metal_rough = (material.params.x > 0.0 || wet_surface) && !voxel_hit
                            ? textureLod(rt_textures[nonuniformEXT(material.metallic_roughness_texture)], hit.uv, lod)
                            : vec4(1.0);
     float metallic = clamp(material.params.x * metal_rough.b, 0.0, 1.0);

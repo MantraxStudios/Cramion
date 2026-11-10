@@ -6,6 +6,7 @@
 #include "CramionFX/vk/VulkanShader.h"
 
 #include <array>
+#include <optional>
 #include <iostream>
 #include <vector>
 
@@ -239,6 +240,41 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
         pipeline_info.setStages(stages);
         lite_pipeline_ = compat::makeGraphicsPipeline(device, pipeline_info);
     }
+    // La del movil en Baja: kLite y kMobile (lighting.frag, mobileMain).
+    {
+        const std::array<VkBool32, 2> values = {VK_TRUE, VK_TRUE};
+        const std::array<vk::SpecializationMapEntry, 2> entries = {
+            vk::SpecializationMapEntry{0, 0, sizeof(VkBool32)}, vk::SpecializationMapEntry{1, sizeof(VkBool32), sizeof(VkBool32)}};
+        vk::SpecializationInfo specialization{};
+        specialization.setMapEntries(entries);
+        specialization.dataSize = sizeof(values);
+        specialization.pData = values.data();
+        stages[1].pSpecializationInfo = &specialization;
+        // Su propio shader (lighting_mobile.frag: solo mobileMain, sin el resto
+        // del de siempre); sin el (shaders de antes), lighting.frag con kMobile.
+        std::optional<vk::raii::ShaderModule> mobile_module;
+        try {
+            mobile_module.emplace(shaders::loadModule(device, "lighting_mobile.frag.spv"));
+            stages[1].module = **mobile_module;
+        } catch (const std::exception&) {
+            mobile_module.reset();
+        }
+        pipeline_info.setStages(stages);
+        mobile_pipeline_ = compat::makeGraphicsPipeline(device, pipeline_info);
+        stages[1].module = *fragment_module;
+        // UNLIT: la del modo Unlit del juego (lighting_unlit.frag: solo unlitMain). Sin el shader
+        // (instalacion antigua), la del movil.
+        try {
+            vk::raii::ShaderModule unlit_module = shaders::loadModule(device, "lighting_unlit.frag.spv");
+            stages[1].module = *unlit_module;
+            pipeline_info.setStages(stages);
+            unlit_pipeline_ = compat::makeGraphicsPipeline(device, pipeline_info);
+        } catch (const std::exception& e) {
+            std::cerr << "[Vulkan] Sin iluminacion Unlit (lighting_unlit.frag): " << e.what() << "\n";
+            unlit_pipeline_ = nullptr;
+        }
+        stages[1].module = *fragment_module;
+    }
 
     std::cout << "[Vulkan] Pipeline de iluminacion creado\n";
 }
@@ -252,6 +288,8 @@ bool LightingPass::hasBinding(std::uint32_t binding) const {
 }
 
 void LightingPass::destroy() {
+    unlit_pipeline_ = nullptr;  // UNLIT
+    mobile_pipeline_ = nullptr;
     lite_pipeline_ = nullptr;
     pipeline_ = nullptr;
     pipeline_layout_ = nullptr;

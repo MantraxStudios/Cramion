@@ -1521,10 +1521,993 @@ bool structureKeepsPattern(const std::string& name) {
     return false;
 }
 
+// --- Tierras salvajes del Aventura (GeneratorWild.cpp) ----------------------------------
+
+// Arenisca por capas del color dado (como "sandstone").
+Texel bandedSandstoneTexel(float u, float v, std::uint32_t seed, Rgb tone) {
+    Texel t = sandTexel(u, v, seed, tone);
+    const float bands = std::sin((v + fbm(u, v, 2, 2, seed + 3u) * 0.05f) * kTau * 3.0f);
+    t.color = t.color * (0.92f + bands * 0.07f);
+    t.height += bands * 0.08f;
+    t.roughness = 0.88f;
+    return t;
+}
+
+Recipe wildRecipe(const std::string& name, std::uint32_t seed) {
+    if (name == "red_sandstone") return [=](float u, float v) { return bandedSandstoneTexel(u, v, seed, Rgb{0.72f, 0.36f, 0.20f}); };
+    if (name == "red_sandstone_top") return [=](float u, float v) { return sandTexel(u, v, seed, Rgb{0.76f, 0.40f, 0.23f}); };
+    if (name == "pink_sand") return [=](float u, float v) { return sandTexel(u, v, seed, Rgb{0.94f, 0.66f, 0.72f}); };
+    if (name == "pink_sandstone") return [=](float u, float v) { return bandedSandstoneTexel(u, v, seed, Rgb{0.86f, 0.56f, 0.63f}); };
+    if (name == "pink_sandstone_top") return [=](float u, float v) { return sandTexel(u, v, seed, Rgb{0.90f, 0.62f, 0.68f}); };
+    if (name == "rose_quartz") {
+        return [=](float u, float v) {
+            Texel t = crystalTexel(u, v, seed, Rgb{0.95f, 0.60f, 0.74f}, 0.0f);
+            t.roughness = 0.3f;
+            return t;
+        };
+    }
+    if (name == "blight_grass_top") {
+        return [=](float u, float v) {
+            Texel t = grassTopTexel(u, v, seed);
+            const float k = (t.color.r + t.color.g + t.color.b) / 3.0f;
+            t.color = Rgb{0.28f + k * 0.42f, 0.20f + k * 0.28f, 0.30f + k * 0.46f};  // violeta grisaceo enfermizo
+            return t;
+        };
+    }
+    if (name == "blight_grass_side") {
+        return [=](float u, float v) {
+            Texel t = dirtTexel(u, v, seed);
+            t.color = Rgb{t.color.r * 0.6f, t.color.g * 0.55f, t.color.b * 1.1f + 0.08f};  // como dusk_soil
+            if (v < 0.22f + fbm(u, 0.0f, 8, 2, seed) * 0.07f) t.color = Rgb{0.42f, 0.22f, 0.48f} * (0.9f + fbm(u, v, 12, 2, seed + 2u) * 0.1f);
+            return t;
+        };
+    }
+    if (name == "blight_thorns") {
+        return [=](float u, float v) {
+            Texel t = deadBushTexel(u, v, seed);
+            if (t.alpha > 0.5f) t.color = Rgb{0.30f, 0.14f, 0.34f} * (0.8f + t.color.r * 0.6f);
+            return t;
+        };
+    }
+    if (name == "brimstone") {
+        return [=](float u, float v) {
+            Texel t = pebblesTexel(u, v, seed, 7);
+            const float k = (t.color.r + t.color.g + t.color.b) / 3.0f;
+            t.color = Rgb{0.70f + k * 0.3f, 0.60f + k * 0.25f, 0.12f + k * 0.1f};
+            t.emission = 0.08f;
+            return t;
+        };
+    }
+    return {};
+}
+
+// --- Luces (Blocks.cpp addLightBlocks; piezas finas en Mesher.cpp) --------------------------
+// Las texturas de las piezas van por franjas horizontales: la fila (v * 16)
+// es la altura de la pieza (v = 1 - y), las columnas casi no importan.
+
+Texel ironTexel(float u, float v, std::uint32_t seed, Rgb tone = Rgb{0.17f, 0.17f, 0.18f}) {
+    Texel t = plainTexel(u, v, seed, tone, 0.12f);
+    t.metal = 0.75f;
+    t.roughness = 0.45f;
+    return t;
+}
+
+Texel stickTexel(float u, float v, std::uint32_t seed) {
+    Texel t;
+    t.color = Rgb{0.42f, 0.29f, 0.16f} * (0.85f + fbm(u, v, 16, 2, seed) * 0.2f);
+    t.roughness = 0.8f;
+    return t;
+}
+
+// Llama por filas: punta clara arriba (k = 0) y naranja hacia la base (k = 1).
+Texel flameBand(float k) {
+    Texel t;
+    t.color = mix(Rgb{1.0f, 0.95f, 0.62f}, Rgb{1.0f, 0.55f, 0.12f}, std::clamp(k, 0.0f, 1.0f));
+    t.emission = 1.0f;
+    t.roughness = 1.0f;
+    return t;
+}
+
+// Cristal que brilla dentro de un marco de hierro (lamparas).
+Texel lampPaneTexel(float u, float v, std::uint32_t seed, Rgb glow) {
+    if (inFrame(u, v, 0.09f) || std::abs(u - 0.5f) < 0.035f || std::abs(v - 0.5f) < 0.035f) return ironTexel(u, v, seed);
+    Texel t;
+    const float r = std::hypot(u - 0.5f, v - 0.5f);
+    const float n = fbm(u, v, 6, 3, seed);
+    t.color = mix(glow, Rgb{1.0f, 1.0f, 0.95f}, std::clamp(0.55f - r, 0.0f, 0.5f)) * (0.92f + n * 0.1f);
+    t.emission = 0.8f + std::clamp(0.4f - r, 0.0f, 0.2f);
+    t.roughness = 0.2f;
+    t.reflectance = 0.8f;
+    return t;
+}
+
+Recipe lightRecipe(const std::string& name, std::uint32_t seed) {
+    const auto row = [](float v) { return v * 16.0f; };  // fila 0 (arriba) .. 16 (abajo)
+    if (name == "torch_stick") {
+        return [=](float u, float v) {
+            const float r = row(v);
+            Texel t;
+            t.alpha = 0.0f;
+            if (r >= 6.0f) return stickTexel(u, v, seed);
+            if (r >= 2.0f) return flameBand((r - 2.0f) / 4.0f);
+            return t;
+        };
+    }
+    if (name == "torch_flame_top") {
+        return [=](float u, float v) {
+            Texel t = flameBand(0.25f + fbm(u, v, 4, 2, seed) * 0.3f);
+            return t;
+        };
+    }
+    if (name == "standing_torch") {
+        return [=](float u, float v) {
+            const float r = row(v);
+            if (r >= 6.0f) {
+                Texel t = stickTexel(u, v, seed);
+                t.color = t.color * 0.8f;
+                return t;
+            }
+            if (r >= 4.0f) return ironTexel(u, v, seed);
+            return flameBand(r / 4.0f);
+        };
+    }
+    if (name == "lamp_post" || name == "lamp_post_top" || name == "street_lamp_top") {
+        return [=](float u, float v) {
+            Texel t = ironTexel(u, v, seed);
+            if (name == "lamp_post") t.color = t.color * (0.85f + 0.3f * std::max(0.0f, std::cos((u - 0.35f) * kTau)));
+            return t;
+        };
+    }
+    if (name == "street_lamp") {
+        return [=](float u, float v) {
+            const float r = row(v);
+            const float c = u * 16.0f;
+            const bool glass = r >= 6.0f && r < 11.0f && c >= 6.0f && c < 10.0f;
+            if (!glass) return ironTexel(u, v, seed, r >= 3.0f && r < 5.0f ? Rgb{0.12f, 0.16f, 0.14f} : Rgb{0.17f, 0.17f, 0.18f});
+            Texel t;
+            t.color = mix(Rgb{1.0f, 0.78f, 0.40f}, Rgb{1.0f, 0.96f, 0.75f}, 1.0f - std::abs(u - 0.5f) * 6.0f);
+            t.emission = 1.0f;
+            t.roughness = 0.2f;
+            return t;
+        };
+    }
+    if (name == "campfire_log") {
+        return [=](float u, float v) {
+            Texel t = logBarkTexel(v, u, seed, Rgb{0.33f, 0.23f, 0.14f}, 8.0f);  // vetas a lo largo (u)
+            const float char_spot = fbm(u, v, 5, 2, seed + 9u);
+            if (char_spot > 0.25f) t.color = t.color * 0.45f;  // chamuscado
+            if (char_spot > 0.55f) {
+                t.color = Rgb{1.0f, 0.42f, 0.10f};  // brasas
+                t.emission = 0.6f;
+            }
+            return t;
+        };
+    }
+    if (name == "campfire_fire") return [=](float u, float v) { return flameTexel(u, v, seed, 0.94f, 0.8f); };
+    if (name == "crystal_lamp") {
+        return [=](float u, float v) {
+            if (inFrame(u, v, 0.08f)) return ironTexel(u, v, seed, Rgb{0.55f, 0.45f, 0.22f});
+            Texel t = crystalTexel(u, v, seed, Rgb{0.55f, 0.90f, 1.0f}, 1.0f);
+            t.emission = std::max(t.emission, 0.7f);
+            return t;
+        };
+    }
+    if (name == "lamp_red") return [=](float u, float v) { return lampPaneTexel(u, v, seed, Rgb{0.95f, 0.22f, 0.15f}); };
+    if (name == "lamp_blue") return [=](float u, float v) { return lampPaneTexel(u, v, seed, Rgb{0.25f, 0.50f, 1.0f}); };
+    if (name == "lamp_green") return [=](float u, float v) { return lampPaneTexel(u, v, seed, Rgb{0.30f, 0.90f, 0.35f}); };
+    if (name == "paper_lantern" || name == "paper_lantern_top") {
+        return [=](float u, float v) {
+            const Rgb wood{0.25f, 0.15f, 0.09f};
+            if (name == "paper_lantern_top") return plainTexel(u, v, seed, wood, 0.1f);
+            const float r = row(v);
+            const float c = u * 16.0f;
+            if (r < 4.0f) {  // cordon (solo en el centro: la cadena del farol)
+                Texel t = plainTexel(u, v, seed, Rgb{0.45f, 0.08f, 0.06f}, 0.1f);
+                t.alpha = c >= 7.0f && c < 9.0f ? 1.0f : 0.0f;
+                return t;
+            }
+            if (r < 6.0f || r >= 14.0f) return plainTexel(u, v, seed, wood, 0.1f);
+            Texel t = clothTexel(u, v, seed, Rgb{0.92f, 0.20f, 0.12f});
+            const bool rib = (r >= 8.0f && r < 8.6f) || (r >= 11.0f && r < 11.6f) || c < 6.0f || c >= 10.0f;
+            t.color = rib ? t.color * 0.7f : mix(t.color, Rgb{1.0f, 0.70f, 0.40f}, 0.25f);
+            t.emission = rib ? 0.35f : 0.75f;
+            return t;
+        };
+    }
+    if (name == "chandelier") return [=](float u, float v) { return ironTexel(u, v, seed, Rgb{0.62f, 0.48f, 0.22f}); };
+    if (name == "chandelier_candle") {
+        return [=](float u, float v) {
+            const float r = row(v);
+            Texel t;
+            t.alpha = 0.0f;
+            if (r >= 5.0f) {
+                t = plainTexel(u, v, seed, Rgb{0.95f, 0.92f, 0.82f}, 0.05f);
+                t.roughness = 0.6f;
+                return t;
+            }
+            if (r >= 3.0f) return flameBand((r - 3.0f) / 2.0f);
+            return t;
+        };
+    }
+    return {};
+}
+
+// Las de las luces conservan su dibujo en el estilo de color liso.
+bool lightKeepsPattern(const std::string& name) {
+    static const char* const kNames[] = {"torch_stick", "standing_torch", "street_lamp", "campfire_fire", "paper_lantern",
+                                         "chandelier_candle", "lamp_red", "lamp_blue", "lamp_green", "crystal_lamp"};
+    for (const char* n : kNames) {
+        if (name == n) return true;
+    }
+    return false;
+}
+
+// --- Asentamientos y castillos (ids 166..180) -----------------------------------------------
+
+// Calavera de frente en (cu, cv) con radio r (para estandartes y montones).
+bool skullMask(float u, float v, float cu, float cv, float r, bool& hole) {
+    const float dx = (u - cu) / r, dy = (v - cv) / r;
+    const bool head = dx * dx + dy * dy < 1.0f && dy < 0.55f;
+    const bool jaw = std::abs(dx) < 0.55f && dy >= 0.4f && dy < 1.05f;
+    hole = (std::hypot(dx + 0.38f, dy - 0.05f) < 0.26f) || (std::hypot(dx - 0.38f, dy - 0.05f) < 0.26f) ||
+           (std::abs(dx) < 0.1f && dy > 0.35f && dy < 0.55f) || (jaw && dy > 0.75f && std::fmod((dx + 1.0f) * 3.5f, 1.0f) < 0.18f);
+    return head || jaw;
+}
+
+Texel settlementBannerTexel(float u, float v, std::uint32_t seed, Rgb tone, int emblem) {
+    Texel t = clothTexel(u, v, seed, tone);
+    if (v < 0.08f || v > 0.92f) t.color = tone * 0.6f;
+    if (emblem == 0) {  // calavera de hueso
+        bool hole = false;
+        if (skullMask(u, v, 0.5f, 0.42f, 0.2f, hole)) {
+            t.color = hole ? Rgb{0.05f, 0.05f, 0.06f} : Rgb{0.90f, 0.88f, 0.80f};
+            t.height += 0.1f;
+        }
+    } else if (emblem == 1) {  // ojo del culto
+        const float e = std::hypot((u - 0.5f) * 1.0f, (v - 0.45f) * 2.2f);
+        if (e < 0.3f && e > 0.2f) t.color = Rgb{0.95f, 0.78f, 0.28f};
+        if (std::hypot(u - 0.5f, v - 0.45f) < 0.07f) {
+            t.color = Rgb{0.9f, 0.2f, 0.25f};
+            t.emission = 0.6f;
+        }
+    } else {  // hoja de plata
+        const float lu = u - 0.5f, lv = v - 0.45f;
+        if (std::abs(lu) < 0.16f * (1.0f - std::abs(lv) / 0.28f) && std::abs(lv) < 0.28f) t.color = Rgb{0.86f, 0.90f, 0.86f};
+        if (std::abs(lu) < 0.015f && std::abs(lv) < 0.3f) t.color = Rgb{0.6f, 0.7f, 0.6f};
+    }
+    return t;
+}
+
+Recipe settlementRecipe(const std::string& name, std::uint32_t seed) {
+    using R = Rgb;
+    if (name == "blackstone_bricks") return [=](float u, float v) { return bricksTexel(u, v, seed, 3, R{0.17f, 0.16f, 0.19f}, R{0.08f, 0.07f, 0.09f}); };
+    if (name == "cracked_blackstone") {
+        return [=](float u, float v) {
+            Texel t = bricksTexel(u, v, seed, 3, R{0.19f, 0.17f, 0.20f}, R{0.08f, 0.07f, 0.09f});
+            const Cell c = voronoi(u, v, 3, seed + 7u, 1.0f);
+            const float crack = 1.0f - smooth(0.0f, 0.025f, c.f2 - c.f1);
+            t.color = mix(t.color, R{0.02f, 0.02f, 0.03f}, crack * 0.9f);
+            t.height -= crack * 0.3f;
+            return t;
+        };
+    }
+    if (name == "banner_skull") return [=](float u, float v) { return settlementBannerTexel(u, v, seed, R{0.10f, 0.09f, 0.10f}, 0); };
+    if (name == "banner_purple") return [=](float u, float v) { return settlementBannerTexel(u, v, seed, R{0.36f, 0.12f, 0.48f}, 1); };
+    if (name == "banner_green") return [=](float u, float v) { return settlementBannerTexel(u, v, seed, R{0.14f, 0.46f, 0.26f}, 2); };
+    if (name == "hide_tent") {
+        return [=](float u, float v) {
+            // Pieles cosidas: parches pardos de varios tonos con costuras.
+            const Cell c = voronoi(u, v, 3, seed + 3u, 0.8f);
+            const float k = idRand(c.id, 4);
+            Texel t = clothTexel(u, v, seed, mix(R{0.50f, 0.36f, 0.22f}, R{0.66f, 0.52f, 0.34f}, k));
+            const float seam = 1.0f - smooth(0.0f, 0.03f, c.f2 - c.f1);
+            if (seam > 0.5f) {
+                t.color = R{0.25f, 0.17f, 0.10f};
+                t.height -= 0.15f;
+            }
+            return t;
+        };
+    }
+    if (name == "palisade") {
+        return [=](float u, float v) {
+            Texel t = logBarkTexel(u, v, seed, R{0.40f, 0.29f, 0.18f}, 12.0f);
+            if (std::abs(u - 0.5f) > 0.46f) t.color = t.color * 0.6f;  // junta entre troncos
+            return t;
+        };
+    }
+    if (name == "palisade_top") return [=](float u, float v) { return logTopTexel(u, v, seed, R{0.62f, 0.47f, 0.30f}, R{0.36f, 0.26f, 0.16f}); };
+    if (name == "soul_brazier" || name == "soul_brazier_top") {
+        const bool top = name == "soul_brazier_top";
+        return [=](float u, float v) {
+            Texel t = brazierTexel(u, v, seed, top);
+            if (t.emission > 0.0f) {  // llamas verdes
+                const float k = (t.color.r + t.color.g + t.color.b) / 3.0f;
+                t.color = R{0.25f + k * 0.35f, 0.75f + k * 0.25f, 0.55f + k * 0.2f};
+            }
+            return t;
+        };
+    }
+    if (name == "gravestone" || name == "gravestone_top") {
+        const bool top = name == "gravestone_top";
+        return [=](float u, float v) {
+            Texel t = stoneTexel(u, v, seed, R{0.52f, 0.52f, 0.54f});
+            if (top) {
+                t.alpha = std::abs(v - 0.5f) < 0.12f && std::abs(u - 0.5f) < 0.36f ? 1.0f : 0.0f;
+                return t;
+            }
+            // Lapida redondeada sobre un zocalo; una cruz grabada.
+            const float dx = u - 0.5f;
+            const bool slab = std::abs(dx) < 0.32f && v > 0.22f && (v > 0.4f || std::hypot(dx, (v - 0.4f) * 1.4f) < 0.32f);
+            const bool base = v > 0.86f && std::abs(dx) < 0.42f;
+            t.alpha = slab || base ? 1.0f : 0.0f;
+            if ((std::abs(dx) < 0.035f && v > 0.34f && v < 0.7f) || (std::abs(v - 0.46f) < 0.03f && std::abs(dx) < 0.14f)) {
+                t.color = t.color * 0.55f;
+                t.height -= 0.25f;
+            }
+            return t;
+        };
+    }
+    if (name == "skull_pile") {
+        return [=](float u, float v) {
+            Texel t;
+            t.alpha = 0.0f;
+            t.color = R{0.90f, 0.87f, 0.78f};
+            t.roughness = 0.75f;
+            static constexpr float kSkulls[4][3] = {{0.3f, 0.82f, 0.13f}, {0.7f, 0.82f, 0.13f}, {0.5f, 0.6f, 0.14f}, {0.5f, 0.86f, 0.11f}};
+            for (const auto& s : kSkulls) {
+                bool hole = false;
+                if (skullMask(u, v, s[0], s[1], s[2], hole)) {
+                    t.alpha = 1.0f;
+                    t.color = hole ? R{0.08f, 0.07f, 0.07f} : R{0.90f, 0.87f, 0.78f} * (0.9f + fbm(u, v, 8, 2, seed) * 0.2f);
+                }
+            }
+            return t;
+        };
+    }
+    if (name == "elderwood_planks") return [=](float u, float v) { return planksTexel(u, v, seed, R{0.86f, 0.80f, 0.64f}); };
+    return {};
+}
+
+bool settlementKeepsPattern(const std::string& name) {
+    static const char* const kNames[] = {"banner_skull", "banner_purple", "banner_green", "soul_brazier", "soul_brazier_top",
+                                         "gravestone", "hide_tent"};
+    for (const char* n : kNames) {
+        if (name == n) return true;
+    }
+    return false;
+}
+
+// --- Cuevas inmensas (GeneratorCaves.cpp) ------------------------------------------------
+
+// Punta de piedra (estalactita: ancha arriba; estalagmita: ancha abajo) con anillos.
+Texel spikeTexel(float u, float v, std::uint32_t seed, Rgb tone, bool down) {
+    Texel t;
+    t.alpha = 0.0f;
+    t.height = 1.0f;
+    t.roughness = 0.6f;
+    const float along = down ? v : 1.0f - v;  // 0 en la base, 1 en la punta
+    const auto spike = [&](float cx, float base_w, float len) {
+        if (along > len) return false;
+        const float k = along / len;
+        const float w = base_w * (1.0f - k) + 0.012f;
+        const float wob = fbm(0.0f, v, 4, 2, seed) * 0.025f;
+        return std::abs(u - cx - wob) < w;
+    };
+    if (spike(0.5f, 0.26f, 0.96f) || spike(0.24f, 0.1f, 0.5f) || spike(0.77f, 0.08f, 0.38f)) {
+        t.alpha = 1.0f;
+        const float rings = std::sin(along * 38.0f + fbm(u, v, 6, 2, seed + 4u) * 2.0f) * 0.06f;
+        t.color = tone * (0.82f + fbm01(u, v, 8, 3, seed + 2u) * 0.28f + rings) * (1.0f - along * 0.18f);
+        t.height = 0.7f + rings;
+    }
+    return t;
+}
+
+// Enredadera luminosa: tallos que cuelgan con hojas y bayas que brillan.
+// LIANAS: `entera` = tramo con otra liana debajo: hebras de borde a borde (sin puntas). La ondulacion es periodica
+// en v (2 vueltas por bloque) para que los tramos apilados encajen.
+Texel glowVinesTexel(float u, float v, std::uint32_t seed, bool entera = false) {
+    Texel t;
+    t.alpha = 0.0f;
+    t.height = 1.0f;
+    t.roughness = 0.7f;
+    for (int i = 0; i < 4; ++i) {
+        const float x = 0.14f + 0.24f * static_cast<float>(i) + std::sin(v * 12.566371f + static_cast<float>(i) * 2.1f) * 0.035f;
+        const float end = entera ? 2.0f : 0.75f + rand01(i, 3, seed) * 0.25f;
+        if (v > end) continue;
+        if (std::abs(u - x) < 0.022f) {
+            t.alpha = 1.0f;
+            t.color = Rgb{0.18f, 0.40f, 0.20f} * (0.85f + fbm(u, v, 12, 2, seed) * 0.2f);
+        }
+        // Hojas alternas.
+        const float leaf_v = std::fmod(v * 7.0f + rand01(i, 4, seed), 1.0f);
+        const float side = (static_cast<int>(v * 7.0f + rand01(i, 4, seed)) % 2 == 0) ? 1.0f : -1.0f;
+        const float lx = (u - x) * side;
+        if (lx > 0.0f && lx < 0.08f && std::abs(leaf_v - 0.5f) < 0.16f * (1.0f - lx / 0.08f)) {
+            t.alpha = 1.0f;
+            t.color = Rgb{0.22f, 0.55f, 0.26f};
+        }
+        // Bayas luminosas.
+        const float bv = std::fmod(v * 4.0f + rand01(i, 5, seed) * 3.0f, 1.0f);
+        const float dx = u - x - side * 0.05f, dy = (bv - 0.5f) / 4.0f;
+        if (dx * dx + dy * dy < 0.0011f) {
+            t.alpha = 1.0f;
+            t.color = Rgb{1.0f, 0.78f, 0.32f};
+            t.emission = 1.0f;
+        }
+    }
+    return t;
+}
+
+Recipe caveRecipe(const std::string& name, std::uint32_t seed) {
+    if (name == "deepstone") {
+        return [=](float u, float v) {
+            Texel t = stoneTexel(u, v, seed, Rgb{0.27f, 0.27f, 0.31f});
+            const float layers = std::sin((v + fbm(u, v, 3, 2, seed + 9u) * 0.06f) * kTau * 4.0f);
+            t.color = t.color * (0.94f + layers * 0.06f);
+            t.height += layers * 0.05f;
+            return t;
+        };
+    }
+    if (name == "dripstone") {
+        return [=](float u, float v) {
+            Texel t = stoneTexel(u, v, seed, Rgb{0.56f, 0.45f, 0.36f});
+            const float streaks = fbm(u * 6.0f, v, 2, 3, seed + 5u);
+            t.color = t.color * (0.9f + streaks * 0.12f);
+            t.height = 0.5f + streaks * 0.25f;
+            t.roughness = 0.65f;
+            return t;
+        };
+    }
+    if (name == "stalactite") return [=](float u, float v) { return spikeTexel(u, v, seed, Rgb{0.60f, 0.49f, 0.39f}, true); };
+    if (name == "stalagmite") return [=](float u, float v) { return spikeTexel(u, v, seed, Rgb{0.58f, 0.47f, 0.37f}, false); };
+    if (name == "glow_vines") return [=](float u, float v) { return glowVinesTexel(u, v, seed); };
+    if (name == "glow_vines_low") return [=](float u, float v) { return glowVinesTexel(u, v, seed, true); };  // LIANAS
+    return {};
+}
+
+// --- Oceanos hondos ---------------------------------------------------------------------
+
+// Kelp: un tallo que ondula (se repite arriba y abajo: las columnas se empalman)
+// con hojas alargadas alternas y alguna vejiga.
+Texel kelpTexel(float u, float v, std::uint32_t seed) {
+    Texel t;
+    t.alpha = 0.0f;
+    t.height = 1.0f;
+    t.roughness = 0.55f;
+    const float x = 0.5f + std::sin(v * kTau) * 0.06f;
+    if (std::abs(u - x) < 0.035f) {
+        t.alpha = 1.0f;
+        t.color = Rgb{0.30f, 0.38f, 0.12f} * (0.85f + fbm(u, v, 8, 2, seed) * 0.15f);
+    }
+    for (int i = 0; i < 4; ++i) {
+        const float side = (i % 2 == 0) ? 1.0f : -1.0f;
+        const float v0 = 0.125f + 0.25f * static_cast<float>(i);
+        const float bx = 0.5f + std::sin(v0 * kTau) * 0.06f;
+        // Hoja: una elipse inclinada hacia arriba que sale del tallo.
+        const float lx = (u - bx) * side, ly = v - v0 + lx * 0.55f;
+        if (lx > 0.0f && lx < 0.36f) {
+            const float w = 0.075f * std::sin(lx / 0.36f * 3.14159f);
+            if (std::abs(ly) < w) {
+                t.alpha = 1.0f;
+                t.color = Rgb{0.36f, 0.50f, 0.16f} * (0.8f + 0.3f * (1.0f - std::abs(ly) / std::max(w, 1e-4f)));
+            }
+        }
+        const float dx = u - bx - side * 0.05f, dy = v - v0 - 0.02f;
+        if (dx * dx + dy * dy < 0.0012f) {
+            t.alpha = 1.0f;
+            t.color = Rgb{0.55f, 0.52f, 0.20f};
+        }
+    }
+    return t;
+}
+
+// Abanico de coral: ramas que salen de la base y se abren hacia arriba.
+Texel coralFanTexel(float u, float v, std::uint32_t seed, Rgb tone) {
+    Texel t;
+    t.alpha = 0.0f;
+    t.height = 1.0f;
+    t.roughness = 0.6f;
+    const float dx = u - 0.5f, dy = 0.97f - v;
+    if (dy < 0.0f) return t;
+    const float r = std::hypot(dx, dy);
+    const float a = std::atan2(dx, dy);  // 0 hacia arriba
+    if (r > 0.82f || std::abs(a) > 1.05f) return t;
+    const float ribs = std::abs(std::sin(a * 9.0f + fbm(u, v, 4, 2, seed) * 0.6f));
+    const float mesh = std::abs(std::sin(r * 38.0f));
+    const bool rib = ribs < 0.16f + r * 0.05f || r < 0.08f;
+    const bool web = r > 0.2f && mesh < 0.10f && r < 0.8f;
+    const float edge = 0.62f + fbm(u, v, 6, 2, seed + 3u) * 0.16f;
+    if ((rib && r < edge + 0.12f) || (web && r < edge)) {
+        t.alpha = 1.0f;
+        t.color = tone * (0.75f + 0.35f * r);
+    }
+    return t;
+}
+
+// Bloque de coral: superficie de poros (celdas) con bordes claros.
+Texel coralTexel(float u, float v, std::uint32_t seed, Rgb tone, int cells) {
+    const Cell c = voronoi(u, v, cells, seed, 0.8f);
+    const float pore = smooth(0.32f, 0.12f, c.f1);
+    const float rim = 1.0f - smooth(0.0f, 0.06f, c.f2 - c.f1);
+    Texel t;
+    t.color = mix(tone * (0.92f + idRand(c.id, 2) * 0.14f), tone * 0.55f, pore) + Rgb{0.06f, 0.05f, 0.05f} * rim;
+    t.height = 0.65f - pore * 0.45f + rim * 0.1f;
+    t.roughness = 0.8f;
+    return t;
+}
+
+Recipe oceanRecipe(const std::string& name, std::uint32_t seed) {
+    if (name == "kelp") return [=](float u, float v) { return kelpTexel(u, v, seed); };
+    if (name == "sea_grass") return [=](float u, float v) { return tallGrassTexel(u, v, seed, Rgb{0.26f, 0.55f, 0.30f}); };
+    if (name == "coral_block") return [=](float u, float v) { return coralTexel(u, v, seed, Rgb{0.90f, 0.42f, 0.58f}, 7); };
+    if (name == "coral_tube") return [=](float u, float v) { return coralTexel(u, v, seed, Rgb{0.95f, 0.58f, 0.20f}, 4); };
+    if (name == "coral_fan") return [=](float u, float v) { return coralFanTexel(u, v, seed, Rgb{0.62f, 0.30f, 0.85f}); };
+    if (name == "sea_silt") {
+        return [=](float u, float v) {
+            Texel t = sandTexel(u, v, seed, Rgb{0.26f, 0.29f, 0.32f});
+            t.roughness = 0.95f;
+            return t;
+        };
+    }
+    if (name == "sea_glow") {
+        return [=](float u, float v) {
+            // Anemona: tentaculos cortos con las puntas que brillan.
+            Texel t = tallGrassTexel(u, std::clamp(v * 1.6f - 0.6f, 0.0f, 1.0f), seed, Rgb{0.30f, 0.80f, 0.85f});
+            if (v < 0.375f) t.alpha = 0.0f;
+            if (t.alpha > 0.5f) t.emission = v < 0.6f ? 1.0f : 0.45f;
+            return t;
+        };
+    }
+    return {};
+}
+
+// --- Rieles y senales de arcanita (ids 211..230) ----------------------------------------------
+// Las piezas finas leen la textura por la posicion: las traviesas y los carriles
+// son casi lisos (madera oscura, hierro); la arcanita es un mineral turquesa que
+// brilla cuando lleva senal.
+
+const Rgb kArcanite{0.24f, 0.92f, 0.84f};
+
+Texel arcaniteDust(float u, float v, std::uint32_t seed, bool lit) {
+    Texel t;
+    const float grain = fbm(u, v, 24, 2, seed);
+    const float spark = rand01(static_cast<int>(u * 64.0f), static_cast<int>(v * 64.0f), seed + 3u);
+    if (lit) {
+        t.color = mix(kArcanite, Rgb{0.85f, 1.0f, 0.98f}, std::clamp(spark - 0.7f, 0.0f, 0.3f) * 2.0f) * (0.9f + grain * 0.2f);
+        t.emission = 0.75f + (spark > 0.85f ? 0.25f : 0.0f);
+    } else {
+        t.color = Rgb{0.13f, 0.33f, 0.34f} * (0.8f + grain * 0.35f);
+        if (spark > 0.9f) t.color = Rgb{0.30f, 0.62f, 0.60f};
+    }
+    t.roughness = 0.55f;
+    t.height = 0.5f + grain * 0.2f;
+    return t;
+}
+
+Recipe railRecipe(const std::string& name, std::uint32_t seed) {
+    if (name == "rail_tie") {
+        return [=](float u, float v) {
+            Texel t = planksTexel(u, v, seed, Rgb{0.33f, 0.22f, 0.13f});
+            t.roughness = 0.9f;
+            return t;
+        };
+    }
+    if (name == "rail_iron") {
+        return [=](float u, float v) {
+            Texel t = ironTexel(u, v, seed, Rgb{0.36f, 0.35f, 0.34f});
+            t.color = t.color * (0.85f + 0.3f * fbm(u, v, 12, 2, seed + 1u));
+            t.roughness = 0.35f;
+            return t;
+        };
+    }
+    if (name == "rail_surge") {  // carril dorado con vetas de arcanita
+        return [=](float u, float v) {
+            Texel t = ironTexel(u, v, seed, Rgb{0.85f, 0.66f, 0.24f});
+            t.metal = 0.9f;
+            t.roughness = 0.3f;
+            const float vein = std::abs(std::sin((u + v * 0.35f) * kTau * 4.0f + fbm(u, v, 6, 2, seed) * 3.0f));
+            if (vein < 0.12f) {
+                t.color = kArcanite;
+                t.emission = 0.8f;
+                t.metal = 0.0f;
+            }
+            return t;
+        };
+    }
+    if (name == "rail_drag") {  // zapatas de freno: hierro oscuro rayado y oxido
+        return [=](float u, float v) {
+            Texel t = ironTexel(u, v, seed, Rgb{0.30f, 0.17f, 0.10f});
+            t.color = t.color * (0.8f + 0.4f * std::abs(std::sin(v * kTau * 8.0f)));
+            t.roughness = 0.85f;
+            t.metal = 0.3f;
+            return t;
+        };
+    }
+    if (name == "rail_switch") {  // cabeza roja y blanca de la palanca del cambio
+        return [=](float u, float v) {
+            Texel t = ironTexel(u, v, seed, Rgb{0.80f, 0.12f, 0.10f});
+            t.metal = 0.2f;
+            t.roughness = 0.5f;
+            if (std::fmod(u * 4.0f + v * 4.0f, 2.0f) < 1.0f) t.color = Rgb{0.92f, 0.90f, 0.86f};
+            return t;
+        };
+    }
+    if (name == "rail_sensor") {  // placa de piedra runica
+        return [=](float u, float v) {
+            Texel t = runeStoneTexel(u, v, seed);
+            if (t.emission > 0.0f) t.color = kArcanite;
+            return t;
+        };
+    }
+    if (name == "buffer_stop") {  // viga del tope: franjas rojas y blancas
+        return [=](float u, float v) {
+            Texel t = planksTexel(u, v, seed, Rgb{0.70f, 0.14f, 0.10f});
+            if (std::fmod((u + v) * 4.0f, 2.0f) < 1.0f) t.color = Rgb{0.90f, 0.88f, 0.82f} * (0.9f + fbm(u, v, 8, 2, seed) * 0.15f);
+            return t;
+        };
+    }
+    if (name == "arcanite_ore") return [=](float u, float v) { return oreTexel(u, v, seed, kArcanite, 0.0f, 0.25f, 0.55f); };
+    if (name == "arcanite_trace") return [=](float u, float v) { return arcaniteDust(u, v, seed, false); };
+    if (name == "arcanite_trace_lit") return [=](float u, float v) { return arcaniteDust(u, v, seed, true); };
+    if (name == "rune_lever_base" || name == "null_rune_base" || name == "echo_relay_side") {
+        return [=](float u, float v) {
+            Texel t = stoneTexel(u, v, seed, Rgb{0.24f, 0.22f, 0.28f});
+            if (inFrame(u, v, 0.06f)) t.color = t.color * 0.7f;
+            return t;
+        };
+    }
+    if (name == "rune_lever_handle" || name == "rune_lever_handle_on") {
+        const bool on = name == "rune_lever_handle_on";
+        return [=](float u, float v) {
+            // Mango de madera con la punta (filas de arriba) de arcanita.
+            if (v < 0.35f) return arcaniteDust(u, v, seed, on);
+            return stickTexel(u, v, seed);
+        };
+    }
+    if (name == "rune_button" || name == "rune_button_on") {
+        const bool on = name == "rune_button_on";
+        return [=](float u, float v) {
+            Texel t = stoneTexel(u, v, seed, Rgb{0.30f, 0.28f, 0.34f});
+            if (std::hypot(u - 0.5f, v - 0.5f) < 0.22f) {
+                t.color = on ? kArcanite : Rgb{0.18f, 0.42f, 0.42f};
+                t.emission = on ? 0.9f : 0.0f;
+            }
+            return t;
+        };
+    }
+    if (name == "trigger_plate") {
+        return [=](float u, float v) {
+            Texel t = stoneTexel(u, v, seed, Rgb{0.42f, 0.41f, 0.40f});
+            if (inFrame(u, v, 0.08f)) t.color = t.color * 0.75f;
+            const float r = std::hypot(u - 0.5f, v - 0.5f);
+            if (r > 0.18f && r < 0.22f) t.color = Rgb{0.18f, 0.42f, 0.42f};
+            return t;
+        };
+    }
+    if (name == "signal_lamp") {
+        return [=](float u, float v) {
+            Texel t = lampPaneTexel(u, v, seed, Rgb{0.16f, 0.30f, 0.30f});
+            t.emission = 0.0f;
+            return t;
+        };
+    }
+    if (name == "signal_lamp_lit") return [=](float u, float v) { return lampPaneTexel(u, v, seed, Rgb{0.55f, 1.0f, 0.92f}); };
+    if (name == "null_rune_crystal") return [=](float u, float v) { return crystalTexel(u, v, seed, Rgb{0.20f, 0.26f, 0.34f}, 0.0f); };
+    if (name == "null_rune_crystal_lit") return [=](float u, float v) { return crystalTexel(u, v, seed, Rgb{0.45f, 0.65f, 1.0f}, 0.9f); };
+    if (name == "echo_relay_top") {
+        return [=](float u, float v) {
+            Texel t = stoneTexel(u, v, seed, Rgb{0.26f, 0.24f, 0.30f});
+            // Dos ondas de eco grabadas.
+            const float r = std::hypot(u - 0.5f, (v - 0.5f) * 1.6f);
+            if (std::abs(std::fmod(r * 8.0f, 1.0f) - 0.5f) < 0.08f && r < 0.45f) t.color = Rgb{0.18f, 0.42f, 0.42f};
+            return t;
+        };
+    }
+    if (name == "echo_relay_crystal") return [=](float u, float v) { return crystalTexel(u, v, seed, Rgb{0.16f, 0.36f, 0.34f}, 0.0f); };
+    if (name == "echo_relay_crystal_lit") return [=](float u, float v) { return crystalTexel(u, v, seed, kArcanite, 0.9f); };
+    return {};
+}
+
+// --- Reino Profundo (GeneratorDeep.cpp) -------------------------------------------------
+
+// Ladrillos de los Delvers: sillares grandes oscuros con una veta dorada en las juntas.
+Texel delverBricksTexel(float u, float v, std::uint32_t seed, bool cracked) {
+    Texel t = bricksTexel(u, v, seed, 2, Rgb{0.22f, 0.21f, 0.27f}, Rgb{0.55f, 0.44f, 0.20f});
+    if (cracked) {
+        const Cell c = voronoi(u, v, 3, seed + 7u, 1.0f);
+        const float crack = 1.0f - smooth(0.0f, 0.03f, c.f2 - c.f1);
+        t.color = mix(t.color, Rgb{0.03f, 0.03f, 0.04f}, crack * 0.9f);
+        t.height -= crack * 0.35f;
+    }
+    return t;
+}
+
+Recipe deepRecipe(const std::string& name, std::uint32_t seed) {
+    if (name == "umbral_stone") {
+        return [=](float u, float v) {
+            Texel t = stoneTexel(u, v, seed, Rgb{0.20f, 0.21f, 0.27f});
+            const float layers = std::sin((v + fbm(u, v, 3, 2, seed + 9u) * 0.08f) * kTau * 3.0f);
+            t.color = t.color * (0.93f + layers * 0.07f);
+            return t;
+        };
+    }
+    if (name == "delver_bricks") return [=](float u, float v) { return delverBricksTexel(u, v, seed, false); };
+    if (name == "cracked_delver_bricks") return [=](float u, float v) { return delverBricksTexel(u, v, seed, true); };
+    if (name == "glyph_stone") {
+        return [=](float u, float v) {
+            Texel t = runeStoneTexel(u, v, seed);
+            if (t.emission > 0.0f) t.color = Rgb{0.45f, 1.0f, 0.82f};
+            return t;
+        };
+    }
+    if (name == "lore_tablet") {
+        return [=](float u, float v) {
+            // Losa clara con renglones de runas doradas y marco.
+            Texel t = stoneTexel(u, v, seed, Rgb{0.46f, 0.42f, 0.36f});
+            if (inFrame(u, v, 0.08f)) {
+                t.color = Rgb{0.22f, 0.21f, 0.27f};
+                return t;
+            }
+            const float row = std::fmod(v * 6.0f, 1.0f);
+            const int glyph = static_cast<int>(std::floor(u * 9.0f)) + static_cast<int>(std::floor(v * 6.0f)) * 9;
+            if (v > 0.15f && v < 0.88f && row > 0.3f && row < 0.75f && rand01(glyph, 3, seed) > 0.25f &&
+                std::abs(std::fmod(u * 9.0f, 1.0f) - 0.5f) < 0.3f) {
+                t.color = Rgb{0.95f, 0.76f, 0.30f};
+                t.emission = 0.7f;
+                t.height -= 0.15f;
+            }
+            return t;
+        };
+    }
+    if (name == "mithril_ore") return [=](float u, float v) { return oreTexel(u, v, seed, Rgb{0.70f, 0.92f, 1.0f}, 0.8f, 0.2f, 0.45f); };
+    if (name == "duskroot") {
+        return [=](float u, float v) {
+            Texel t = glowVinesTexel(u, v, seed);
+            if (t.alpha > 0.0f && t.emission > 0.0f) t.color = Rgb{0.55f, 0.75f, 1.0f};
+            return t;
+        };
+    }
+    // Capas hondas: adamantita (roja violacea), roca del Hueco (palida) y la raiz viva del Corazon.
+    if (name == "adamant_ore") return [=](float u, float v) { return oreTexel(u, v, seed, Rgb{0.95f, 0.30f, 0.55f}, 0.9f, 0.18f, 0.55f); };
+    if (name == "hollow_stone") {
+        return [=](float u, float v) {
+            Texel t = stoneTexel(u, v, seed, Rgb{0.58f, 0.56f, 0.66f});
+            const float veins = std::abs(fbm(u, v, 8, 2, seed + 5u) - 0.5f);
+            if (veins < 0.025f) t.color = t.color * 0.72f;  // grietas finas
+            return t;
+        };
+    }
+    if (name == "heart_root") {
+        return [=](float u, float v) {
+            Texel t = logBarkTexel(u, v, seed, Rgb{0.36f, 0.12f, 0.10f}, 9.0f);
+            const float vein = std::abs(std::sin((u + fbm(u, v, 3, 2, seed + 3u) * 0.3f) * kTau * 3.0f));
+            if (vein < 0.12f) {
+                t.color = Rgb{1.0f, 0.45f, 0.28f};
+                t.emission = 1.0f;
+            }
+            return t;
+        };
+    }
+    if (name == "heart_root_top") {
+        return [=](float u, float v) {
+            Texel t = logTopTexel(u, v, seed, Rgb{0.85f, 0.35f, 0.25f}, Rgb{0.36f, 0.12f, 0.10f});
+            const float r = std::hypot(u - 0.5f, v - 0.5f);
+            if (r < 0.12f) {
+                t.color = Rgb{1.0f, 0.62f, 0.35f};
+                t.emission = 1.0f;
+            }
+            return t;
+        };
+    }
+    return {};
+}
+
+// --- NOCHE-MUNDO: biomas frondosos y construccion (Blocks.cpp addLushBlocks) -----------------
+// (El juego usa sus PNG pixel art de Tools/texturas_mundo.py; esto es lo que sale sin ellos.)
+
+// Cesped de un color propio (sin tinte del bioma): briznas como grass_top recoloreadas.
+Texel tonedGrassTop(float u, float v, std::uint32_t seed, Rgb tone) {
+    Texel t = grassTopTexel(u, v, seed);
+    const float l = (t.color.r + t.color.g + t.color.b) / (0.33f + 0.52f + 0.20f);
+    t.color = tone * l;
+    return t;
+}
+// Lado: tierra con el borde de arriba del color de la superficie.
+Texel tonedGrassSide(float u, float v, std::uint32_t seed, Rgb tone, float depth) {
+    Texel t = dirtTexel(u, v, seed);
+    const float edge = depth + fbm(u, 0.0f, 8, 3, seed + 21u) * 0.07f + (rand01(static_cast<int>(u * 48.0f), 0, seed) - 0.5f) * 0.06f;
+    if (v < edge) {
+        const Texel top = tonedGrassTop(u, v, seed + 5u, tone);
+        const float k = smooth(edge, edge - 0.03f, v);
+        t.color = mix(t.color, top.color * 0.95f, k);
+        t.height = t.height * (1.0f - k) + (top.height * 0.5f + 0.5f) * k;
+    }
+    return t;
+}
+// Hojarasca: hojas sueltas de otono sobre la tierra.
+Texel litterTexel(float u, float v, std::uint32_t seed) {
+    Texel t = dirtTexel(u, v, seed);
+    const Cell c = voronoi(u, v, 9, seed + 3u, 1.0f);
+    const float leaf = smooth(0.48f, 0.28f, c.f1);
+    if (leaf > 0.0f) {
+        static constexpr Rgb kTones[4] = {{0.86f, 0.42f, 0.12f}, {0.74f, 0.20f, 0.12f}, {0.92f, 0.70f, 0.20f}, {0.55f, 0.32f, 0.14f}};
+        const Rgb tone = kTones[static_cast<int>(idRand(c.id, 1) * 3.999f)];
+        t.color = mix(t.color, tone * (0.8f + idRand(c.id, 2) * 0.3f), std::min(1.0f, leaf * 1.6f));
+        t.height += leaf * 0.2f;
+    }
+    return t;
+}
+// Liana: cuerdas verdes que cuelgan con hojitas.
+Texel vinesTexel(float u, float v, std::uint32_t seed, Rgb tone) {
+    Texel t;
+    t.alpha = 0.0f;
+    t.height = 1.0f;
+    t.roughness = 0.7f;
+    for (int i = 0; i < 4; ++i) {
+        const float x = 0.14f + 0.24f * static_cast<float>(i) + std::sin(v * 9.0f + static_cast<float>(i) * 2.0f) * 0.03f;
+        const float d = std::abs(u - x);
+        if (d < 0.022f) {
+            t.alpha = 1.0f;
+            t.color = tone * 0.75f;
+        } else if (d < 0.08f && std::fmod(v * 7.0f + rand01(i, 0, seed) * 3.0f, 1.0f) < 0.35f) {
+            t.alpha = 1.0f;  // hojas a los lados
+            t.color = tone * (0.9f + rand01(static_cast<int>(v * 30.0f), i, seed) * 0.3f);
+        }
+    }
+    return t;
+}
+// Petalos caidos: manchas rosas sueltas cerca del suelo.
+Texel petalsTexel(float u, float v, std::uint32_t seed) {
+    Texel t;
+    t.alpha = 0.0f;
+    t.height = 1.0f;
+    t.roughness = 0.6f;
+    if (v < 0.55f) return t;
+    const Cell c = voronoi(u, v, 7, seed, 1.0f);
+    if (c.f1 < 0.22f && idRand(c.id, 1) > 0.3f) {
+        t.alpha = 1.0f;
+        t.color = mix(Rgb{0.98f, 0.70f, 0.82f}, Rgb{1.0f, 0.88f, 0.93f}, idRand(c.id, 2));
+    }
+    return t;
+}
+// Nenufar visto desde arriba: hoja redonda con una muesca y a veces una flor.
+Texel lilyTexel(float u, float v, std::uint32_t seed) {
+    Texel t;
+    const float dx = u - 0.5f, dy = v - 0.5f;
+    const float r = std::hypot(dx, dy);
+    const float a = std::atan2(dy, dx);
+    t.alpha = (r < 0.44f && !(a > -0.25f && a < 0.25f && r > 0.05f)) ? 1.0f : 0.0f;
+    t.color = Rgb{0.24f, 0.52f, 0.20f} * (0.85f + 0.2f * std::cos(a * 9.0f) * smooth(0.1f, 0.4f, r));
+    if (std::hypot(u - 0.36f, v - 0.62f) < 0.08f) t.color = Rgb{0.98f, 0.78f, 0.88f};
+    t.height = 0.6f;
+    t.roughness = 0.45f;
+    (void)seed;
+    return t;
+}
+// Vidriera: emplomado oscuro y vidrios de tonos de un color.
+Texel stainedTexel(float u, float v, std::uint32_t seed, Rgb tone) {
+    const Cell c = voronoi(u, v, 3, seed, 0.8f);
+    const float lead = 1.0f - smooth(0.0f, 0.05f, c.f2 - c.f1);
+    const float border = std::min(std::min(u, 1.0f - u), std::min(v, 1.0f - v));
+    Texel t;
+    const float k = idRand(c.id, 1);
+    t.color = mix(tone * (0.75f + k * 0.4f), Rgb{1.0f, 0.95f, 0.75f}, k > 0.85f ? 0.5f : 0.0f);
+    if (lead > 0.5f || border < 0.05f) t.color = Rgb{0.12f, 0.12f, 0.14f};
+    t.height = lead > 0.5f ? 0.8f : 0.5f;
+    t.roughness = 0.1f;
+    t.reflectance = 0.9f;
+    t.emission = lead > 0.5f ? 0.0f : 0.08f;
+    return t;
+}
+
+Recipe lushRecipe(const std::string& name, std::uint32_t seed) {
+    using R = Rgb;
+    if (name == "jungle_grass_top") return [=](float u, float v) { return tonedGrassTop(u, v, seed, R{0.22f, 0.62f, 0.16f}); };
+    if (name == "jungle_grass_side") return [=](float u, float v) { return tonedGrassSide(u, v, seed, R{0.22f, 0.62f, 0.16f}, 0.22f); };
+    if (name == "blossom_grass_top") {
+        return [=](float u, float v) {
+            Texel t = tonedGrassTop(u, v, seed, R{0.45f, 0.70f, 0.30f});
+            const Cell c = voronoi(u, v, 10, seed + 7u, 1.0f);
+            if (c.f1 < 0.16f && idRand(c.id, 1) > 0.55f) t.color = R{0.98f, 0.72f, 0.84f};
+            return t;
+        };
+    }
+    if (name == "blossom_grass_side") return [=](float u, float v) { return tonedGrassSide(u, v, seed, R{0.45f, 0.70f, 0.30f}, 0.16f); };
+    if (name == "swamp_grass_top") return [=](float u, float v) { return tonedGrassTop(u, v, seed, R{0.34f, 0.42f, 0.18f}); };
+    if (name == "swamp_grass_side") return [=](float u, float v) { return tonedGrassSide(u, v, seed, R{0.34f, 0.42f, 0.18f}, 0.18f); };
+    if (name == "savanna_grass_top") return [=](float u, float v) { return tonedGrassTop(u, v, seed, R{0.72f, 0.66f, 0.30f}); };
+    if (name == "savanna_grass_side") return [=](float u, float v) { return tonedGrassSide(u, v, seed, R{0.72f, 0.66f, 0.30f}, 0.16f); };
+    if (name == "leaf_litter_top") return [=](float u, float v) { return litterTexel(u, v, seed); };
+    if (name == "leaf_litter_side") {
+        return [=](float u, float v) {
+            Texel t = dirtTexel(u, v, seed);
+            if (v < 0.14f + fbm(u, 0.0f, 8, 2, seed + 3u) * 0.06f) t = litterTexel(u, v, seed + 1u);
+            return t;
+        };
+    }
+    if (name == "mud") {
+        return [=](float u, float v) {
+            Texel t = dirtTexel(u, v, seed);
+            t.color = R{t.color.r * 0.62f, t.color.g * 0.60f, t.color.b * 0.58f};
+            t.roughness = 0.45f;  // humedo
+            return t;
+        };
+    }
+    if (name == "jungle_log") return [=](float u, float v) { return logBarkTexel(u, v, seed, R{0.42f, 0.33f, 0.20f}, 9.0f); };
+    if (name == "jungle_log_top") return [=](float u, float v) { return logTopTexel(u, v, seed, R{0.68f, 0.50f, 0.30f}, R{0.40f, 0.31f, 0.19f}); };
+    if (name == "cherry_log") return [=](float u, float v) { return logBarkTexel(u, v, seed, R{0.30f, 0.17f, 0.16f}, 14.0f); };
+    if (name == "cherry_log_top") return [=](float u, float v) { return logTopTexel(u, v, seed, R{0.86f, 0.60f, 0.56f}, R{0.30f, 0.17f, 0.16f}); };
+    if (name == "mangrove_log") return [=](float u, float v) { return logBarkTexel(u, v, seed, R{0.40f, 0.24f, 0.17f}, 10.0f); };
+    if (name == "mangrove_log_top") return [=](float u, float v) { return logTopTexel(u, v, seed, R{0.64f, 0.30f, 0.24f}, R{0.40f, 0.24f, 0.17f}); };
+    if (name == "acacia_log") return [=](float u, float v) { return logBarkTexel(u, v, seed, R{0.42f, 0.38f, 0.34f}, 8.0f); };
+    if (name == "acacia_log_top") return [=](float u, float v) { return logTopTexel(u, v, seed, R{0.80f, 0.42f, 0.22f}, R{0.42f, 0.38f, 0.34f}); };
+    if (name == "jungle_leaves") return [=](float u, float v) { return leavesTexel(u, v, seed, R{0.16f, 0.50f, 0.12f}, 0.2f, 6); };
+    if (name == "cherry_leaves") return [=](float u, float v) { return leavesTexel(u, v, seed, R{0.98f, 0.66f, 0.80f}, 0.2f, 8); };
+    if (name == "mangrove_leaves") return [=](float u, float v) { return leavesTexel(u, v, seed, R{0.26f, 0.44f, 0.16f}, 0.2f, 9); };
+    if (name == "acacia_leaves") return [=](float u, float v) { return leavesTexel(u, v, seed, R{0.42f, 0.56f, 0.16f}, 0.15f, 9); };
+    if (name == "autumn_leaves_orange") return [=](float u, float v) { return leavesTexel(u, v, seed, R{0.92f, 0.46f, 0.10f}, 0.2f, 7); };
+    if (name == "autumn_leaves_red") return [=](float u, float v) { return leavesTexel(u, v, seed, R{0.78f, 0.16f, 0.10f}, 0.2f, 7); };
+    if (name == "autumn_leaves_yellow") return [=](float u, float v) { return leavesTexel(u, v, seed, R{0.96f, 0.78f, 0.18f}, 0.2f, 7); };
+    if (name == "jungle_vines") return [=](float u, float v) { return vinesTexel(u, v, seed, R{0.20f, 0.52f, 0.14f}); };
+    if (name == "blossom_petals") return [=](float u, float v) { return petalsTexel(u, v, seed); };
+    if (name == "lily_pad") return [=](float u, float v) { return lilyTexel(u, v, seed); };
+    if (name == "jungle_planks") return [=](float u, float v) { return planksTexel(u, v, seed, R{0.66f, 0.46f, 0.30f}); };
+    if (name == "cherry_planks") return [=](float u, float v) { return planksTexel(u, v, seed, R{0.88f, 0.62f, 0.58f}); };
+    if (name == "acacia_planks") return [=](float u, float v) { return planksTexel(u, v, seed, R{0.78f, 0.42f, 0.22f}); };
+    if (name == "mangrove_planks") return [=](float u, float v) { return planksTexel(u, v, seed, R{0.52f, 0.24f, 0.20f}); };
+    if (name == "white_bricks") return [=](float u, float v) { return bricksTexel(u, v, seed, 4, R{0.90f, 0.88f, 0.84f}, R{0.66f, 0.64f, 0.62f}); };
+    if (name == "sandstone_bricks") return [=](float u, float v) { return bricksTexel(u, v, seed, 3, R{0.86f, 0.75f, 0.52f}, R{0.66f, 0.56f, 0.38f}); };
+    if (name == "quartz_tiles") {
+        return [=](float u, float v) {
+            Texel t = plainTexel(u, v, seed, R{0.94f, 0.92f, 0.90f}, 0.03f);
+            const float gu = std::fmod(u * 2.0f, 1.0f), gv = std::fmod(v * 2.0f, 1.0f);
+            if (std::min({gu, 1.0f - gu, gv, 1.0f - gv}) < 0.03f) {
+                t.color = R{0.70f, 0.68f, 0.66f};
+                t.height -= 0.3f;
+            }
+            t.roughness = 0.25f;
+            return t;
+        };
+    }
+    if (name == "copper_block" || name == "oxidized_copper") {
+        const bool old = name == "oxidized_copper";
+        return [=](float u, float v) {
+            Texel t = plainTexel(u, v, seed, old ? R{0.32f, 0.66f, 0.56f} : R{0.86f, 0.50f, 0.30f}, 0.06f);
+            const float rivet = std::min(std::min(u, 1.0f - u), std::min(v, 1.0f - v));
+            if (rivet < 0.05f) t.color = t.color * 0.7f;
+            t.metal = old ? 0.2f : 0.9f;
+            t.roughness = old ? 0.7f : 0.35f;
+            return t;
+        };
+    }
+    if (name == "polished_stone" || name == "polished_stone_top") {
+        const bool top = name == "polished_stone_top";
+        return [=](float u, float v) {
+            Texel t = plainTexel(u, v, seed, R{0.60f, 0.60f, 0.62f}, 0.04f);
+            const float border = std::min(std::min(u, 1.0f - u), std::min(v, 1.0f - v));
+            if (border < 0.06f || (!top && std::abs(v - 0.5f) < 0.02f)) {
+                t.color = R{0.44f, 0.44f, 0.46f};
+                t.height -= 0.25f;
+            }
+            t.roughness = 0.45f;
+            return t;
+        };
+    }
+    if (name == "stained_glass_blue") return [=](float u, float v) { return stainedTexel(u, v, seed, R{0.20f, 0.42f, 0.95f}); };
+    if (name == "stained_glass_rose") return [=](float u, float v) { return stainedTexel(u, v, seed, R{0.95f, 0.30f, 0.55f}); };
+    return {};
+}
+
 Recipe recipeFor(const std::string& name) {
     const std::uint32_t seed = static_cast<std::uint32_t>(std::hash<std::string>{}(name) & 0xFFFFFF);
+    if (Recipe r = lushRecipe(name, seed)) return r;  // NOCHE-MUNDO
     if (Recipe r = dimensionRecipe(name, seed)) return r;
     if (Recipe r = structureRecipe(name, seed)) return r;
+    if (Recipe r = lightRecipe(name, seed)) return r;
+    if (Recipe r = settlementRecipe(name, seed)) return r;
+    if (Recipe r = oceanRecipe(name, seed)) return r;
+    if (Recipe r = railRecipe(name, seed)) return r;
+    if (Recipe r = deepRecipe(name, seed)) return r;
     if (name == "stone") return [=](float u, float v) { return stoneTexel(u, v, seed, Rgb{0.47f, 0.47f, 0.46f}); };
     if (name == "dirt") return [=](float u, float v) { return dirtTexel(u, v, seed); };
     if (name == "grass_top") return [=](float u, float v) { return grassTopTexel(u, v, seed); };
@@ -1642,6 +2625,8 @@ Recipe recipeFor(const std::string& name) {
     if (name == "moss") return [=](float u, float v) { return sandTexel(u, v, seed, Rgb{0.32f, 0.52f, 0.2f}); };
     if (name == "red_sand") return [=](float u, float v) { return sandTexel(u, v, seed, Rgb{0.80f, 0.48f, 0.28f}); };
     if (name == "terracotta") return [=](float u, float v) { return terracottaTexel(u, v, seed); };
+    if (Recipe r = wildRecipe(name, seed)) return r;
+    if (Recipe r = caveRecipe(name, seed)) return r;
     // Desconocida: gris liso.
     return [](float, float) { return Texel{}; };
 }
@@ -1761,7 +2746,8 @@ void flatten(const std::string& name, gfx::VoxelTextureLayer& out) {
         cross = cross || d.shape == BlockShape::Cross;
         leaves = leaves || (d.shape == BlockShape::Cube && d.cutout && d.waves);
     }
-    const bool keep_pattern = cross || name.find("_ore") != std::string::npos || name == "torch" || structureKeepsPattern(name);
+    const bool keep_pattern = cross || name.find("_ore") != std::string::npos || name == "torch" || structureKeepsPattern(name) ||
+                              lightKeepsPattern(name) || settlementKeepsPattern(name);
     const std::size_t n = out.albedo.size() / 4;
     if (n == 0) return;
     double sum[4] = {0, 0, 0, 0}, material[4] = {0, 0, 0, 0}, weight = 0.0;
@@ -1792,8 +2778,290 @@ void flatten(const std::string& name, gfx::VoxelTextureLayer& out) {
 
 }  // namespace
 
+// HOJAS: mascara de hojas sueltas (elipses en punta, giradas, que se repiten en los bordes): ~55 % cubierto.
+void fluffMask(std::uint32_t size, std::vector<std::uint8_t>& albedo) {
+    if (albedo.size() < static_cast<std::size_t>(size) * size * 4) return;
+    std::vector<float> cover(static_cast<std::size_t>(size) * size, 0.0f);
+    constexpr int kLeaves = 34;
+    for (int i = 0; i < kLeaves; ++i) {
+        const float cx = rand01(i, 11, 7771u), cy = rand01(i, 12, 7771u);
+        const float len = 0.10f + 0.07f * rand01(i, 13, 7771u), wid = len * (0.42f + 0.18f * rand01(i, 14, 7771u));
+        const float ang = rand01(i, 15, 7771u) * 6.2831853f;
+        const float ca = std::cos(ang), sa = std::sin(ang);
+        for (std::uint32_t py = 0; py < size; ++py) {
+            for (std::uint32_t px = 0; px < size; ++px) {
+                float dx = (static_cast<float>(px) + 0.5f) / static_cast<float>(size) - cx;
+                float dy = (static_cast<float>(py) + 0.5f) / static_cast<float>(size) - cy;
+                dx -= std::round(dx);
+                dy -= std::round(dy);
+                const float u = (dx * ca + dy * sa) / len, v = (-dx * sa + dy * ca) / wid;
+                // hoja en punta: mas estrecha hacia los extremos
+                const float w = 1.0f - u * u;
+                if (w <= 0.0f) continue;
+                if (v * v < w * w) cover[py * size + px] = 1.0f;
+            }
+        }
+    }
+    for (std::size_t i = 0; i < cover.size(); ++i) {
+        const std::uint8_t a = albedo[i * 4 + 3];
+        albedo[i * 4 + 3] = cover[i] > 0.5f ? a : 0;
+    }
+}
+
+namespace {
+
+// PAQUETES-TEXTURAS: imagen de un paquete a size x size. Si es mas pequena y cabe un numero entero de veces
+// (16, 32, 64... -> 256), se amplia por vecino mas cercano: el pixel art sigue nitido. Si no, como loadResized.
+bool loadPackImage(const std::filesystem::path& file, std::uint32_t size, std::vector<std::uint8_t>& out) {
+    std::error_code error;
+    if (file.empty() || !std::filesystem::exists(file, error)) return false;
+    asset::ImageRgba8 image;
+    if (!asset::loadImageRgba8(file, image, 4096) || image.width == 0 || image.height == 0) return false;
+    if (image.width == image.height && image.width <= size && size % image.width == 0) {
+        const std::uint32_t k = size / image.width;
+        out.assign(static_cast<std::size_t>(size) * size * 4, 0);
+        for (std::uint32_t y = 0; y < size; ++y) {
+            for (std::uint32_t x = 0; x < size; ++x) {
+                const std::size_t src = (static_cast<std::size_t>(y / k) * image.width + x / k) * 4;
+                const std::size_t dst = (static_cast<std::size_t>(y) * size + x) * 4;
+                for (std::size_t c = 0; c < 4; ++c) out[dst + c] = image.pixels[src + c];
+            }
+        }
+        return true;
+    }
+    return loadResized(file, size, out);
+}
+
+// Normal (xy), altura (z) y oclusion (w) sacadas del brillo del color: el paquete que solo trae el color no hereda
+// el relieve de la textura original (que tendria otro dibujo).
+void normalFromAlbedo(std::uint32_t size, const std::vector<std::uint8_t>& albedo, std::vector<std::uint8_t>& normal) {
+    const std::size_t n = static_cast<std::size_t>(size) * size;
+    if (albedo.size() < n * 4) return;
+    std::vector<float> h(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        h[i] = (0.299f * albedo[i * 4] + 0.587f * albedo[i * 4 + 1] + 0.114f * albedo[i * 4 + 2]) / 255.0f;
+    }
+    const int s = static_cast<int>(size);
+    const auto at = [&](int x, int y) { return h[static_cast<std::size_t>(wrap(y, s)) * size + static_cast<std::size_t>(wrap(x, s))]; };
+    const float strength = 2.0f * std::max(1.0f, static_cast<float>(size) / 64.0f);
+    normal.assign(n * 4, 0);
+    for (int y = 0; y < s; ++y) {
+        for (int x = 0; x < s; ++x) {
+            float dx = 0.0f, dy = 0.0f;
+            for (int k = -1; k <= 1; ++k) {  // Sobel
+                dx += (at(x + 1, y + k) - at(x - 1, y + k)) * (k == 0 ? 2.0f : 1.0f);
+                dy += (at(x + k, y + 1) - at(x + k, y - 1)) * (k == 0 ? 2.0f : 1.0f);
+            }
+            float nx = -dx * strength * 0.25f, ny = dy * strength * 0.25f;
+            const float len = std::sqrt(nx * nx + ny * ny + 1.0f);
+            nx /= len;
+            ny /= len;
+            const std::size_t i = (static_cast<std::size_t>(y) * size + static_cast<std::size_t>(x)) * 4;
+            const float hv = at(x, y);
+            normal[i + 0] = byte(nx * 0.5f + 0.5f);
+            normal[i + 1] = byte(ny * 0.5f + 0.5f);
+            normal[i + 2] = byte(0.72f + 0.28f * hv);
+            normal[i + 3] = byte(0.85f + 0.15f * hv);
+        }
+    }
+}
+
+// El material medio (rugosidad, metal, emision, reflectancia) en toda la textura.
+void averageMaterial(std::vector<std::uint8_t>& material) {
+    const std::size_t n = material.size() / 4;
+    if (n == 0) return;
+    double sum[4] = {0, 0, 0, 0};
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t c = 0; c < 4; ++c) sum[c] += material[i * 4 + c];
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t c = 0; c < 4; ++c) material[i * 4 + c] = static_cast<std::uint8_t>(sum[c] / static_cast<double>(n) + 0.5);
+    }
+}
+
+// MENAS-HZ: <mena>_gem = el mineral de la textura de la mena (la que haya: generada, del disco o del paquete). Los
+// pixeles del mineral son los que mas se apartan del color medio (la roca es la mayor parte): su color medio, con el
+// brillo de cada pixel de la mena para que no quede liso, y su material medio (metal, rugosidad, emision).
+void gemFromOre(gfx::VoxelTextureLayer& t) {
+    const std::size_t n = t.albedo.size() / 4;
+    if (n == 0) return;
+    double mean[3] = {0, 0, 0};
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t c = 0; c < 3; ++c) mean[c] += t.albedo[i * 4 + c];
+    for (double& m : mean) m /= static_cast<double>(n);
+    std::vector<float> dist(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        float d = 0.0f;
+        for (std::size_t c = 0; c < 3; ++c) {
+            const float e = static_cast<float>(t.albedo[i * 4 + c] - mean[c]);
+            d += e * e;
+        }
+        dist[i] = d;
+    }
+    // Dos grupos (k-medias con k = 2): la roca empieza en el color medio y el mineral en el pixel mas apartado; el
+    // mineral es el grupo pequeno (con solo "lo mas apartado" salian pepitas grises en el carbon: la roca clara
+    // tambien se aparta del medio).
+    std::size_t farthest = 0;
+    for (std::size_t i = 1; i < n; ++i)
+        if (dist[i] > dist[farthest]) farthest = i;
+    double rock[3] = {mean[0], mean[1], mean[2]};
+    double ore[3] = {static_cast<double>(t.albedo[farthest * 4]), static_cast<double>(t.albedo[farthest * 4 + 1]),
+                     static_cast<double>(t.albedo[farthest * 4 + 2])};
+    std::vector<std::uint8_t> is_ore(n, 0);
+    for (int it = 0; it < 8; ++it) {
+        double sr[3] = {0, 0, 0}, so[3] = {0, 0, 0};
+        std::size_t nr = 0, no = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            double dr = 0, d_o = 0;
+            for (std::size_t c = 0; c < 3; ++c) {
+                const double p = t.albedo[i * 4 + c];
+                dr += (p - rock[c]) * (p - rock[c]);
+                d_o += (p - ore[c]) * (p - ore[c]);
+            }
+            is_ore[i] = d_o < dr ? 1 : 0;
+            for (std::size_t c = 0; c < 3; ++c) (is_ore[i] ? so : sr)[c] += t.albedo[i * 4 + c];
+            ++(is_ore[i] ? no : nr);
+        }
+        if (no == 0 || nr == 0) break;
+        for (std::size_t c = 0; c < 3; ++c) {
+            rock[c] = sr[c] / static_cast<double>(nr);
+            ore[c] = so[c] / static_cast<double>(no);
+        }
+    }
+    std::size_t ore_count = 0;
+    for (std::uint8_t v : is_ore) ore_count += v;
+    if (ore_count * 2 > n)  // el grupo grande es la roca
+        for (std::uint8_t& v : is_ore) v = v != 0 ? 0 : 1;
+    double gem[3] = {0, 0, 0}, mat[4] = {0, 0, 0, 0}, lum = 0;
+    std::size_t count = 0;
+    const bool has_material = t.material.size() == n * 4;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (is_ore[i] == 0) continue;
+        for (std::size_t c = 0; c < 3; ++c) gem[c] += t.albedo[i * 4 + c];
+        if (has_material)
+            for (std::size_t c = 0; c < 4; ++c) mat[c] += t.material[i * 4 + c];
+        lum += t.albedo[i * 4] * 0.299 + t.albedo[i * 4 + 1] * 0.587 + t.albedo[i * 4 + 2] * 0.114;
+        ++count;
+    }
+    if (count == 0) return;
+    for (double& g : gem) g /= static_cast<double>(count);
+    for (double& m : mat) m /= static_cast<double>(count);
+    lum /= static_cast<double>(count);
+    for (std::size_t i = 0; i < n; ++i) {
+        const double l = t.albedo[i * 4] * 0.299 + t.albedo[i * 4 + 1] * 0.587 + t.albedo[i * 4 + 2] * 0.114;
+        // Variacion del brillo de la mena alrededor de 1 (suave: +-25 %).
+        const double k = std::clamp(1.0 + (l - mean[0] * 0.299 - mean[1] * 0.587 - mean[2] * 0.114) / 255.0 * 0.8, 0.75, 1.25);
+        for (std::size_t c = 0; c < 3; ++c) t.albedo[i * 4 + c] = static_cast<std::uint8_t>(std::clamp(gem[c] * k, 0.0, 255.0));
+        t.albedo[i * 4 + 3] = 255;
+        if (has_material)
+            for (std::size_t c = 0; c < 4; ++c) t.material[i * 4 + c] = static_cast<std::uint8_t>(std::clamp(mat[c] + 0.5, 0.0, 255.0));
+    }
+    (void)lum;
+}
+
+// PLANTAS-ALTAS: desde que altura (0 = arriba) empieza el tramo de abajo de cada planta apilada
+// (como Tools/texturas_plantas_altas.py de Horizonz).
+float lowCut(const std::string& plant) {
+    if (plant == "tall_grass") return 0.42f;
+    if (plant == "reeds") return 0.50f;
+    if (plant == "fern") return 0.55f;
+    return 0.45f;
+}
+
+// La parte baja de la imagen (size x size) estirada a todo el alto (vecino mas cercano).
+void lowFromFull(std::uint32_t size, float cut, std::vector<std::uint8_t>& image) {
+    if (image.size() < static_cast<std::size_t>(size) * size * 4) return;
+    const std::vector<std::uint8_t> full = image;
+    const float y0 = cut * static_cast<float>(size);
+    const float span = static_cast<float>(size) - y0;
+    for (std::uint32_t y = 0; y < size; ++y) {
+        const auto sy = std::min(size - 1, static_cast<std::uint32_t>(y0 + (static_cast<float>(y) + 0.5f) / static_cast<float>(size) * span));
+        std::copy_n(full.begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(sy) * size * 4), static_cast<std::size_t>(size) * 4,
+                    image.begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(y) * size * 4));
+    }
+}
+
+// Pone encima de `out` lo que traiga el paquete para `name`.
+void overlayPack(const std::string& name, std::uint32_t size, const std::filesystem::path& pack, gfx::VoxelTextureLayer& out) {
+    if (pack.empty()) return;
+    std::vector<std::uint8_t> image;
+    const bool albedo = loadPackImage(pack / (name + ".png"), size, image);
+    if (albedo) out.albedo = std::move(image);
+    // "<planta>_low" que no esta en el paquete pero "<planta>" si: se saca de ella.
+    static const std::string kLow = "_low";
+    if (!albedo && name.size() > kLow.size() && name.compare(name.size() - kLow.size(), kLow.size(), kLow) == 0) {
+        const std::string plant = name.substr(0, name.size() - kLow.size());
+        if (loadPackImage(pack / (plant + ".png"), size, image)) {
+            const float cut = lowCut(plant);
+            lowFromFull(size, cut, image);
+            out.albedo = std::move(image);
+            if (loadPackImage(pack / (plant + "_n.png"), size, image)) {
+                lowFromFull(size, cut, image);
+                out.normal = std::move(image);
+            } else {
+                normalFromAlbedo(size, out.albedo, out.normal);
+            }
+            if (loadPackImage(pack / (plant + "_m.png"), size, image)) {
+                lowFromFull(size, cut, image);
+                out.material = std::move(image);
+            } else {
+                averageMaterial(out.material);
+            }
+            return;
+        }
+    }
+    if (loadPackImage(pack / (name + "_n.png"), size, image)) out.normal = std::move(image);
+    else if (albedo) normalFromAlbedo(size, out.albedo, out.normal);
+    if (loadPackImage(pack / (name + "_m.png"), size, image)) out.material = std::move(image);
+    else if (albedo) averageMaterial(out.material);
+}
+
+}  // namespace
+
 void buildTexture(const std::string& name, std::uint32_t size, const std::filesystem::path& folder,
                   gfx::VoxelTextureLayer& out, bool flat_colors) {
+    buildTexture(name, size, folder, std::filesystem::path{}, out, flat_colors);
+}
+
+void buildTexture(const std::string& name, std::uint32_t size, const std::filesystem::path& folder,
+                  const std::filesystem::path& pack, gfx::VoxelTextureLayer& out, bool flat_colors) {
+    // HOJAS: <hojas>_fluff = la textura de las hojas (generada, del disco o del paquete) con la mascara de hojas sueltas.
+    static const std::string kFluff = "_fluff";
+    if (name.size() > kFluff.size() && name.compare(name.size() - kFluff.size(), kFluff.size(), kFluff) == 0) {
+        buildTexture(name.substr(0, name.size() - kFluff.size()), size, folder, pack, out, flat_colors);
+        fluffMask(size, out.albedo);
+        std::vector<std::uint8_t> image;
+        if (!folder.empty()) {
+            if (loadResized(folder / (name + ".png"), size, image)) out.albedo = std::move(image);
+            if (loadResized(folder / (name + "_n.png"), size, image)) out.normal = std::move(image);
+            if (loadResized(folder / (name + "_m.png"), size, image)) out.material = std::move(image);
+        }
+        if (!pack.empty()) {  // PAQUETES-TEXTURAS
+            if (loadPackImage(pack / (name + ".png"), size, image)) out.albedo = std::move(image);
+            if (loadPackImage(pack / (name + "_n.png"), size, image)) out.normal = std::move(image);
+            if (loadPackImage(pack / (name + "_m.png"), size, image)) out.material = std::move(image);
+        }
+        return;
+    }
+    // MENAS-HZ: <mena>_gem = el mineral de la textura de la mena (Mesher.cpp: pepitas que sobresalen). Del disco o del
+    // paquete si trae una propia.
+    static const std::string kGem = "_gem";
+    if (name.size() > kGem.size() && name.compare(name.size() - kGem.size(), kGem.size(), kGem) == 0) {
+        buildTexture(name.substr(0, name.size() - kGem.size()), size, folder, pack, out, flat_colors);
+        gemFromOre(out);
+        std::vector<std::uint8_t> image;
+        if (!folder.empty()) {
+            if (loadResized(folder / (name + ".png"), size, image)) out.albedo = std::move(image);
+            if (loadResized(folder / (name + "_n.png"), size, image)) out.normal = std::move(image);
+            if (loadResized(folder / (name + "_m.png"), size, image)) out.material = std::move(image);
+        }
+        if (!pack.empty()) {
+            if (loadPackImage(pack / (name + ".png"), size, image)) out.albedo = std::move(image);
+            if (loadPackImage(pack / (name + "_n.png"), size, image)) out.normal = std::move(image);
+            if (loadPackImage(pack / (name + "_m.png"), size, image)) out.material = std::move(image);
+        }
+        return;
+    }
     generate(name, size, out);
     if (!folder.empty()) {
         // Las que haya en disco mandan (cada una por separado).
@@ -1802,6 +3070,7 @@ void buildTexture(const std::string& name, std::uint32_t size, const std::filesy
         if (loadResized(folder / (name + "_n.png"), size, image)) out.normal = std::move(image);
         if (loadResized(folder / (name + "_m.png"), size, image)) out.material = std::move(image);
     }
+    overlayPack(name, size, pack, out);  // PAQUETES-TEXTURAS
     if (flat_colors) flatten(name, out);
 }
 
@@ -1810,6 +3079,8 @@ bool writeTexturePngs(const std::filesystem::path& folder, std::uint32_t size) {
     std::filesystem::create_directories(folder, error);
     bool ok = true;
     for (const std::string& name : textureNames()) {
+        // MENAS-HZ: las <mena>_gem salen de la mena al cargar (un PNG gris aqui las taparia).
+        if (name.size() > 4 && name.compare(name.size() - 4, 4, "_gem") == 0) continue;
         gfx::VoxelTextureLayer layer;
         generate(name, size, layer);
         const auto save = [&](const std::string& file, const std::vector<std::uint8_t>& pixels) {
@@ -1851,6 +3122,7 @@ bool writeBlockIcons(const std::filesystem::path& folder, std::uint32_t size, co
     for (std::size_t id = 1; id < blocks().size(); ++id) {
         const BlockDef& def = blocks()[id];
         if (def.shape == BlockShape::Air || def.shape == BlockShape::Liquid) continue;
+        if (def.name.rfind("id_test_", 0) == 0) continue;  // IDS16: los bloques de prueba no llevan icono
         asset::ImageRgba8 image;
         image.width = image.height = size;
         image.pixels.assign(static_cast<std::size_t>(size) * size * 4, 0);

@@ -607,6 +607,8 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
                   << ")\n";
     }
     swapchain_.initialize(device_, surface_, width, height);
+    // Arranco minimizado: el primer frame con area rehace swapchain y destinos.
+    if (!swapchain_.isValid()) framebuffer_resized_ = true;
     // El tope de VRAM (applyEffectiveGraphics) antes del primer G-buffer: a
     // tamano completo en una ventana enorme ya no cabia lo que viene detras.
     applyEffectiveGraphics();
@@ -1116,6 +1118,7 @@ void VulkanRenderer::shutdown() {
     composite_sets_.clear();
     early_composite_sets_.clear();
     early_easu_sets_.clear();
+    early_histogram_sets_.clear();
     early_rcas_sets_.clear();
     early_pool_ = nullptr;
     bloom_up_sets_.clear();
@@ -1769,11 +1772,12 @@ void VulkanRenderer::createDescriptors() {
         const std::array<vk::DescriptorPoolSize, 3> sizes = {
             vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight},
             // (5 texturas por composicion: + la distorsion y la profundidad)
-            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, kMaxFramesInFlight * 5 + 2},
-            vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kMaxFramesInFlight}};
+            // (+1: el histograma de la auto-exposicion sobre la imagen interna)
+            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, kMaxFramesInFlight * 5 + 3},
+            vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kMaxFramesInFlight + 1}};
         vk::DescriptorPoolCreateInfo info{};
         info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-        info.maxSets = kMaxFramesInFlight + 2;
+        info.maxSets = kMaxFramesInFlight + 3;
         info.setPoolSizes(sizes);
         early_pool_ = vk::raii::DescriptorPool(device_.handle(), info);
         const auto allocate_early = [&](const vk::raii::DescriptorSetLayout& layout, std::uint32_t count) {
@@ -1786,6 +1790,7 @@ void VulkanRenderer::createDescriptors() {
         early_composite_sets_ = allocate_early(composite_pass_.descriptorSetLayout(), kMaxFramesInFlight);
         early_easu_sets_ = allocate_early(easu_ldr_pass_.descriptorSetLayout(), 1);
         early_rcas_sets_ = allocate_early(rcas_ldr_pass_.descriptorSetLayout(), 1);
+        early_histogram_sets_ = allocate_early(histogram_pass_.descriptorSetLayout(), 1);
     }
     outline_sets_ = allocate(outline_pass_, 1);
     ssgi_sets_ = allocate(ssgi_pass_, kMaxFramesInFlight);
@@ -1953,6 +1958,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     lod_triangles_ = 0;
     lod_actors_ = 0;
     culled_small_ = 0;
+    culled_far_ = 0;  // NOCHE-PERF
     gpu_clusters_.clear();
 
     // Para los LODs: pixeles de pantalla por unidad del mundo a distancia 1
@@ -1995,8 +2001,14 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     const float animated_lod_pixels = std::min(user_post_.lod_pixel_error, kAnimatedLodPixels) * lod_bias;
     // Objetos diminutos: el umbral de la gama (1.5 px en Bajo .. 0.5 en Ultra)
     // o el del presupuesto si es mayor. En VR y en el movil, el de siempre.
-    const float tiny_base = xr_view_frame_ || mobile_level_ >= 0 ? 0.5f : tinyObjectPixelsFor(hardware_.tier);
-    const float cull_pixels = std::max(tiny_base, budget_.cullPixels());
+    // Movil en Baja: 2 px (piezas pequenas de los personajes lejanos, adornos).
+    const float tiny_base = mobile_level_ == 0                     ? 2.0f
+                            : xr_view_frame_ || mobile_level_ >= 0 ? 0.5f
+                                                                   : tinyObjectPixelsFor(hardware_.tier);
+    // MALLAS-DETALLE: con menos detalle de actores, el umbral sube (3 px en Bajo, 1.5 en Medio).
+    const float detail_pixels = actor_detail_ == 0 ? 3.0f : actor_detail_ == 1 ? 1.5f : 0.0f;
+    const float cull_pixels = std::max({tiny_base, budget_.cullPixels(), detail_pixels});
+    culled_detail_shadows_ = 0;
     // Con histeresis solo en la vista principal (otra camara ve otros
     // tamanos): se oculta por debajo del umbral y vuelve por encima de 1.25
     // veces, asi no parpadea en el borde.
@@ -2006,6 +2018,9 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     draw_batches_.clear();
     batch_first_.assign(skinned_models_.size(), UINT32_MAX);
     batch_of_group_.clear();
+    // NOCHE-PERF: corte por distancia de los actores, solo con el perfil movil.
+    const float far_cut = mobile_level_ >= 0 ? mobile_actor_distance_ : 0.0f;
+    const float far_cut2 = far_cut * far_cut;
 
     for (const scene::Actor& actor : scene.actors()) {
         if (actor.model >= skinned_models_.size()) {
@@ -2022,6 +2037,16 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         }
         if (!modelResident(actor.model)) {
             continue;  // Fuera de la GPU (streaming): vuelve en cuanto se acerque.
+        }
+        // NOCHE-PERF: movil, mas alla de la distancia de los actores (la de los
+        // bloques: no hay suelo detras), fuera del todo (dibujo y sombra).
+        if (far_cut2 > 0.0f) {
+            const Vec3 to = actor.bounds_center - camera_position;
+            const float reach = far_cut + actor.bounds_radius;
+            if (to.x * to.x + to.y * to.y + to.z * to.z > reach * reach) {
+                ++culled_far_;
+                continue;
+            }
         }
 
         const auto actor_index = static_cast<std::uint32_t>(&actor - scene.actors().data());
@@ -2169,6 +2194,13 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
                 tiny = far_enough && screen_pixels < cull_pixels;
             }
             if (tiny) ++culled_small_;
+            draw.tiny = tiny;
+            // MALLAS-DETALLE: en Bajo la pieza diminuta tampoco da sombra (en el mapa de sombras del movil es
+            // menos de un texel y era un draw mas por pieza de cada personaje lejano).
+            if (tiny && actor_detail_ == 0 && draw.cast_shadows && !draw.shadows_only) {
+                draw.cast_shadows = false;
+                ++culled_detail_shadows_;
+            }
             const std::vector<asset::SubMesh>& lod_submeshes = model.lodSubmeshes(draw.lod);
             if (draw.lod > 0) {
                 ++lod_actors_;
@@ -3069,7 +3101,16 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
             GpuMeshletShadowPush mesh_push{};
             mesh_push.light_model_view_projection = light_model_view_projection;
             mesh_push.bone_offset = draw.bone_offset;
-            mesh_push.flags = model.closed(lod) && uniform ? 1u : 0u;
+            // Meshlets de espaldas a la luz en mallas cerradas: fuera (la cara
+            // que mira a la luz ya deja la misma profundidad, la sombra es la
+            // misma por las dos caras). Quitarlo costaba ~30 ms de cascadas
+            // con el sol rasante en Horizonz (2 ms con el descarte).
+            // CRAMION_SHADOW_CONE_CULL=0 lo apaga (comparar).
+            static const bool cone_cull = [] {
+                const char* v = std::getenv("CRAMION_SHADOW_CONE_CULL");
+                return v == nullptr || v[0] != '0';
+            }();
+            mesh_push.flags = cone_cull && model.closed(lod) && uniform ? 1u : 0u;
             mesh_push.light_direction = toVec4(local_travel, 0.0f);
 
             std::uint32_t run_first = 0;
@@ -4079,6 +4120,11 @@ void VulkanRenderer::updatePostDescriptors() {
         write_texture(early_easu_sets_[0], 0, easu_ldr_pass_.sampler(), early_ldr_, kRead);
         write_texture(early_rcas_sets_[0], 0, rcas_ldr_pass_.sampler(), early_upscaled_, kRead);
     }
+    // Cadena corta con auto-exposicion: el histograma de la imagen HDR interna.
+    if (!early_histogram_sets_.empty()) {
+        write_texture(early_histogram_sets_[0], 0, histogram_pass_.sampler(), scene_color_, kRead);
+        write_storage(early_histogram_sets_[0], 1, histogram_buffer_);
+    }
     write_storage(histogram_sets_[0], 1, histogram_buffer_);
 
     write_storage(exposure_average_sets_[0], 0, histogram_buffer_);
@@ -4088,7 +4134,11 @@ void VulkanRenderer::updatePostDescriptors() {
 vk::Extent2D VulkanRenderer::outputExtent() const {
     if (xr_output_extent_.width > 0 && xr_output_extent_.height > 0) return xr_output_extent_;
     if (view_extent_request_.width > 0 && view_extent_request_.height > 0) return view_extent_request_;
-    return swapchain_.extent();
+    const vk::Extent2D extent = swapchain_.extent();
+    if (extent.width > 0 && extent.height > 0) return extent;
+    // Sin swapchain (ventana minimizada al arrancar): destinos provisionales
+    // del tamano pedido de la ventana; se rehacen al recuperar el area.
+    return vk::Extent2D{std::clamp(window_width_, 16u, 8192u), std::clamp(window_height_, 16u, 8192u)};
 }
 
 void VulkanRenderer::setViewExtent(std::uint32_t width, std::uint32_t height) {
@@ -4140,7 +4190,9 @@ std::uint32_t VulkanRenderer::desiredShadowResolution() const {
     // Movil: la imagen del juego es de 720-1080 lineas y cada cascada se
     // escribe entera en memoria (en una GPU de movil, lo caro): 1024 en Baja
     // y Media (4 MB por cascada en vez de 9), 1536 en Alta, 2048 en Ultra.
-    if (mobile_level_ >= 0) return mobile_level_ <= 1 ? 1024u : mobile_level_ == 2 ? 1536u : 2048u;
+    // (Baja: 512. Con 35 m de alcance cada cascada cubre poco y en una Mali
+    // las sombras de los voxeles eran 30-45 ms con 1024.)
+    if (mobile_level_ >= 0) return mobile_level_ == 0 ? 512u : mobile_level_ == 1 ? 1024u : mobile_level_ == 2 ? 1536u : 2048u;
     return shadowResolutionFor(hardware_.tier);
 }
 
@@ -4160,6 +4212,21 @@ void VulkanRenderer::setFrameRateCap(float fps) {
     if (cap == frame_rate_cap_) return;
     frame_rate_cap_ = cap;
     if (!xr_budget_applied_) budget_.setTargetFps(desktopTargetFps());
+}
+
+void VulkanRenderer::setGameUnlit(bool unlit) {
+    // UNLIT: ver VulkanRenderer.h.
+    if (unlit == game_unlit_) return;
+    game_unlit_ = unlit;
+    std::cout << "[Vulkan] Modo de dibujo del juego: " << (unlit ? "Unlit (luz minima)" : "Lit") << "\n";
+    // Medir de nuevo (el coste cambia mucho) y el post-proceso con lo que este modo apaga.
+    budget_.reset();
+    post_ = mobilePost(budget_.apply(user_post_));
+    // Otro escalador (sin los temporales): se rehacen los destinos si hace falta.
+    if (initialized_) applyEffectiveGraphics();
+    // Al volver a Lit, el cielo y el IBL enseguida (no esperan su turno de 1 de cada 30).
+    sky_frames_skipped_ = 1000;
+    path_tracing_reset_ = true;
 }
 
 void VulkanRenderer::setGraphicsSettings(const GraphicsSettings& settings) {
@@ -4210,7 +4277,10 @@ TextureFiltering VulkanRenderer::desiredTextureFiltering() const {
     // el presupuesto cambia la resolucion a menudo y cada sesgo distinto era
     // rehacer los samplers con la GPU parada (tiron). Lo que el presupuesto
     // baja de mas sale algo mas suave hasta que vuelve a subir.
-    const float bias = upscaleMipBias(mip_bias_scale_, mip_bias_upscaler_);
+    float bias = upscaleMipBias(mip_bias_scale_, mip_bias_upscaler_);
+    // Movil Baja y Media: sin sesgo negativo (a media resolucion era -1: leer
+    // mips el doble de grandes, 4x de ancho de banda de texturas).
+    if (mobile_level_ >= 0 && mobile_level_ <= 1) bias = std::max(bias, 0.0f);
     if (bias != 0.0f) filtering.lod_bias = std::clamp(filtering.lod_bias + bias, -1.0f, 2.0f);
     return filtering;
 }
@@ -4284,6 +4354,11 @@ void VulkanRenderer::applyEffectiveGraphics() {
         if (settings.upscaler != Upscaler::Fsr1) settings.upscaler = Upscaler::Taa;
         settings.quality = vr_scale >= 0.999f ? UpscaleQuality::Native : UpscaleQuality::Custom;
         settings.custom_scale = vr_scale;
+    }
+    // UNLIT: sin escaladores temporales (TAA, FSR 3, DLSS: historia, jitter y pasadas a la resolucion de
+    // pantalla). FSR 1 (espacial) si se escala; a resolucion nativa ninguno (queda el FXAA, si esta encendido).
+    if (game_unlit_ && !xr_eyes && settings.upscaler != Upscaler::Off && settings.upscaler != Upscaler::Fsr1) {
+        settings.upscaler = renderScale(settings) < 0.999f ? Upscaler::Fsr1 : Upscaler::Off;
     }
     const float base_scale = renderScale(settings);
     // Suelo de la resolucion interna (renderScaleFloor): el presupuesto no la
@@ -4373,6 +4448,13 @@ void VulkanRenderer::applyEffectiveGraphics() {
 }
 
 void VulkanRenderer::updateRenderScaleFloor() {
+    // Movil: el presupuesto no baja de 300 lineas internas (antes llegaba a
+    // 288x180 en una tablet: todo borroso).
+    if (mobile_level_ >= 0 && xr_output_extent_.width == 0) {
+        const float lines = static_cast<float>(outputExtent().height) * std::max(floor_base_scale_, 0.01f);
+        budget_.setRenderScaleFloor(std::clamp(300.0f / std::max(lines, 1.0f), 0.0f, 1.0f), /*hard=*/true);
+        return;
+    }
     budget_.setRenderScaleFloor(floor_exempt_ ? 0.0f : renderScaleFloor(outputExtent().height, floor_base_scale_));
 }
 
@@ -5188,6 +5270,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     camera_data.inverse_view_projection = core::inverse(camera_data.view_projection);
     camera_data.position = toVec4(camera.position(), 1.0f);
     camera_position_ = camera.position();
+    camera_orthographic_ = camera.orthographic();
     // La oclusion del cielo desde arriba: si toca rehacerla, donde (antes de
     // escribir las luces de este frame, que llevan su sitio). Una vez por frame.
     if (!xrSecondEye()) planSkyMap();
@@ -5203,7 +5286,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // Con las sombras apagadas no se toca la cache: al volver a encenderlas
     // solo se redibuja lo que haya cambiado entretanto. Las caras de la sonda
     // usan los mapas tal como estan: su camara no debe decidir los huecos.
-    if (shadows_enabled_ && !isolated() && !xrSecondEye()) {
+    if (shadowsOn() && !isolated() && !xrSecondEye()) {  // UNLIT: shadowsOn
         local_shadows_.update(shadow_camera, lights, LocalShadowMaps::kSpotResolution,
                               LocalShadowMaps::kPointResolution);
         requestLocalShadowMaps();
@@ -5267,6 +5350,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
             gpu.color_intensity = toVec4(linear_color(light.color), light.intensity);
             gpu.params = Vec4{-2.0f, static_cast<float>(local_shadows_.pointSlot(index)),
                               light.cast_shadows ? light.shadow_strength : 0.0f, std::max(light.source_radius, 0.0f)};
+            // (Puntual: sin cono; w = 1 si no ilumina los voxeles, PointLight::skip_voxels.)
+            gpu.direction_inner.w = light.skip_voxels ? 1.0f : 0.0f;
             continue;
         }
         const std::int32_t i = point_count++;
@@ -5274,7 +5359,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         light_data.points[i].color_intensity = toVec4(linear_color(light.color), light.intensity);
         light_data.points[i].shadow = Vec4{
             static_cast<float>(local_shadows_.pointSlot(index)),
-            light.cast_shadows ? light.shadow_strength : 0.0f, std::max(light.source_radius, 0.0f), 0.0f};
+            light.cast_shadows ? light.shadow_strength : 0.0f, std::max(light.source_radius, 0.0f),
+            light.skip_voxels ? 1.0f : 0.0f};  // w = 1: no ilumina los voxeles
     }
     light_data.point_count = point_count;
     // --- Luces puntuales por teselas de pantalla (lighting.frag) ---
@@ -5401,7 +5487,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         bool shadowed = false;
         for (std::int32_t i = 0; i < point_count; ++i) shadowed = shadowed || light_data.points[i].shadow.y > 0.0f;
         for (std::int32_t i = 0; i < spot_count; ++i) shadowed = shadowed || light_data.spots[i].outer_shadow.z > 0.0f;
-        const bool traced = shadows_enabled_ && rayTracingActive() && !isolated() && !pathTraceReplacesLighting();
+        const bool traced = shadowsOn() && rayTracingActive() && !isolated() && !pathTraceReplacesLighting();
         const bool local = shadowed && traced;
         const bool sun = traced && sun_cascades && sun_shadow_strength_ > 0.0f && lights.sun.intensity > 0.0f &&
                          core::length(lights.sun.direction) > 1e-6f && core::normalize(lights.sun.direction).y < 0.0f;
@@ -5782,9 +5868,29 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         // Alcance de las sombras del sol por gama (F2-8: 60 m en Bajo, 80 en
         // Medio; antes 100 en todos), con el presupuesto adaptativo. Al
         // cambiar, cambia el encuadre y las cascadas se rehacen solas.
+        // El jugador puede fijarlo en Opciones (Graphics.set("shadow_distance", m)); 0 = automatico.
+        // Movil: 35 m en Baja, 50 en Media, 70 en Alta (antes 100 en todos:
+        // en una Mali-G52 las cuatro cascadas de un mundo de voxeles eran la
+        // mitad del frame, 70 ms).
+        static constexpr float kMobileShadowDistance[] = {35.0f, 50.0f, 70.0f, 100.0f};
         const float shadow_distance =
-            budget_.enabled() && tierBiasActive() ? shadowDistanceFor(hardware_.tier) : 100.0f;
+            user_graphics_.shadow_distance > 0.0f ? std::clamp(user_graphics_.shadow_distance, 40.0f, 500.0f)
+            : mobile_level_ >= 0                    ? kMobileShadowDistance[std::clamp(mobile_level_, 0, 3)]
+            : budget_.enabled() && tierBiasActive() ? shadowDistanceFor(hardware_.tier)
+                                                    : 100.0f;
         if (cascades_.shadowDistance() != shadow_distance) cascades_.setShadowDistance(shadow_distance);
+        // Alcance en altura (Graphics.set("shadow_height", m), 64..512; 0 =
+        // automatico): cuanto se extiende cada cascada hacia el sol para que
+        // los objetos altos fuera de su caja sigan tapando, y la ventana
+        // vertical de la ocupacion de voxeles de los rayos. En automatico las
+        // cascadas siguen con 60 m (precision y sesgo de siempre): los voxeles
+        // ya proyectan desde cualquier altura (sin plano cercano, depth clamp)
+        // y la ocupacion mira 192 m hacia arriba (islas flotantes).
+        const float shadow_height =
+            user_graphics_.shadow_height > 0.0f ? std::clamp(user_graphics_.shadow_height, 64.0f, 512.0f) : 0.0f;
+        const float caster_margin = shadow_height > 0.0f ? shadow_height : 60.0f;
+        if (cascades_.casterMargin() != caster_margin) cascades_.setCasterMargin(caster_margin);
+        voxel_pass_.setOccupancyHeight(shadow_height > 0.0f ? shadow_height : 192.0f);
         cascades_.update(shadow_camera, lights.sun, shadow_map_.resolution());
         // Para recordActorShadows: la camara de las sombras (profundidad de
         // vista de cada tramo), lo largas que son y el trozo de vista de cada
@@ -5810,7 +5916,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
             const core::Mat4 view = shadow_camera.view();
             const float fov = std::min(shadow_camera.fovY() * 1.5f, 2.6f);  // radianes: tope ~150 grados
             const float aspect = shadow_camera.aspectRatio() * 1.3f;
-            constexpr float kCascadeCasterMargin = 60.0f;  // ShadowCascades::caster_margin_
+            const float kCascadeCasterMargin = cascades_.casterMargin();  // GraphicsSettings::shadow_height
             const float map_size = static_cast<float>(std::max(shadow_map_.resolution(), 1u));
             for (std::uint32_t c = 0; c < scene::kShadowCascadeCount; ++c) {
                 const scene::ShadowCascade& cascade = cascades_.cascade(c);
@@ -5911,7 +6017,9 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
             bool due = redraw_all;
             if (!due && !kept_clear) {
                 const std::uint64_t f = cascade_frame_;
-                if (budget_.level(Lever::ShadowDetail) >= 2) {
+                // (En el movil Baja y Media, siempre: su GPU no aguanta dos
+                // cascadas por frame en un mundo de voxeles.)
+                if (budget_.level(Lever::ShadowDetail) >= 2 || (mobile_level_ >= 0 && mobile_level_ <= 1)) {
                     // Gama baja: la cercana cada 2 frames y la siguiente cada
                     // 4, intercaladas con las lejanas (cada frame dibuja una
                     // sola: ~1 cascada por frame en vez de 2). Con un frame de
@@ -6034,7 +6142,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     }
     local_data.params = Vec4{static_cast<float>(LocalShadowMaps::kSpotResolution),
                              static_cast<float>(LocalShadowMaps::kPointResolution),
-                             shadows_enabled_ ? 1.0f : 0.0f, lod_error_per_meter_};
+                             shadowsOn() ? 1.0f : 0.0f, lod_error_per_meter_};  // UNLIT: shadowsOn
 
     local_shadow_buffers_[frame_index].write(&local_data, sizeof(local_data));
 }
@@ -6053,6 +6161,20 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
         if (raised.exchange(true)) return;
         throw vk::DeviceLostError("drawFrame: la GPU ya se habia perdido (" + VulkanDevice::deviceLostReport().where +
                                   ")");
+    }
+    // GPU-DIAG: CRAMION_SIMULATE_DEVICE_LOST=<segundos> simula una perdida de la GPU a los N s de juego
+    // (prueba del cierre: informe, aviso y salida limpia sin colgar la GPU de verdad).
+    static const double simulate_after = [] {
+        const char* value = std::getenv("CRAMION_SIMULATE_DEVICE_LOST");
+        return value != nullptr ? std::atof(value) : 0.0;
+    }();
+    static const auto simulate_start = std::chrono::steady_clock::now();
+    if (simulate_after > 0.0 &&
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - simulate_start).count() > simulate_after) {
+        raised = true;
+        device_.reportDeviceLost("simulacro", "CRAMION_SIMULATE_DEVICE_LOST (prueba, no es un fallo real)");
+        VulkanDevice::notifyDeviceLost();
+        throw vk::DeviceLostError("drawFrame: simulacro de dispositivo perdido (CRAMION_SIMULATE_DEVICE_LOST)");
     }
     try {
         drawFrameUnguarded(scene, present);
@@ -6500,10 +6622,12 @@ void VulkanRenderer::drawFrameUnguarded(const scene::Scene& scene, bool present)
     present_info.pSwapchains = &swapchain;
     present_info.pImageIndices = &image_index;
 
+    const auto present_start = TimingClock::now();
     const vk::Result present_result = [&] {
         const std::lock_guard queue_lock(device_.queueMutex());
         return device_.presentQueue().presentKHR(present_info);
     }();
+    frame_timings_.present_ms += since(present_start);
 
 #if defined(__ANDROID__)
     // Android devuelve "suboptimo" siempre que la pantalla esta girada y la
@@ -6572,7 +6696,7 @@ bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
     // Hacen falta los mapas de sombra locales y la imagen HDR de un frame ya
     // dibujado (se leen tal cual en la captura).
     // Con trazado de rayos la sonda no hace falta: nada de capturas.
-    if (!probe_enabled_ || rayTracingActive() || !scene_history_valid_ ||
+    if (!probe_enabled_ || game_unlit_ || rayTracingActive() || !scene_history_valid_ ||  // UNLIT
         !local_shadow_layout_ready_) {
         return false;
     }
@@ -7066,10 +7190,32 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         staticGeometryChanged();
         rain_map_voxels_dirty_ = true;
     }
+    voxel_pass_.setFaceCulling(!camera_orthographic_);
+    // UNLIT: los bloques en su calidad minima (sin relieve ni normal map: la luz minima no los usa).
+    voxel_pass_.setLowQuality((mobile_level_ >= 0 && mobile_level_ <= 1) || game_unlit_);
+    voxel_pass_.setLowestQuality(mobile_level_ == 0 || game_unlit_);
+    // TESELADO: relieve teselado de los bloques cercanos; nunca en el perfil movil. Si cambia lo que proyectan
+    // las sombras (el empuje de voxel.vert), se redibujan las guardadas y el mapa de lluvia.
+    if (voxel_pass_.setTessellation(voxel_tess_enabled_ && mobile_level_ < 0 && !game_unlit_, voxel_tess_distance_, voxel_tess_depth_,
+                                    voxel_tess_density_)) {
+        staticGeometryChanged();
+        rain_map_voxels_dirty_ = true;
+    }
     voxel_pass_.prepare(frame_index, camera_position_, camera_view_projection_);
+    // Ocupacion de los bloques para los rayos (sombras, GI, reflejos: los
+    // voxeles no estan en la TLAS). Una vez por frame, con la vista principal.
+    if (ray_tracing_.sceneBuilt() && !isolated() && !xrSecondEye()) {
+        voxel_pass_.recordOccupancy(cmd, frame_index, camera_position_);
+        const VoxelOccupancy& occupancy = voxel_pass_.occupancy();
+        if (occupancy.ready()) {
+            ray_tracing_.setVoxelGrid(*occupancy.infoBuffer().handle(), *occupancy.cellBuffer().handle());
+        }
+    }
     // Vegetacion: recorte y niveles de detalle en la GPU (antes de las sombras).
     foliage_pass_.recordCull(cmd, frame_index, camera_position_, camera_view_projection_, frame_delta_seconds_);
-    water_pass_.setLowQuality(liteLighting());  // F2-7: SSR del agua mas corto en Baja
+    water_pass_.setLowQuality(liteLighting() || game_unlit_);  // F2-7: SSR del agua mas corto en Baja
+    // Movil en Baja: agua sencilla (sin reflejos por pantalla, detalle fino, ondas ni causticas). UNLIT: tambien.
+    water_pass_.setLowestQuality(mobile_level_ == 0 || game_unlit_);
     water_pass_.prepare(frame_index);
     // Oceano FFT: el oleaje de este frame (compute + mipmaps), una vez por
     // frame; las vistas aisladas usan el ultimo.
@@ -7133,11 +7279,11 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     recordPathTracePass(cmd, frame_index);
     markPass(cmd, frame_index, "Path tracing");
     const bool wire_only = drawModeNow() == SceneDrawMode::Wireframe;
-    if (!wire_only) recordGlassPass(cmd, frame_index);
+    if (!wire_only && (debug_skip_ & 64u) == 0) recordGlassPass(cmd, frame_index);
     // El vidrio con su marca justo detras (antes iba despues del agua: el
     // vidrio se cobraba al agua y "Vidrio" medio 0).
     markPass(cmd, frame_index, "Vidrio");
-    if (!water_pass_.empty() && !capturing_ && !wire_only) {
+    if (!water_pass_.empty() && !capturing_ && !wire_only && (debug_skip_ & 64u) == 0) {
         recordWaterPass(cmd, frame_index);
         markPass(cmd, frame_index, "Agua");
     }
@@ -7149,12 +7295,12 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         recordSpritePass(cmd, frame_index);
         markPass(cmd, frame_index, "Sprites 2D");
     }
-    const bool particles_drawn = !particles_.empty() && !capturing_ && !wire_only;
+    const bool particles_drawn = !particles_.empty() && !capturing_ && !wire_only && (debug_skip_ & 128u) == 0;
     if (particles_drawn) {
         recordParticlePass(cmd, frame_index);
         markPass(cmd, frame_index, "Particulas");
     }
-    const bool vfx_drawn = vfx_pass_.active() && !capturing_ && !wire_only;
+    const bool vfx_drawn = vfx_pass_.active() && !capturing_ && !wire_only && (debug_skip_ & 128u) == 0;
     if (vfx_drawn) {
         recordVfxPass(cmd, frame_index);
         markPass(cmd, frame_index, "VFX Graph");
@@ -7330,7 +7476,59 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
                 if (marks) cmd.setCheckpointNV(*kTerrainMark);
                 terrain_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], light_view_projection);
                 if (marks) cmd.setCheckpointNV(*kVoxelMark);
-                voxel_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], light_view_projection);
+                // Sin las cuevas cerradas (el sol no llega; la corteza ya tapa).
+                // Los que proyectan se eligen SOLO por la luz (la columna de
+                // la cascada hacia el sol, sin plano cercano: depth clamp),
+                // nunca por lo que ve la camara. Antes, ademas, solo las
+                // secciones cuya sombra barrida tocaba el trozo de vista de la
+                // cascada: con la cascada guardada de otro encuadre, una sombra
+                // cuyo arbol o pared quedaba fuera de la vista desaparecia al
+                // dejar de mirarlo, y lo que estaba muy por encima (islas
+                // flotantes a 140-240 m) no entraba en las cascadas cercanas:
+                // debajo no habia sombra y solo la ponia la ultima cascada (la
+                // grande, de borde duro). CRAMION_VOXEL_SHADOW_SLICE=1 vuelve
+                // al recorte por la vista (comparar).
+                std::function<bool(const core::Aabb&)> keep;
+                static const bool slice_cull = std::getenv("CRAMION_VOXEL_SHADOW_SLICE") != nullptr;
+                if (slice_cull && shadow_slices_valid_ && cascade < scene::kShadowCascadeCount) {
+                    const core::Frustum& slice = shadow_slice_frustums_[cascade];
+                    const float rise = std::max(-shadow_light_travel_.y, 0.04f);
+                    const Vec3 travel = shadow_light_travel_ * (shadow_slice_reach_[cascade] / std::min(rise, 1.0f));
+                    const float pad = shadow_slice_pad_[cascade];
+                    keep = [&slice, travel, pad](const core::Aabb& box) {
+                        const Vec3 center = (box.min + box.max) * 0.5f;
+                        const float radius = core::length(box.max - box.min) * 0.5f;
+                        return slice.intersectsSwept(center, center + travel, radius + pad);
+                    };
+                } else if (cascade < scene::kShadowCascadeCount) {
+                    // Hacia el sol, solo lo bastante alto para tapar algo de la
+                    // cascada: una seccion a `d` m de su esfera en la direccion
+                    // del sol tiene que subir al menos d * seno(elevacion) por
+                    // encima de lo mas bajo de la esfera. Con el sol rasante, sin
+                    // esto la columna hacia el sol metia todo el terreno cargado
+                    // (30 ms de cascadas al atardecer); asi sigue entrando lo que
+                    // de verdad tapa (montes, islas flotantes, lo de fuera de la
+                    // vista) y no depende de la camara.
+                    const scene::ShadowCascade& sc = cascades_.cascade(cascade);
+                    const float map_size = static_cast<float>(std::max(shadow_map_.resolution(), 1u));
+                    const float sphere = sc.texel_world_size * map_size * 0.5f;
+                    const float margin = cascades_.casterMargin();
+                    const float depth_range = 2.0f * sphere + margin;
+                    const core::Vec4 c = core::inverse(sc.light_view_projection) *
+                                         core::Vec4{0.0f, 0.0f, (sphere + margin) / depth_range, 1.0f};
+                    const Vec3 sphere_center = Vec3{c.x, c.y, c.z} * (1.0f / (std::abs(c.w) > 1e-6f ? c.w : 1.0f));
+                    const Vec3 to_sun = shadow_light_travel_ * -1.0f;
+                    const float rise = std::max(to_sun.y, 0.02f);
+                    const float lowest = sphere_center.y - sphere;
+                    keep = [sphere_center, to_sun, rise, lowest, sphere](const core::Aabb& box) {
+                        const Vec3 center = (box.min + box.max) * 0.5f;
+                        const float radius = core::length(box.max - box.min) * 0.5f;
+                        const float beyond = core::dot(center - sphere_center, to_sun) - sphere - radius;
+                        return beyond <= 0.0f || box.max.y >= lowest + beyond * rise;
+                    };
+                }
+                voxel_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], light_view_projection,
+                                         /*sun=*/true, keep);
                 if (marks) cmd.setCheckpointNV(*kFoliageMark);
                 foliage_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], light_view_projection);
             }
@@ -7553,7 +7751,7 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
     // Proyecto, capturas) tiene otros actores (el modelo de la miniatura) y
     // dejaba sus siluetas en la cache de una luz: sombras sin objeto (discos,
     // cuadrados) que no se volvian a dibujar.
-    if (shadows_enabled_ && !isolated()) {
+    if (shadowsOn() && !isolated()) {  // UNLIT: shadowsOn
         local_static_dirty_ = false;
         for (std::uint32_t slot = 0; slot < scene::kMaxShadowedSpotLights; ++slot) {
             const scene::SpotShadow& spot = local_shadows_.spots()[slot];
@@ -7761,23 +7959,23 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
 
     // --- Fase temprana: animados + lo que era visible ---
     begin_rendering(/*clear=*/true);
-    drawCpuActors(cmd, frame_index);
+    if ((debug_skip_ & 2u) == 0) drawCpuActors(cmd, frame_index);
     // El escenario visible el frame anterior antes que el terreno: en una
     // ciudad el suelo de las calles y las plazas tapa el terreno de debajo, y
     // con el terreno primero se sombreaba entero (su shader es de los mas
     // caros: alturas, pesos y hasta 8 capas) para que luego lo pisara todo.
     // Asi la prueba de profundidad lo descarta antes del shader. La
     // profundidad final es la misma y todo sigue entrando en la Hi-Z.
-    if (gpu_scenery) drawGpuClusters(cmd, frame_index, 0);
+    if (gpu_scenery && (debug_skip_ & 8u) == 0) drawGpuClusters(cmd, frame_index, 0);
     // El terreno, pronto: tapa mucho y entra en la piramide Hi-Z.
-    terrain_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
+    if ((debug_skip_ & 16u) == 0) terrain_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     // La hierba no entra en las caras de la sonda: sus briznas estan
     // recortadas para la camara de pantalla y en un cubo de 128 no se notan.
-    if (!capturing_) terrain_pass_.recordGrassGBuffer(cmd, frame_index, skin_sets_[frame_index]);
+    if (!capturing_ && (debug_skip_ & 16u) == 0) terrain_pass_.recordGrassGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     // Los voxeles tambien tapan mucho: pronto, de cerca a lejos.
-    voxel_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
+    if ((debug_skip_ & 1u) == 0) voxel_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     // Vegetacion: una llamada indirecta por especie (sus 3 niveles).
-    foliage_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
+    if ((debug_skip_ & 32u) == 0) foliage_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     compat::endRendering(cmd);
 
     if (!occlusion || !gpu_scenery) {
@@ -7847,9 +8045,17 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
 
     // Modo compatible: tambien el escenario (sin culling en GPU).
     const bool scenery = device_.compatMode();
-    for (const ActorDraw& draw : actor_draws_) {
+    cpu_rigid_order_.clear();
+    for (std::uint32_t d = 0; d < actor_draws_.size(); ++d) {
+        const ActorDraw& draw = actor_draws_[d];
         if ((draw.per_submesh && !scenery) || draw.shadows_only || draw.smooth_fade) {
             continue;  // Escenario (lo dibuja drawGpuClusters), solo sombras o fundido suave (recordGlassPass).
+        }
+        if (draw.per_submesh) {
+            // Rigido del modo compatible: diminuto (como en los lotes de la
+            // GPU) fuera; el resto, agrupado abajo.
+            if (!draw.tiny) cpu_rigid_order_.push_back(d);
+            continue;
         }
         if (!bound) {
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *meshGeometryPipeline());
@@ -7911,6 +8117,106 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
             }
         });
         flush();
+    }
+
+    // --- Rigidos del modo compatible, agrupados ---
+    // Las piezas de los personajes (cabeza, manos, armadura...) son cientos
+    // de actores con pocos modelos: en la GPU de un movil cada dibujo suelto
+    // pagaba buffers, set del material, pipeline y push constants. Agrupados
+    // por (modelo, LOD, disolucion), cada material se prepara una vez y cada
+    // instancia es un drawIndexed con su hueco como firstInstance (el bit 0
+    // de flags: skinned.vert lee su matriz de mundo, su registro y su lightmap
+    // en ese hueco, como los lotes de la GPU). Mismo culling por submalla.
+    if (cpu_rigid_order_.empty()) return;
+    std::sort(cpu_rigid_order_.begin(), cpu_rigid_order_.end(), [&](std::uint32_t a, std::uint32_t b) {
+        const ActorDraw& x = actor_draws_[a];
+        const ActorDraw& y = actor_draws_[b];
+        if (x.model != y.model) return x.model < y.model;
+        if (x.lod != y.lod) return x.lod < y.lod;
+        if (x.dissolve != y.dissolve) return !x.dissolve;
+        return a < b;
+    });
+    if (!bound) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *meshGeometryPipeline());
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(), 0,
+                               *skin_sets_[frame_index], nullptr);
+        bound_shader = -1;
+    }
+    std::uint32_t bound_model = UINT32_MAX;
+    for (std::size_t start = 0; start < cpu_rigid_order_.size();) {
+        const ActorDraw& head = actor_draws_[cpu_rigid_order_[start]];
+        std::size_t end = start + 1;
+        while (end < cpu_rigid_order_.size()) {
+            const ActorDraw& next = actor_draws_[cpu_rigid_order_[end]];
+            if (next.model != head.model || next.lod != head.lod || next.dissolve != head.dissolve) break;
+            ++end;
+        }
+        const SkinnedModel& model = skinned_models_[head.model];
+        const std::vector<asset::SubMesh>& lod_submeshes = model.lodSubmeshes(head.lod);
+
+        // Submallas visibles de cada instancia (en orden), una sola vez.
+        cpu_rigid_visible_.clear();
+        cpu_rigid_visible_first_.clear();
+        for (std::size_t k = start; k < end; ++k) {
+            cpu_rigid_visible_first_.push_back(static_cast<std::uint32_t>(cpu_rigid_visible_.size()));
+            visible_submeshes_ += forEachVisibleSubmesh(actor_draws_[cpu_rigid_order_[k]], frustum,
+                                                        [&](std::uint32_t i) { cpu_rigid_visible_.push_back(i); });
+        }
+        cpu_rigid_visible_first_.push_back(static_cast<std::uint32_t>(cpu_rigid_visible_.size()));
+        if (cpu_rigid_visible_.empty()) {
+            start = end;
+            continue;
+        }
+        if (head.model != bound_model) {
+            cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
+            cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+            bound_model = head.model;
+        }
+
+        // Por material (en el orden en que aparece en el modelo): se prepara
+        // una vez y se dibujan sus tramos de cada instancia.
+        const std::uint32_t material_count = static_cast<std::uint32_t>(model.materials().size());
+        cpu_rigid_material_done_.assign(material_count, 0);
+        for (std::uint32_t seen = 0; seen < cpu_rigid_visible_.size(); ++seen) {
+            const std::uint32_t material_index = lod_submeshes[cpu_rigid_visible_[seen]].material;
+            if (material_index >= material_count || cpu_rigid_material_done_[material_index] != 0) continue;
+            cpu_rigid_material_done_[material_index] = 1;
+            const SkinnedModel::Material& material = model.materials()[material_index];
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(), 1,
+                                   *model.materialSet(material_index), nullptr);
+            GpuSkinnedPush push{};
+            push.model = core::Mat4::identity();
+            push.base_color = material.base_color;
+            push.emissive = material.emissive;
+            push.material = material.params;
+            push.reflectance = material.reflectance;
+            push.flags = 1u | material.shader_flags;
+            push.pick_id = material.shading;  // modelo de Disney (skinned.frag)
+            bindMaterialPipeline(cmd, frame_index, material, bound_shader, push, head.dissolve);
+            cmd.pushConstants<GpuSkinnedPush>(*skinned_pass_.geometryLayout(), skinned_pass_.geometryPushStages(), 0,
+                                              push);
+            for (std::size_t k = start; k < end; ++k) {
+                const ActorDraw& draw = actor_draws_[cpu_rigid_order_[k]];
+                // La matriz de mundo de la instancia va detras de su hueso.
+                const std::uint32_t slot = draw.bone_offset + draw.bone_entries - 1;
+                const std::size_t local = k - start;
+                std::uint32_t run_first = 0;
+                std::uint32_t run_count = 0;
+                for (std::uint32_t v = cpu_rigid_visible_first_[local]; v < cpu_rigid_visible_first_[local + 1]; ++v) {
+                    const asset::SubMesh& submesh = lod_submeshes[cpu_rigid_visible_[v]];
+                    if (submesh.material != material_index) continue;
+                    if (run_count > 0 && run_first + run_count == submesh.first_index) {
+                        run_count += submesh.index_count;
+                        continue;
+                    }
+                    if (run_count > 0) cmd.drawIndexed(run_count, 1, run_first, 0, slot);
+                    run_first = submesh.first_index;
+                    run_count = submesh.index_count;
+                }
+                if (run_count > 0) cmd.drawIndexed(run_count, 1, run_first, 0, slot);
+            }
+        }
+        start = end;
     }
 }
 
@@ -8308,7 +8614,7 @@ void VulkanRenderer::recordRtReflectionFilter(const vk::raii::CommandBuffer& cmd
 void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
                                     std::uint32_t frame_index) {
     // GI horneada: las sondas en lugar de los rayos o el SSGI.
-    const bool baked = bakedGiActive();
+    const bool baked = bakedGiActive() && !game_unlit_;  // UNLIT: la iluminacion minima no la lee
     const bool ray_traced = !baked && rayTracingActive() && !isolated();
     // La historia HDR (ssr_pyramids_) vale como frame anterior: existe y el
     // frame anterior la guardo (con todo apagado no se copia).
@@ -8714,14 +9020,17 @@ void VulkanRenderer::recordLightingPass(const vk::raii::CommandBuffer& cmd,
 
     // La ligera en los PC de gama baja (presupuesto) y en el modo compatible
     // (su shader ya lo es).
-    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *lighting_pass_.pipeline(liteLighting()));
+    // UNLIT: la minima del modo Unlit del juego (lighting_unlit.frag).
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, unlitLightingNow()   ? *lighting_pass_.unlitPipeline()
+                                                       : mobile_level_ == 0 ? *lighting_pass_.mobilePipeline()
+                                                                            : *lighting_pass_.pipeline(liteLighting()));
     cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
                                     static_cast<float>(extent.height), 0.0f, 1.0f});
     cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *lighting_pass_.layout(), 0,
                            *lighting_sets_[frame_index], nullptr);
 
-    cmd.draw(3, 1, 0, 0);
+    if ((debug_skip_ & 4u) == 0) cmd.draw(3, 1, 0, 0);
 
     compat::endRendering(cmd);
 }
@@ -10185,7 +10494,8 @@ void VulkanRenderer::bindMaterialPipeline(const vk::raii::CommandBuffer& cmd, st
     if (key != bound_shader) {
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,
                          tessellated   ? *skinned_pass_.geometryTessPipeline()
-                         : opaque      ? *skinned_pass_.geometryOpaquePipeline()
+                         : opaque      ? (mobile_level_ == 0 ? *skinned_pass_.geometryOpaqueLitePipeline()
+                                                             : *skinned_pass_.geometryOpaquePipeline())
                          : shader >= 0 ? *surface_pipelines_[static_cast<std::size_t>(shader)]
                                        : *meshGeometryPipeline());
         bound_shader = key;
@@ -10955,8 +11265,9 @@ bool VulkanRenderer::earlyPostChain() const {
     return !disabled && upscaling_ && activeUpscaler() == Upscaler::Fsr1 && !vendor_upscaler_ && !isolated() &&
            !secondary_view_ && xr_eye_target_ < 0 && render_texture_target_ < 0 && !post_.bloom &&
            post_.lens_flare <= 0.0f &&  // los destellos leen el bloom (que aqui no se graba)
-           !post_.light_shafts && !post_.depth_of_field && !post_.motion_blur && !post_.auto_exposure &&
-           !early_composite_sets_.empty();
+           !post_.light_shafts && !post_.depth_of_field && !post_.motion_blur &&
+           // Auto-exposicion: con su histograma sobre la imagen interna (barato).
+           (!post_.auto_exposure || !early_histogram_sets_.empty()) && !early_composite_sets_.empty();
 }
 
 // Cadena corta de FSR 1: la composicion (tonemap, color, vineta) a la
@@ -10980,6 +11291,8 @@ void VulkanRenderer::recordEarlyPostChain(const vk::raii::CommandBuffer& cmd, st
     std::array<vk::ImageMemoryBarrier2, 3> barriers{};
     std::uint32_t barrier_count = 0;
     barriers[barrier_count++] = writtenToSampled(*scene_color_.handle());
+    // La lee tambien el histograma de la auto-exposicion (compute).
+    barriers[0].dstStageMask |= vk::PipelineStageFlagBits2::eComputeShader;
     const auto to_texture_once = [&](const VulkanImage& image, bool& ready) {
         if (ready) return;
         barriers[barrier_count++] = colorBarrier(*image.handle(), vk::ImageLayout::eUndefined,
@@ -10993,7 +11306,14 @@ void VulkanRenderer::recordEarlyPostChain(const vk::raii::CommandBuffer& cmd, st
     to_texture_once(light_shafts_, light_shafts_ready_);
     pipelineBarrier(cmd, vk::ArrayProxy<const vk::ImageMemoryBarrier2>(barrier_count, barriers.data()));
     light_shafts_drawn_ = false;
-    exposure_reset_pending_ = true;  // sin auto-exposicion (como con la cadena normal apagada)
+    if (post_.auto_exposure && !early_histogram_sets_.empty()) {
+        // Histograma y adaptacion sobre la imagen HDR interna (ya es textura:
+        // barrera de arriba); la composicion lee la exposicion que deja.
+        recordAutoExposurePass(cmd, early_histogram_sets_[0], scene_color_.extent());
+        markPass(cmd, frame_index, "Auto-exposicion");
+    } else {
+        exposure_reset_pending_ = true;  // sin auto-exposicion (como con la cadena normal apagada)
+    }
     recordCompositeTo(cmd, frame_index, early_ldr_, early_composite_sets_[frame_index]);
     markPass(cmd, frame_index, "Composicion");
 
@@ -11019,10 +11339,20 @@ void VulkanRenderer::recordEarlyPostChain(const vk::raii::CommandBuffer& cmd, st
     push.con[11] = bits(2.0f / in_h);
     push.con[12] = bits(0.0f);
     push.con[13] = bits(4.0f / in_h);
+    push.con[15] = mobile_level_ == 0 ? 1u : 0u;  // bilineal en el movil en Baja (fsr_easu_ldr.frag)
+    const float sharpness = std::clamp(graphics_.sharpness, 0.0f, 1.0f);
+    if (mobile_level_ == 0) {
+        // Movil en Baja: el escalado bilineal directo a ldr_color_, sin la
+        // nitidez (RCAS): un pase menos a la resolucion de pantalla.
+        pipelineBarrier(cmd, discardToAttachment(*ldr_color_.handle()));
+        drawFullscreen(cmd, easu_ldr_pass_, &early_easu_sets_[0], ldr_color_, &push);
+        pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
+        markPass(cmd, frame_index, "FSR 1");
+        return;
+    }
     pipelineBarrier(cmd, discardToAttachment(*early_upscaled_.handle()));
     drawFullscreen(cmd, easu_ldr_pass_, &early_easu_sets_[0], early_upscaled_, &push);
     pipelineBarrier(cmd, writtenToSampled(*early_upscaled_.handle()));
-    const float sharpness = std::clamp(graphics_.sharpness, 0.0f, 1.0f);
     GpuRcasPush rcas{};
     rcas.con[0] = bits(std::exp2(-(1.0f - sharpness) * 2.0f));
     rcas.bypass = sharpness <= 0.001f ? 1u : 0u;
@@ -11230,8 +11560,9 @@ void VulkanRenderer::recordSkyLutPass(const vk::raii::CommandBuffer& cmd) {
 
     // Movil: el cielo y el IBL cambian despacio; se rehacen 1 de cada 8
     // frames (el resto se usan los de antes, que siguen como texturas).
-    if (mobile_level_ >= 0 && mobile_level_ < 3 && !capturing_) {
-        if (sky_frames_skipped_ < 7 && sky_recorded_once_) {
+    // UNLIT: 1 de cada 30.
+    if (((mobile_level_ >= 0 && mobile_level_ < 3) || game_unlit_) && !capturing_) {
+        if (sky_frames_skipped_ < (game_unlit_ ? 29 : 7) && sky_recorded_once_) {
             ++sky_frames_skipped_;
             return;
         }
@@ -11478,6 +11809,11 @@ void VulkanRenderer::recordLightShaftPass(const vk::raii::CommandBuffer& cmd) {
 }
 
 void VulkanRenderer::recordAutoExposurePass(const vk::raii::CommandBuffer& cmd) {
+    recordAutoExposurePass(cmd, histogram_sets_[0], postSource().extent());
+}
+
+void VulkanRenderer::recordAutoExposurePass(const vk::raii::CommandBuffer& cmd, const vk::raii::DescriptorSet& histogram_set,
+                                            vk::Extent2D extent) {
     // El frame anterior vacio el histograma y leyo/copio la exposicion: hay
     // que esperar a que acabe antes de volver a escribirlos.
     memoryBarrier(cmd,
@@ -11492,10 +11828,9 @@ void VulkanRenderer::recordAutoExposurePass(const vk::raii::CommandBuffer& cmd) 
                       vk::AccessFlagBits2::eShaderStorageWrite);
 
     // --- 1) Histograma ---
-    const vk::Extent2D extent = postSource().extent();
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *histogram_pass_.pipeline());
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *histogram_pass_.layout(), 0,
-                           *histogram_sets_[0], nullptr);
+                           *histogram_set, nullptr);
     cmd.dispatch((extent.width + 15) / 16, (extent.height + 15) / 16, 1);
 
     // Segundo ojo en VR: su histograma se queda acumulado para el promedio
@@ -11724,7 +12059,7 @@ VulkanRenderer::NativeHandles VulkanRenderer::nativeHandles() const {
     handles.queue_family = device_.queueFamilies().graphics;
     handles.queue = *device_.graphicsQueue();
     handles.swapchain_format = static_cast<VkFormat>(swapchain_.imageFormat());
-    handles.image_count = swapchain_.imageCount();
+    handles.image_count = std::max(2u, swapchain_.imageCount());  // 0 si arranco minimizado
     handles.api_version = instance_.apiVersion();
     return handles;
 }

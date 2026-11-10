@@ -3,6 +3,7 @@
 #endif
 #include "GraphicsConfig.h"
 
+#include <CramionCore/cvar/CVar.h>
 #include <CramionCore/vfx/VisualEffect.h>
 #include <CramionFX/vk/FrameBudget.h>
 #include <CramionFX/vk/GraphicsSettings.h>
@@ -42,6 +43,17 @@ using scripting::GraphicsValue;
 std::string lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
+}
+
+// UNLIT: el modo de dibujo del juego vive en la CVar render.Unlit (RenderSync la pasa al
+// renderizador cada frame): Graphics "draw_mode", el Graphics.ini y la consola cambian lo mismo.
+bool gameUnlitWanted() {
+    const cvar::CVarBase* c = cvar::Registry::instance().find("render.Unlit");
+    return c != nullptr && c->toString() == "true";
+}
+void setGameUnlitWanted(gfx::VulkanRenderer& renderer, bool unlit) {
+    if (cvar::CVarBase* c = cvar::Registry::instance().find("render.Unlit")) c->fromString(unlit ? "true" : "false");
+    renderer.setGameUnlit(unlit);  // ya (sin esperar al frame siguiente)
 }
 
 // Nombres de los enums en la API (en el orden del enum).
@@ -186,6 +198,10 @@ int loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& rend
         }
         if (key == "target_fps") g.target_fps = std::clamp(value, 15.0f, 360.0f);
         if (key == "shadow_resolution") g.shadow_resolution = std::clamp(static_cast<int>(value), 0, 8192);
+        if (key == "shadow_distance" && std::isfinite(value))
+            g.shadow_distance = value <= 0.0f ? 0.0f : std::clamp(value, 40.0f, 500.0f);
+        if (key == "shadow_height" && std::isfinite(value))
+            g.shadow_height = value <= 0.0f ? 0.0f : std::clamp(value, 64.0f, 512.0f);
         if (key == "texture_max_size") g.texture_max_size = std::clamp(static_cast<int>(value), 0, 16384);
         if (key == "texture_filtering") g.texture_filtering = std::clamp(static_cast<int>(value), 0, 16);
         if (key == "texture_lod_bias" && std::isfinite(value)) g.texture_lod_bias = std::clamp(value, -1.0f, 2.0f);
@@ -198,6 +214,7 @@ int loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& rend
         // Iluminacion: 0 = la decide el presupuesto adaptativo (como antes),
         // 1 = completa, 2 = ligera (sin sombras suaves de contacto del sol,
         // sin oclusion del cielo desde arriba ni sombras de contacto).
+        if (key == "draw_mode") setGameUnlitWanted(renderer, value != 0.0f);  // UNLIT: 0 lit, 1 unlit
         if (key == "lighting_quality") {
             const int q = static_cast<int>(value);
             if (q == 1) renderer.setLiteLightingForced(false);
@@ -224,6 +241,8 @@ bool saveGraphicsIni(const std::filesystem::path& file, const gfx::VulkanRendere
     out << "adaptive=" << (g.adaptive ? 1 : 0) << "\n";
     out << "target_fps=" << g.target_fps << "\n";
     out << "shadow_resolution=" << g.shadow_resolution << "\n";
+    out << "shadow_distance=" << g.shadow_distance << "\n";
+    out << "shadow_height=" << g.shadow_height << "\n";
     out << "texture_max_size=" << g.texture_max_size << "\n";
     out << "texture_filtering=" << g.texture_filtering << "\n";
     out << "texture_lod_bias=" << g.texture_lod_bias << "\n";
@@ -235,6 +254,7 @@ bool saveGraphicsIni(const std::filesystem::path& file, const gfx::VulkanRendere
     out << "occlusion_culling=" << (renderer.occlusionCullingEnabled() ? 1 : 0) << "\n";
     out << "lighting_quality=" << (renderer.liteLightingForced() < 0 ? 0 : renderer.liteLightingForced() == 0 ? 1 : 2)
         << "\n";
+    out << "draw_mode=" << (gameUnlitWanted() ? 1 : 0) << "\n";  // UNLIT
     return static_cast<bool>(out);
 }
 
@@ -303,6 +323,33 @@ void applyQualityPreset(gfx::VulkanRenderer& renderer, int level) {
     renderer.setGraphicsSettings(g);
     // Efectos: la tabla de escalabilidad por tipo de esa calidad (vfx.quality manda si es >= 0).
     vfx::setQualityPreset(level);
+}
+
+void applyMobileQualityPreset(gfx::VulkanRenderer& renderer, int level) {
+    level = std::clamp(level, 0, 3);
+    applyQualityPreset(renderer, level);
+    renderer.setRayTracingEnabled(false);
+    renderer.setMobileProfile(level);
+    // Las nubes volumetricas cuestan mucho en un movil: desde Alta. Con el
+    // tope del renderizador: setCloudsEnabled lo volvia a encender la escena
+    // en cada frame (componente Sky) y no duraba.
+    renderer.setCloudsAllowed(level >= 2);
+    if (level == 0) renderer.setShadowsEnabled(false);
+    // Baja: iluminacion ligera (sin sombras de contacto del sol ni oclusion
+    // del cielo), para los moviles mas flojos.
+    if (level == 0) renderer.setLiteLightingForced(true);
+    else renderer.clearLiteLightingForced();
+    gfx::GraphicsSettings g = renderer.graphicsSettings();
+    if (level <= 1) {
+        // Baja y Media: FSR 1 al 67 % / 75 % de la pantalla (antes el 50 % del
+        // preset de escritorio; con el presupuesto bajando encima quedaba
+        // borroso). Si la GPU no llega, el presupuesto baja la resolucion
+        // (no menos de 300 lineas: updateRenderScaleFloor).
+        g.upscaler = gfx::Upscaler::Fsr1;
+        g.quality = gfx::UpscaleQuality::Custom;
+        g.custom_scale = level == 0 ? 0.67f : 0.75f;
+    }
+    renderer.setGraphicsSettings(g);
 }
 
 // -----------------------------------------------------------------------------
@@ -716,6 +763,11 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
     add("shadows", renderer_.shadowsEnabled(), "Sombras");
     add("shadow_resolution", number(g.shadow_resolution),
         "Resolucion por cascada del mapa de sombras del sol (0 = segun el PC, 512..8192)");
+    add("shadow_distance", number(g.shadow_distance),
+        "Alcance de las sombras del sol en metros (40..500; 0 = segun el PC). Mas lejos = mas coste de GPU");
+    add("shadow_height", number(g.shadow_height),
+        "Alcance en altura de las sombras del sol en metros (64..512; 0 = automatico, 320): cuanto por encima se "
+        "buscan objetos que tapan el sol (islas flotantes, montanas)");
     add("shadow_quality", levelOf(kShadowLevels, g.shadow_resolution),
         "Calidad de las sombras: auto, low (1024), medium (2048), high (4096) o ultra (6144)", levelNames(kShadowLevels));
     add("texture_max_size", number(g.texture_max_size),
@@ -747,6 +799,12 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
         "de contacto del sol, sin oclusion del cielo desde arriba ni sombras de contacto; mas barata en GPU "
         "integradas). Se aplica al momento",
         {"auto", "full", "lite"});
+    // UNLIT
+    add("draw_mode", std::string(gameUnlitWanted() ? "unlit" : "lit"),
+        "Modo de dibujo: lit (normal) o unlit (equipos de gama ultra baja: el color de los materiales con una luz "
+        "minima, sin sombras, SSAO, GI, reflejos, nubes volumetricas, bloom ni TAA). Se aplica al momento; "
+        "CVar render.Unlit",
+        {"lit", "unlit"});
     add("cascade_debug", renderer_.cascadeDebug(), "Colorear las cascadas de sombra (depurar)");
     // Ventana (solo en el juego exportado)
     const bool game_window = window_ != nullptr;
@@ -892,6 +950,14 @@ bool RendererGraphicsHost::set(const std::string& key, const GraphicsValue& valu
         const int size = static_cast<int>(n);
         g.shadow_resolution = size == 0 ? 0 : std::max(size, 512);
         settings_changed = true;
+    } else if (key == "shadow_distance") {
+        if (!need_number(0.0, 500.0)) return false;
+        g.shadow_distance = n <= 0.0 ? 0.0f : std::clamp(static_cast<float>(n), 40.0f, 500.0f);
+        settings_changed = true;
+    } else if (key == "shadow_height") {
+        if (!need_number(0.0, 512.0)) return false;
+        g.shadow_height = n <= 0.0 ? 0.0f : std::clamp(static_cast<float>(n), 64.0f, 512.0f);
+        settings_changed = true;
     } else if (key == "shadow_quality") {
         if (!need_choice(levelNames(kShadowLevels))) return false;
         int size = 0;
@@ -953,6 +1019,18 @@ bool RendererGraphicsHost::set(const std::string& key, const GraphicsValue& valu
         else if (text == "full") renderer_.setLiteLightingForced(false);
         else if (text == "lite") renderer_.setLiteLightingForced(true);
         else return bad_choice({"auto", "full", "lite"});
+    } else if (key == "draw_mode") {
+        // UNLIT: tambien un bool (true = unlit).
+        if (std::holds_alternative<bool>(value)) {
+            setGameUnlitWanted(renderer_, std::get<bool>(value));
+        } else {
+            if (!need_choice({"lit", "unlit"})) return false;
+            if (text == "lit") setGameUnlitWanted(renderer_, false);
+            else if (text == "unlit") setGameUnlitWanted(renderer_, true);
+            else return bad_choice({"lit", "unlit"});
+        }
+        // Convive con las calidades rapidas (no las cambia): la calidad elegida no pasa a Personalizada.
+        return true;
     } else if (key == "occlusion_culling") {
         if (!need_bool()) return false;
         renderer_.setOcclusionCullingEnabled(flag);
@@ -1019,7 +1097,11 @@ bool RendererGraphicsHost::setQuality(const std::string& level, std::string& err
     const std::string wanted = lower(level);
     for (std::size_t i = 0; i < levels.size(); ++i) {
         if (wanted == lower(levels[i]) || wanted == kEnglish[i]) {
-            applyQualityPreset(renderer_, static_cast<int>(i));
+            if (renderer_.mobileProfile() >= 0) {
+                applyMobileQualityPreset(renderer_, static_cast<int>(i));
+            } else {
+                applyQualityPreset(renderer_, static_cast<int>(i));
+            }
             quality_ = levels[i];
             return true;
         }
