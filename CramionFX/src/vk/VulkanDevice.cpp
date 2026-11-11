@@ -1204,6 +1204,10 @@ std::uint64_t VulkanDevice::gpuTimeoutNanoseconds() {
 }
 
 void VulkanDevice::waitFence(vk::Fence fence, const char* where) const {
+    // GPU-CUELGUE: perdida ya (o dada por perdida tras el tope): no se vuelve a esperar. Con el tope
+    // la GPU sigue atascada de verdad y cada espera era otro tope (o infinita) en los destructores.
+    // (Vuelve sin lanzar: estas esperas tambien van en destructores durante el desenrollado.)
+    if (deviceLostOccurred()) return;
     const std::uint64_t limit = gpuTimeoutNanoseconds();
     constexpr std::uint64_t kWarn = 2'000'000'000ull;  // 2 s: aviso en el log
     const auto start = std::chrono::steady_clock::now();
@@ -1231,6 +1235,10 @@ void VulkanDevice::waitFence(vk::Fence fence, const char* where) const {
 }
 
 void VulkanDevice::waitIdle() const {
+    // GPU-CUELGUE: tras darla por perdida por el tope (CRAMION_GPU_TIMEOUT_MS) el driver NO la ve
+    // perdida: vkDeviceWaitIdle esperaba para siempre al trabajo atascado y el juego quedaba
+    // congelado al cerrar, sin el mensaje de error. Perdida = no hay nada que esperar.
+    if (deviceLostOccurred()) return;
     if (*device_ != VK_NULL_HANDLE) {
         // vkDeviceWaitIdle exige acceso exclusivo a TODAS las colas del
         // dispositivo: antes solo se tomaba la de graficos y un hilo de

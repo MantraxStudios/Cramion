@@ -7256,6 +7256,7 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     recordCloudPass(cmd, frame_index);
     markPass(cmd, frame_index, "Nubes");
     fire_pass_.recordUpload(cmd, frame_index);  // mapa de quemado antes de la geometria
+    if (device_.checkpointsEnabled()) cmd.setCheckpointNV(*"Mapa de quemado");
     if (sky_map_redraw_ && !isolated() && !xrSecondEye()) {
         recordSkyMap(cmd, frame_index);
         // Aparte de la geometria: se rehace de vez en cuando y la iluminacion
@@ -7887,6 +7888,9 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     // (abajo); si no, la de un frame o una vista anterior no vale.
     glass_occlusion_ready_ = false;
     if (gpu_scenery) gpu_culling_.recordCull(cmd, frame_index, 0, occlusion);
+    // GPU-CUELGUE: marcas finas dentro de la geometria (solo checkpoints NVIDIA, sin medir):
+    // los cuelgues de 1.0.3x quedaban "despues de Nubes" sin saber en que parte.
+    if (device_.checkpointsEnabled()) cmd.setCheckpointNV(*"Geometria: culling 0");
 
     // --- Los tres destinos pasan a destino de color ---
     std::array<vk::ImageMemoryBarrier2, GBuffer::kColorAttachmentCount + 1> barriers{};
@@ -7967,15 +7971,19 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     // Asi la prueba de profundidad lo descarta antes del shader. La
     // profundidad final es la misma y todo sigue entrando en la Hi-Z.
     if (gpu_scenery && (debug_skip_ & 8u) == 0) drawGpuClusters(cmd, frame_index, 0);
+    if (device_.checkpointsEnabled()) cmd.setCheckpointNV(*"Geometria: clusters");
     // El terreno, pronto: tapa mucho y entra en la piramide Hi-Z.
     if ((debug_skip_ & 16u) == 0) terrain_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     // La hierba no entra en las caras de la sonda: sus briznas estan
     // recortadas para la camara de pantalla y en un cubo de 128 no se notan.
     if (!capturing_ && (debug_skip_ & 16u) == 0) terrain_pass_.recordGrassGBuffer(cmd, frame_index, skin_sets_[frame_index]);
+    if (device_.checkpointsEnabled()) cmd.setCheckpointNV(*"Geometria: terreno y hierba");
     // Los voxeles tambien tapan mucho: pronto, de cerca a lejos.
     if ((debug_skip_ & 1u) == 0) voxel_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
+    if (device_.checkpointsEnabled()) cmd.setCheckpointNV(*"Geometria: voxeles");
     // Vegetacion: una llamada indirecta por especie (sus 3 niveles).
     if ((debug_skip_ & 32u) == 0) foliage_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
+    if (device_.checkpointsEnabled()) cmd.setCheckpointNV(*"Geometria: vegetacion");
     compat::endRendering(cmd);
 
     if (!occlusion || !gpu_scenery) {
@@ -7995,6 +8003,7 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     pipelineBarrier(cmd, depth_to_read);
 
     gpu_culling_.recordHiZ(cmd);
+    if (device_.checkpointsEnabled()) cmd.setCheckpointNV(*"Geometria: Hi-Z");
     // El vidrio de esta vista se prueba contra esta piramide (recien hecha
     // con esta camara; solo en la vista principal: las sondas, las Render
     // Textures y los ojos de VR tienen otra). CRAMION_GLASS_OCCLUSION=0 lo
@@ -8008,6 +8017,7 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
 
     // --- Fase tardia: lo recien descubierto, probado contra la Hi-Z ---
     gpu_culling_.recordCull(cmd, frame_index, 1, true);
+    if (device_.checkpointsEnabled()) cmd.setCheckpointNV(*"Geometria: culling 1");
 
     vk::ImageMemoryBarrier2 depth_to_attachment = depth_to_read;
     depth_to_attachment.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;

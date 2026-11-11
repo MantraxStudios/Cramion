@@ -234,6 +234,48 @@ void showError(const std::string& message) {
     MessageBoxA(nullptr, message.c_str(), "Cramion", MB_ICONERROR);
 }
 
+// GPU-CUELGUE: la GPU se colgo (o se dio por perdida tras CRAMION_GPU_TIMEOUT_MS). Antes el
+// desenrollado se atascaba esperando a la GPU y el juego quedaba congelado para siempre, sin
+// mensaje. Ahora: un aviso (una sola vez) que ofrece volver a abrir el juego con la misma linea
+// de comandos (la del launcher, con la sesion) y el proceso se termina sin destructores.
+std::atomic<bool> g_aviso_gpu{false};
+#if defined(_WIN32)
+void relanzarJuego() {
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring linea = GetCommandLineW();
+    if (CreateProcessW(nullptr, linea.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        std::cout << "[Juego] GPU perdida: el juego se vuelve a abrir" << std::endl;
+    }
+}
+#endif
+// true si este hilo mostro el aviso (los demas no lo repiten).
+bool avisoGpuPerdida(const std::string& detalle) {
+    if (g_aviso_gpu.exchange(true)) return false;
+    std::cout.flush();
+    std::cerr.flush();
+    if (g_test_cli.enabled) {
+        std::cerr << "[Juego] Error: la GPU dejo de responder: " << detalle << std::endl;
+        return true;
+    }
+#if defined(_WIN32)
+    std::string message = "La tarjeta grafica dejo de responder y el juego tiene que reiniciarse.\n\n"
+                          "Tu progreso guardado se conserva. Pulsa Aceptar para volver a abrir el juego.\n\n"
+                          "Si se repite a menudo: actualiza el driver de la GPU y cierra superposiciones (OBS, "
+                          "grabadores, overlays).\n\nDetalle: " + detalle;
+    const auto report = cramion::gfx::VulkanDevice::deviceLostReport();
+    if (!report.file.empty()) message += "\nInforme: " + report.file.string();
+    const int r = MessageBoxA(nullptr, message.c_str(), "Cramion", MB_OKCANCEL | MB_ICONWARNING | MB_TOPMOST);
+    if (r == IDOK) relanzarJuego();
+#else
+    std::cerr << "[Juego] Error: la GPU dejo de responder: " << detalle << std::endl;
+#endif
+    return true;
+}
+
 // Una linea de las pruebas: al log y a la consola de quien lanzo el juego (o
 // al archivo al que redirige la salida). El juego es de ventana (sin consola
 // propia) y su log va a %LOCALAPPDATA%, que en integracion continua no se ve.
@@ -476,6 +518,23 @@ const char* upscalerName(gfx::Upscaler upscaler) {
 
 int runPlayer() {
     using namespace cramion;
+#if defined(_WIN32)
+    // GPU-CUELGUE: drawFrame avisa aqui (hilo principal) antes de relanzar la excepcion. Si el
+    // cierre se atasca (destructores esperando a una GPU colgada), a los 6 s el vigilante avisa,
+    // relanza el juego y termina el proceso: nunca se queda congelado.
+    gfx::VulkanDevice::setDeviceLostHandler([](const gfx::VulkanDevice::DeviceLostReport& report) {
+        std::cout << "[Juego] GPU perdida (" << report.where << "): cerrando" << std::endl;
+        std::thread([where = report.where] {
+            std::this_thread::sleep_for(std::chrono::seconds(6));
+            if (g_aviso_gpu.load()) return;  // el hilo principal llego al aviso (y termina el)
+            std::cout << "[Juego] GPU perdida: el cierre se atasco, se termina el proceso" << std::endl;
+            if (!avisoGpuPerdida(where)) return;
+            std::cout.flush();
+            std::cerr.flush();
+            TerminateProcess(GetCurrentProcess(), 1);
+        }).detach();
+    });
+#endif
     try {
 #if defined(_WIN32)
         ImGui_ImplWin32_EnableDpiAwareness();
@@ -2740,6 +2799,16 @@ int runPlayer() {
                       "otra superposicion (overlay), a cerrarla.\n\n"
                       "Detalle: " + std::string(e.what());
             if (!report.file.empty()) message += "\nInforme: " + report.file.string();
+#if defined(_WIN32)
+            // GPU-CUELGUE: aviso con "volver a abrir" y fin sin destructores estaticos (con la GPU
+            // colgada tambien podian atascarse).
+            if (avisoGpuPerdida(e.what())) {
+                std::cout.flush();
+                std::cerr.flush();
+                TerminateProcess(GetCurrentProcess(), 1);
+            }
+            return EXIT_FAILURE;
+#endif
         }
         showError(message);
         return EXIT_FAILURE;
