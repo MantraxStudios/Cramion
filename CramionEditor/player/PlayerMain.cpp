@@ -34,6 +34,7 @@
 #include "UiRenderer.h"
 
 #include <CramionCore/cvar/CVar.h>
+#include <CramionCore/scripting/DebugDraw.h>
 #include <CramionCore/jobs/JobSystem.h>
 #include <CramionCore/scripting/CppScripts.h>
 #include <CramionCore/scripting/ModEntry.h>
@@ -2580,6 +2581,14 @@ int runPlayer() {
                 voxels.appendBlockLights(scene.camera().position(), scene.lights().points);
                 sync_ms = ms_since(t);
                 renderer.setParticles(particles.drawList(scene.camera().position()));
+                // Debug.draw* de los scripts: solo con la CVar debug.draw.InGame (si no, ni se recoge).
+                if (debugdraw::DebugDraw& debug_draw = debugdraw::shared(); !debug_draw.empty()) {
+                    gfx::OverlayGeometry geometry;
+                    debug_draw.build(geometry);
+                    renderer.setDebugGeometry(std::move(geometry));
+                } else if (!renderer.debugGeometry().empty()) {
+                    renderer.setDebugGeometry({});
+                }
                 // La camara (tras sync): distancia y vista de los efectos con tipo.
                 vfx_system.setCamera(scene.camera().position(), scene.camera().projection() * scene.camera().view());
                 vfx_system.setGroundQuery([&sync](float x, float z, float& h) { return sync.terrainHeight(x, z, h); });

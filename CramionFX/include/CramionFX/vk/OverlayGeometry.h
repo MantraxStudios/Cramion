@@ -13,6 +13,7 @@
 #include "CramionFX/core/Math.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace cramion::gfx {
@@ -20,6 +21,16 @@ namespace cramion::gfx {
 struct OverlayVertex {
     core::Vec3 position{};           // en el mundo
     std::uint32_t color = 0xFFFFFFFF;  // RGBA8 (IM_COL32: r | g<<8 | b<<16 | a<<24)
+};
+
+// Texto en el mundo (Debug.drawText): letra de trazos (StrokeFont.h) con el
+// grosor de las lineas, de alto constante en pixeles y centrado en `position`.
+struct OverlayText {
+    core::Vec3 position{};
+    std::uint32_t color = 0xFFFFFFFF;
+    float size = 14.0f;  // alto de las letras en pixeles
+    bool on_top = true;  // sin prueba de profundidad (se lee a traves de todo)
+    std::string text;
 };
 
 struct OverlayGeometry {
@@ -33,18 +44,22 @@ struct OverlayGeometry {
     // queda dentro del objeto seleccionado. Se dibuja despues de lo anterior.
     std::vector<OverlayVertex> top_lines;
     std::vector<OverlayVertex> top_triangles;
+    // Textos (Debug.drawText): los de on_top van con lo de encima; el resto,
+    // con prueba de profundidad como `lines`.
+    std::vector<OverlayText> texts;
     float line_width = 2.5f;        // pixeles
     float top_line_width = 5.0f;    // pixeles de las lineas "top" (gizmo, gruesas como Unreal)
     float occluded_alpha = 0.25f;   // opacidad de lo que queda tapado (0 = oculto)
 
     bool empty() const {
-        return lines.empty() && triangles.empty() && top_lines.empty() && top_triangles.empty();
+        return lines.empty() && triangles.empty() && top_lines.empty() && top_triangles.empty() && texts.empty();
     }
     void clear() {
         lines.clear();
         triangles.clear();
         top_lines.clear();
         top_triangles.clear();
+        texts.clear();
     }
 };
 

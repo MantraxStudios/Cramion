@@ -1,6 +1,7 @@
 #include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/OverlayPass.h"
 
+#include "CramionFX/vk/StrokeFont.h"
 #include "CramionFX/vk/VulkanDevice.h"
 #include "CramionFX/vk/VulkanShader.h"
 
@@ -160,13 +161,9 @@ void OverlayPass::appendTriangles(const std::vector<OverlayVertex>& triangles,
 void OverlayPass::appendLines(const std::vector<OverlayVertex>& lines,
                               const core::Mat4& view_projection, float half_width,
                               vk::Extent2D viewport) {
-    const auto push = [&](const core::Vec4& clip, std::uint32_t color, float edge) {
-        scratch_.push_back(Vertex{{clip.x, clip.y, clip.z, clip.w}, color, edge});
-    };
     const float extent = half_width + 1.0f;  // medio pixel de mas para el antialias
     const float sx = static_cast<float>(viewport.width) * 0.5f;
     const float sy = static_cast<float>(viewport.height) * 0.5f;
-    constexpr float kMinW = 1e-5f;
     for (std::size_t i = 0; i + 1 < lines.size(); i += 2) {
         const OverlayVertex& a = lines[i];
         const OverlayVertex& b = lines[i + 1];
@@ -180,6 +177,19 @@ void OverlayPass::appendLines(const std::vector<OverlayVertex>& lines,
         } else if (cb.z < 0.0f) {
             cb = lerp4(cb, ca, cb.z / (cb.z - ca.z));
         }
+        appendClipSegment(ca, cb, a.color, b.color, extent, sx, sy);
+    }
+}
+
+// Un segmento ya en espacio de recorte (delante del plano cercano) como un
+// quad de `extent` pixeles a cada lado.
+void OverlayPass::appendClipSegment(core::Vec4 ca, core::Vec4 cb, std::uint32_t color_a, std::uint32_t color_b,
+                                    float extent, float sx, float sy) {
+    const auto push = [&](const core::Vec4& clip, std::uint32_t color, float edge) {
+        scratch_.push_back(Vertex{{clip.x, clip.y, clip.z, clip.w}, color, edge});
+    };
+    constexpr float kMinW = 1e-5f;
+    {
         ca.w = std::max(ca.w, kMinW);
         cb.w = std::max(cb.w, kMinW);
 
@@ -211,12 +221,36 @@ void OverlayPass::appendLines(const std::vector<OverlayVertex>& lines,
         const core::Vec4 a1 = offset(ca, -nx - tx, -ny - ty);
         const core::Vec4 b0 = offset(cb, nx + tx, ny + ty);
         const core::Vec4 b1 = offset(cb, -nx + tx, -ny + ty);
-        push(a0, a.color, extent);
-        push(a1, a.color, -extent);
-        push(b0, b.color, extent);
-        push(b0, b.color, extent);
-        push(a1, a.color, -extent);
-        push(b1, b.color, -extent);
+        push(a0, color_a, extent);
+        push(a1, color_a, -extent);
+        push(b0, color_b, extent);
+        push(b0, color_b, extent);
+        push(a1, color_a, -extent);
+        push(b1, color_b, -extent);
+    }
+}
+
+// Debug.drawText: los trazos de cada texto (StrokeFont) alrededor de su punto
+// proyectado, con el alto en pixeles y todos a la profundidad del punto.
+void OverlayPass::appendTexts(const std::vector<OverlayText>& texts, bool on_top,
+                              const core::Mat4& view_projection, float half_width, vk::Extent2D viewport) {
+    const float extent = half_width + 1.0f;
+    const float sx = static_cast<float>(viewport.width) * 0.5f;
+    const float sy = static_cast<float>(viewport.height) * 0.5f;
+    for (const OverlayText& t : texts) {
+        if (t.on_top != on_top || t.text.empty()) continue;
+        const core::Vec4 c = toClip(view_projection, t.position);
+        if (c.z < 0.0f || c.w <= 1e-5f) continue;  // detras de la camara
+        // Fuera de pantalla (con margen): nada.
+        if (std::abs(c.x) > c.w * 4.0f || std::abs(c.y) > c.w * 4.0f) continue;
+        text_segments_.clear();
+        strokeText(t.text, std::clamp(t.size, 4.0f, 256.0f), text_segments_);
+        for (const StrokeSegment& s : text_segments_) {
+            // Pixeles (y hacia arriba) a recorte (la y de Vulkan va hacia abajo).
+            const core::Vec4 a{c.x + s.x0 / sx * c.w, c.y - s.y0 / sy * c.w, c.z, c.w};
+            const core::Vec4 b{c.x + s.x1 / sx * c.w, c.y - s.y1 / sy * c.w, c.z, c.w};
+            appendClipSegment(a, b, t.color, t.color, extent, sx, sy);
+        }
     }
 }
 
@@ -239,10 +273,14 @@ bool OverlayPass::prepare(const VulkanDevice& device, std::uint32_t frame,
     // Primero lo que se prueba contra la escena y detras lo de encima.
     appendTriangles(geometry.triangles, view_projection);
     appendLines(geometry.lines, view_projection, half_width, viewport);
+    if (!geometry.texts.empty()) appendTexts(geometry.texts, false, view_projection, half_width, viewport);
     tested_counts_[frame] = static_cast<std::uint32_t>(scratch_.size());
     appendTriangles(geometry.top_triangles, view_projection);
     appendLines(geometry.top_lines, view_projection, std::max(geometry.top_line_width * 0.5f, 0.5f),
                 viewport);
+    if (!geometry.texts.empty()) {
+        appendTexts(geometry.texts, true, view_projection, std::max(geometry.top_line_width * 0.5f, 0.5f), viewport);
+    }
 
     if (scratch_.empty()) {
         return false;

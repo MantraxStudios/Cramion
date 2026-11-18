@@ -621,6 +621,12 @@ public:
     // dibujan en el frame siguiente a la llamada; se sustituyen enteras.
     void setOverlayGeometry(OverlayGeometry geometry) { overlay_geometry_ = std::move(geometry); }
     const OverlayGeometry& overlayGeometry() const { return overlay_geometry_; }
+    // Dibujo de depuracion de los scripts (Debug.drawLine...): como la de
+    // arriba, pero tambien en la vista de juego (sin ayudas del editor) y en
+    // CramionPlayer; no en las RenderTexture ni en las capturas. Se sustituye
+    // entera; vacia = coste cero.
+    void setDebugGeometry(OverlayGeometry geometry) { debug_geometry_ = std::move(geometry); }
+    const OverlayGeometry& debugGeometry() const { return debug_geometry_; }
 
     // Particulas (ParticleGeometry.h): discos suaves sobre la imagen HDR,
     // con profundidad. Se dibujan en el frame siguiente; se sustituyen enteras.
@@ -2198,6 +2204,8 @@ private:
     std::array<double, 3> world_origin_{0.0, 0.0, 0.0};
     OverlayCallback overlay_;
     OverlayGeometry overlay_geometry_;
+    OverlayGeometry debug_geometry_;   // Debug.draw* de los scripts
+    OverlayGeometry overlay_merged_;   // gizmos + depuracion en la vista de Escena (se reutiliza)
     OverlayPass overlay_pass_{};
     WorldUiPass world_ui_pass_{};
     // Texturas de la interfaz.

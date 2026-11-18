@@ -7377,7 +7377,8 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         recordPickPass(cmd, frame_index);
         markPass(cmd, frame_index, "Picking");
     }
-    if (!overlay_geometry_.empty() && !capturing_ && editor_helpers_) {
+    if (!capturing_ && ((!overlay_geometry_.empty() && editor_helpers_) ||
+                        (!debug_geometry_.empty() && render_texture_target_ < 0))) {
         recordOverlayPass(cmd, frame_index);
         markPass(cmd, frame_index, "Gizmos 3D");
     }
@@ -10979,8 +10980,25 @@ void VulkanRenderer::recordOutputDepth(const vk::raii::CommandBuffer& cmd) {
 void VulkanRenderer::recordOverlayPass(const vk::raii::CommandBuffer& cmd,
                                        std::uint32_t frame_index) {
     const vk::Extent2D extent = ldr_color_.extent();
-    if (!overlay_pass_.prepare(device_, frame_index, overlay_geometry_, camera_view_projection_,
-                               extent)) {
+    // Los gizmos del editor (vista de Escena) y el dibujo de depuracion de los
+    // scripts (Debug.draw*, tambien en la de Juego y en el juego): uno, el
+    // otro o los dos juntos (con el grosor y los rayos X de los gizmos).
+    const bool helpers = editor_helpers_ && !overlay_geometry_.empty();
+    const bool debug = !debug_geometry_.empty() && render_texture_target_ < 0;
+    const OverlayGeometry* geometry = helpers ? &overlay_geometry_ : &debug_geometry_;
+    if (helpers && debug) {
+        overlay_merged_ = overlay_geometry_;
+        const auto append = [](std::vector<OverlayVertex>& to, const std::vector<OverlayVertex>& from) {
+            to.insert(to.end(), from.begin(), from.end());
+        };
+        append(overlay_merged_.lines, debug_geometry_.lines);
+        append(overlay_merged_.triangles, debug_geometry_.triangles);
+        append(overlay_merged_.top_lines, debug_geometry_.top_lines);
+        append(overlay_merged_.top_triangles, debug_geometry_.top_triangles);
+        overlay_merged_.texts.insert(overlay_merged_.texts.end(), debug_geometry_.texts.begin(), debug_geometry_.texts.end());
+        geometry = &overlay_merged_;
+    }
+    if (!overlay_pass_.prepare(device_, frame_index, *geometry, camera_view_projection_, extent)) {
         return;
     }
 
@@ -11033,7 +11051,7 @@ void VulkanRenderer::recordOverlayPass(const vk::raii::CommandBuffer& cmd,
     rendering_info.pDepthAttachment = &depth_attachment;
 
     compat::beginRendering(cmd, rendering_info);
-    overlay_pass_.record(cmd, frame_index, extent, overlay_geometry_);
+    overlay_pass_.record(cmd, frame_index, extent, *geometry);
     compat::endRendering(cmd);
     pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
 }

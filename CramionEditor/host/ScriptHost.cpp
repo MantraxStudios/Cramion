@@ -125,8 +125,8 @@ RestoreFn g_restore = nullptr;    // opcional
 std::unordered_map<std::uint32_t, void*> g_instances;
 
 // Los eventos que sobrescribe cada clase (cramion_class_events, opcional: una
-// DLL anterior no la tiene y se dan todos). Van tras los nombres en la
-// respuesta de Load; un motor anterior no los lee.
+// DLL anterior no la tiene y se dan todos) y su prioridad (cramion_class_order).
+// Van tras los nombres en la respuesta de Load; un motor anterior no los lee.
 using EventsFn = std::uint32_t (*)(int);
 void writeClassEvents(proto::Writer& extra, int n) {
 #if defined(_WIN32)
@@ -136,6 +136,16 @@ void writeClassEvents(proto::Writer& extra, int n) {
 #endif
     extra.u32(static_cast<std::uint32_t>(n));
     for (int i = 0; i < n; ++i) extra.u32(events != nullptr ? events(i) : ~0u);
+    // Y la prioridad de cada clase en el orden de ejecucion (cramion_class_order,
+    // opcional: 0). Va detras; un motor anterior no la lee.
+    using OrderFn = int (*)(int);
+#if defined(_WIN32)
+    const auto order = reinterpret_cast<OrderFn>(GetProcAddress(g_dll, "cramion_class_order"));
+#else
+    const auto order = reinterpret_cast<OrderFn>(dlsym(g_dll, "cramion_class_order"));
+#endif
+    extra.u32(static_cast<std::uint32_t>(n));
+    for (int i = 0; i < n; ++i) extra.u32(static_cast<std::uint32_t>(order != nullptr ? order(i) : 0));
 }
 
 // --- Turnos ---
