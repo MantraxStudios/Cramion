@@ -11,6 +11,7 @@
 #include "CramionCore/ecs/RuntimeMesh.h"
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/StaticBatching.h"
+#include "CramionCore/ecs/Outline.h"
 #include "CramionCore/ecs/FloatingOrigin.h"
 #include "CramionCore/asset/AssetDatabase.h"
 #include "CramionCore/asset/AssetManager.h"
@@ -533,6 +534,37 @@ void testStaticBatching() {
         check(!ecs::buildStaticBatch(repeated, database, root / "Assets" / "rep.crdata", tight, r) &&
                   r.kept_instanced == 2,
               "malla repetida y grande: se queda instanciada");
+    }
+
+    // Capas de render y contornos de juego (RM-capas): fuera del lote (es de
+    // la capa 0 y el contorno va por actor); el hijo de un Outline con
+    // "incluir hijos" tambien, el de uno sin el no.
+    {
+        ecs::World layered;
+        const auto add = [&](const char* name, float x, ecs::Entity parent) {
+            ecs::Entity e = parent.valid() ? layered.create(name, parent) : layered.create(name);
+            e.setLocalPosition(Vec3{x, 0.0f, 0.0f});
+            e.get<ecs::EntityInfo>().is_static = true;
+            e.add<ecs::MeshRenderer>().model = assets::AssetRef{assets::builtin::kCube, assets::AssetType::Model};
+            return e;
+        };
+        add("Normal1", 0.0f, {});
+        add("Normal2", 3.0f, {});
+        add("Capa8", 6.0f, {}).get<ecs::MeshRenderer>().render_layers = 1u << 8;
+        add("ConContorno", 9.0f, {}).add<ecs::Outline>();
+        ecs::Entity root_all = add("RaizHijos", 12.0f, {});
+        root_all.add<ecs::Outline>().include_children = true;
+        ecs::Entity child_in = add("HijoDentro", 1.0f, root_all);
+        ecs::Entity root_own = add("RaizSola", 15.0f, {});
+        root_own.add<ecs::Outline>().include_children = false;
+        ecs::Entity child_out = add("HijoFuera", 1.0f, root_own);
+        ecs::StaticBatchReport r;
+        const bool built = ecs::buildStaticBatch(layered, database, root / "Assets" / "capas.crdata",
+                                                 ecs::StaticBatchOptions{}, r);
+        check(built && r.combined == 3 && r.kept_movable == 5,
+              "capas y contornos: fuera del lote (capa 8, Outline, hijo con incluir hijos)");
+        check(!child_in.get<ecs::EntityInfo>().static_batched && child_out.get<ecs::EntityInfo>().static_batched,
+              "el hijo de un Outline sin incluir hijos si entra");
     }
 
     ecs::StaticBatchReport again;

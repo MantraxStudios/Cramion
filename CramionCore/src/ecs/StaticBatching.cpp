@@ -3,6 +3,7 @@
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/asset/Importer.h"
 #include "CramionCore/ecs/Components.h"
+#include "CramionCore/ecs/Outline.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/world/WorldPartition.h"
 
@@ -89,8 +90,21 @@ bool hasComponent(World& world, Entity e, const char* name) {
 }
 
 // Algo que puede mover el objeto en el juego.
+// Con contorno de juego (componente Outline en la entidad, o en un padre con
+// "incluir hijos"; RM-capas): el contorno se dibuja por actor y dentro del lote
+// no tendria el suyo.
+bool outlined(Entity e) {
+    for (Entity p = e; p.valid(); p = p.parent()) {
+        if (const Outline* outline = p.tryGet<Outline>(); outline != nullptr && (p == e || outline->include_children)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool movable(World& world, Entity e) {
     if (e.has<Animator>() || hasComponent(world, e, "Script")) return true;
+    if (outlined(e)) return true;
     for (Entity p = e; p.valid(); p = p.parent()) {
         if (const auto* body = p.tryGet<physics::Rigidbody>(); body != nullptr && body->type != physics::BodyType::Static) {
             return true;

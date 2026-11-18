@@ -62,7 +62,8 @@ CramionCore
   `collectOutlines`, `renderLayerMask`.
 - `include/CramionCore/ecs/RenderSync.h`, `src/ecs/RenderSync.cpp`, `src/ecs/RenderSyncLayers.cpp` (nuevo): capas del
   actor, camara principal y de Render Textures, `shadow_layers` de las luces, `syncOutlines` (y la CVar de DLSS).
-- `src/ecs/StaticBatching.cpp`: fuera del lote si `render_layers != 1`.
+- `src/ecs/StaticBatching.cpp`: fuera del lote si `render_layers != 1` o lleva contorno (Outline propio o de un padre
+  con *Incluir hijos*).
 - `CMakeLists.txt` (CramionCore): objetivo `CramionRenderLayersTests` y `src/ecs/Outline.cpp` en las fuentes de
   `CramionCoreTests` (Components.cpp registra Outline).
 - `tests/RenderLayersTests.cpp` (nuevo).
@@ -116,8 +117,6 @@ Escena de prueba sugerida (proyecto vacio con suelo y un par de cubos):
 - Capas en particulas/VFX, terreno, vegetacion, voxeles, agua y sprites (siguen visibles para todas las camaras; solo
   los Mesh Renderer y personajes llevan capas). Luces por capas de render que iluminan ("light layers") tampoco.
 - Mascara de capas propia para las sondas de reflexion (hoy usan la de la camara principal sin el viewmodel).
-- Lo transparente del viewmodel (cristal de una mira) va en la pasada del vidrio sin comprimir: puede quedar tapado por
-  una pared cercana.
 - El trazado de rayos ignora las mascaras de sombra por luz (las sombras por rayos usan `cast_shadows`).
 - Viewmodel sin sombra propia (opcion para que proyecte) ni en VR.
 - Contornos de juego: sin contorno del viewmodel; maximo 15 estilos por frame (los demas comparten el ultimo).
@@ -127,8 +126,52 @@ Escena de prueba sugerida (proyecto vacio con suelo y un par de cubos):
 ## Riesgos
 
 - El culling por capas se hace en `updateActors` marcando `shadows_only`: cualquier ruta que dibuje actores sin mirar
-  `shadows_only` los veria (no se encontro ninguna, ademas del picking del editor).
-- Las caches de sombras del sol no se invalidan al cambiar `shadow_layers` del sol en marcha (se redibujan por turno).
+  `shadows_only` los veria (revisadas: G-buffer, vidrio, contornos, picking y sombras; todas lo miran).
 - El viewmodel se ilumina en la posicion reconstruida de la profundidad comprimida (junto al plano cercano): SSAO, sombras
   de contacto y niebla lo ven pegado a la camara.
 - Mascara reactiva de DLSS activa por defecto: si en algun juego empeora (parpadeo en transparentes), `render.DlssReactiveMask 0`.
+
+## Revision (segundo agente)
+
+Revisado el diff `horizonz-1031...rm-capas` (41af132). Lo pedido esta cubierto (con las limitaciones de *Pendiente*).
+Retrocompatibilidad: los campos nuevos tienen el valor neutro por defecto y una escena sin ellos carga igual (prueba);
+la camara de la vista Juego del editor se guarda y se devuelve entera (`saved_camera_`), asi que la culling mask y el
+viewmodel no pasan a la vista Escena; ningun script de Horizonz usa el nombre `Outline`. Sin coste con la funcion sin
+usar: una mascara por actor y luz, `view<Outline>().empty()` por frame y la pasada de contornos solo con alguno.
+
+Arreglado:
+- **Vidrio del viewmodel** (`recordGlassPass`): lo transparente del arma (mira, cristal) y su fundido suave se dibujaban
+  sin comprimir la profundidad y en su posicion "real", que la matriz del viewmodel aleja hasta `near_camara /
+  viewmodel_near` veces (x10 con los valores por defecto): cualquier pared a pocos metros lo tapaba, el culling del vidrio
+  en GPU lo daba por oculto y el vidrio del mundo se mezclaba encima. Ahora va con el mismo viewport comprimido, el
+  ultimo en el orden y con una caja de oclusion que nunca se da por tapada.
+- **Contornos "Solo tapado" con ruido**: la mascara de lo visible se dibujaba siempre con LOD0 y sin jitter contra la
+  profundidad del G-buffer (con LOD y con jitter, y con escalado contra la copia a resolucion de pantalla): partes que se
+  ven salian "tapadas" (contorno y relleno a trozos en personajes lejanos con LOD y en superficies inclinadas con
+  TAA/FSR/DLSS). Ahora usa el LOD que dibujo el G-buffer (con sus cajas por submalla) y la pipeline de lo visible de los
+  contornos de juego lleva un margen de profundidad hacia la camara (depth bias -1 / pendiente -2.5). El contorno de
+  seleccion del editor no cambia.
+- **Cascadas del sol al cambiar `Light.shadow_layers`**: con la camara quieta y sin nada que se moviera las cascadas (y
+  su cache de lo estatico) no se volvian a dibujar nunca, y la sombra de las capas quitadas seguia. Ahora un cambio de
+  las capas del sol redibuja todas las cascadas (como un cambio del detalle de sombras).
+- **Static batching y Outline**: una entidad Static con Outline (o hija de una con *Incluir hijos*) entraba en el lote
+  del juego exportado y perdia su contorno (va por actor). Ahora se queda suelta.
+- Quitado `game_outline_mask_` (imagen declarada y nunca usada).
+
+Pruebas anadidas: en `CramionMeshTests` (static batching), capas y contornos fuera del lote (capa 8, Outline, hijo con
+*Incluir hijos*; el hijo de un Outline sin el si entra).
+
+Resultado tras la revision (build-rm, Release, clang; CramionFX y CramionCore recompilados, sin avisos nuevos):
+`CramionRenderLayersTests` 53/53, `CramionMeshTests` 183/183 (con las 2 nuevas), `CramionCoreTests` 102/102,
+`CramionPrefabTests` 21/21, `CramionSceneLoadTests` 43/43, de una en una y sin ventana. CramionEditor y CramionPlayer
+siguen sin compilar en este worktree (no se toco su codigo; incluyen `VulkanRenderer.h`, que cambio): compilarlos en la
+integracion.
+
+Revisado y correcto (sin cambios): vectores de movimiento del viewmodel (las matrices del frame anterior se guardan con
+`draw.transform`, que ya lleva la matriz del viewmodel), rigidos del viewmodel en modo compatible (sin el bit de
+instancia: `push.model` x hueso), barreras de la mascara compartida con el contorno de seleccion (la segunda pasada
+espera la lectura de la primera), mascara reactiva de DLSS (misma imagen, barrera y formato que FSR 3), camaras de
+Render Texture (su culling mask y su viewmodel, `camera_override_`).
+
+Sigue pendiente de verificar en GPU (no se pudo sin ventana): todo lo de *Banco de prueba*, y en particular el margen de
+profundidad del modo *Solo tapado* (si deja ver como visible algo tapado por una pared pegada, bajar la pendiente).

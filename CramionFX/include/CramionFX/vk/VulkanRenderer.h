@@ -2441,11 +2441,11 @@ private:
     // Contornos de juego (RM-capas): lo pedido, su mascara (R = estilo de la
     // silueta, G = estilo de lo visible) y su composicion.
     scene::GameOutlines game_outlines_;
-    VulkanImage game_outline_mask_{};
     FullscreenPass game_outline_pass_{};
     std::vector<vk::raii::DescriptorSet> game_outline_sets_;
     // Capas y viewmodel (RM-capas), de updateActors para esta vista.
     std::uint32_t sun_shadow_layers_ = scene::kAllRenderLayers;
+    std::uint32_t cascade_shadow_layers_ = scene::kAllRenderLayers;  // con las que se dibujaron las cascadas
     std::uint32_t viewmodel_draws_ = 0;
     float viewmodel_depth_range_ = 0.02f;
     bool dlss_reactive_mask_ = true;

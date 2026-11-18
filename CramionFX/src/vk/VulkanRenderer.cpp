@@ -6001,8 +6001,12 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         // dejar el mapa limpio (nada ocluye) una vez: borrar las cuatro capas
         // cada frame (y antes copiarlas de la cache) no cambiaba nada.
         const bool kept_clear = !sun_cascades && cascades_clear_ && !isolated();
-        const bool redraw_all =
-            !kept_clear && (isolated() || !cascades_valid_ || !sun_cascades || actor_set_reset_ || detail_changed);
+        // Otras capas con sombra del sol (Light.shadow_layers, RM-capas): las
+        // cascadas guardadas (y su cache) tienen otros proyectores.
+        const bool layers_changed = sun_shadow_layers_ != cascade_shadow_layers_;
+        if (!isolated()) cascade_shadow_layers_ = sun_shadow_layers_;
+        const bool redraw_all = !kept_clear && (isolated() || !cascades_valid_ || !sun_cascades || actor_set_reset_ ||
+                                                detail_changed || layers_changed);
         const std::uint64_t far_period = 4ull * budget_.farCascadeInterval();
         // La cache de lo estatico solo con animados que proyectan sombra (se
         // crea al frame siguiente; se suelta tras ~10 s sin ninguno).
@@ -9410,6 +9414,10 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
         const Vec3 eye = camera_position_;
         const auto distance2 = [&](const GlassDraw& glass) {
             const ActorDraw& draw = *glass.actor;
+            // El arma en primera persona (RM-capas), la ultima: esta delante
+            // de todo (su profundidad comprimida), aunque su transform la
+            // lleve lejos.
+            if (draw.viewmodel) return -1.0f;
             Vec3 center = draw.bounds_center;
             if (draw.per_submesh) {
                 const core::Aabb& box = lod0Box(draw, glass.submesh);
@@ -9443,6 +9451,12 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
             } else {
                 const Vec3 r{draw.bounds_radius, draw.bounds_radius, draw.bounds_radius};
                 box = core::Aabb{draw.bounds_center - r, draw.bounds_center + r};
+            }
+            if (draw.viewmodel) {
+                // Arma en primera persona (RM-capas): su caja real queda tras
+                // las paredes, pero se dibuja delante de todo. Una caja con el
+                // ojo dentro nunca se da por tapada (glass_cull.comp).
+                box = core::Aabb{camera_position_ - Vec3{0.05f, 0.05f, 0.05f}, camera_position_ + Vec3{0.05f, 0.05f, 0.05f}};
             }
             item.bounds_min = toVec4(box.min, 0.0f);
             item.bounds_max = toVec4(box.max, 0.0f);
@@ -9493,9 +9507,18 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
     std::int32_t bound_glass_shader = -1;
     const vk::Buffer glass_commands = glass_indirect ? *gpu_culling_.glassCommands(frame_index).handle() : vk::Buffer{};
     std::uint32_t glass_slot = 0;
+    bool viewmodel_viewport = false;
     for (const GlassDraw& glass : visible) {
         const ActorDraw& draw = *glass.actor;
         const SkinnedModel& model = skinned_models_[draw.model];
+        if (draw.viewmodel != viewmodel_viewport) {
+            // Lo transparente del arma en primera persona (RM-capas), con la
+            // misma profundidad comprimida que su parte opaca (no lo tapan
+            // las paredes). Van los ultimos (orden de arriba).
+            viewmodel_viewport = draw.viewmodel;
+            cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height),
+                                            0.0f, viewmodel_viewport ? viewmodel_depth_range_ : 1.0f});
+        }
         if (&draw != bound_actor) {
             cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
             cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
@@ -9549,6 +9572,10 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
             cmd.drawIndexed(submesh.index_count, 1, submesh.first_index, 0, 0);
         }
         ++glass_slot;
+    }
+    if (viewmodel_viewport) {
+        cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height),
+                                        0.0f, 1.0f});
     }
 
     compat::endRendering(cmd);
@@ -9744,9 +9771,14 @@ void VulkanRenderer::recordGameOutlinePass(const vk::raii::CommandBuffer& cmd, s
             push.flags = 2u;  // sin jitter: el contorno no tiembla con el TAA
             cmd.pushConstants<GpuSkinnedPush>(*skinned_pass_.geometryLayout(), skinned_pass_.geometryPushStages(), 0,
                                               push);
-            const auto& submeshes = model.submeshes();
+            // Con el LOD que dibujo el G-buffer (la prueba de lo visible
+            // compara con esa profundidad; con LOD0 lo de lejos salia "tapado"
+            // a trozos), todas sus submallas, opacas y de vidrio.
+            const auto& submeshes = model.lodSubmeshes(draw->lod);
             for (std::uint32_t i = 0; i < submeshes.size(); ++i) {
-                if (draw->per_submesh && !frustum.intersects(lod0Box(*draw, i))) continue;
+                if (draw->per_submesh) {
+                    if (const core::Aabb* box = submeshBox(*draw, i); box != nullptr && !frustum.intersects(*box)) continue;
+                }
                 cmd.drawIndexed(submeshes[i].index_count, 1, submeshes[i].first_index, 0, 0);
             }
         }

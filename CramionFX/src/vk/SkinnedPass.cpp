@@ -703,6 +703,16 @@ vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device
     rasterization.cullMode = vk::CullModeFlagBits::eNone;
     rasterization.frontFace = vk::FrontFace::eCounterClockwise;
     rasterization.lineWidth = 1.0f;
+    if (game && visible_only) {
+        // Contornos de juego (RM-capas): la mascara va sin jitter y, con
+        // escalado, contra la profundidad copiada a la resolucion de pantalla;
+        // el G-buffer, con jitter. En superficies inclinadas la diferencia
+        // daba por "tapados" pixeles que se ven (ruido en el modo Solo
+        // tapado): un margen hacia la camara de unos pixeles de pendiente.
+        rasterization.depthBiasEnable = VK_TRUE;
+        rasterization.depthBiasConstantFactor = -1.0f;
+        rasterization.depthBiasSlopeFactor = -2.5f;
+    }
 
     vk::PipelineMultisampleStateCreateInfo multisample{};
     multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
