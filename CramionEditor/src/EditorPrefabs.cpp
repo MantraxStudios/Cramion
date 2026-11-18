@@ -320,7 +320,7 @@ void EditorApp::drawPrefabInspectorBar(ecs::Entity entity) {
         }
         ImGui::SetItemTooltip("Un prefab nuevo basado en este con los cambios propios de la instancia;\n"
                               "la instancia pasa a la variante. Lo que no cambia se sigue heredando.");
-        const Uuid base = missing ? Uuid{} : ecs::prefabVariantBase(ecs::readPrefabFileRaw(path));
+        const Uuid base = missing ? Uuid{} : cachedPrefabVariantBase(prefab, path);
         if (ImGui::MenuItem("Abrir la base", nullptr, false, base.valid() && !prefabPath(base).empty() && !playing())) {
             openPrefabWorkspace(base);
         }
@@ -385,8 +385,11 @@ void EditorApp::drawPrefabHierarchyMenu(ecs::Entity entity) {
     {
         const ecs::PrefabLink* link = linked ? entity.tryGet<ecs::PrefabLink>() : nullptr;
         const std::filesystem::path path = linked && !missing ? prefabPath(root.get<ecs::PrefabInstance>().prefab.uuid) : std::filesystem::path{};
+        // Copia: abrir o desvincular vacia la cache.
         const std::optional<ecs::PrefabOrigin> origin =
-            link != nullptr && !path.empty() && !link->source.empty() ? ecs::prefabEntityOrigin(path, link->source) : std::nullopt;
+            link != nullptr && !path.empty() && !link->source.empty()
+                ? cachedPrefabOrigin(root.get<ecs::PrefabInstance>().prefab.uuid, path, link->source)
+                : std::nullopt;
         const bool nested = origin && !origin->nested.empty() && !origin->file.empty();
         if (ImGui::MenuItem("Abrir prefab anidado", nullptr, false, nested && !playing())) openPrefabWorkspace(origin->prefab);
         ImGui::SetItemTooltip("Edita el prefab que esta dentro de este (sus cambios llegan a todos los que lo usan)");
@@ -431,6 +434,23 @@ void EditorApp::forgetPrefabTexts() {
     prefab_docs_.clear();
     prefab_origins_.clear();
     prefab_inherited_.clear();
+    prefab_variant_bases_.clear();
+}
+
+const std::optional<ecs::PrefabOrigin>& EditorApp::cachedPrefabOrigin(const Uuid& prefab, const std::filesystem::path& path,
+                                                                      const std::string& source) {
+    prefabText(prefab);  // vacia las caches si cambio la base de datos
+    const std::string key = prefab.toString() + "|" + source;
+    auto it = prefab_origins_.find(key);
+    if (it == prefab_origins_.end()) it = prefab_origins_.emplace(key, ecs::prefabEntityOrigin(path, source)).first;
+    return it->second;
+}
+
+Uuid EditorApp::cachedPrefabVariantBase(const Uuid& prefab, const std::filesystem::path& path) {
+    prefabText(prefab);
+    auto it = prefab_variant_bases_.find(prefab);
+    if (it == prefab_variant_bases_.end()) it = prefab_variant_bases_.emplace(prefab, ecs::prefabVariantBase(ecs::readPrefabFileRaw(path))).first;
+    return it->second;
 }
 
 void EditorApp::createPrefabVariantAsset(const std::filesystem::path& base_file) {
@@ -493,12 +513,9 @@ OverrideHook* EditorApp::inspectorOverrideHook(ecs::Entity entity, const std::st
     }
     if (prefab_override_fields_.empty()) return nullptr;
     // De donde viene la entidad (base de la variante o prefab anidado).
-    prefabText(prefab);
-    const std::string origin_key = prefab.toString() + "|" + link->source;
-    auto origin = prefab_origins_.find(origin_key);
-    if (origin == prefab_origins_.end()) origin = prefab_origins_.emplace(origin_key, ecs::prefabEntityOrigin(path, link->source)).first;
+    const std::optional<ecs::PrefabOrigin>& origin = cachedPrefabOrigin(prefab, path, link->source);
     prefab_override_hook_.in_prefab = in_prefab;
-    prefab_override_hook_.can_apply_base = origin->second.has_value() && !origin->second->file.empty();
+    prefab_override_hook_.can_apply_base = origin.has_value() && !origin->file.empty();
     prefab_override_hook_.overridden = [this](const std::string& field) {
         return std::find(prefab_override_fields_.begin(), prefab_override_fields_.end(), field) != prefab_override_fields_.end();
     };

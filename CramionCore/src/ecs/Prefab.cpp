@@ -249,12 +249,22 @@ bool createPrefab(World& world, Entity root, const std::filesystem::path& file, 
     return !applyInstance(world, root, file, error).empty();
 }
 
+// El texto con el que se trabaja: el mismo o, con anidados o variante, el
+// documento resuelto. nullptr si no se pudo resolver (falta la base o hay un
+// ciclo): no se instancia ni se sincroniza con el texto sin resolver, que
+// tiene registros de enlace sin componentes.
+static const std::string* workingText(const std::string& raw_text, std::string& storage) {
+    if (!prefabNeedsResolve(raw_text)) return &raw_text;
+    storage = resolvePrefabText(raw_text);
+    return storage.empty() ? nullptr : &storage;
+}
+
 Entity instantiatePrefab(World& world, const std::string& raw_text, Entity parent) {
     // Con anidados o variante, el documento resuelto (plano).
     std::string resolved;
-    if (prefabNeedsResolve(raw_text)) resolved = resolvePrefabText(raw_text);
-    const std::string& text = resolved.empty() ? raw_text : resolved;
-    const json prefab = parse(text);
+    const std::string* working = workingText(raw_text, resolved);
+    if (working == nullptr) return {};
+    const json prefab = parse(*working);
     // Sin copiar los registros (antes, una copia profunda de todo el JSON en
     // cada instancia: ~45 ms con Valley.crprefab). buildEntities se salta lo
     // que no es un objeto, igual que esta lista: created[i] es records[i].
@@ -310,9 +320,9 @@ struct ParsedPrefab {
 
 std::shared_ptr<const ParsedPrefab> parsePrefabText(const std::string& raw_text) {
     std::string resolved;
-    if (prefabNeedsResolve(raw_text)) resolved = resolvePrefabText(raw_text);
-    const std::string& text = resolved.empty() ? raw_text : resolved;
-    json j = json::parse(text, nullptr, false);
+    const std::string* text = workingText(raw_text, resolved);
+    if (text == nullptr) return nullptr;
+    json j = json::parse(*text, nullptr, false);
     if (j.is_discarded() || !j.is_object()) return nullptr;
     auto doc = std::make_shared<ParsedPrefab>();
     doc->revision = j.value("revision", 0);
@@ -380,8 +390,9 @@ void recordOverrides(World& world, Entity root, const ParsedPrefab& document) {
 void syncInstance(World& world, Entity root, const std::string& raw_text) {
     if (!root.valid() || !root.has<PrefabInstance>()) return;
     std::string resolved_text;
-    if (prefabNeedsResolve(raw_text)) resolved_text = resolvePrefabText(raw_text);
-    const json prefab = parse(resolved_text.empty() ? raw_text : resolved_text);
+    const std::string* working = workingText(raw_text, resolved_text);
+    if (working == nullptr) return;  // sin resolver no se toca la instancia
+    const json prefab = parse(*working);
     const std::vector<std::string> list = root.get<PrefabInstance>().overrides;
     const std::unordered_set<std::string> overrides(list.begin(), list.end());
     const auto overridden = [&](const std::string& key) { return overrides.count(key) != 0; };
@@ -461,6 +472,15 @@ void syncInstance(World& world, Entity root, const std::string& raw_text) {
 // que tendran en el documento resuelto). Rechaza los ciclos.
 static bool linkInnerInstances(World& world, Entity root, const Uuid& self, std::vector<detail::NewNestedPart>& added,
                         std::string* error) {
+    // Primero se comprueba todo (ciclos) y despues se cambia: si hay un ciclo,
+    // la instancia se queda como estaba (antes, las de delante ya habian
+    // perdido su PrefabInstance).
+    struct Candidate {
+        Entity e;
+        Uuid child;
+        std::filesystem::path file;
+    };
+    std::vector<Candidate> candidates;
     for (Entity e : subtree(world, root)) {
         if (e == root || !world.registry().valid(e.handle()) || !e.has<PrefabInstance>()) continue;
         const Uuid child = e.get<PrefabInstance>().prefab.uuid;
@@ -473,12 +493,15 @@ static bool linkInnerInstances(World& world, Entity root, const Uuid& self, std:
             if (error) *error = "ciclo de prefabs: \"" + e.name() + "\" contiene (o es) el prefab que se guarda";
             return false;
         }
+        candidates.push_back(Candidate{e, child, child_file});
+    }
+    for (Candidate& c : candidates) {
         const std::string nested = Uuid::generate().toString();
-        for (auto& [source, linked] : linkedEntities(world, e)) {
-            linked.get<PrefabLink>().source = linked == e ? nested : detail::nestedEntityId(nested, source);
+        for (auto& [source, linked] : linkedEntities(world, c.e)) {
+            linked.get<PrefabLink>().source = linked == c.e ? nested : detail::nestedEntityId(nested, source);
         }
-        e.remove<PrefabInstance>();
-        added.push_back(detail::NewNestedPart{nested, child, child_file});
+        c.e.remove<PrefabInstance>();
+        added.push_back(detail::NewNestedPart{nested, c.child, c.file});
     }
     return true;
 }

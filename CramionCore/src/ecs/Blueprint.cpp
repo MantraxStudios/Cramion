@@ -269,7 +269,9 @@ std::string withBlueprintInfo(const std::string& prefab_text, const BlueprintInf
 }
 
 bool writeBlueprintInfo(const std::filesystem::path& prefab_file, const BlueprintInfo& info, std::string* error) {
-    const std::string text = readPrefabFile(prefab_file);
+    // El texto de disco: con el resuelto, una variante o un prefab con
+    // anidados se guardaria aplanado (perderia sus enlaces).
+    const std::string text = readPrefabFileRaw(prefab_file);
     const json j = json::parse(text, nullptr, false);
     if (text.empty() || !j.is_object()) {
         if (error) *error = "no se pudo leer el prefab " + utf8(prefab_file);

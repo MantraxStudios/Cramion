@@ -9,6 +9,7 @@
 
 #include "CramionCore/asset/AssetDatabase.h"
 #include "CramionCore/cvar/CVar.h"
+#include "CramionCore/ecs/Blueprint.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/ecs/PrefabSpawn.h"
@@ -404,6 +405,66 @@ void testDataPack(const std::filesystem::path& root) {
     check(eje && rueda && orco, "el DataPack de Coche y OrcoRojo incluye Eje, Rueda y Orco");
 }
 
+// Revision: lo que se arreglo despues de la primera entrega.
+void testReview(const std::filesystem::path& root) {
+    std::printf("Revision\n");
+    std::string error;
+    const std::filesystem::path pf = root / "Prefabs";
+    locate({pf / "Rueda.crprefab", pf / "Ejes" / "Eje.crprefab", pf / "Coche.crprefab", pf / "Orco.crprefab", pf / "OrcoRojo.crprefab",
+            pf / "OrcoVerde.crprefab"});
+
+    // Un ciclo detras de otra instancia que si se podia enlazar: la instancia
+    // se queda como estaba (antes, la primera ya habia perdido su enlace).
+    cvar::Registry::instance().set("prefab.SaveNested", "true", &error, true);
+    {
+        ecs::World w;
+        ecs::Entity wheel = ecs::instantiatePrefab(w, pf / "Rueda.crprefab");
+        ecs::Entity orc = ecs::instantiatePrefab(w, pf / "Orco.crprefab", wheel);
+        ecs::instantiatePrefab(w, pf / "Coche.crprefab", wheel);
+        const std::string orc_source = orc.get<ecs::PrefabLink>().source;
+        const std::string before = ecs::readPrefabFileRaw(pf / "Rueda.crprefab");
+        error.clear();
+        check(ecs::applyInstance(w, wheel, pf / "Rueda.crprefab", &error).empty() && error.find("ciclo") != std::string::npos &&
+                  orc.has<ecs::PrefabInstance>() && orc.get<ecs::PrefabLink>().source == orc_source &&
+                  ecs::readPrefabFileRaw(pf / "Rueda.crprefab") == before,
+              "ciclo rechazado: las instancias de dentro no se tocan (ni la que iba antes)");
+    }
+    cvar::Registry::instance().set("prefab.SaveNested", "false", &error, true);
+
+    // Base perdida: ni se instancia ni se sincroniza con el texto sin resolver.
+    {
+        const std::filesystem::path lost = pf / "SinBase.crprefab";
+        std::ofstream(lost, std::ios::binary)
+            << "{\"format\":\"CramionPrefab\",\"version\":1,\"uuid\":\"" << Uuid::generate().toString()
+            << "\",\"name\":\"SinBase\",\"revision\":1,\"variantOf\":{\"uuid\":\"" << Uuid::generate().toString()
+            << "\",\"path\":\"NoEsta.crprefab\"},\"patches\":[],\"entities\":[{\"uuid\":\"" << Uuid::generate().toString()
+            << "\",\"name\":\"Suelto\",\"parent\":null,\"components\":{}}]}";
+        const std::string raw = ecs::readPrefabFileRaw(lost);
+        ecs::World w;
+        check(ecs::readPrefabFile(lost).empty() && !ecs::instantiatePrefab(w, raw).valid() && ecs::compilePrefabTemplate(raw) == nullptr,
+              "variante sin base: no se instancia (ni por JSON ni por plantilla)");
+        ecs::Entity red = ecs::instantiatePrefab(w, pf / "OrcoRojo.crprefab");
+        const std::size_t parts = subtreeOf(w, red).size();
+        ecs::syncInstance(w, red, raw);
+        check(red.valid() && subtreeOf(w, red).size() == parts && parts > 1, "sincronizar con un texto que no se resuelve no borra nada");
+    }
+
+    // Escribir los datos de Blueprint en una variante no la aplana.
+    {
+        ecs::BlueprintInfo info;
+        info.description = "variante con datos de Blueprint";
+        check(ecs::writeBlueprintInfo(pf / "OrcoRojo.crprefab", info, &error), "writeBlueprintInfo en una variante");
+        const std::string raw = ecs::readPrefabFileRaw(pf / "OrcoRojo.crprefab");
+        check(ecs::prefabVariantBase(raw).valid() && raw.find("\"Arma\"") == std::string::npos && !ecs::readPrefabFile(pf / "OrcoRojo.crprefab").empty(),
+              "la variante sigue siendo variante (sin copiar las entidades de la base)");
+    }
+
+    // Consultas del editor sobre un prefab de siempre: nada (sin parsearlo).
+    check(!ecs::prefabEntityOrigin(pf / "Farola.crprefab", "x") && ecs::prefabInheritedOverrides(pf / "Farola.crprefab").empty() &&
+              ecs::prefabDependencies(pf / "Farola.crprefab").empty(),
+          "origen, diferencias y dependencias de un prefab plano: vacios");
+}
+
 void testFlatUnchanged(const std::filesystem::path& root) {
     std::printf("Retrocompatibilidad\n");
     const std::filesystem::path f = root / "Prefabs" / "Farola.crprefab";
@@ -554,6 +615,7 @@ int main() {
     testParity(root);
     testDataPack(root);
     testFlatUnchanged(root);
+    testReview(root);
 
     std::filesystem::remove_all(root, ec);
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);

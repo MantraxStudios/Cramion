@@ -470,6 +470,11 @@ bool resolveImpl(const json& raw, const std::filesystem::path& file, Context& ct
     return true;
 }
 
+// Un .crprefab de los de siempre (sin anidados ni variante): no hay nada que
+// resolver. Solo se buscan las claves, sin parsear (el editor pregunta por
+// origenes y diferencias de prefabs que pueden ser muy grandes).
+bool plainPrefabFile(const std::filesystem::path& file) { return !prefabNeedsResolve(readText(file)); }
+
 bool resolveFile(const std::filesystem::path& file, json* raw_out, Resolution& out, std::string* error) {
     json raw = parseObject(readText(file));
     if (raw.empty()) {
@@ -919,6 +924,7 @@ Uuid prefabVariantBase(const std::string& raw_text) {
 }
 
 std::vector<Uuid> prefabDependencies(const std::filesystem::path& file) {
+    if (plainPrefabFile(file)) return {};
     Resolution r;
     if (!resolveFile(file, nullptr, r, nullptr)) return {};
     return r.dependencies;
@@ -1013,6 +1019,7 @@ bool unlinkNestedPrefab(const std::filesystem::path& file, const std::string& ne
 }
 
 std::optional<PrefabOrigin> prefabEntityOrigin(const std::filesystem::path& file, const std::string& source) {
+    if (plainPrefabFile(file)) return std::nullopt;
     Resolution r;
     if (!resolveFile(file, nullptr, r, nullptr)) return std::nullopt;
     const auto it = r.origins.find(source);
@@ -1022,6 +1029,7 @@ std::optional<PrefabOrigin> prefabEntityOrigin(const std::filesystem::path& file
 
 std::vector<std::string> prefabInheritedOverrides(const std::filesystem::path& file) {
     std::vector<std::string> out;
+    if (plainPrefabFile(file)) return out;
     json raw;
     Resolution r;
     if (!resolveFile(file, &raw, r, nullptr)) return out;

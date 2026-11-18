@@ -386,6 +386,12 @@ private:
     OverrideHook* inspectorOverrideHook(ecs::Entity entity, const std::string& component);
     void inspectorOverrideAction(ecs::Entity entity, const std::string& component);
     void runPrefabOverrideAction();
+    // De donde viene una entidad de un prefab y la base de una variante, con
+    // cache (los menus se dibujan en cada frame: sin ella, leer y resolver el
+    // .crprefab entero en cada uno).
+    const std::optional<ecs::PrefabOrigin>& cachedPrefabOrigin(const Uuid& prefab, const std::filesystem::path& path,
+                                                               const std::string& source);
+    Uuid cachedPrefabVariantBase(const Uuid& prefab, const std::filesystem::path& path);
 
     // --- Espacios de trabajo (EditorWorkspaces.cpp) ---
     // Pestanas debajo del menu, como los editores de assets de Unreal: la
@@ -1513,6 +1519,7 @@ private:
     // cada prefab respecto a su base (se vacian con prefab_texts_).
     std::unordered_map<std::string, std::optional<ecs::PrefabOrigin>> prefab_origins_;
     std::unordered_map<Uuid, std::vector<std::string>> prefab_inherited_;
+    std::unordered_map<Uuid, Uuid> prefab_variant_bases_;
     OverrideHook prefab_override_hook_;
     std::vector<std::string> prefab_override_fields_;
     struct PendingOverride {
