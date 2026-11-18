@@ -51,8 +51,9 @@ vk::ImageMemoryBarrier2 colorBarrier(vk::Image image, vk::ImageLayout old_layout
 bool VulkanRenderer::gtaoActive() const {
     // En gama baja sigue el SSAO de siempre (mas barato); en el modo
     // compatible no hay GTAO (su imagen es RG16F y lighting.frag no lo lee).
+    // (Y con la imagen en RGBA16F: ssaoFormat.)
     return gtao_requested_ && *gtao_pass_.pipeline() != VK_NULL_HANDLE && !device_.compatMode() &&
-           hardware_.tier != HardwareTier::Low;
+           hardware_.tier != HardwareTier::Low && ssaoFormat() == kGtaoFormat;
 }
 
 void VulkanRenderer::fillPlacedProbes(GpuLights& light_data, const core::Vec3& eye) {

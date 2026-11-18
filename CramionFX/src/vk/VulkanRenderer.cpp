@@ -677,8 +677,9 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         ssao_pass_.create(device_, ssao);
         // GTAO (gtao.frag, CVar render.ao.Gtao): los mismos descriptores (usa
         // ssao_sets_) y la misma imagen, con el radio y el patron temporal por
-        // push constant. Sin el shader (instalacion antigua), solo SSAO.
-        if (!compat) {
+        // push constant. Sin el shader (instalacion antigua), solo SSAO. Ni en
+        // el modo compatible ni en gama baja (ssaoFormat: alli solo SSAO).
+        if (ssaoFormat() == kGtaoFormat) {
             FullscreenPassDesc gtao = ssao;
             gtao.fragment_shader = "gtao.frag.spv";
             gtao.push_constant_size = sizeof(GpuBloomPush);

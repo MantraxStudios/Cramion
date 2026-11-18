@@ -76,11 +76,15 @@ std::string EditorApp::bakeReflectionProbesJson(const std::string& args_json) {
     if (args.is_object() && args.contains("entity") && args["entity"].is_string()) {
         const std::string text = args["entity"].get<std::string>();
         if (!text.empty()) {
+            // UUID o, si no, el nombre (la primera con ese nombre).
             const Uuid id = Uuid::parse(text);
-            if (!id.valid() || !world_.find(id).valid()) {
-                return json{{"error", "no existe la entidad " + text}}.dump();
+            ecs::Entity target = id.valid() ? world_.find(id) : ecs::Entity{};
+            if (!target.valid()) target = world_.findByName(text);
+            if (!target.valid()) return json{{"error", "no existe la entidad " + text}}.dump();
+            if (target.tryGet<lighting::ReflectionProbeBox>() == nullptr) {
+                return json{{"error", "la entidad " + text + " no tiene Reflection Probe"}}.dump();
             }
-            only.push_back(id);
+            only.push_back(target.uuid());
         }
     }
     json out;

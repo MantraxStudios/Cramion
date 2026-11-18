@@ -1295,44 +1295,41 @@ vec3 placedProbeSample(int i, vec3 p, vec3 r, float lod) {
            lights.placed[i].center_intensity.w;
 }
 
-// Reflejo de las sondas colocadas en p: las 2 que mas pesan (manda la de mas
-// prioridad; a igual prioridad, la de mas peso; empate, la primera, que la
-// CPU ordena con la caja mas pequena delante). La segunda solo rellena lo que
-// deja la primera en su fundido. rgb ya por su peso, a = peso total (0..1);
-// lo que falta lo pone la sonda de la camara o el cielo.
+// Reflejo de las sondas colocadas en p (la misma regla que blendPlacedProbes
+// de la CPU): manda la primera que pesa algo en el orden de la lista (la CPU
+// la ordena por prioridad y, a igualdad, con la caja mas pequena delante),
+// con el peso de su fundido; de las demas, la que mas pesa rellena lo que deja
+// la primera. Asi una habitacion dentro de un edificio entra fundiendose en su
+// borde. rgb ya por su peso, a = peso total (0..1); lo que falta lo pone la
+// sonda de la camara o el cielo.
 vec4 placedProbeReflection(vec3 p, vec3 r, float lod) {
     int count = int(min(lights.placed_info.x, uint(kMaxPlacedProbes)));
     if (count == 0) return vec4(0.0);
     int first = -1;
     int second = -1;
-    float key0 = -1.0e30;
-    float key1 = -1.0e30;
     float w0 = 0.0;
     float w1 = 0.0;
     for (int i = 0; i < count; ++i) {
         float w = placedProbeWeight(i, p);
         if (w <= 0.0) continue;
-        float key = lights.placed[i].box_max_priority.w * 2.0 + w;
-        if (key > key0) {
-            second = first;
-            key1 = key0;
-            w1 = w0;
+        if (first < 0) {
             first = i;
-            key0 = key;
             w0 = w;
-        } else if (key > key1) {
+            if (w >= 0.999) break;  // cubre del todo: no hace falta otra
+        } else if (w > w1) {
             second = i;
-            key1 = key;
             w1 = w;
         }
     }
     if (first < 0) return vec4(0.0);
     vec3 color = placedProbeSample(first, p, r, lod) * w0;
     float total = w0;
-    if (second >= 0 && w0 < 0.999) {
+    if (second >= 0) {
         float w = min(w1, 1.0 - w0);
-        color += placedProbeSample(second, p, r, lod) * w;
-        total += w;
+        if (w > 0.0) {
+            color += placedProbeSample(second, p, r, lod) * w;
+            total += w;
+        }
     }
     return vec4(color, total);
 }

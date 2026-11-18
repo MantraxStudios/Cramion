@@ -1779,9 +1779,13 @@ private:
     // GTAO: misma disposicion que ssao_pass_ (usa ssao_sets_), con push constants.
     FullscreenPass gtao_pass_{};
     bool gtao_requested_ = false;
-    // Formato de la imagen del SSAO: RG16F en el modo compatible (solo SSAO);
-    // si no, RGBA16F (el GTAO guarda la normal doblada en ba).
-    vk::Format ssaoFormat() const { return device_.compatMode() ? kSsaoFormat : kGtaoFormat; }
+    // Formato de la imagen del SSAO: RGBA16F donde puede ir el GTAO (guarda la
+    // normal doblada en ba); RG16F, como antes, en el modo compatible y en
+    // gama baja (solo SSAO: sin el doble de memoria y ancho de banda). El
+    // nivel de la GPU se decide antes de crear la imagen y no cambia.
+    vk::Format ssaoFormat() const {
+        return device_.compatMode() || hardware_.tier == HardwareTier::Low ? kSsaoFormat : kGtaoFormat;
+    }
     // Trazado de rayos: estructuras de aceleracion y pases de GI y reflejos.
     RayTracing ray_tracing_{};
     VulkanImage probe_capture_{};

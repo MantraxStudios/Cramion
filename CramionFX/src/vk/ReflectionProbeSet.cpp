@@ -113,33 +113,33 @@ std::vector<SelectedPlacedProbe> selectPlacedProbes(const std::vector<PlacedRefl
 }
 
 PlacedProbeBlend blendPlacedProbes(const std::vector<PlacedReflectionProbe>& ordered, const core::Vec3& p) {
-    // Clave: prioridad * 2 + peso (el peso <= 1, asi que manda la prioridad).
-    // Solo cambia la elegida con una clave estrictamente mayor: a igualdad,
-    // la primera de la lista (como el bucle del shader).
+    // Manda la primera de la lista que pesa algo (la lista ya va por
+    // prioridad y, a igualdad, la caja mas pequena delante), con su propio
+    // peso aunque otra pese mas: asi una habitacion dentro de un edificio
+    // entra fundiendose en su borde (antes, con la clave prioridad * 2 +
+    // peso, el edificio pesaba 1 y mandaba hasta el final del fundido, y la
+    // habitacion aparecia de golpe). La segunda es la que mas pesa de las
+    // demas y solo rellena lo que deja la primera (w0 + w1 <= 1). Igual que
+    // placedProbeReflection de lighting_body.glsl.
     PlacedProbeBlend blend;
-    float key0 = -std::numeric_limits<float>::max();
-    float key1 = -std::numeric_limits<float>::max();
-    float w0 = 0.0f;
     float w1 = 0.0f;
     for (int i = 0; i < static_cast<int>(ordered.size()); ++i) {
         const float w = placedProbeWeight(ordered[i], p);
         if (w <= 0.0f) continue;
-        const float key = static_cast<float>(ordered[i].priority) * 2.0f + w;
-        if (key > key0) {
-            blend.second = blend.first;
-            key1 = key0;
-            w1 = w0;
+        if (blend.first < 0) {
             blend.first = i;
-            key0 = key;
-            w0 = w;
-        } else if (key > key1) {
+            blend.first_weight = w;
+            if (w >= 0.999f) break;  // cubre del todo: no hace falta otra
+        } else if (w > w1) {
             blend.second = i;
-            key1 = key;
             w1 = w;
         }
     }
-    blend.first_weight = blend.first >= 0 ? w0 : 0.0f;
     blend.second_weight = blend.second >= 0 ? std::min(w1, 1.0f - blend.first_weight) : 0.0f;
+    if (blend.second >= 0 && blend.second_weight <= 0.0f) {
+        blend.second = -1;
+        blend.second_weight = 0.0f;
+    }
     return blend;
 }
 

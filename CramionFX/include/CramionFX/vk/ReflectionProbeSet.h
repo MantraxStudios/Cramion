@@ -17,10 +17,11 @@
 // VulkanRenderer::bakeReflectionCube.
 //
 // En el sombreado (lighting_body.glsl, placedProbeReflection) cada pixel
-// mezcla las 2 sondas que mas pesan: manda la de mayor prioridad (a igual
-// prioridad, la mas pequena: el orden de selectPlacedProbes); la segunda
-// rellena lo que la primera deja en su borde de fundido, y lo que queda sin
-// sonda colocada se queda con la sonda de la camara o el cielo.
+// mezcla 2 sondas: manda la primera que le llega en el orden de
+// selectPlacedProbes (mayor prioridad; a igual prioridad, la mas pequena), con
+// el peso de su fundido; de las demas, la que mas pesa rellena lo que deja la
+// primera, y lo que queda sin sonda colocada se queda con la sonda de la
+// camara o el cielo.
 
 #include "CramionFX/core/Math.h"
 
@@ -102,10 +103,10 @@ std::vector<SelectedPlacedProbe> selectPlacedProbes(const std::vector<PlacedRefl
                                                     const std::vector<PlacedProbeId>& baked, const core::Vec3& eye,
                                                     std::uint32_t max_count = kMaxActivePlacedProbes);
 
-// Mezcla de las sondas en un punto, como la hace lighting.frag: las 2 que mas
-// pesan (prioridad y luego peso; empate: la primera de la lista). `weights`
-// son los pesos de la primera y de la segunda (0 si no hay); la segunda solo
-// rellena lo que deja la primera (w0 + w1 <= 1). Devuelve cuantas entran.
+// Mezcla de las sondas en un punto, como la hace lighting.frag: la primera de
+// la lista (ya en el orden de la GPU) que pesa algo, con su peso, y de las
+// demas la que mas pesa, que solo rellena lo que deja la primera (w0 + w1 <=
+// 1). Los pesos de la primera y de la segunda (0 si no hay).
 struct PlacedProbeBlend {
     int first = -1;
     int second = -1;

@@ -168,13 +168,40 @@ void blending() {
           "en el borde del edificio, el resto para la sonda de la camara");
     b = gfx::blendPlacedProbes(ordered, Vec3{30.0f, 0.0f, 0.0f});
     check(b.first == -1 && b.total() == 0.0f, "fuera de todas, nada");
-    // Misma prioridad: la de mas peso; empate, la primera.
+    // Misma prioridad y una dentro de otra (habitacion en un edificio, la
+    // pequena delante, como las ordena selectPlacedProbes): la habitacion
+    // entra fundiendose en su borde. Antes mandaba la de mas peso y el
+    // edificio (peso 1) tapaba todo el fundido: la habitacion salia de golpe.
+    std::vector<gfx::PlacedReflectionProbe> nested = {box(5, Vec3{}, Vec3{6.0f, 4.0f, 6.0f}, 1.0f),
+                                                      box(6, Vec3{}, Vec3{40.0f, 10.0f, 40.0f}, 2.0f)};
+    b = gfx::blendPlacedProbes(nested, Vec3{2.75f, 0.0f, 0.0f});
+    check(b.first == 0 && b.second == 1 && near(b.first_weight, 0.25f) && near(b.second_weight, 0.75f),
+          "misma prioridad, una dentro de otra: la pequena se funde en su borde");
+    float previous = 0.0f;
+    bool continuous = true;
+    for (int step = 0; step <= 40; ++step) {
+        const float x = 3.0f - 0.05f * static_cast<float>(step);  // del borde de la habitacion hacia dentro
+        const gfx::PlacedProbeBlend m = gfx::blendPlacedProbes(nested, Vec3{x, 0.0f, 0.0f});
+        const float room = m.first == 0 ? m.first_weight : (m.second == 0 ? m.second_weight : 0.0f);
+        if (room + 1e-4f < previous || room - previous > 0.06f || !near(m.total(), 1.0f)) continuous = false;
+        previous = room;
+    }
+    check(continuous && near(previous, 1.0f), "el peso de la habitacion crece sin saltos y el total es 1");
+    // Misma prioridad, dos que se solapan de lado: cada una con su peso.
     std::vector<gfx::PlacedReflectionProbe> same = {box(3, Vec3{-2.0f, 0.0f, 0.0f}, Vec3{6.0f, 4.0f, 6.0f}, 2.0f),
                                                     box(4, Vec3{2.0f, 0.0f, 0.0f}, Vec3{6.0f, 4.0f, 6.0f}, 2.0f)};
     b = gfx::blendPlacedProbes(same, Vec3{0.5f, 0.0f, 0.0f});
-    check(b.first == 1 && b.second == 0 && b.total() <= 1.0f + 1e-6f, "a igual prioridad, la de mas peso delante");
+    check(b.first == 0 && b.second == 1 && near(b.first_weight, 0.25f) && near(b.second_weight, 0.75f),
+          "a igual prioridad, de lado: cada una con su peso");
     b = gfx::blendPlacedProbes(same, Vec3{0.0f, 0.0f, 0.0f});
-    check(b.first == 0 && near(b.first_weight, 0.5f) && near(b.second_weight, 0.5f), "empate exacto: la primera");
+    check(b.first == 0 && near(b.first_weight, 0.5f) && near(b.second_weight, 0.5f), "en medio, mitad y mitad");
+    // Tres: la primera pesa poco, de las otras rellena la que mas pesa.
+    std::vector<gfx::PlacedReflectionProbe> three = {box(7, Vec3{-2.0f, 0.0f, 0.0f}, Vec3{6.0f, 4.0f, 6.0f}, 2.0f, 1),
+                                                     box(8, Vec3{3.0f, 0.0f, 0.0f}, Vec3{6.0f, 4.0f, 6.0f}, 2.0f),
+                                                     box(9, Vec3{}, Vec3{40.0f, 10.0f, 40.0f}, 2.0f)};
+    b = gfx::blendPlacedProbes(three, Vec3{0.5f, 0.0f, 0.0f});
+    check(b.first == 0 && b.second == 2 && near(b.first_weight, 0.25f) && near(b.second_weight, 0.75f),
+          "la segunda es la que mas pesa de las demas (no la siguiente de la lista)");
 }
 
 void packing() {
