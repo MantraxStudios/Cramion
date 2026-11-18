@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -21,8 +22,14 @@ cvar::CVar<std::string> g_editor_url("crash.ReportUrl", std::string(),
                                      "(boton Enviar de la ventana del informe); vacia = no se envia nada",
                                      cvar::Saved);
 
-// La cola la tocan el hilo de envio y el principal.
-std::mutex g_queue_mutex;
+// La cola la tocan el hilo de envio y el principal. Sin destructor (se
+// pierde a proposito): el hilo de envio va suelto y puede seguir vivo
+// mientras el proceso destruye sus estaticos al salir.
+std::mutex& g_queue_mutex = *new std::mutex;
+// Un envio en segundo plano a la vez: dos (el boton del editor pulsado dos
+// veces, o el arranque y el boton) leerian la misma cola y mandarian dos
+// veces el mismo informe.
+std::atomic<bool> g_uploading{false};
 
 std::filesystem::path queueFile(const std::filesystem::path& folder, const std::string& app) {
     return folder / (app + ".upload");
@@ -220,15 +227,26 @@ int uploadQueued(const UploadConfig& config, const std::filesystem::path& crash_
     return sent;
 }
 
-void uploadQueuedAsync(const UploadConfig& config, const std::filesystem::path& crash_folder, const std::string& app) {
-    if (config.url.empty()) return;
-    std::thread([config, crash_folder, app] {
-        try {
-            uploadQueued(config, crash_folder, app, [](const net::HttpRequest& r) { return net::httpRequest(r); });
-        } catch (const std::exception& e) {
-            std::cerr << "[Crash] Envio de informes: " << e.what() << "\n";
-        }
-    }).detach();
+bool uploadQueuedAsync(const UploadConfig& config, const std::filesystem::path& crash_folder, const std::string& app) {
+    if (config.url.empty()) return false;
+    // Ya hay uno en marcha: lo que se acaba de poner en la cola sale en el
+    // siguiente (o en el proximo arranque).
+    if (g_uploading.exchange(true)) return false;
+    try {
+        std::thread([config, crash_folder, app] {
+            try {
+                uploadQueued(config, crash_folder, app, [](const net::HttpRequest& r) { return net::httpRequest(r); });
+            } catch (const std::exception& e) {
+                std::cerr << "[Crash] Envio de informes: " << e.what() << "\n";
+            }
+            g_uploading = false;
+        }).detach();
+    } catch (const std::exception& e) {
+        g_uploading = false;
+        std::cerr << "[Crash] No se pudo lanzar el envio de informes: " << e.what() << "\n";
+        return false;
+    }
+    return true;
 }
 
 }  // namespace cramion::crash

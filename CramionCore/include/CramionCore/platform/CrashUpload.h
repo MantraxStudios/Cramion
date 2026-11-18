@@ -62,8 +62,9 @@ using Sender = std::function<net::HttpResponse(const net::HttpRequest&)>;
 int uploadQueued(const UploadConfig& config, const std::filesystem::path& crash_folder, const std::string& app,
                  const Sender& send, int max_attempts = 3);
 // Lo mismo en un hilo aparte con net::httpRequest (no espera). Sin
-// direccion no hace nada.
-void uploadQueuedAsync(const UploadConfig& config, const std::filesystem::path& crash_folder, const std::string& app);
+// direccion no hace nada; con un envio ya en marcha tampoco (lo nuevo de la
+// cola sale en el siguiente). true si lanzo el envio.
+bool uploadQueuedAsync(const UploadConfig& config, const std::filesystem::path& crash_folder, const std::string& app);
 
 }  // namespace cramion::crash
 

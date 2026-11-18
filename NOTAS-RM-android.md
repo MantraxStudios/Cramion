@@ -92,3 +92,28 @@ Compilado en `build-rm` (Windows, Release, clang, como build-release; Android ap
 5. Con un servidor propio de pruebas (https o http a localhost en escritorio), poner la direccion y comprobar que llega el JSON y que la cola se vacia.
 6. Android con memoria baja: `adb shell am send-trim-memory <paquete> RUNNING_LOW` y ver `[Memoria] Aviso del sistema (nivel 10)...` en el log; la linea `[Rendimiento]` con la RAM.
 7. Editor: con `crash.ReportUrl` puesta, tras un cierre, el boton *Enviar informe*.
+
+## Revision (segundo agente, sobre c5f84d5)
+
+Revisado el diff entero contra horizonz-1031 (RAM/LRU, avisos de memoria, manejador de cierre de Android, envio de informes, ASTC/ETC2 de punta a punta: exportacion, claves, carga, subida a Vulkan). Comprobado:
+
+- Retrocompatibilidad: `TextureFormat::Astc4x4/Etc2Rgba8` nunca llegan a un `.crdata` ni a un `.cramcache` (la cache de modelos se escribe antes de `decodeTextures`; en el editor la cache de movil nunca se activa). BuildConfigs.json y game.ini solo ganan campos opcionales. Escenas, prefabs y scripts no se tocan.
+- Coste con todo apagado: `tickAssetRam` por frame = un atomico, un `steady_clock` y dos `prof::counter` (que salen al momento con el perfilador apagado); `ramStats` una vez por segundo. En Android, `pollMemoryPressure` sale al momento salvo cada 2 s (una llamada JNI). La busqueda de texturas de movil solo existe si el paquete trae `TextureCache/` (solo con la opcion de exportacion).
+- Vulkan: pedir `textureCompressionASTC_LDR` / `ETC2` solo cuando la GPU los tiene (tambien en el dispositivo compatible); la subida de ASTC solo llega con la cache activa, que solo se activa si la GPU lo lee; las normales se rehacen en el shader con XY (el peso bajo de B/A en ASTC es correcto). `createUiTextureCompressed` devuelve 0 con los formatos nuevos (no da aviso de compilacion con este clang: la compilacion de la revision no lo muestra).
+- Expulsion LRU: nadie guarda punteros crudos a un `ModelAsset` (todo `shared_ptr`), asi que soltar lo que tiene `use_count() == 1` es seguro; el codificador ETC1/ETC2 nunca desborda el modo diferencial (lo que en ETC2 seria T/H/plano).
+- `AndroidSupport.cpp` compila tambien para x86_64 y armeabi-v7a (`-fsyntax-only` con el NDK 30, android-26): el riesgo de `REG_RIP` queda descartado.
+
+Arreglado:
+
+1. **Envio de informes repetido** (`CrashUpload.cpp`): dos envios en segundo plano a la vez (el boton *Enviar informe* pulsado dos veces, o el del arranque y el boton) leian la misma cola y mandaban dos veces el mismo informe. Ahora hay un solo envio en marcha (`uploadQueuedAsync` devuelve `false` si ya hay uno; lo nuevo de la cola sale en el siguiente) y el editor lo dice en el aviso.
+2. **Salida del proceso con el envio en marcha**: el mutex de la cola era un estatico y el hilo va suelto (detach); al salir del juego con un envio colgado (hasta 15 s de espera) el hilo podia usar el mutex ya destruido. El mutex ya no se destruye nunca.
+3. **Prueba de ETC2 que no comprobaba el formato**: el codificador y el decodificador son nuestros y solo se probaban entre si (un error comun de orden de bits o de modificadores pasaba la prueba y la GPU veria otra cosa). Nueva prueba con un bloque ETC2 + EAC escrito a mano segun la especificacion de Khronos (modo individual, subbloques, indices 00/01/11, tabla y multiplicador de EAC, orden por columnas) y un bloque liso codificado que sale a +-6.
+
+Compilado de nuevo con `compila.sh`: build-rm (CramionMobileTextureTests, CramionRamCrashTests, CramionTextureTests, CramionPlayer, CramionEditor, y con ellos CramionFX y CramionCore) y build-android (`main` = libmain.so arm64-v8a), sin errores ni avisos nuevos. Pruebas, de una en una: CramionMobileTextureTests **TODO OK**, CramionRamCrashTests **TODO OK**, CramionTextureTests **TODO OK**.
+
+Queda (ademas de lo de *Pendiente*):
+
+- El reproductor de escritorio ahora consume la marca `Crashes/<juego>.pending` al arrancar (antes se quedaba hasta el siguiente cierre). Si alguna herramienta externa (p. ej. el launcher de Horizonz) la leyera, dejaria de verla: no hay nada en este repositorio que la lea.
+- Con la app en segundo plano el bucle del juego no corre: los avisos `UI_HIDDEN`/`BACKGROUND` se atienden al volver (no mientras esta oculta, que es cuando el sistema decide a quien matar).
+- `localtime_r` y `dladdr` dentro del manejador de senales no son seguros para senales (igual que en el de Linux); en la practica bionic no se cuelga con ellos.
+- El envio de informes no tiene prueba del hilo real (`uploadQueuedAsync`): necesitaria red; la logica (`uploadQueued`) si esta probada con un servidor falso.

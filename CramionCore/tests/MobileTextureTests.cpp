@@ -158,6 +158,57 @@ int main() {
         for (int i = 0; i < 16; ++i) t_ok = t_ok && rgba[i * 4] == 255 && rgba[i * 4 + 1] == 0 && rgba[i * 4 + 2] == 0;
         check(t_ok, "modo T: indice 0 = el primer color");
     }
+    {
+        // (Revision) Un bloque escrito a mano segun la especificacion (Khronos
+        // Data Format, ETC2 + EAC), no con nuestro codificador: si el
+        // codificador y el decodificador tuvieran el mismo error (orden de
+        // los bits o de los modificadores) la ida y vuelta de arriba pasaria
+        // y la GPU veria otra cosa.
+        std::uint8_t block[16] = {};
+        // EAC: base 100, multiplicador 2, tabla 0 {-3,-6,-9,-15,2,5,8,14};
+        // texel a (0,0) indice 7 (+14*2 = 128), texel e (1,0) indice 3
+        // (-15*2 = 70), el resto indice 4 (+2*2 = 104). Por columnas: a b c d
+        // es la primera columna, a en los bits 47-45.
+        block[0] = 100;
+        block[1] = 0x20;
+        std::uint64_t alpha_bits = 0;
+        for (int i = 0; i < 16; ++i) alpha_bits |= static_cast<std::uint64_t>(i == 0 ? 7 : i == 4 ? 3 : 4) << (45 - 3 * i);
+        for (int i = 0; i < 6; ++i) block[2 + i] = static_cast<std::uint8_t>(alpha_bits >> (40 - 8 * i));
+        // Color, modo individual (diff 0, flip 0: columnas 0-1 subbloque 1,
+        // 2-3 subbloque 2): R1 = 15 (255), R2 = 0, G y B = 0, tablas 0 {2, 8}.
+        // Indice (msb, lsb): 00 = +2, 01 = +8, 10 = -2, 11 = -8. Texel (3,0)
+        // -> 11 (i = 12: msb bit 28, lsb bit 12); texel (0,1) -> 01 (lsb bit 1).
+        const std::uint32_t hi = 0xF0000000u;
+        const std::uint32_t lo = (1u << 28) | (1u << 12) | (1u << 1);
+        for (int i = 0; i < 4; ++i) {
+            block[8 + i] = static_cast<std::uint8_t>(hi >> (24 - 8 * i));
+            block[12 + i] = static_cast<std::uint8_t>(lo >> (24 - 8 * i));
+        }
+        std::uint8_t rgba[64];
+        asset::decodeEtc2Rgba8Block(block, rgba);
+        const auto at = [&](int x, int y, int c) { return static_cast<int>(rgba[(y * 4 + x) * 4 + c]); };
+        check(at(0, 0, 0) == 255 && at(0, 0, 1) == 2 && at(0, 0, 2) == 2 && at(0, 0, 3) == 128,
+              "bloque de la especificacion: texel (0,0) = (255, 2, 2, 128)");
+        check(at(1, 0, 3) == 70 && at(2, 2, 3) == 104, "EAC: tabla, multiplicador y orden por columnas");
+        check(at(3, 0, 0) == 0 && at(3, 0, 1) == 0 && at(2, 0, 0) == 2, "subbloque derecho: R2 = 0, indice 11 = -8");
+        check(at(0, 1, 0) == 255 && at(0, 1, 1) == 8, "indice 01 = +b (8)");
+        // Y el codificador produce bloques que el decodificador de la
+        // especificacion entiende: un bloque liso sale casi exacto.
+        std::uint8_t flat[64];
+        for (int i = 0; i < 16; ++i) {
+            flat[i * 4 + 0] = 34;
+            flat[i * 4 + 1] = 136;
+            flat[i * 4 + 2] = 204;
+            flat[i * 4 + 3] = 77;
+        }
+        const std::vector<std::uint8_t> encoded = asset::encodeEtc2Rgba8Level(flat, 4, 4, 1);
+        const std::vector<std::uint8_t> decoded = asset::decodeEtc2Rgba8Level(encoded.data(), encoded.size(), 4, 4);
+        bool close = decoded.size() == 64;
+        for (int i = 0; close && i < 16; ++i) {
+            for (int c = 0; c < 4; ++c) close = close && std::abs(decoded[i * 4 + c] - flat[i * 4 + c]) <= 6;
+        }
+        check(close, "bloque liso: el codificador lo deja a +-6");
+    }
 
     std::cout << "ASTC 4x4\n";
     if (asset::astcEncoderAvailable()) {

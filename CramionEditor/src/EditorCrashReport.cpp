@@ -72,8 +72,9 @@ void EditorApp::drawCrashReportWindow() {
             upload.version = CRAMION_VERSION_STRING;
             const std::filesystem::path folder = localDataFolder("Crashes");
             crash::queueReport(folder, upload.app, crash_report_path_);
-            crash::uploadQueuedAsync(upload, folder, upload.app);
-            pushToast("Enviando el informe (el resultado sale en la consola)");
+            pushToast(crash::uploadQueuedAsync(upload, folder, upload.app)
+                          ? "Enviando el informe (el resultado sale en la consola)"
+                          : "Ya se esta enviando (lo que falte sale en el siguiente envio)");
         }
         ImGui::SetItemTooltip("Lo envia a %s (CVar crash.ReportUrl)", upload_url.c_str());
     }
