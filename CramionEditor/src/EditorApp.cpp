@@ -2720,6 +2720,41 @@ void EditorApp::drawGraphicsSettings() {
     ImGui::Checkbox("Generación de frames (DLSS 3 / FSR 3, fase 3)", &frame_generation);
     ImGui::EndDisabled();
 
+    // SALIDA: baja latencia y salida HDR (DisplayOutput.h).
+    ImGui::SeparatorText("Salida");
+    {
+        const gfx::VulkanRenderer::OutputStatus out = r.outputStatus();
+        static constexpr const char* kLatency[] = {"Apagada", "Activada", "Activada + boost"};
+        int latency = std::clamp(static_cast<int>(g.low_latency), 0, 2);
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::Combo("Baja latencia", &latency, kLatency, 3)) {
+            g.low_latency = static_cast<gfx::LowLatencyMode>(latency);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("NVIDIA Reflex, AMD Anti-Lag 2 o esperar a la presentación (present_wait), lo que\n"
+                              "tenga la GPU. En uso: %s. Latencia: %s%.1f ms.",
+                              gfx::latencyBackendName(out.backend), out.latency_measured ? "" : "~", out.latency_ms);
+        static constexpr const char* kHdr[] = {"SDR", "HDR automática", "HDR10", "scRGB"};
+        int hdr = std::clamp(static_cast<int>(g.hdr_output), 0, 3);
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::Combo("Salida HDR", &hdr, kHdr, 4)) {
+            g.hdr_output = static_cast<gfx::HdrOutput>(hdr);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("En uso: %s%s. Si la pantalla o el driver no la ofrecen, SDR.",
+                              gfx::outputEncodingName(out.encoding), out.hdr_fell_back ? " (HDR no disponible)" : "");
+        if (g.hdr_output != gfx::HdrOutput::Off) {
+            float paper = g.hdr_paper_white;
+            ImGui::SetNextItemWidth(-90.0f);
+            if (ImGui::SliderFloat("Papel (nits)", &paper, 80.0f, 500.0f, "%.0f")) g.hdr_paper_white = paper;
+            if (ImGui::IsItemDeactivatedAfterEdit()) changed = true;
+            float peak = g.hdr_max_nits;
+            ImGui::SetNextItemWidth(-90.0f);
+            if (ImGui::SliderFloat("Máximo (nits)", &peak, 400.0f, 4000.0f, "%.0f")) g.hdr_max_nits = peak;
+            if (ImGui::IsItemDeactivatedAfterEdit()) changed = true;
+        }
+    }
+
     ImGui::SeparatorText("Realidad virtual");
     {
         // Se aplica al soltar (cada cambio rehace los destinos de los ojos).

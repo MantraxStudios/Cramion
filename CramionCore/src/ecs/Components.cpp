@@ -366,6 +366,12 @@ void blendPostProcess(gfx::PostProcessSettings& o, const gfx::PostProcessSetting
         c(o.lift, v.lift);
         c(o.gamma, v.gamma);
         c(o.gain, v.gain);
+        // LUT .cube: la intensidad va desde/hacia 0 si uno de los dos no tiene
+        // LUT; la ruta cambia a mitad (o al momento si antes no habia).
+        const float lut_from = o.color_lut.empty() ? 0.0f : o.color_lut_intensity;
+        const float lut_to = v.color_lut.empty() ? 0.0f : v.color_lut_intensity;
+        if (o.color_lut.empty() || (!v.color_lut.empty() && flip)) o.color_lut = v.color_lut;
+        o.color_lut_intensity = lerpf(lut_from, lut_to, t);
     }
     if (mask & kPostVignette) {
         const float from = o.vignette ? o.vignette_intensity : 0.0f;
@@ -741,6 +747,14 @@ void PostProcessing::reflect(PropertyVisitor& v) {
         v.field({"lift", "Lift (sombras)"}, s.lift, Vec3Kind::ColorHdr);
         v.field({"gamma", "Gamma (medios)"}, s.gamma, Vec3Kind::ColorHdr);
         v.field({"gain", "Gain (luces)"}, s.gain, Vec3Kind::ColorHdr);
+        v.field({"color_lut", "LUT (.cube)",
+                 "Archivo .cube (DaVinci Resolve, Photoshop...) relativo al proyecto, aplicado sobre la imagen ya "
+                 "con el tono (en sRGB). Vacio = ninguna"},
+                s.color_lut);
+        if (all || !s.color_lut.empty()) {
+            v.field({"color_lut_intensity", "Intensidad de la LUT", "0 = sin efecto, 1 = la LUT entera"},
+                    s.color_lut_intensity, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+        }
         v.endGroup();
     }
 

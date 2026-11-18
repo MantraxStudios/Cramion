@@ -188,6 +188,12 @@ std::vector<const char*> VulkanInstance::selectExtensions(const std::vector<std:
         }
     }
 
+    // Opcional: espacios de color de la swapchain ademas de sRGB (salida
+    // HDR10 / scRGB, DisplayOutput.h). No cambia nada si no se pide HDR.
+    if (has(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) {
+        extensions.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
+    }
+
     // Las de OpenXR (el runtime del casco).
     for (const std::string& name : extra) {
         if (!has(name.c_str())) {

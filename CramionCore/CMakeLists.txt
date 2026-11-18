@@ -485,6 +485,11 @@ target_link_libraries(CramionShaderTests PRIVATE Cramion::Core)
 target_compile_options(CramionShaderTests PRIVATE -Wall -Wextra)
 cramionfx_deploy(CramionShaderTests)
 
+# --- Pruebas de la salida de imagen (consola, sin GPU): LUT .cube, formato HDR, baja latencia ---
+add_executable(CramionOutputTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/OutputTests.cpp")
+target_link_libraries(CramionOutputTests PRIVATE Cramion::Core)
+target_compile_options(CramionOutputTests PRIVATE -Wall -Wextra)
+
 # --- Pruebas de la animacion (consola) ---
 add_executable(CramionAnimationTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/AnimationTests.cpp")
 target_link_libraries(CramionAnimationTests PRIVATE Cramion::Core)

@@ -8,6 +8,7 @@
 #include <array>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 
 namespace cramion::gfx {
 
@@ -46,7 +47,14 @@ bool VulkanSwapchain::create(std::uint32_t width, std::uint32_t height) {
     const auto formats = physical.getSurfaceFormatsKHR(surface);
     const auto present_modes = physical.getSurfacePresentModesKHR(surface);
 
-    const vk::SurfaceFormatKHR surface_format = chooseSurfaceFormat(formats);
+    const SurfaceFormatChoice output = chooseOutputFormat(formats, hdr_request_, colorspace_extension_);
+    const vk::SurfaceFormatKHR surface_format = output.surface;
+    if (output.hdr_fell_back && !hdr_fallback_logged_) {
+        std::cout << "[Vulkan] Salida HDR pedida, pero la pantalla o el driver no la ofrecen"
+                  << (colorspace_extension_ ? "" : " (sin VK_EXT_swapchain_colorspace)") << ": SDR\n";
+        hdr_fallback_logged_ = true;
+    }
+    hdr_fell_back_ = output.hdr_fell_back;
     const vk::PresentModeKHR present_mode = choosePresentMode(present_modes);
     vk::Extent2D extent = chooseExtent(capabilities, width, height);
     vk::SurfaceTransformFlagBitsKHR transform = capabilities.currentTransform;
@@ -80,6 +88,9 @@ bool VulkanSwapchain::create(std::uint32_t width, std::uint32_t height) {
     // arranca minimizado o lo minimizan mientras carga): no hay swapchain
     // posible. Se deja invalida y se rehace cuando la ventana tenga area.
     image_format_ = surface_format.format;
+    ui_format_ = output.ui_format;
+    color_space_ = surface_format.colorSpace;
+    encoding_ = output.encoding;
     if (extent.width == 0 || extent.height == 0) {
         image_views_.clear();
         images_.clear();
@@ -123,6 +134,16 @@ bool VulkanSwapchain::create(std::uint32_t width, std::uint32_t height) {
     // Reutilizar la swapchain antigua acelera el redimensionado.
     create_info.oldSwapchain = *swapchain_;
 
+    // NVIDIA Reflex: la swapchain tiene que nacer con el modo de latencia.
+#if defined(VK_NV_low_latency2)
+    vk::SwapchainLatencyCreateInfoNV latency_info{};
+    latency_info.latencyModeEnable = VK_TRUE;
+    if (latency_mode_enable_) create_info.pNext = &latency_info;
+    latency_created_ = latency_mode_enable_;
+#else
+    latency_created_ = false;
+#endif
+
     // Si graficos y presentacion son familias distintas, las imagenes deben ser
     // compartidas (o habria que hacer transferencias de propiedad explicitas).
     const QueueFamilyIndices& families = device_->queueFamilies();
@@ -149,8 +170,35 @@ bool VulkanSwapchain::create(std::uint32_t width, std::uint32_t height) {
 
     std::cout << "[Vulkan] Swapchain creada: " << extent_.width << "x" << extent_.height << ", "
               << images_.size() << " imagenes, formato " << vk::to_string(image_format_) << ", modo "
-              << vk::to_string(present_mode) << "\n";
+              << vk::to_string(present_mode)
+              << (encoding_ != OutputEncoding::Sdr ? std::string(", salida ") + outputEncodingName(encoding_) : std::string())
+              << "\n";
     return true;
+}
+
+void VulkanSwapchain::setHdrMetadata(float max_nits, float paper_white) const {
+    if (encoding_ == OutputEncoding::Sdr || !isValid() || device_ == nullptr) return;
+    if (!device_->outputExtensions().hdr_metadata) return;
+    // Primarios de la imagen: BT.2020 (HDR10) o BT.709 (scRGB), blanco D65.
+    vk::HdrMetadataEXT metadata{};
+    if (encoding_ == OutputEncoding::Hdr10Pq) {
+        metadata.displayPrimaryRed = vk::XYColorEXT{0.708f, 0.292f};
+        metadata.displayPrimaryGreen = vk::XYColorEXT{0.170f, 0.797f};
+        metadata.displayPrimaryBlue = vk::XYColorEXT{0.131f, 0.046f};
+    } else {
+        metadata.displayPrimaryRed = vk::XYColorEXT{0.640f, 0.330f};
+        metadata.displayPrimaryGreen = vk::XYColorEXT{0.300f, 0.600f};
+        metadata.displayPrimaryBlue = vk::XYColorEXT{0.150f, 0.060f};
+    }
+    metadata.whitePoint = vk::XYColorEXT{0.3127f, 0.3290f};
+    const float paper = clampPaperWhite(paper_white);
+    const float peak = clampMaxNits(max_nits, paper);
+    metadata.maxLuminance = peak;
+    metadata.minLuminance = 0.001f;
+    metadata.maxContentLightLevel = peak;
+    metadata.maxFrameAverageLightLevel = std::min(peak, paper * 2.0f);
+    const vk::SwapchainKHR swapchain = *swapchain_;
+    device_->handle().setHdrMetadataEXT(swapchain, metadata);
 }
 
 void VulkanSwapchain::createImageViews() {
@@ -168,34 +216,6 @@ void VulkanSwapchain::createImageViews() {
         image_views_.emplace_back(device_->handle(), create_info);
         compat::registerView(static_cast<VkImageView>(*image_views_.back()), create_info.format);
     }
-}
-
-vk::SurfaceFormatKHR VulkanSwapchain::chooseSurfaceFormat(
-    const std::vector<vk::SurfaceFormatKHR>& available) {
-    if (available.empty()) {
-        throw std::runtime_error("La superficie no expone ningun formato de color.");
-    }
-
-    // Un formato UNORM: la composicion ya aplica la curva sRGB a mano. Uno
-    // _SRGB la aplicaria otra vez (imagen lavada). Preferencia: BGRA8 (el
-    // habitual en Windows), luego RGBA8 (Android) y luego el de 10 bits.
-    const std::array<vk::Format, 4> preferred = {vk::Format::eB8G8R8A8Unorm, vk::Format::eR8G8B8A8Unorm,
-                                                 vk::Format::eA2B10G10R10UnormPack32,
-                                                 vk::Format::eA2R10G10B10UnormPack32};
-    for (const vk::Format wanted : preferred) {
-        for (const auto& format : available) {
-            if (format.format == wanted && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-                return format;
-            }
-        }
-    }
-    // Como ultimo recurso cualquiera que no sea _SRGB.
-    for (const auto& format : available) {
-        const bool srgb = format.format == vk::Format::eB8G8R8A8Srgb || format.format == vk::Format::eR8G8B8A8Srgb ||
-                          format.format == vk::Format::eA8B8G8R8SrgbPack32;
-        if (!srgb && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) return format;
-    }
-    return available.front();
 }
 
 vk::PresentModeKHR VulkanSwapchain::choosePresentMode(
@@ -233,6 +253,9 @@ void VulkanSwapchain::shutdown() {
     swapchain_ = nullptr;
 
     image_format_ = vk::Format::eUndefined;
+    ui_format_ = vk::Format::eUndefined;
+    encoding_ = OutputEncoding::Sdr;
+    latency_created_ = false;
     extent_ = vk::Extent2D{0, 0};
     device_ = nullptr;
     surface_ = nullptr;

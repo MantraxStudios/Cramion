@@ -606,6 +606,7 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
                   << ", " << hardware_.vram_mb << " MB de VRAM" << (hardware_.integrated ? ", integrada" : "")
                   << ")\n";
     }
+    prepareSwapchainOutput();  // HDR y Reflex pedidos antes de crearla
     swapchain_.initialize(device_, surface_, width, height);
     // Arranco minimizado: el primer frame con area rehace swapchain y destinos.
     if (!swapchain_.isValid()) framebuffer_resized_ = true;
@@ -621,6 +622,7 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
     if (!device_.compatMode()) gpu_culling_.create(device_);
     gpu_profiler_.create(device_, kMaxFramesInFlight);
     createRenderTargets();
+    createOutputTargets();
     shadow_map_.create(device_, desiredShadowResolution());
     shadow_cache_valid_ = {};
     shadow_cache_layout_ready_ = false;
@@ -630,7 +632,8 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
     // La iluminacion escribe en HDR; la composicion lo lleva a 8 bits y el
     // FXAA es quien escribe en la swapchain.
     lighting_pass_.create(device_, kHdrFormat);
-    post_process_pass_.create(device_, swapchain_.imageFormat());
+    // (Formato SDR de la UI: en HDR el FXAA va a una imagen aparte.)
+    post_process_pass_.create(device_, swapchain_.uiFormat());
     skinned_pass_.create(device_, gbuffer_, shadow_map_.format(), kHdrFormat);
     // Terrenos: comparten el set 0 de la geometria (camara, lluvia, decals).
     water_pass_.create(device_, skinned_pass_.frameSetLayout(), skinned_pass_.glassSetLayout(), kHdrFormat,
@@ -711,10 +714,11 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         // destellos del sol solo salen si en el sol se ve el cielo (sin ella,
         // un muro de voxeles muy iluminado delante del sol dejaba pasar el
         // destello).
-        const std::array<Type, 7> composite_bindings = {
+        // (+ binding 7: la LUT 3D .cube de la gradacion, VulkanRendererOutput.cpp.)
+        const std::array<Type, 8> composite_bindings = {
             Type::eCombinedImageSampler, Type::eCombinedImageSampler,
             Type::eCombinedImageSampler, Type::eStorageBuffer, Type::eUniformBuffer,
-            Type::eCombinedImageSampler, Type::eCombinedImageSampler};
+            Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler};
         FullscreenPassDesc composite{};
         composite.fragment_shader = "composite.frag.spv";
         composite.bindings = composite_bindings;
@@ -1211,6 +1215,7 @@ void VulkanRenderer::shutdown() {
     ssgi_pass_.destroy();
     destroyBakedGi();
     sky_lut_pass_.destroy();
+    destroyOutputResources();
     composite_pass_.destroy();
     outline_pass_.destroy();
     overlay_pass_.destroy();
@@ -1738,7 +1743,8 @@ void VulkanRenderer::createDescriptors() {
                                // (+ kMaxFramesInFlight: la distorsion de la composicion)
                                // (+ 1: la mascara reactiva de FSR 3)
                                // (+ kMaxFramesInFlight: la profundidad de la composicion)
-                               kMaxFramesInFlight * 31 + kBloomSets + 2 + 1 + 1 + 6 + 3 + 4 + 1},
+                               // (+ kMaxFramesInFlight: la LUT 3D de la composicion)
+                               kMaxFramesInFlight * 32 + kBloomSets + 2 + 1 + 1 + 6 + 3 + 4 + 1},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 + kMaxFramesInFlight * 2}};
 
     vk::DescriptorPoolCreateInfo post_pool_info{};
@@ -1773,7 +1779,8 @@ void VulkanRenderer::createDescriptors() {
             vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight},
             // (5 texturas por composicion: + la distorsion y la profundidad)
             // (+1: el histograma de la auto-exposicion sobre la imagen interna)
-            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, kMaxFramesInFlight * 5 + 3},
+            // (+1 por composicion: la LUT 3D)
+            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, kMaxFramesInFlight * 6 + 3},
             vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kMaxFramesInFlight + 1}};
         vk::DescriptorPoolCreateInfo info{};
         info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -4098,6 +4105,8 @@ void VulkanRenderer::updatePostDescriptors() {
     write_texture(easu_sets_[0], 0, easu_pass_.sampler(), scene_color_, kRead);
     write_texture(rcas_sets_[0], 0, rcas_pass_.sampler(), upscale_target_, kRead);
     // Cadena corta: la composicion lee la imagen HDR interna (no la escalada).
+    writeColorLutDescriptors();  // binding 7 de la composicion (las dos cadenas)
+    writeOutputDescriptors();    // salida HDR
     for (std::uint32_t i = 0; i < kMaxFramesInFlight && i < early_composite_sets_.size(); ++i) {
         write_texture(early_composite_sets_[i], 0, composite_pass_.sampler(), scene_color_, kRead);
         write_texture(early_composite_sets_[i], 1, composite_pass_.sampler(), bloom_levels_[0], kRead);
@@ -4436,6 +4445,8 @@ void VulkanRenderer::applyEffectiveGraphics() {
                          settings.quality != graphics_.quality;
     graphics_ = settings;
     swapchain_.setVsync(settings.vsync);
+    // Salida HDR o Reflex distintos: la swapchain se rehace (como el vsync).
+    if (prepareSwapchainOutput()) settings_dirty_ = true;
     taa_history_valid_ = false;
     xr_eye1_.taa_valid = false;
     jitter_index_ = 0;
@@ -5178,6 +5189,7 @@ void VulkanRenderer::recreateSwapchain() {
     }
     gbuffer_.create(device_, render_extent_);
     createRenderTargets();
+    createOutputTargets();  // salida HDR / baja latencia de la swapchain nueva
     updateLightingDescriptors();
     updatePostDescriptors();
     ++scene_image_generation_;
@@ -6206,6 +6218,10 @@ void VulkanRenderer::drawFrameUnguarded(const scene::Scene& scene, bool present)
     if (!swapchain_.isValid()) {
         return;
     }
+    // Salida de imagen (VulkanRendererOutput.cpp): otra LUT .cube y, con baja
+    // latencia, la espera antes del frame (si el bucle no la hizo ya).
+    updateColorLut();
+    if (present && xr_eye_target_ < 0 && render_texture_target_ < 0) latencySleep();
     if (local_shadow_maps_dirty_) applyLocalShadowMaps();
     if (shadow_cache_dirty_) applyShadowCache();
     if (texture_filtering_dirty_) applyTextureFiltering();
@@ -6235,6 +6251,7 @@ void VulkanRenderer::drawFrameUnguarded(const scene::Scene& scene, bool present)
     // Con tope (VulkanDevice::waitFence): un cuelgue de la GPU se trata como
     // dispositivo perdido, con su informe, en vez de colgar el programa.
     device_.waitFence(*fence, "fence del frame");
+    latencyFenceDone(current_frame_);  // medida de la latencia sin present_wait
     const float fence_wait = since(stage);
     frame_timings_.fence_wait_ms += fence_wait;
     fence_wait_total_ms_ += fence_wait;
@@ -6607,11 +6624,13 @@ void VulkanRenderer::drawFrameUnguarded(const scene::Scene& scene, bool present)
     submit_info.pCommandBuffers = &command_buffer;
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &signal_semaphore;
+    latencyBeforeSubmit(submit_info);  // id de presentacion (Reflex) y marcas
 
     {
         const std::lock_guard queue_lock(device_.queueMutex());
         device_.graphicsQueue().submit(submit_info, *fence);
     }
+    latencyAfterSubmit();
 
     const vk::SwapchainKHR swapchain = *swapchain_.handle();
 
@@ -6621,6 +6640,7 @@ void VulkanRenderer::drawFrameUnguarded(const scene::Scene& scene, bool present)
     present_info.swapchainCount = 1;
     present_info.pSwapchains = &swapchain;
     present_info.pImageIndices = &image_index;
+    latencyBeforePresent(present_info);  // VkPresentIdKHR, Anti-Lag 2, marcas de Reflex
 
     const auto present_start = TimingClock::now();
     const vk::Result present_result = [&] {
@@ -6628,6 +6648,7 @@ void VulkanRenderer::drawFrameUnguarded(const scene::Scene& scene, bool present)
         return device_.presentQueue().presentKHR(present_info);
     }();
     frame_timings_.present_ms += since(present_start);
+    latencyAfterPresent();
 
 #if defined(__ANDROID__)
     // Android devuelve "suboptimo" siempre que la pantalla esta girada y la
@@ -11922,6 +11943,7 @@ void VulkanRenderer::recordCompositeTo(const vk::raii::CommandBuffer& cmd, std::
     settings.flare = Vec4{sun_screen_weight_,
                           static_cast<float>(screen.width) / static_cast<float>(std::max(screen.height, 1u)),
                           std::clamp(p.night_vision, 0.0f, 1.0f), 0.01f + 0.3f * last_daylight_};
+    fillColorLutSettings(settings);
     composite_buffers_[frame_index].write(&settings, sizeof(settings));
 
     drawFullscreen<GpuBloomPush>(cmd, composite_pass_, &set, target, nullptr);
@@ -11937,8 +11959,36 @@ void VulkanRenderer::recordCompositeTo(const vk::raii::CommandBuffer& cmd, std::
                   vk::AccessFlagBits2::eHostRead);
 }
 
+// Constantes del FXAA y la nitidez (recordPostProcessPass y la salida HDR).
+GpuPostProcessPush VulkanRenderer::postProcessPush() const {
+    GpuPostProcessPush push{};
+    // (FXAA mira pixeles de la imagen de origen: la de salida de la escena.)
+    const vk::Extent2D source = ldr_color_.extent();
+    push.inverse_resolution = core::Vec2{1.0f / static_cast<float>(std::max(source.width, 1u)),
+                                         1.0f / static_cast<float>(std::max(source.height, 1u))};
+    // Con un escalador temporal (TAA, FSR 3, DLSS) la imagen ya llega sin
+    // dientes de sierra: el FXAA encima solo la emborronaba (bordes de 1-2 px
+    // mas blandos: pestanas, mechones, filos de las armas). Con FSR 1 o sin
+    // escalador sigue. CRAMION_FXAA_TAA=1: tambien con TAA, como antes (A/B).
+    const Upscaler upscaler = activeUpscaler();
+    static const bool fxaa_after_taa = [] {
+        const char* v = std::getenv("CRAMION_FXAA_TAA");
+        return v != nullptr && std::strcmp(v, "1") == 0;
+    }();
+    const bool temporal = upscaler == Upscaler::Taa || upscaler == Upscaler::Fsr3 || upscaler == Upscaler::Dlss;
+    push.enabled = post_.fxaa && (!temporal || fxaa_after_taa) ? 1.0f : 0.0f;
+    push.sharpen = std::clamp(post_.sharpen, 0.0f, 1.0f);
+    return push;
+}
+
 void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
                                            std::uint32_t image_index) {
+    // Salida HDR: escena y UI a imagenes aparte y hdr_output.frag a la
+    // swapchain (VulkanRendererOutput.cpp).
+    if (hdrOutputReady()) {
+        recordHdrPostProcess(cmd, image_index);
+        return;
+    }
     const vk::Extent2D extent = swapchain_.extent();
 
     // --- La imagen de la swapchain pasa a destino ---
@@ -11973,23 +12023,7 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *post_process_pass_.layout(), 0,
                            *post_process_sets_[current_frame_], nullptr);
 
-    GpuPostProcessPush push{};
-    // (FXAA mira pixeles de la imagen de origen: la de salida de la escena.)
-    const vk::Extent2D source = ldr_color_.extent();
-    push.inverse_resolution = core::Vec2{1.0f / static_cast<float>(std::max(source.width, 1u)),
-                                         1.0f / static_cast<float>(std::max(source.height, 1u))};
-    // Con un escalador temporal (TAA, FSR 3, DLSS) la imagen ya llega sin
-    // dientes de sierra: el FXAA encima solo la emborronaba (bordes de 1-2 px
-    // mas blandos: pestanas, mechones, filos de las armas). Con FSR 1 o sin
-    // escalador sigue. CRAMION_FXAA_TAA=1: tambien con TAA, como antes (A/B).
-    const Upscaler upscaler = activeUpscaler();
-    static const bool fxaa_after_taa = [] {
-        const char* v = std::getenv("CRAMION_FXAA_TAA");
-        return v != nullptr && std::strcmp(v, "1") == 0;
-    }();
-    const bool temporal = upscaler == Upscaler::Taa || upscaler == Upscaler::Fsr3 || upscaler == Upscaler::Dlss;
-    push.enabled = post_.fxaa && (!temporal || fxaa_after_taa) ? 1.0f : 0.0f;
-    push.sharpen = std::clamp(post_.sharpen, 0.0f, 1.0f);
+    const GpuPostProcessPush push = postProcessPush();
     cmd.pushConstants<GpuPostProcessPush>(*post_process_pass_.layout(),
                                           vk::ShaderStageFlagBits::eFragment, 0, push);
 
@@ -12068,7 +12102,8 @@ VulkanRenderer::NativeHandles VulkanRenderer::nativeHandles() const {
     handles.device = *device_.handle();
     handles.queue_family = device_.queueFamilies().graphics;
     handles.queue = *device_.graphicsQueue();
-    handles.swapchain_format = static_cast<VkFormat>(swapchain_.imageFormat());
+    // El de la UI: en HDR la UI se dibuja en una imagen SDR aparte.
+    handles.swapchain_format = static_cast<VkFormat>(swapchain_.uiFormat());
     handles.image_count = std::max(2u, swapchain_.imageCount());  // 0 si arranco minimizado
     handles.api_version = instance_.apiVersion();
     return handles;
