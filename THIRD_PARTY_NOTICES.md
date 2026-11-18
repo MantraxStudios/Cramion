@@ -29,6 +29,7 @@ Cramion uses the following libraries, each under its own license. Exported games
 | NVIDIA DLSS | NVIDIA RTX SDKs License (ver `licencias/NVIDIA-DLSS-LICENSE.txt`) | https://github.com/NVIDIA/DLSS |
 | bundletool (solo exportación Android) | Apache-2.0 | https://github.com/google/bundletool |
 | WebXR Input Profiles (modelos de los mandos de Meta Quest 3) | MIT | https://github.com/immersive-web/webxr-input-profiles |
+| XeGTAO (algoritmo de la oclusión ambiental GTAO con normales dobladas, adaptado en `CramionFX/shaders/gtao.frag`) | MIT | https://github.com/GameTechDev/XeGTAO |
 
 Estas licencias se aplican solo a esos componentes. El resto de Cramion se rige por [LICENSE](LICENSE).
 
@@ -102,6 +103,36 @@ Generates the lightmap UVs (UV2) in the editor when baking lighting. It is not s
 MIT License
 
 Copyright (c) 2018-2020 Jonathan Young
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## XeGTAO
+
+La oclusión ambiental GTAO (`CramionFX/shaders/gtao.frag`: horizontes por cortes, integral del coseno y normales dobladas) sigue el código de XeGTAO, reescrito en GLSL para el renderizador de Cramion.
+
+The GTAO ambient occlusion (`CramionFX/shaders/gtao.frag`: per-slice horizons, cosine-weighted integral and bent normals) follows the XeGTAO code, rewritten in GLSL for the Cramion renderer.
+
+```
+MIT License
+
+Copyright (C) 2016-2021, Intel Corporation
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

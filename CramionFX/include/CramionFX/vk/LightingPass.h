@@ -37,9 +37,10 @@ class VulkanDevice;
 //   sombras por rayos, modelo de Disney y oclusion del cielo desde arriba)
 //   set 0, binding 29 -> luces locales por clusteres: cabecera + luces (storage)
 //   set 0, binding 30 -> listas de luces de cada cluster (storage)
+//   set 0, binding 31 -> cubos de las sondas de reflexion colocadas (array de cubos)
 //
 // En el modo compatible (VulkanCompat.h, moviles) no existen 19, 21, 22, 24,
-// 25, 26, 27 ni 28: el shader se queda en 16 texturas (el minimo de Vulkan).
+// 25, 26, 27, 28 ni 31: el shader se queda en 16 texturas (el minimo de Vulkan).
 // hasBinding() dice cuales hay.
 //
 // Dos pipelines con los mismos descriptores: el completo y el ligero

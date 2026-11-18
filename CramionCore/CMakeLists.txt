@@ -485,6 +485,11 @@ target_link_libraries(CramionShaderTests PRIVATE Cramion::Core)
 target_compile_options(CramionShaderTests PRIVATE -Wall -Wextra)
 cramionfx_deploy(CramionShaderTests)
 
+# --- Pruebas de las sondas de reflexion colocadas y el empaquetado de la luz (consola, sin GPU) ---
+add_executable(CramionReflectionProbeTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ReflectionProbeTests.cpp")
+target_link_libraries(CramionReflectionProbeTests PRIVATE Cramion::Core)
+target_compile_options(CramionReflectionProbeTests PRIVATE -Wall -Wextra)
+
 # --- Pruebas de la animacion (consola) ---
 add_executable(CramionAnimationTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/AnimationTests.cpp")
 target_link_libraries(CramionAnimationTests PRIVATE Cramion::Core)

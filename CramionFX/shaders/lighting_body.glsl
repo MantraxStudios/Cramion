@@ -48,6 +48,16 @@ struct SpotLightGpu {
     vec4 outer_shadow;         // x   = cos del angulo exterior, y = hueco de sombra (-1 = sin), z = fuerza
 };
 
+// Sondas de reflexion colocadas (GpuPlacedProbe, ReflectionProbeSet.h): las
+// kMaxPlacedProbes mas cercanas a la camara, en orden de prioridad.
+const int kMaxPlacedProbes = 8;
+struct PlacedProbeGpu {
+    vec4 center_intensity;   // xyz = donde se horneo, w = intensidad
+    vec4 box_min_blend;      // xyz = esquina menor de la caja, w = fundido (m)
+    vec4 box_max_priority;   // xyz = esquina mayor, w = prioridad
+    vec4 params;             // x = capa del array de cubos (binding 31), y = 1 proyeccion de caja
+};
+
 layout(set = 0, binding = 0) uniform CameraBuffer {
     mat4 view;
     mat4 projection;
@@ -89,6 +99,8 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     vec4 sky_tint;                 // rgb = tinte del disco solar (lineal), w = peso del degradado del Sky (0 = fisico)
     uvec4 light_tiles;             // luces puntuales por teselas: xy = pixeles de una tesela, zw = columnas y filas (z = 0: sin teselas)
     uvec4 point_tiles[576];        // un bit por luz puntual en cada tesela (64 x 36 teselas, 4 por uvec4; GpuTypes.h)
+    uvec4 placed_info;             // sondas de reflexion colocadas: x = cuantas hay en placed[]
+    PlacedProbeGpu placed[kMaxPlacedProbes];
 } lights;
 
 // Mapa de sombras en cascada. El muestreador compara por hardware: devuelve
@@ -198,6 +210,13 @@ layout(set = 0, binding = 28) uniform sampler2D sky_map_scene;
 #define CLUSTER_LIGHTS_BINDING 29
 #define CLUSTER_GRID_BINDING 30
 #include "light_clusters.glsl"
+
+// Sondas de reflexion colocadas (ReflectionProbeBox): sus cubos horneados,
+// prefiltrados por rugosidad como environment_map (una capa por sonda;
+// lights.placed[i].params.x dice cual). No en el modo compatible.
+#ifndef CRAMION_COMPAT
+layout(set = 0, binding = 31) uniform samplerCubeArray placed_probe_cubes;
+#endif
 
 // Iluminacion ligera: sin las sombras suaves de contacto del sol (PCSS: 28
 // lecturas del mapa por pixel), sin la oclusion del cielo desde arriba (12) y
@@ -1066,6 +1085,59 @@ float blurredSsao(vec3 normal) {
     return weight_sum > 0.0 ? sum / weight_sum : 1.0;
 }
 
+// GTAO (gtao.frag, lights.counts.z = 2): la misma media de 4x4 que
+// blurredSsao, y ademas la normal doblada (ba, en octaedro) con los mismos
+// pesos. Sin vecinos validos, la normal del pixel.
+float blurredGtao(vec3 normal, out vec3 bent) {
+    ivec2 size = textureSize(ssao_map, 0);
+    ivec2 center = ivec2(gl_FragCoord.xy);
+    float center_depth = texelFetch(ssao_map, center, 0).g;
+    float tolerance = center_depth * 0.10 + 0.05;
+    ivec2 origin = clamp(center - ivec2(2), ivec2(0), max(size - ivec2(4), ivec2(0)));
+    float sum = 0.0;
+    float weight_sum = 0.0;
+    vec3 bent_sum = vec3(0.0);
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            ivec2 p = min(origin + ivec2(x, y), size - 1);
+            vec4 s = texelFetch(ssao_map, p, 0);
+            vec3 n = decodeNormal(texelFetch(g_normal, p, 0).rg);
+            float w = (abs(s.g - center_depth) < tolerance && dot(n, normal) > 0.8) ? 1.0 : 0.0;
+            sum += s.r * w;
+            bent_sum += decodeNormal(s.ba) * w;
+            weight_sum += w;
+        }
+    }
+    float bent_length = length(bent_sum);
+    bent = bent_length > 1e-3 ? bent_sum / bent_length : normal;
+    // La normal doblada nunca por detras de la superficie.
+    if (dot(bent, normal) < 0.0) bent = normal;
+    return weight_sum > 0.0 ? sum / weight_sum : 1.0;
+}
+
+// Oclusion especular con la normal doblada (GTSO, Jimenez et al. 2016; cono
+// contra cono, como la aproximacion de Unreal): el cono visible (alrededor de
+// la normal doblada, con la apertura que da la AO: AO = 1 - cos^2) contra el
+// lobulo especular (alrededor del reflejo, mas abierto cuanto mas rugoso).
+// Donde no hay oclusion (AO ~1) no cambia nada: entra con la oclusion.
+float coneConeIntersection(float arc0, float arc1, float angle) {
+    float difference = abs(arc0 - arc1);
+    float span = max(arc0 + arc1 - difference, 1e-4);
+    return smoothstep(0.0, 1.0, 1.0 - clamp((angle - difference) / span, 0.0, 1.0));
+}
+
+float bentSpecularOcclusion(vec3 bent, vec3 reflected, float ao, float roughness) {
+    float cos_visible = sqrt(clamp(1.0 - ao, 0.0, 1.0));
+    float visible_arc = acos(cos_visible);
+    float specular_arc = max(roughness, 0.1) * kPi * 0.5;
+    float angle = acos(clamp(dot(bent, reflected), -1.0, 1.0));
+    float overlap = coneConeIntersection(visible_arc, specular_arc, angle);
+    // Lobulo mas ancho que lo visible: solo llega la parte que cabe.
+    float ratio = clamp((1.0 - cos_visible) / max(1.0 - cos(specular_arc), 1e-4), 0.0, 1.0);
+    float occlusion = overlap * ratio;
+    return mix(1.0, occlusion, clamp((1.0 - ao) * 4.0, 0.0, 1.0));
+}
+
 // Normal geometrica (la de la cara del triangulo) reconstruida del depth
 // buffer: se toma, en cada eje, el vecino mas cercano en profundidad para no
 // mezclar dos objetos en los bordes.
@@ -1184,6 +1256,87 @@ vec3 probeDirection(samplerCube probe, vec3 center, vec3 position, vec3 directio
     // Sin choque: muy lejos (cielo), la direccion casi no cambia.
     return normalize(offset + direction * kProbeMaxDistance);
 }
+
+#ifndef CRAMION_COMPAT
+// --- Sondas de reflexion colocadas (ReflectionProbeSet.h; las mismas cuentas
+// que la CPU: placedProbeWeight, boxProjectedDirection, blendPlacedProbes) ---
+
+// Peso (0..1) de la sonda i en p: 0 fuera de su caja, 1 a mas de su fundido
+// de todas las caras, lineal entre medias.
+float placedProbeWeight(int i, vec3 p) {
+    vec3 lo = p - lights.placed[i].box_min_blend.xyz;
+    vec3 hi = lights.placed[i].box_max_priority.xyz - p;
+    float inside = min(min(min(lo.x, lo.y), lo.z), min(min(hi.x, hi.y), hi.z));
+    if (inside < 0.0) return 0.0;
+    float blend = lights.placed[i].box_min_blend.w;
+    return blend <= 1e-4 ? 1.0 : clamp(inside / blend, 0.0, 1.0);
+}
+
+// Proyeccion de caja (paralaje): el rayo que sale de p (dentro de la caja)
+// choca con una de sus paredes; el cubo se lee desde donde se horneo hacia
+// ese punto. Sin proyeccion, la direccion tal cual (como un cielo).
+vec3 boxProjectedDirection(int i, vec3 p, vec3 r) {
+    if (lights.placed[i].params.y < 0.5) return r;
+    vec3 safe = vec3(abs(r.x) < 1e-6 ? (r.x < 0.0 ? -1e-6 : 1e-6) : r.x,
+                     abs(r.y) < 1e-6 ? (r.y < 0.0 ? -1e-6 : 1e-6) : r.y,
+                     abs(r.z) < 1e-6 ? (r.z < 0.0 ? -1e-6 : 1e-6) : r.z);
+    vec3 far_plane = mix(lights.placed[i].box_min_blend.xyz, lights.placed[i].box_max_priority.xyz,
+                         step(vec3(0.0), safe));
+    vec3 t3 = (far_plane - p) / safe;
+    float t = max(min(min(t3.x, t3.y), t3.z), 0.0);
+    vec3 d = p + r * t - lights.placed[i].center_intensity.xyz;
+    float len = length(d);
+    return len > 1e-5 ? d / len : r;
+}
+
+vec3 placedProbeSample(int i, vec3 p, vec3 r, float lod) {
+    vec3 d = boxProjectedDirection(i, p, r);
+    return textureLod(placed_probe_cubes, vec4(d, lights.placed[i].params.x), lod).rgb *
+           lights.placed[i].center_intensity.w;
+}
+
+// Reflejo de las sondas colocadas en p: las 2 que mas pesan (manda la de mas
+// prioridad; a igual prioridad, la de mas peso; empate, la primera, que la
+// CPU ordena con la caja mas pequena delante). La segunda solo rellena lo que
+// deja la primera en su fundido. rgb ya por su peso, a = peso total (0..1);
+// lo que falta lo pone la sonda de la camara o el cielo.
+vec4 placedProbeReflection(vec3 p, vec3 r, float lod) {
+    int count = int(min(lights.placed_info.x, uint(kMaxPlacedProbes)));
+    if (count == 0) return vec4(0.0);
+    int first = -1;
+    int second = -1;
+    float key0 = -1.0e30;
+    float key1 = -1.0e30;
+    float w0 = 0.0;
+    float w1 = 0.0;
+    for (int i = 0; i < count; ++i) {
+        float w = placedProbeWeight(i, p);
+        if (w <= 0.0) continue;
+        float key = lights.placed[i].box_max_priority.w * 2.0 + w;
+        if (key > key0) {
+            second = first;
+            key1 = key0;
+            w1 = w0;
+            first = i;
+            key0 = key;
+            w0 = w;
+        } else if (key > key1) {
+            second = i;
+            key1 = key;
+            w1 = w;
+        }
+    }
+    if (first < 0) return vec4(0.0);
+    vec3 color = placedProbeSample(first, p, r, lod) * w0;
+    float total = w0;
+    if (second >= 0 && w0 < 0.999) {
+        float w = min(w1, 1.0 - w0);
+        color += placedProbeSample(second, p, r, lod) * w;
+        total += w;
+    }
+    return vec4(color, total);
+}
+#endif
 
 // GI a resolucion completa: media de la ventana 4x4 de media resolucion (las
 // 16 rotaciones de ssgi.frag), solo con los texeles de la misma superficie
@@ -1679,8 +1832,21 @@ void main() {
             geometric_normal = normal;
         }
 
-        // AO horneada del material x SSAO (contactos).
-        float ssao = lights.counts.z != 0 ? blurredSsao(normal) : 1.0;
+        // AO horneada del material x SSAO (contactos). Con GTAO
+        // (counts.z = 2) ademas la normal doblada: el cielo se mira por donde
+        // llega la luz y el reflejo se ocluye con ella.
+        vec3 bent_normal = normal;
+        bool gtao = false;
+        float ssao = 1.0;
+        if (lights.counts.z == 1) {
+            ssao = blurredSsao(normal);
+        }
+#ifndef CRAMION_COMPAT
+        else if (lights.counts.z == 2) {
+            ssao = blurredGtao(normal, bent_normal);
+            gtao = true;
+        }
+#endif
         float ao = albedo_sample.a * ssao;
 
         vec3 sun_radiance = toLinear(lights.sun_color_ambient.rgb) *
@@ -1742,7 +1908,7 @@ void main() {
         // Cielo cubierto: las nubes reparten la luz del sol por todo el cielo,
         // asi que la luz ambiente pasa del azul del cielo despejado a un gris
         // neutro (algo mas clara), como en un dia nublado.
-        vec3 sky_irradiance = irradianceSh(normal);
+        vec3 sky_irradiance = irradianceSh(gtao ? bent_normal : normal);
         if (lights.clouds.x > 0.5 && lights.clouds.w > 0.0) {
             float overcast = lights.clouds.w * lights.clouds.w;
             float luminance_sky = dot(sky_irradiance, vec3(0.2126, 0.7152, 0.0722));
@@ -1796,37 +1962,51 @@ void main() {
         // veces junto a las paredes y bajo los muebles).
         float specular_ao = clamp(pow(n_dot_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao,
                                   0.0, 1.0);
+        // GTAO: ademas, el cono visible de la normal doblada contra el reflejo.
+        if (gtao) {
+            specular_ao = min(specular_ao, bentSpecularOcclusion(bent_normal, reflected, ao, roughness));
+        }
         vec4 ssr = texelFetch(ssr_map, ivec2(gl_FragCoord.xy), 0);
         vec3 reflected_light = ssr.rgb;
         if (ssr.a < 1.0) {
-            vec3 fallback = textureLod(environment_map, reflected, roughness * kEnvironmentMaxLod).rgb * sky_visibility;
-            // Cada cubo con su peso: el del fundido por la confianza en el (la
-            // CPU la baja si la camara se ha ido a donde ese cubo no ve: una
-            // sonda capturada en otra habitacion no vale aqui).
-            float weight_0 = lights.probes[0].w * lights.probe_trust.x;
-            float weight_1 = 0.0;
+            // Sondas colocadas (con caja): donde cubren del todo, ni la sonda
+            // de la camara ni el cielo; en su fundido, se mezclan con ellos.
+            vec4 placed = vec4(0.0);
 #ifndef CRAMION_COMPAT
-            weight_1 = lights.probes[1].w * lights.probe_trust.y;
+            placed = placedProbeReflection(world_position, reflected, roughness * kEnvironmentMaxLod);
 #endif
-            float probe_weight = weight_0 + weight_1;
-            if (probe_weight > 0.001) {
-                float lod = roughness * kEnvironmentMaxLod;
-                vec3 probe_light = vec3(0.0);
-                if (weight_0 > 0.001) {
-                    vec3 d = probeDirection(reflection_probe_0, lights.probes[0].xyz,
-                                            world_position, reflected);
-                    probe_light += textureLod(reflection_probe_0, d, lod).rgb * weight_0;
-                }
+            vec3 fallback = vec3(0.0);
+            if (placed.a < 0.999) {
+                fallback = textureLod(environment_map, reflected, roughness * kEnvironmentMaxLod).rgb * sky_visibility;
+                // Cada cubo con su peso: el del fundido por la confianza en el (la
+                // CPU la baja si la camara se ha ido a donde ese cubo no ve: una
+                // sonda capturada en otra habitacion no vale aqui).
+                float weight_0 = lights.probes[0].w * lights.probe_trust.x;
+                float weight_1 = 0.0;
 #ifndef CRAMION_COMPAT
-                if (weight_1 > 0.001) {
-                    vec3 d = probeDirection(reflection_probe_1, lights.probes[1].xyz,
-                                            world_position, reflected);
-                    probe_light += textureLod(reflection_probe_1, d, lod).rgb * weight_1;
-                }
+                weight_1 = lights.probes[1].w * lights.probe_trust.y;
 #endif
-                // La parte sin sonda de confianza se queda con el cielo.
-                fallback = mix(fallback, probe_light / probe_weight, min(probe_weight, 1.0));
+                float probe_weight = weight_0 + weight_1;
+                if (probe_weight > 0.001) {
+                    float lod = roughness * kEnvironmentMaxLod;
+                    vec3 probe_light = vec3(0.0);
+                    if (weight_0 > 0.001) {
+                        vec3 d = probeDirection(reflection_probe_0, lights.probes[0].xyz,
+                                                world_position, reflected);
+                        probe_light += textureLod(reflection_probe_0, d, lod).rgb * weight_0;
+                    }
+#ifndef CRAMION_COMPAT
+                    if (weight_1 > 0.001) {
+                        vec3 d = probeDirection(reflection_probe_1, lights.probes[1].xyz,
+                                                world_position, reflected);
+                        probe_light += textureLod(reflection_probe_1, d, lod).rgb * weight_1;
+                    }
+#endif
+                    // La parte sin sonda de confianza se queda con el cielo.
+                    fallback = mix(fallback, probe_light / probe_weight, min(probe_weight, 1.0));
+                }
             }
+            fallback = fallback * (1.0 - placed.a) + placed.rgb;
             reflected_light = mix(fallback * specular_ao, ssr.rgb, ssr.a);
         }
         vec3 specular_ibl = reflected_light * (f0 * brdf.x + brdf.y) * energy;

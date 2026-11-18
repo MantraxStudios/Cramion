@@ -31,7 +31,7 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
 
     // --- Descriptores ---
     compat_ = device.compatMode();
-    std::array<vk::DescriptorSetLayoutBinding, 31> bindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 32> bindings{};
 
     bindings[0].binding = 0;
     bindings[0].descriptorType = vk::DescriptorType::eUniformBuffer;
@@ -142,6 +142,12 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
         bindings[binding].descriptorCount = 1;
         bindings[binding].stageFlags = vk::ShaderStageFlagBits::eFragment;
     }
+    // Binding 31: los cubos de las sondas de reflexion colocadas (array de
+    // cubos, ReflectionProbe::placedView). No en el modo compatible.
+    bindings[31].binding = 31;
+    bindings[31].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    bindings[31].descriptorCount = 1;
+    bindings[31].stageFlags = vk::ShaderStageFlagBits::eFragment;
 
     // Modo compatible: sin los que el shader no declara (16 texturas).
     std::vector<vk::DescriptorSetLayoutBinding> used;
@@ -280,9 +286,9 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
 }
 
 bool LightingPass::hasBinding(std::uint32_t binding) const {
-    if (!compat_) return binding <= 30;
+    if (!compat_) return binding <= 31;
     switch (binding) {
-        case 19: case 21: case 22: case 24: case 25: case 26: case 27: case 28: return false;
+        case 19: case 21: case 22: case 24: case 25: case 26: case 27: case 28: case 31: return false;
         default: return binding <= 30;
     }
 }

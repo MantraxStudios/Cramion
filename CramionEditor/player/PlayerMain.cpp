@@ -53,6 +53,7 @@
 #include <CramionCore/replay/Replay.h>
 #include <CramionCore/asset/LightmapUv.h>
 #include <CramionCore/lighting/ProbeBaker.h>
+#include <CramionCore/lighting/ReflectionProbes.h>
 #include <CramionCore/twod/System2D.h>
 #include <CramionCore/vfx/VisualEffect.h>
 #include <CramionCore/net/WebSocket.h>
@@ -1545,6 +1546,8 @@ int runPlayer() {
                 renderer.setBakedLighting(std::move(baked));
                 renderer.setLightingMode(mode);
             }
+            // Sondas de reflexion colocadas: su <escena>.crrefl (sin el, ninguna).
+            lighting::loadSceneReflectionProbes(file, renderer);
         };
         // Fisica, navegacion, bloques, audio, video (y los scripts si
         // with_scripts) con la escena ya en el mundo y en la GPU.
