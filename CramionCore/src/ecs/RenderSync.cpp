@@ -14,6 +14,7 @@
 
 #include "CramionCore/anim/IK.h"
 #include "CramionCore/ecs/MathUtil.h"
+#include "CramionCore/ecs/RenderLayers.h"
 #include "CramionCore/navigation/Navigation.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/net/NetworkObject.h"
@@ -2922,6 +2923,10 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
         syncCamera(world, scene);
     }
     {
+        CR_PROFILE_SCOPE("Contornos de juego");
+        syncOutlines(world, renderer, delta_seconds);  // RM-capas
+    }
+    {
         // Despues de la camara: el agua mira si la camara esta sumergida.
         CR_PROFILE_SCOPE("Agua");
         syncWater(world, renderer, delta_seconds, scene.camera().position());
@@ -3076,6 +3081,7 @@ void RenderSync::renderCameraTextures(World& world, scene::Scene& scene, gfx::Vu
         view.setFovY(camera.fov * kDegToRad);
         view.setOrthographic(camera.orthographic, camera.ortho_size);
         view.setClipPlanes(camera.near_plane, camera.far_plane);
+        applyCameraLayers(camera, view);  // culling mask y viewmodel (RM-capas)
         renderer.renderToTexture(scene, view, job.texture);
     }
 }
@@ -4572,6 +4578,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         }
         actor.cast_shadows = renderer_component->cast_shadows != ShadowCasting::Off;
         actor.shadows_only = renderer_component->cast_shadows == ShadowCasting::ShadowsOnly;
+        actor.layers = renderer_component->render_layers;  // capas de render (RM-capas)
         // Su lightmap horneado, si lo tiene (RenderSyncLightmaps.cpp).
         assignLightmap(actor, e, *renderer_component, data, renderer);
         // Parametros por instancia (tinte, opacidad, escala de la emision).
@@ -4736,6 +4743,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
                         p.cast_shadows = light->cast_shadows;
                         p.shadow_strength = std::clamp(light->shadow_strength, 0.0f, 1.0f);
                         p.source_radius = std::clamp(light->source_radius, 0.0f, 2.0f);
+                        p.shadow_layers = light->shadow_layers;
                         lights.points.push_back(p);
                     }
                     break;
@@ -4754,6 +4762,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
                         s.cast_shadows = light->cast_shadows;
                         s.shadow_strength = std::clamp(light->shadow_strength, 0.0f, 1.0f);
                         s.source_radius = std::clamp(light->source_radius, 0.0f, 2.0f);
+                        s.shadow_layers = light->shadow_layers;
                         lights.spots.push_back(s);
                     }
                     break;
@@ -4886,6 +4895,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
         // lo tiñe y lo escala.
         lights.sun.color = lights.sun.color * light.color;
         lights.sun.intensity *= light.intensity;
+        lights.sun.shadow_layers = light.shadow_layers;
         renderer.setSunShadowsEnabled(light.cast_shadows);
         renderer.setSunShadowStrength(std::clamp(light.shadow_strength, 0.0f, 1.0f));
         // Sol Horneado: con un .crbake con lightmaps, sus sombras del lightmap.
@@ -5035,6 +5045,7 @@ void RenderSync::syncCamera(World& world, scene::Scene& scene) {
     // no se dibuja: se ve el cielo). Antes no se aplicaban y la camara del
     // juego usaba siempre 0.1 - 500 m.
     view.setClipPlanes(camera.near_plane, camera.far_plane);
+    applyCameraLayers(camera, view);  // culling mask y viewmodel (RM-capas)
 }
 
 int RenderSync::actorIndex(Entity entity) const {

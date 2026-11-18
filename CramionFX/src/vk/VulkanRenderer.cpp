@@ -730,6 +730,17 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         outline.alpha_blend = true;
         outline.filter = vk::Filter::eNearest;
         outline_pass_.create(device_, outline);
+        // Contornos de juego (RM-capas): la misma mascara (R8G8, se reutiliza:
+        // cada pasada la borra) con el estilo de cada pixel y los estilos en
+        // las push constants (scene::GameOutlines::pack, 128 bytes).
+        FullscreenPassDesc game_outline{};
+        game_outline.fragment_shader = "game_outline.frag.spv";
+        game_outline.bindings = one_texture;
+        game_outline.push_constant_size = sizeof(std::array<std::uint32_t, 32>);
+        game_outline.color_format = kLdrFormat;
+        game_outline.alpha_blend = true;
+        game_outline.filter = vk::Filter::eNearest;
+        game_outline_pass_.create(device_, game_outline);
         // Gizmos del editor en 3D, con prueba contra el depth de la escena.
         overlay_pass_.create(device_, kLdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
         // UI en el mundo: sus texturas y sus paneles (igual: tras el tono).
@@ -1108,6 +1119,7 @@ void VulkanRenderer::shutdown() {
     easu_sets_.clear();
     rcas_sets_.clear();
     outline_sets_.clear();
+    game_outline_sets_.clear();
     clouds_sets_.clear();
     gi_atrous_sets_.clear();
     gi_temporal_sets_.clear();
@@ -1213,6 +1225,7 @@ void VulkanRenderer::shutdown() {
     sky_lut_pass_.destroy();
     composite_pass_.destroy();
     outline_pass_.destroy();
+    game_outline_pass_.destroy();
     overlay_pass_.destroy();
     world_ui_pass_.destroy();
     video_textures_.destroy();
@@ -1793,6 +1806,7 @@ void VulkanRenderer::createDescriptors() {
         early_histogram_sets_ = allocate_early(histogram_pass_.descriptorSetLayout(), 1);
     }
     outline_sets_ = allocate(outline_pass_, 1);
+    game_outline_sets_ = allocate(game_outline_pass_, 1);
     ssgi_sets_ = allocate(ssgi_pass_, kMaxFramesInFlight);
     ssr_sets_ = allocate(ssr_pass_, kMaxFramesInFlight);
     ssr_resolve_sets_ = allocate(ssr_resolve_pass_, kMaxFramesInFlight * 2);  // por frame y ojo
@@ -2021,6 +2035,23 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     // NOCHE-PERF: corte por distancia de los actores, solo con el perfil movil.
     const float far_cut = mobile_level_ >= 0 ? mobile_actor_distance_ : 0.0f;
     const float far_cut2 = far_cut * far_cut;
+    // --- Capas de render y viewmodel (RM-capas) ---
+    // La camara de esta vista (la de la Render Texture, la del ojo...): su
+    // culling mask y su arma en primera persona. En VR no hay viewmodel (el
+    // campo de vision es el del casco). El sol: sus capas con sombra.
+    const scene::Camera& view_camera = camera_override_ != nullptr ? *camera_override_ : scene.camera();
+    const std::uint32_t culling_mask = view_camera.cullingMask();
+    const scene::Camera::Viewmodel& viewmodel = view_camera.viewmodel();
+    const bool viewmodel_on = viewmodel.active() && !view_camera.orthographic() && !xr_view_frame_ &&
+                              xr_eye_target_ < 0;
+    const core::Mat4 viewmodel_matrix = viewmodel_on ? scene::viewmodelMatrix(view_camera) : core::Mat4::identity();
+    const float viewmodel_radius_scale =
+        viewmodel_on ? scene::viewmodelDepthScale(view_camera.nearPlane(), viewmodel.near_plane) *
+                           std::max(1.0f, scene::viewmodelFovScale(view_camera.fovY(), viewmodel.fov_y))
+                     : 1.0f;
+    viewmodel_depth_range_ = scene::viewmodelDepthRange(viewmodel);
+    viewmodel_draws_ = 0;
+    sun_shadow_layers_ = scene.lights().sun.shadow_layers;
 
     for (const scene::Actor& actor : scene.actors()) {
         if (actor.model >= skinned_models_.size()) {
@@ -2082,12 +2113,27 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         draw.scene_actor = actor_index;
         draw.id = identity;
         draw.model = actor.model;
-        draw.transform = actor.transform;
+        // Capas (RM-capas): fuera de la culling mask, la camara no lo ve (su
+        // sombra si, como "solo sombras"). En las capas del viewmodel, con el
+        // campo de vision de la viewmodel y sin sombra propia.
+        draw.layers = actor.layers;
+        const bool layer_visible = scene::layersVisible(actor.layers, culling_mask);
+        draw.viewmodel = viewmodel_on && layer_visible && !actor.shadows_only &&
+                         scene::layersVisible(actor.layers, viewmodel.layers);
+        const core::Mat4 actor_transform = draw.viewmodel ? viewmodel_matrix * actor.transform : actor.transform;
+        draw.transform = actor_transform;
         draw.bone_offset = static_cast<std::uint32_t>(bone_staging_.size());
         draw.bounds_center = actor.bounds_center;
         draw.bounds_radius = actor.bounds_radius;
-        draw.cast_shadows = actor.cast_shadows;
-        draw.shadows_only = actor.shadows_only;
+        if (draw.viewmodel) {
+            const core::Vec4 c = viewmodel_matrix * core::Vec4{actor.bounds_center.x, actor.bounds_center.y,
+                                                               actor.bounds_center.z, 1.0f};
+            draw.bounds_center = Vec3{c.x, c.y, c.z};
+            draw.bounds_radius = actor.bounds_radius * viewmodel_radius_scale;
+            ++viewmodel_draws_;
+        }
+        draw.cast_shadows = actor.cast_shadows && !draw.viewmodel;
+        draw.shadows_only = actor.shadows_only || !layer_visible;
         draw.dissolve = actor.tint.w < 0.999f;
         draw.smooth_fade = draw.dissolve && actor.smooth_fade;
         draw.opacity = std::clamp(actor.tint.w, 0.0f, 1.0f);
@@ -2110,7 +2156,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         core::Mat4 rigid_to_world = core::Mat4::identity();
         if (model.rigid() && bones.size() == 1) {
             draw.per_submesh = true;
-            const core::Mat4 to_world = actor.transform * bones[0];
+            const core::Mat4 to_world = actor_transform * bones[0];
             rigid_to_world = to_world;
             // Quieto desde el frame anterior (mismo modelo, misma version y
             // misma matriz): sus cajas son las mismas y se copian.
@@ -2246,7 +2292,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
             const std::uint32_t instance = draw.bone_offset + static_cast<std::uint32_t>(bones.size());
             for (std::uint32_t i = 0; i < lod_submeshes.size(); ++i) {
                 const std::uint32_t group = model.lodSubmeshGroup(draw.lod, i);
-                if (group == SkinnedModel::kNoGroup || draw.shadows_only || tiny || draw.smooth_fade) {
+                if (group == SkinnedModel::kNoGroup || draw.shadows_only || tiny || draw.smooth_fade || draw.viewmodel) {
                     // Transparente, solo sombras o diminuto: la camara no lo ve
                     // (fundido suave: lo dibuja recordGlassPass mezclado).
                     continue;
@@ -2303,7 +2349,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
             // matriz se copia abajo): su registro lleva la trama inversa. Los
             // lotes que lo reciben (y los del que entra) van con la pipeline
             // con recorte, como la disolucion.
-            if (draw.lod_fade < 1.0f && !draw.shadows_only && !tiny && !draw.smooth_fade) {
+            if (draw.lod_fade < 1.0f && !draw.shadows_only && !tiny && !draw.smooth_fade && !draw.viewmodel) {
                 const std::uint32_t from = draw.lod_fade_from;
                 const std::vector<asset::SubMesh>& from_submeshes = model.lodSubmeshes(from);
                 for (std::uint32_t i = 0; i < from_submeshes.size(); ++i) {
@@ -2360,9 +2406,9 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
             // manos y las armas ya se deformaban): animated_lod_pixels, con
             // el escalado de la gama. Sus sombras del sol siguen con el error
             // de siempre (shadow_lod).
-            draw.lod = chooseLod(model, actor.transform, draw.bounds_center, draw.bounds_radius, camera_position,
+            draw.lod = chooseLod(model, actor_transform, draw.bounds_center, draw.bounds_radius, camera_position,
                                  pixels_per_unit, oldAnimatedLods() ? 0.0f : animated_lod_pixels);
-            draw.shadow_lod = chooseLod(model, actor.transform, draw.bounds_center, draw.bounds_radius,
+            draw.shadow_lod = chooseLod(model, actor_transform, draw.bounds_center, draw.bounds_radius,
                                         camera_position, pixels_per_unit);
             if (draw.lod > 0) ++lod_actors_;
         }
@@ -2578,6 +2624,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         std::vector<std::pair<float, std::uint32_t>> skinned_draws;  // (distancia^2, actor)
         for (std::uint32_t d = 0; d < actor_draws_.size(); ++d) {
             const ActorDraw& draw = actor_draws_[d];
+            if (draw.viewmodel) continue;  // el arma en primera persona no esta en el mundo de los rayos
             const bool skinned = !draw.per_submesh && draw.bone_entries > 1 && draw.opacity > kRtMinOpacity;
             // Uno que no tenia instancias al construirla (no entro): se apunta
             // en rt_scene_used_ y prepareRayTracingScene lo anade solo
@@ -2902,7 +2949,7 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
                                         std::uint32_t frame_index,
                                         const core::Mat4& light_view_projection,
                                         const Vec3& light_position, float range,
-                                        float texel_world_size, ShadowActors which) {
+                                        float texel_world_size, ShadowActors which, std::uint32_t layer_mask) {
     // Las cascadas se dibujan con depth clamp (range == 0): lo que queda entre
     // el sol y la cascada tambien proyecta sombra dentro, asi que no se
     // descarta por el plano cercano.
@@ -2946,6 +2993,9 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
         const ActorDraw& draw = actor_draws_[nearby != nullptr ? (*nearby)[n] : n];
         if (!draw.cast_shadows) {
             continue;  // MeshRenderer con "Proyecta sombras" apagado.
+        }
+        if (!scene::layersVisible(draw.layers, layer_mask)) {
+            continue;  // Capas de render sin sombra de esta luz (Light.shadow_layers).
         }
         if (draw.opacity <= 0.002f) {
             continue;  // MeshRenderer.alpha = 0: ni se ve ni hace sombra.
@@ -4072,6 +4122,7 @@ void VulkanRenderer::updatePostDescriptors() {
     }
 
     write_texture(outline_sets_[0], 0, outline_pass_.sampler(), outline_mask_, kRead);
+    write_texture(game_outline_sets_[0], 0, game_outline_pass_.sampler(), outline_mask_, kRead);
 
     write_texture(light_shaft_sets_[0], 0, light_shaft_pass_.sampler(), gbuffer_.depth(),
                   compat::depthReadOnlyLayout());
@@ -7369,6 +7420,10 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         recordWorldUiPass(cmd, frame_index);
         markPass(cmd, frame_index, "UI en el mundo");
     }
+    if (!game_outlines_.empty() && !capturing_ && drawModeNow() != SceneDrawMode::Wireframe) {
+        recordGameOutlinePass(cmd, frame_index);
+        markPass(cmd, frame_index, "Contornos de juego");
+    }
     if (!outlined_actors_.empty() && editor_helpers_) {
         recordOutlinePass(cmd, frame_index);
         markPass(cmd, frame_index, "Contorno de seleccion");
@@ -7465,7 +7520,7 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
             static const char kFoliageMark[] = "Sombras: vegetacion";
             if (marks) cmd.setCheckpointNV(*kActorsMark);
             recordActorShadows(cmd, frame_index, light_view_projection, {}, 0.0f,
-                               rendered_cascades_[cascade].texel_world_size, which);
+                               rendered_cascades_[cascade].texel_world_size, which, sun_shadow_layers_);
             shadow_cascade_drawing_ = previous_cascade;
             if (which != ShadowActors::Animated) {
                 // Con los trozos de este frame (prepare() ya paso): la firma
@@ -7691,6 +7746,8 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
         Vec3 face_axis;
         // Texel del mapa por metro de distancia a la luz (LOD de los actores).
         float texel_scale = 0.0f;
+        // Capas de render que proyectan su sombra (Light.shadow_layers).
+        std::uint32_t layers = scene::kAllRenderLayers;
     };
 
     const vk::Image spot_image = *local_shadow_maps_.spotImage().handle();
@@ -7763,7 +7820,7 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
             }
             jobs.push_back(ShadowJob{&local_shadow_maps_.spotView(slot), spot_image, slot,
                                      local_shadow_maps_.spotExtent(), spot.light_view_projection,
-                                     spot.position, spot.range, Vec3{}, spot.texel_scale});
+                                     spot.position, spot.range, Vec3{}, spot.texel_scale, spot.layers});
         }
 
         for (std::uint32_t slot = 0; slot < scene::kMaxShadowedPointLights; ++slot) {
@@ -7788,7 +7845,7 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
                                          point.face_view_projection[face], point.position,
                                          point.range,
                                          scene::LocalLightShadows::faceDirection(face),
-                                         point.texel_scale});
+                                         point.texel_scale, point.layers});
             }
         }
     }
@@ -7851,7 +7908,7 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
         cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, job.extent});
 
         recordActorShadows(cmd, frame_index, job.light_view_projection, job.light_position,
-                           job.range, job.texel_scale);
+                           job.range, job.texel_scale, ShadowActors::All, job.layers);
         // El terreno y los bloques tambien tapan la luz de antorchas y focos.
         terrain_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], job.light_view_projection,
                                    /*local=*/true);
@@ -7963,6 +8020,8 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
 
     // --- Fase temprana: animados + lo que era visible ---
     begin_rendering(/*clear=*/true);
+    // El arma en primera persona, la primera: tapa lo de detras (RM-capas).
+    if ((debug_skip_ & 2u) == 0) drawViewmodelActors(cmd, frame_index, extent);
     if ((debug_skip_ & 2u) == 0) drawCpuActors(cmd, frame_index);
     // El escenario visible el frame anterior antes que el terreno: en una
     // ciudad el suelo de las calles y las plazas tapa el terreno de debajo, y
@@ -8047,6 +8106,68 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     compat::endRendering(cmd);
 }
 
+// Arma en primera persona (viewmodel, RM-capas). Sus actores ya traen el
+// transform del campo de vision del viewmodel (updateActors); aqui se dibujan
+// los primeros, con el viewport comprimido a [0, viewmodel_depth_range_] de la
+// profundidad: quedan delante de todo el mundo (no atraviesan paredes) y lo
+// que tapan ni se sombrea. Van al G-buffer como los demas: se iluminan, reciben
+// sombras (en su posicion junto a la camara) y llevan vectores de movimiento
+// (skinned.vert con sus matrices del frame anterior). Lo transparente del arma
+// sigue en la pasada del vidrio sin comprimir (limitacion conocida).
+void VulkanRenderer::drawViewmodelActors(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
+                                         vk::Extent2D extent) {
+    if (viewmodel_draws_ == 0 || capturing_ || extent.width == 0 || extent.height == 0) return;
+    const core::Frustum frustum(camera_view_projection_);
+    bool bound = false;
+    bool any = false;
+    std::int32_t bound_shader = -1;
+    for (const ActorDraw& draw : actor_draws_) {
+        if (!draw.viewmodel || draw.shadows_only || draw.smooth_fade || draw.model >= skinned_models_.size()) continue;
+        if (!any) {
+            cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
+                                            static_cast<float>(extent.height), 0.0f, viewmodel_depth_range_});
+            any = true;
+        }
+        if (!bound) {
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *meshGeometryPipeline());
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(), 0,
+                                   *skin_sets_[frame_index], nullptr);
+            bound = true;
+        }
+        const SkinnedModel& model = skinned_models_[draw.model];
+        cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
+        cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+        const std::vector<asset::SubMesh>& lod_submeshes = model.lodSubmeshes(draw.lod);
+        std::uint32_t bound_material = UINT32_MAX;
+        visible_submeshes_ += forEachVisibleSubmesh(draw, frustum, [&](std::uint32_t i) {
+            const asset::SubMesh& submesh = lod_submeshes[i];
+            if (submesh.material != bound_material) {
+                const SkinnedModel::Material& material = model.materials()[submesh.material];
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(), 1,
+                                       *model.materialSet(submesh.material), nullptr);
+                GpuSkinnedPush push{};
+                push.model = draw.transform;
+                push.base_color = material.base_color;
+                push.emissive = material.emissive;
+                push.material = material.params;
+                push.bone_offset = draw.bone_offset;
+                push.reflectance = material.reflectance;
+                push.flags = material.shader_flags & (draw.per_submesh ? ~0u : ~GpuSkinnedPush::kFlagLightmap);
+                push.pick_id = material.shading;
+                bindMaterialPipeline(cmd, frame_index, material, bound_shader, push, draw.dissolve);
+                cmd.pushConstants<GpuSkinnedPush>(*skinned_pass_.geometryLayout(), skinned_pass_.geometryPushStages(),
+                                                  0, push);
+                bound_material = submesh.material;
+            }
+            cmd.drawIndexed(submesh.index_count, 1, submesh.first_index, 0, 0);
+        });
+    }
+    if (any) {
+        cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
+                                        static_cast<float>(extent.height), 0.0f, 1.0f});
+    }
+}
+
 void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
                                    std::uint32_t frame_index) {
     bool bound = false;
@@ -8058,8 +8179,9 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
     cpu_rigid_order_.clear();
     for (std::uint32_t d = 0; d < actor_draws_.size(); ++d) {
         const ActorDraw& draw = actor_draws_[d];
-        if ((draw.per_submesh && !scenery) || draw.shadows_only || draw.smooth_fade) {
-            continue;  // Escenario (lo dibuja drawGpuClusters), solo sombras o fundido suave (recordGlassPass).
+        if ((draw.per_submesh && !scenery) || draw.shadows_only || draw.smooth_fade || draw.viewmodel) {
+            continue;  // Escenario (lo dibuja drawGpuClusters), solo sombras, fundido suave (recordGlassPass)
+                       // o arma en primera persona (drawViewmodelActors).
         }
         if (draw.per_submesh) {
             // Rigido del modo compatible: diminuto (como en los lotes de la
@@ -9537,6 +9659,111 @@ void VulkanRenderer::recordOutlinePass(const vk::raii::CommandBuffer& cmd,
                                            vk::AccessFlagBits2::eColorAttachmentWrite)});
     drawFullscreen<GpuBloomPush>(cmd, outline_pass_, &outline_sets_[0], ldr_color_, nullptr,
                                  /*load=*/true);
+    pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
+}
+
+// Contornos de juego (componente Outline, RM-capas). Como el contorno de
+// seleccion del editor, pero en cualquier vista sin ayudas (juego exportado,
+// vista Juego, Render Textures) y por estilo: la mascara guarda en R el estilo
+// (+1) de la silueta entera y en G el de lo que se ve; game_outline.frag
+// dibuja el borde (siempre / solo lo tapado / solo lo visible) y el relleno de
+// lo tapado. Reutiliza outline_mask_ (cada pasada la borra antes).
+void VulkanRenderer::recordGameOutlinePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
+    if (capturing_ || game_outlines_.empty() || !outline_mask_.isValid()) return;
+    // Estilo (+1) por actor de la escena; 0 = sin contorno.
+    std::uint32_t max_actor = 0;
+    for (const scene::OutlinedActor& o : game_outlines_.actors) max_actor = std::max(max_actor, o.actor);
+    std::vector<std::uint8_t> style_of(static_cast<std::size_t>(max_actor) + 1, 0);
+    const auto style_count = static_cast<std::uint32_t>(std::min<std::size_t>(game_outlines_.styles.size(),
+                                                                               scene::kMaxOutlineStyles));
+    for (const scene::OutlinedActor& o : game_outlines_.actors) {
+        style_of[o.actor] = static_cast<std::uint8_t>(std::min(o.style, style_count - 1) + 1);
+    }
+    std::vector<const ActorDraw*> outlined;
+    for (const ActorDraw& draw : actor_draws_) {
+        // Lo que esta vista no ve (capas, solo sombras) y el arma en primera
+        // persona (su profundidad esta comprimida) no llevan contorno.
+        if (draw.shadows_only || draw.viewmodel || draw.scene_actor >= style_of.size()) continue;
+        if (style_of[draw.scene_actor] != 0) outlined.push_back(&draw);
+    }
+    if (outlined.empty()) return;
+
+    // --- 1) Mascara: estilo de la silueta (R) y de lo visible (G) ---
+    const bool scaled = render_extent_ != outline_mask_.extent();
+    if (scaled) recordOutputDepth(cmd);
+    const VulkanImage& depth_image = scaled ? output_depth_ : gbuffer_.depth();
+    vk::ImageMemoryBarrier2 depth_barrier{};
+    depth_barrier.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests |
+                                 vk::PipelineStageFlagBits2::eFragmentShader |
+                                 vk::PipelineStageFlagBits2::eComputeShader;
+    depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                 vk::PipelineStageFlagBits2::eLateFragmentTests;
+    depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
+    depth_barrier.image = *depth_image.handle();
+    depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+    pipelineBarrier(cmd, {discardToAttachment(*outline_mask_.handle()), depth_barrier});
+
+    const vk::Extent2D extent = outline_mask_.extent();
+    vk::RenderingAttachmentInfo mask_attachment{};
+    mask_attachment.imageView = *outline_mask_.view();
+    mask_attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    mask_attachment.loadOp = vk::AttachmentLoadOp::eClear;
+    mask_attachment.storeOp = vk::AttachmentStoreOp::eStore;
+    mask_attachment.clearValue = vk::ClearValue{vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}};
+    vk::RenderingAttachmentInfo depth_attachment{};
+    depth_attachment.imageView = *depth_image.view();
+    depth_attachment.imageLayout = compat::depthReadOnlyLayout();
+    depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
+    vk::RenderingInfo rendering_info{};
+    rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
+    rendering_info.layerCount = 1;
+    rendering_info.setColorAttachments(mask_attachment);
+    rendering_info.pDepthAttachment = &depth_attachment;
+
+    compat::beginRendering(cmd, rendering_info);
+    cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height),
+                                    0.0f, 1.0f});
+    cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
+    const core::Frustum frustum(camera_view_projection_);
+    for (int visible_only = 0; visible_only < 2; ++visible_only) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *skinned_pass_.gameOutlineMaskPipeline(visible_only != 0));
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(), 0,
+                               *skin_sets_[frame_index], nullptr);
+        for (const ActorDraw* draw : outlined) {
+            const SkinnedModel& model = skinned_models_[draw->model];
+            cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
+            cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+            GpuSkinnedPush push{};
+            push.model = draw->transform;
+            push.bone_offset = draw->bone_offset;
+            push.pick_id = style_of[draw->scene_actor];  // estilo + 1
+            push.flags = 2u;  // sin jitter: el contorno no tiembla con el TAA
+            cmd.pushConstants<GpuSkinnedPush>(*skinned_pass_.geometryLayout(), skinned_pass_.geometryPushStages(), 0,
+                                              push);
+            const auto& submeshes = model.submeshes();
+            for (std::uint32_t i = 0; i < submeshes.size(); ++i) {
+                if (draw->per_submesh && !frustum.intersects(lod0Box(*draw, i))) continue;
+                cmd.drawIndexed(submeshes[i].index_count, 1, submeshes[i].first_index, 0, 0);
+            }
+        }
+    }
+    compat::endRendering(cmd);
+
+    // --- 2) Bordes y relleno sobre la imagen compuesta ---
+    pipelineBarrier(cmd, {writtenToSampled(*outline_mask_.handle()),
+                          colorBarrier(*ldr_color_.handle(), vk::ImageLayout::eShaderReadOnlyOptimal,
+                                       vk::ImageLayout::eColorAttachmentOptimal,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead,
+                                       vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                       vk::AccessFlagBits2::eColorAttachmentRead |
+                                           vk::AccessFlagBits2::eColorAttachmentWrite)});
+    const std::array<std::uint32_t, 32> push = game_outlines_.pack();
+    drawFullscreen(cmd, game_outline_pass_, &game_outline_sets_[0], ldr_color_, &push, /*load=*/true);
     pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
 }
 
@@ -11196,10 +11423,12 @@ void VulkanRenderer::recordVendorUpscale(const vk::raii::CommandBuffer& cmd) {
     pipelineBarrier(cmd, discardToAttachment(*upscaler_motion_.handle()));
     const core::Mat4 reproject = taa_reproject_;
     drawFullscreen(cmd, upscaler_motion_pass_, &upscaler_motion_sets_[0], upscaler_motion_, &reproject);
-    // 1b) Mascara reactiva (FSR 3; DLSS no la usa): la opacidad de los
-    // transparentes, del alfa de la imagen HDR (ya es textura).
-    const bool reactive = graphics_.upscaler == Upscaler::Fsr3 && taa_reactive_strength_ > 0.0f &&
-                          upscaler_reactive_.isValid();
+    // 1b) Mascara reactiva: la opacidad de los transparentes, del alfa de la
+    // imagen HDR (ya es textura). FSR 3 la usa como reactive; DLSS, como
+    // Bias Current Color Mask (RM-capas; render.DlssReactiveMask).
+    const bool reactive = (graphics_.upscaler == Upscaler::Fsr3 ||
+                           (graphics_.upscaler == Upscaler::Dlss && dlss_reactive_mask_)) &&
+                          taa_reactive_strength_ > 0.0f && upscaler_reactive_.isValid();
     if (reactive) {
         pipelineBarrier(cmd, discardToAttachment(*upscaler_reactive_.handle()));
         // Tope 0,9 (como recomienda AMD: con 1 FSR no acumula nada alli).

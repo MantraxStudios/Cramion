@@ -36,6 +36,8 @@ struct SpotShadow {
     bool active = false;
     // Hay que volver a dibujar el mapa este frame (la luz ha cambiado).
     bool dirty = false;
+    // Capas de render que proyectan su sombra (SpotLight::shadow_layers).
+    std::uint32_t layers = 0xFFFFFFFFu;
 };
 
 // Sombra de una luz puntual: seis proyecciones en perspectiva, una por cara
@@ -54,6 +56,8 @@ struct PointShadow {
     // Indice en LightSet::points de la luz que ocupa este hueco; -1 = libre.
     std::int32_t light_index = -1;
     bool dirty = false;
+    // Capas de render que proyectan su sombra (PointLight::shadow_layers).
+    std::uint32_t layers = 0xFFFFFFFFu;
     // Frames seguidos que su luz lleva a intensidad 0 (una lampara que
     // parpadea): durante un margen conserva el hueco y su mapa en la cache, en
     // vez de soltarlo en cada parpadeo y obligar a redibujar las demas.
@@ -115,6 +119,7 @@ private:
         float range = 0.0f;
         float angle = 0.0f;
         bool valid = false;
+        std::uint32_t layers = 0xFFFFFFFFu;  // cambiar las capas rehace el mapa
 
         bool operator==(const Signature& other) const;
     };

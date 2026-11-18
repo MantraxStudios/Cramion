@@ -316,6 +316,8 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     outline_silhouette_pipeline_ = createOutlinePipeline(device, gbuffer.depthFormat(), false);
     outline_visible_pipeline_ = createOutlinePipeline(device, gbuffer.depthFormat(), true);
     pick_pipeline_ = createOutlinePipeline(device, gbuffer.depthFormat(), true, /*pick=*/true);
+    game_outline_silhouette_pipeline_ = createOutlinePipeline(device, gbuffer.depthFormat(), false, false, /*game=*/true);
+    game_outline_visible_pipeline_ = createOutlinePipeline(device, gbuffer.depthFormat(), true, false, /*game=*/true);
 
     std::cout << "[Vulkan] Pipelines de modelos con esqueleto creados (huesos en storage buffer)\n";
 }
@@ -673,13 +675,13 @@ void SkinnedPass::createGlassPipeline(const VulkanDevice& device, vk::Format col
 
 vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device,
                                                       vk::Format depth_format,
-                                                      bool visible_only, bool pick) const {
+                                                      bool visible_only, bool pick, bool game) const {
     // skinned.vert, igual que el G-buffer: la profundidad de la mascara sale
     // identica a la del G-buffer y la prueba "menor o igual" es exacta.
     const vk::raii::ShaderModule vertex_module = shaders::loadModule(device, "skinned.vert.spv");
     // (El picking usa el mismo pipeline con pick.frag y una imagen de IDs.)
     const vk::raii::ShaderModule fragment_module =
-        shaders::loadModule(device, pick ? "pick.frag.spv" : "outline_mask.frag.spv");
+        shaders::loadModule(device, pick ? "pick.frag.spv" : game ? "game_outline_mask.frag.spv" : "outline_mask.frag.spv");
     const std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
         stage(vk::ShaderStageFlagBits::eVertex, vertex_module),
         stage(vk::ShaderStageFlagBits::eFragment, fragment_module)};
@@ -955,6 +957,8 @@ void SkinnedPass::destroy() {
     meshlet_set_layout_ = nullptr;
     outline_visible_pipeline_ = nullptr;
     pick_pipeline_ = nullptr;
+    game_outline_silhouette_pipeline_ = nullptr;
+    game_outline_visible_pipeline_ = nullptr;
     outline_silhouette_pipeline_ = nullptr;
     glass_pipeline_ = nullptr;
     glass_layout_ = nullptr;

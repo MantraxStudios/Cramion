@@ -3,11 +3,27 @@
 
 #include "CramionFX/core/Math.h"
 
+#include <cstdint>
+
 namespace cramion::dm {
 class Input;
 }
 
 namespace cramion::scene {
+
+// Arma en primera persona (viewmodel, RM-capas): los actores de `layers` se
+// dibujan con su propio campo de vision y comprimidos al principio del rango
+// de profundidad (`depth_range`, fraccion de [0, 1]): no atraviesan paredes y
+// se iluminan, reciben sombra y llevan vectores de movimiento como los demas.
+// `near_plane`: lo mas cerca que puede quedar el arma (se aleja lo necesario
+// para no cortarse con el plano cercano de la camara). layers = 0: apagado.
+struct CameraViewmodel {
+    std::uint32_t layers = 0;
+    float fov_y = core::radians(60.0f);
+    float near_plane = 0.01f;
+    float depth_range = 0.02f;
+    bool active() const { return layers != 0; }
+};
 
 // Camara libre en primera persona.
 //
@@ -58,6 +74,18 @@ public:
     bool orthographic() const { return orthographic_; }
     float orthoSize() const { return ortho_size_; }
 
+    // --- Capas de render (RM-capas) ---
+    // Culling mask (bit i = capa i, como el de Unity): lo que esta camara
+    // dibuja. Un actor se ve si (Actor::layers & mascara) != 0; si no, solo
+    // queda su sombra. Por defecto todas: sin cambios.
+    void setCullingMask(std::uint32_t mask) { culling_mask_ = mask; }
+    std::uint32_t cullingMask() const { return culling_mask_; }
+
+    // Arma en primera persona (viewmodel): ver CameraViewmodel, arriba.
+    using Viewmodel = CameraViewmodel;
+    void setViewmodel(const Viewmodel& viewmodel) { viewmodel_ = viewmodel; }
+    const Viewmodel& viewmodel() const { return viewmodel_; }
+
     core::Mat4 view() const;
     core::Mat4 projection() const;
 
@@ -91,6 +119,9 @@ private:
     float ortho_size_ = 5.0f;
     float near_plane_ = 0.1f;
     float far_plane_ = 500.0f;
+
+    std::uint32_t culling_mask_ = 0xFFFFFFFFu;
+    Viewmodel viewmodel_{};
 
     float move_speed_ = 14.0f;
     float mouse_sensitivity_ = 0.0028f;

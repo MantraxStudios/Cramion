@@ -41,6 +41,11 @@ struct Actor {
     bool cast_shadows = true;
     bool shadows_only = false;
 
+    // Capas de render (MeshRenderer.render_layers, bit i = capa i): la camara
+    // lo dibuja si comparte alguna con su culling mask; cada luz, su sombra si
+    // comparte alguna con su shadow_layers. Por defecto la capa 0.
+    std::uint32_t layers = 1u;
+
     // Lightmap horneado (BakedLighting de CramionCore): capa del atlas (-1 =
     // sin lightmap) y escala (xy) y desplazamiento (zw) de su rectangulo en
     // esa capa. Solo vale si su modelo tiene UV de lightmap.

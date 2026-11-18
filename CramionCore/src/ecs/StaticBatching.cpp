@@ -355,7 +355,8 @@ bool buildStaticBatch(World& world, const assets::AssetDatabase& database, const
             instance_data = instance_data || d.x != 0.0f || d.y != 0.0f || d.z != 0.0f || d.w != 0.0f;
         }
         if (renderer->tint.x != 1.0f || renderer->tint.y != 1.0f || renderer->tint.z != 1.0f ||
-            renderer->alpha != 1.0f || renderer->emission_scale != 1.0f || !renderer->receive_decals || instance_data) {
+            renderer->alpha != 1.0f || renderer->emission_scale != 1.0f || !renderer->receive_decals || instance_data ||
+            renderer->render_layers != 1u) {  // otras capas de render (RM-capas): el lote es de la capa 0
             ++report.kept_movable;
             return;
         }

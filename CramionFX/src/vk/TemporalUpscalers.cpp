@@ -453,6 +453,17 @@ bool DlssUpscaler::evaluate(const UpscaleDispatch& in) {
     eval.Feature.pInOutput = &output;
     eval.pInDepth = &depth;
     eval.pInMotionVectors = &motion;
+    // Mascara reactiva (RM-capas): la misma que recibe FSR 3 (opacidad de los
+    // transparentes y peso de los reflejos nitidos, R8 a la resolucion
+    // interna). En NGX es la "Bias Current Color Mask": 1 = fiarse del color
+    // de este frame (sin estela en particulas, vidrio, agua y suelos pulidos).
+    // pInTransparencyMask sigue reservada en el SDK 310.9: no se pasa.
+    NVSDK_NGX_Resource_VK bias{};
+    if (in.reactive.image != VK_NULL_HANDLE) {
+        bias = resource(in.reactive, false);
+        eval.pInBiasCurrentColorMask = &bias;
+        eval.InBiasCurrentColorSubrectBase = NVSDK_NGX_Coordinates{0, 0};
+    }
     const float sign = jitterSign();
     eval.InJitterOffsetX = in.jitter_x * sign;
     eval.InJitterOffsetY = in.jitter_y * sign;

@@ -54,6 +54,7 @@
 
 #include <unordered_map>
 #include "CramionFX/scene/LocalLightShadows.h"
+#include "CramionFX/scene/RenderLayers.h"
 #include "CramionFX/scene/ShadowCascades.h"
 
 #include <algorithm>
@@ -643,6 +644,18 @@ public:
         outlined_actors_ = std::move(actor_indices);
     }
     const std::vector<std::uint32_t>& outlinedActors() const { return outlined_actors_; }
+    // Contornos de juego (componente Outline, RM-capas): estilos y actores
+    // (indices en scene.actors()) de este frame. Funcionan en el juego
+    // exportado y en la vista Juego, con mascara propia (silueta y parte
+    // visible, como el Custom Depth/Stencil de UE5). Vacio = sin coste.
+    void setGameOutlines(scene::GameOutlines outlines) { game_outlines_ = std::move(outlines); }
+    const scene::GameOutlines& gameOutlines() const { return game_outlines_; }
+    // Mascara reactiva tambien para DLSS (Bias Current Color Mask de NGX, la
+    // misma que recibe FSR 3). CVar render.DlssReactiveMask (1 por defecto).
+    void setDlssReactiveMask(bool enabled) { dlss_reactive_mask_ = enabled; }
+    bool dlssReactiveMask() const { return dlss_reactive_mask_; }
+    // Actores dibujados como viewmodel el ultimo frame (estadisticas y pruebas).
+    std::uint32_t viewmodelDraws() const { return viewmodel_draws_; }
 
     // Antialiasing de la imagen final.
     void setAntialiasingEnabled(bool enabled) { post_.fxaa = enabled; }
@@ -1405,7 +1418,8 @@ private:
     void recordActorShadows(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                             const core::Mat4& light_view_projection,
                             const core::Vec3& light_position = {}, float range = 0.0f,
-                            float texel_world_size = 0.0f, ShadowActors which = ShadowActors::All);
+                            float texel_world_size = 0.0f, ShadowActors which = ShadowActors::All,
+                            std::uint32_t layer_mask = scene::kAllRenderLayers);
     // LOD para las sombras de una cascada: el mas simple cuyo error no pasa
     // de `allowed` unidades del mundo (lo que mide un texel, por el factor
     // del presupuesto). No depende de la camara.
@@ -1418,6 +1432,10 @@ private:
     // CPU, por su esfera) y clusteres de escenario (comandos indirectos que
     // escribio el culling en GPU en la fase `phase`).
     void drawCpuActors(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Viewmodel (RM-capas): los actores del arma en primera persona, antes que
+    // todo, con el viewport comprimido a [0, viewmodel_depth_range_] (siempre
+    // delante del mundo: no atraviesan paredes). `extent`: el del G-buffer.
+    void drawViewmodelActors(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index, vk::Extent2D extent);
     // Deja lista la pipeline del material (la estandar o la de su shader de
     // superficie) y rellena lo que el push constant lleva de ese shader.
     // `dissolve`: algun objeto del dibujo tiene opacidad por instancia < 1: la
@@ -1475,6 +1493,8 @@ private:
     void recordCompositePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Contorno de seleccion sobre la imagen compuesta (si hay seleccion).
     void recordOutlinePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Contornos de juego (game_outlines_) sobre la imagen compuesta.
+    void recordGameOutlinePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Particulas sobre la imagen HDR (despues del vidrio, antes del bloom).
     void recordParticlePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Buffer de distorsion (distortion_): lo borra y dibuja las particulas de
@@ -2026,6 +2046,13 @@ private:
         // camara no lo dibuja (los lotes de la GPU ya lo saltaban; esto es
         // para drawCpuActors en el modo compatible). Su sombra sigue.
         bool tiny = false;
+        // Capas de render del actor (scene::Actor::layers): las sombras de
+        // cada luz solo lo dibujan si comparte capa con su shadow_layers.
+        std::uint32_t layers = scene::kDefaultRenderLayers;
+        // Arma en primera persona de la camara de esta vista: transform ya
+        // llevado al campo de vision del viewmodel; fuera de los lotes de la
+        // GPU, de las sombras y de la escena de rayos (drawViewmodelActors).
+        bool viewmodel = false;
     };
     // drawCpuActors (modo compatible): rigidos ordenados por (modelo, LOD,
     // disolucion) y sus submallas visibles, reutilizados de frame en frame.
@@ -2411,6 +2438,17 @@ private:
     VulkanImage outline_mask_{};  // R = silueta entera, G = parte visible
     FullscreenPass outline_pass_{};
     std::vector<vk::raii::DescriptorSet> outline_sets_;
+    // Contornos de juego (RM-capas): lo pedido, su mascara (R = estilo de la
+    // silueta, G = estilo de lo visible) y su composicion.
+    scene::GameOutlines game_outlines_;
+    VulkanImage game_outline_mask_{};
+    FullscreenPass game_outline_pass_{};
+    std::vector<vk::raii::DescriptorSet> game_outline_sets_;
+    // Capas y viewmodel (RM-capas), de updateActors para esta vista.
+    std::uint32_t sun_shadow_layers_ = scene::kAllRenderLayers;
+    std::uint32_t viewmodel_draws_ = 0;
+    float viewmodel_depth_range_ = 0.02f;
+    bool dlss_reactive_mask_ = true;
     // Uniform buffers de la composicion (GpuCompositeSettings), uno por frame.
     std::vector<VulkanBuffer> composite_buffers_;
     std::uint64_t scene_image_generation_ = 0;
