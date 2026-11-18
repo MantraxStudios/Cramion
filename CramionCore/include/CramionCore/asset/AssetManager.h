@@ -9,6 +9,7 @@
 #include <CramionFX/CramionFX.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -56,6 +57,26 @@ struct MaterialColors {
     float roughness = 0.8f;
     bool albedo_texture = false;          // tiene textura de color...
     bool albedo_texture_read = false;     // ... y se pudo leer (si no, el factor x 0.6)
+};
+
+// RAM de los modelos que guarda el AssetManager (ramStats). Lo que
+// RenderSync ya movio a la escena no cuenta (aqui queda vacio).
+struct AssetRamStats {
+    std::size_t models = 0;               // en memoria
+    std::uint64_t bytes = 0;              // lo que ocupan (aprox.: mallas, texturas, animaciones)
+    std::size_t evictable = 0;            // sin nadie mas que los use (se pueden soltar)
+    std::uint64_t evictable_bytes = 0;
+    std::uint64_t budget = 0;             // presupuesto (0 = sin limite)
+    std::uint64_t evicted = 0;            // soltados desde el arranque
+    std::uint64_t evicted_bytes = 0;
+    std::uint64_t trims = 0;              // avisos de memoria baja atendidos (trim)
+};
+
+// Aviso de memoria baja del sistema (Android onTrimMemory/onLowMemory).
+enum class TrimLevel : int {
+    Moderate = 0,  // TRIM_MEMORY_RUNNING_MODERATE / UI_HIDDEN: lo que lleva un rato sin usarse
+    Low = 1,       // RUNNING_LOW / BACKGROUND: todo lo que nadie usa
+    Critical = 2,  // RUNNING_CRITICAL / COMPLETE / onLowMemory: igual, y avisar en el log
 };
 
 // Carga y guarda en memoria los assets de un proyecto. Un asset se carga una
@@ -130,6 +151,26 @@ public:
 
     AssetDatabase& database() { return database_; }
 
+    // --- RAM (presupuesto y expulsion LRU) ---
+    // Un modelo se puede soltar si nadie mas tiene su shared_ptr (ni
+    // RenderSync ni un hilo): soltarlo libera de verdad su memoria y, si se
+    // vuelve a pedir, se lee otra vez del .crdata. Lo que esta en uso nunca
+    // se suelta. Presupuesto 0 = sin limite (como antes: nunca se suelta nada).
+    void setRamBudget(std::uint64_t bytes) { ram_budget_ = bytes; }
+    std::uint64_t ramBudget() const { return ram_budget_; }
+    // Si lo que ocupa pasa del presupuesto, suelta los que se pueden, del
+    // usado hace mas tiempo al mas reciente, hasta quedar por debajo. Lo
+    // usado en los ultimos `min_idle_ms` no se toca (lo recien leido que aun
+    // no ha recogido nadie). Devuelve los bytes soltados.
+    std::uint64_t enforceRamBudget(std::uint64_t min_idle_ms = 2000);
+    // Memoria baja (Android): Moderate suelta lo que no se usa desde hace
+    // `idle_ms`; Low y Critical, todo lo que se puede. Devuelve los bytes
+    // soltados.
+    std::uint64_t trim(TrimLevel level, std::uint64_t idle_ms = 30000);
+    AssetRamStats ramStats() const;
+    // Lo que ocupa un modelo en RAM (aprox.).
+    static std::uint64_t modelBytes(const ModelAsset& model);
+
     // --- UV de lightmap de la escena abierta (.crbake v4 o "Generar UV de
     // lightmap") --- Lo que se lea desde ahora sale con sus UV2; lo ya cargado
     // no cambia (quien las cambia recarga: RenderSync::reset). nullptr = sin UV2.
@@ -143,6 +184,14 @@ private:
     AssetDatabase& database_;
     std::filesystem::path cache_folder_;
     std::unordered_map<Uuid, std::shared_ptr<ModelAsset>> models_;
+    // RAM: cuando se uso cada modelo por ultima vez (ms de steady_clock) y lo soltado.
+    void touch(const Uuid& uuid);
+    std::uint64_t release(std::uint64_t target, std::uint64_t min_idle_ms);
+    std::unordered_map<Uuid, std::uint64_t> last_use_;
+    std::uint64_t ram_budget_ = 0;
+    std::uint64_t evicted_ = 0;
+    std::uint64_t evicted_bytes_ = 0;
+    std::uint64_t trims_ = 0;
     std::unordered_set<Uuid> failed_loads_;
     std::unique_ptr<Loader> loader_;
     std::shared_ptr<const lighting::LightmapUvSet> lightmap_uvs_;

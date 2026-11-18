@@ -885,6 +885,11 @@ private:
         // VRAM). Las de los materiales; las de los modelos salen de sus .crdata.
         bool compress_textures = false;
         std::vector<asset::TextureData> material_textures;
+        // Android: texturas de movil (AndroidBuildSettings::texture_format: 0
+        // nada, 1 ASTC, 2 ASTC + ETC2) en TextureCache/<clave>.astc / .etc2,
+        // convertidas con cache en Library/Cache/MobileTextures.
+        int mobile_texture_format = 0;
+        std::filesystem::path mobile_cache;
         // Android: tras el paquete, el APK/AAB (AndroidBuild) y, si se pidio,
         // instalar y abrir en el dispositivo elegido.
         bool android = false;

@@ -16,6 +16,7 @@ Cramion uses the following libraries, each under its own license. Exported games
 | meshoptimizer | MIT | https://github.com/zeux/meshoptimizer |
 | bc7enc (compresión de texturas BC7, `CramionFX/vendor/bc7enc`) | MIT o dominio público (Unlicense) | https://github.com/richgel999/bc7enc_rdo |
 | Vulkan Memory Allocator 3.3.0 (asignador de memoria de la GPU, `CramionFX/vendor/vma`) | MIT | https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator |
+| astc-encoder 5.3.0 (compresión de texturas ASTC para Android al exportar, solo el editor; versión fijada con su SHA-256) | Apache-2.0 | https://github.com/ARM-software/astc-encoder |
 | xatlas (UV de lightmap automáticas, solo el editor; `CramionCore/vendor/xatlas`, commit f700c7790aaa030e794b52ba7791a05c085faf0c) | MIT | https://github.com/jpcy/xatlas |
 | zstd | BSD-3-Clause | https://github.com/facebook/zstd |
 | nlohmann/json | MIT | https://github.com/nlohmann/json |
@@ -90,6 +91,28 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+```
+
+## astc-encoder
+
+Comprime a ASTC 4x4 las texturas de los juegos exportados a Android (opción "Texturas de móvil"). Solo va en el editor: el juego exportado lleva las texturas ya comprimidas, no el compresor. Se descarga en la versión 5.3.0 (SHA-256 fijado en `CramionFX/CMakeLists.txt`) y se compila sin cambios.
+
+Compresses the textures of games exported to Android to ASTC 4x4 ("Mobile textures" option). It only ships with the editor: exported games carry the already compressed textures, not the compressor. Version 5.3.0 is downloaded (SHA-256 pinned in `CramionFX/CMakeLists.txt`) and built unmodified.
+
+```
+Copyright 2011-2025 Arm Limited
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy
+of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
 ```
 
 ## xatlas

@@ -27,6 +27,9 @@
 #include <CramionCore/ai/Crowd.h>
 #include <CramionCore/profiling/Profiler.h>
 #include <CramionFX/asset/TextureCompression.h>
+#include <CramionFX/asset/MobileTextures.h>
+#include <CramionCore/platform/CrashUpload.h>
+#include <CramionCore/platform/MemoryPressure.h>
 #include "GraphicsConfig.h"
 #include "ImGuiLayer.h"
 #include "LoadingScreen.h"
@@ -464,6 +467,11 @@ void printRenderTimings(double frames) {
 }
 #endif
 
+// Android: usar las texturas ASTC/ETC2 del paquete (si las trae).
+cvar::CVar<bool> g_mobile_textures("render.MobileTextures", true,
+                                   "Android: subir tal cual las texturas ASTC/ETC2 que trae el paquete (si la GPU las "
+                                   "lee); apagado, se descomprimen a RGBA8 como antes",
+                                   cvar::RequiresRestart);
 // Con CRAMION_PERF_LOG=1, los frames mas lentos que esto se explican en el
 // log (como el editor), como mucho uno por segundo.
 cvar::CVar<float> g_slow_frame_ms("perf.SlowFrameMs", 150.0f,
@@ -579,6 +587,7 @@ int runPlayer() {
         const std::string game_name = "Game";
         android::redirectLogs(editor::localDataFolder("Logs") / "Game.log");
         editor::installCrashHandler(game_name);
+        editor::setCrashLogFile(editor::localDataFolder("Logs") / "Game.log");
         {
             std::string error;
             if (!installFromApk(root, &error)) {
@@ -591,6 +600,28 @@ int runPlayer() {
 
         // Configuracion de compilacion (game.ini): titulo, ventana y FPS.
         const std::filesystem::path ini = game / "game.ini";
+        // Informe del cierre anterior (Crashes/<juego>.pending) y, si la
+        // configuracion de compilacion tiene direccion (crash_report_url=,
+        // apagado por defecto), su envio en segundo plano (CrashUpload.h).
+        {
+            const std::string version = readIniValue(ini, "version");
+            if (!version.empty()) editor::setCrashContext("Version del juego", version);
+            const std::filesystem::path crash_folder = editor::localDataFolder("Crashes");
+            const std::string crash_url = readIniValue(ini, "crash_report_url");
+            const std::filesystem::path pending = editor::pendingCrashReport(game_name);
+            if (!pending.empty()) {
+                std::cout << "[Crash] La sesion anterior se cerro por un error; informe en "
+                          << std::string(reinterpret_cast<const char*>(pending.u8string().c_str())) << "\n";
+                if (!crash_url.empty()) crash::queueReport(crash_folder, game_name, pending);
+            }
+            if (!crash_url.empty()) {
+                crash::UploadConfig upload;
+                upload.url = crash_url;
+                upload.app = game_name;
+                upload.version = version;
+                crash::uploadQueuedAsync(upload, crash_folder, game_name);
+            }
+        }
         std::string title = readIniValue(ini, "title");
         if (title.empty()) title = game_name;
         const std::string window_setting = readIniValue(ini, "window");
@@ -845,6 +876,21 @@ int runPlayer() {
             if (std::filesystem::is_directory(textures, e)) {
                 asset::setTextureCacheFolder(textures);
                 asset::setTexturePortableKeys(project->assetsFolder());
+            }
+        }
+#else
+        // Texturas de movil (ASTC 4x4 / ETC2) que la exportacion dejo en
+        // TextureCache/ (opcion de la configuracion de compilacion): se suben
+        // tal cual si la GPU las lee; si no, las de siempre (RGBA8).
+        {
+            const std::filesystem::path textures = project->folder / "TextureCache";
+            std::error_code e;
+            const bool astc = renderer.device().textureCompressionAstcSupported();
+            const bool etc2 = renderer.device().textureCompressionEtc2Supported();
+            if (g_mobile_textures.get() && std::filesystem::is_directory(textures, e) && (astc || etc2)) {
+                asset::setMobileTextureCache(textures, project->assetsFolder(), astc, etc2);
+                std::cout << "[Texturas] Texturas de movil del paquete: ASTC " << (astc ? "si" : "no") << ", ETC2 "
+                          << (etc2 ? "si" : "no") << " en esta GPU\n";
             }
         }
 #endif
@@ -2343,6 +2389,13 @@ int runPlayer() {
             const float dt = std::min(clock_dt, 0.1f);
             touch_time += clock_dt;
             window.pumpEvents();
+            // RAM de los modelos (presupuesto, MemoryPressure.h) y avisos de
+            // memoria baja del sistema.
+#if defined(__ANDROID__)
+            if (dm::Window::takeLowMemoryEvents() > 0) memory::notifyLowMemory();
+            android::pollMemoryPressure(dm::Window::app() != nullptr ? dm::Window::app()->activity->vm : nullptr);
+#endif
+            memory::tickAssetRam(asset_manager);
             // Lo que un script apago con un dedo encima se suelta.
             synthesized.clear();
             touch.update(synthesized);
@@ -2712,6 +2765,15 @@ int runPlayer() {
                     }
                     std::cout << " | zonas:";
                     for (const prof::ZoneCost& z : prof::topZones(300, 8)) std::cout << " " << z.name << " " << z.self_ms;
+                    {
+                        // RAM (al final: lo de antes no se mueve): los modelos que
+                        // guarda el AssetManager y el proceso entero.
+                        const assets::AssetRamStats ram = memory::lastAssetRamStats();
+                        std::cout << " | RAM modelos " << (ram.bytes >> 20) << " MB (" << ram.models << " modelos, "
+                                  << ram.evicted << " soltados, presupuesto "
+                                  << (ram.budget > 0 ? std::to_string(ram.budget >> 20) + " MB" : std::string("sin limite"))
+                                  << ") | RAM proceso " << (memory::lastProcessResidentBytes() >> 20) << " MB";
+                    }
                     std::cout << std::endl;
 #if defined(__ANDROID__)
                     printRenderTimings(frames);

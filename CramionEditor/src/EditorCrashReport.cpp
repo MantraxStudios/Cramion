@@ -1,10 +1,13 @@
 // Informe del cierre anterior: si el editor se cerro por un error, al volver
 // a abrirlo se ensena el informe (motivo, funcion, pila y ultimas lineas del
 // registro) con botones para copiarlo o abrir la carpeta (con el minidump),
-// para mandarlo por Discord o correo.
+// para mandarlo por Discord o correo. Con la CVar crash.ReportUrl (vacia por
+// defecto) tambien un boton para enviarlo a ese servidor (CrashUpload.h).
 
 #include "EditorApp.h"
 #include "LoadingScreen.h"
+
+#include <CramionCore/platform/CrashUpload.h>
 
 #include <imgui.h>
 
@@ -42,7 +45,11 @@ void EditorApp::drawCrashReportWindow() {
     ImGui::TextWrapped("Cramion se cerro por un error en la sesion anterior. Este es el informe; si lo mandas (Discord o "
                        "correo) junto al .dmp de su carpeta, se puede saber exactamente donde fallo.");
     ImGui::TextDisabled("%s", dialogs::utf8(crash_report_path_).c_str());
-    const float w = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 2.0f) / 3.0f;
+    // Enviar: solo con una direccion configurada y cuando la persona lo pide.
+    const std::string upload_url = crash::editorReportUrl();
+    const int buttons = upload_url.empty() ? 3 : 4;
+    const float w = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * static_cast<float>(buttons - 1)) /
+                    static_cast<float>(buttons);
     if (ImGui::Button("Copiar informe", ImVec2(w, 0.0f))) {
         ImGui::SetClipboardText(crash_report_text_.c_str());
         pushToast("Informe copiado al portapapeles");
@@ -55,6 +62,20 @@ void EditorApp::drawCrashReportWindow() {
 #else
         sys::revealInFileManager(crash_report_path_);
 #endif
+    }
+    if (!upload_url.empty()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Enviar informe", ImVec2(w, 0.0f))) {
+            crash::UploadConfig upload;
+            upload.url = upload_url;
+            upload.app = "CramionEditor";
+            upload.version = CRAMION_VERSION_STRING;
+            const std::filesystem::path folder = localDataFolder("Crashes");
+            crash::queueReport(folder, upload.app, crash_report_path_);
+            crash::uploadQueuedAsync(upload, folder, upload.app);
+            pushToast("Enviando el informe (el resultado sale en la consola)");
+        }
+        ImGui::SetItemTooltip("Lo envia a %s (CVar crash.ReportUrl)", upload_url.c_str());
     }
     ImGui::SameLine();
     if (ImGui::Button("Cerrar", ImVec2(w, 0.0f))) crash_report_open_ = false;

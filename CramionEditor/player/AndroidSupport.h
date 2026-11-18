@@ -44,6 +44,11 @@ struct AssetRange {
 bool openAssetRange(const std::string& name, AssetRange& range);
 void closeAssetRange(AssetRange& range);
 
+// Memoria baja: lee (cada 2 s como mucho) el ultimo aviso onTrimMemory del
+// sistema al proceso y, si cambia, lo pasa a memory::notifyTrimMemory.
+// Devuelve el nivel nuevo (0 si nada). `java_vm`: la JavaVM de la actividad.
+int pollMemoryPressure(void* java_vm);
+
 }  // namespace cramion::android
 
 #endif  // CRAMION_PLAYER_ANDROID_SUPPORT_H

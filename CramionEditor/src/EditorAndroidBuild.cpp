@@ -237,6 +237,15 @@ bool EditorApp::drawAndroidBuildSettings(BuildConfig& c) {
                               "Un movil de 2400x1080 tiene 2.25 veces mas pixeles que 720p: dibujarlos\n"
                               "todos es lo que mas FPS quita. Segun la calidad: 720p en Baja, 900p en Media,\n"
                               "1080p en Alta y la nativa en Ultra.");
+        row("Texturas de movil");
+        static const char* kTextureFormats[] = {"Como en el PC (se descomprimen en el movil)", "ASTC 4x4",
+                                                "ASTC 4x4 + ETC2 de respaldo"};
+        changed |= ImGui::Combo("##texture_format", &a.texture_format, kTextureFormats, 3);
+        ImGui::SetItemTooltip("Casi ningun movil lee las texturas BC1/BC7 del PC: sin esto se descomprimen a RGBA8\n"
+                              "al cargar (4-8 veces mas memoria y mas tiempo de carga).\n"
+                              "ASTC 4x4: se convierten al exportar (la primera vez tarda; despues van de la cache)\n"
+                              "y el movil las sube tal cual si su GPU lo lee (casi todas); si no, como antes.\n"
+                              "+ ETC2: tambien en ETC2 para las GPU sin ASTC (el paquete pesa mas).");
     }
 
     ImGui::Separator();

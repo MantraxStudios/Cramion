@@ -31,6 +31,9 @@ public:
     // La actividad (android_main la recibe); antes de create().
     static void setApp(android_app* app);
     static android_app* app();
+    // Avisos de memoria baja del sistema (APP_CMD_LOW_MEMORY, onLowMemory)
+    // desde la ultima llamada.
+    static int takeLowMemoryEvents();
 
     Window() = default;
     ~Window();

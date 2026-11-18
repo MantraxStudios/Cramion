@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <mutex>
 #include <string>
@@ -29,6 +30,7 @@ namespace cramion::dm {
 namespace {
 
 android_app* g_app = nullptr;
+std::atomic<int> g_low_memory{0};  // APP_CMD_LOW_MEMORY sin recoger
 
 void onCommand(android_app* app, int32_t command) {
     if (app->userData != nullptr) static_cast<Window*>(app->userData)->handleCommand(command);
@@ -124,6 +126,7 @@ void Window::setApp(android_app* app) {
     installUiHooks();  // teclado en pantalla: ordenes al hilo de la interfaz
 }
 android_app* Window::app() { return g_app; }
+int Window::takeLowMemoryEvents() { return g_low_memory.exchange(0); }
 
 Window::~Window() { destroy(); }
 
@@ -256,6 +259,7 @@ void Window::handleCommand(int32_t command) {
             dispatch(e);
             break;
         }
+        case APP_CMD_LOW_MEMORY: ++g_low_memory; break;  // lo atiende el juego (MemoryPressure.h)
         case APP_CMD_PAUSE: resumed_ = false; break;
         case APP_CMD_RESUME: resumed_ = true; break;
         case APP_CMD_DESTROY: {
