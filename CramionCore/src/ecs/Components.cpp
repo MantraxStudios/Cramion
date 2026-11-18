@@ -370,8 +370,16 @@ void blendPostProcess(gfx::PostProcessSettings& o, const gfx::PostProcessSetting
         // LUT; la ruta cambia a mitad (o al momento si antes no habia).
         const float lut_from = o.color_lut.empty() ? 0.0f : o.color_lut_intensity;
         const float lut_to = v.color_lut.empty() ? 0.0f : v.color_lut_intensity;
+        // (Revision) Entre dos LUT distintas, la primera baja a 0 hasta la
+        // mitad y la otra sube desde 0 (antes la ruta cambiaba a mitad con la
+        // intensidad alta: un salto de color al cruzar el volumen).
+        const bool two_luts = !o.color_lut.empty() && !v.color_lut.empty() && o.color_lut != v.color_lut;
         if (o.color_lut.empty() || (!v.color_lut.empty() && flip)) o.color_lut = v.color_lut;
-        o.color_lut_intensity = lerpf(lut_from, lut_to, t);
+        if (two_luts) {
+            o.color_lut_intensity = flip ? lut_to * (2.0f * t - 1.0f) : lut_from * (1.0f - 2.0f * t);
+        } else {
+            o.color_lut_intensity = lerpf(lut_from, lut_to, t);
+        }
     }
     if (mask & kPostVignette) {
         const float from = o.vignette ? o.vignette_intensity : 0.0f;

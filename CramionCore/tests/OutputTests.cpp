@@ -201,6 +201,13 @@ void testFormatChoice() {
     const gfx::SurfaceFormatChoice off = gfx::chooseOutputFormat(hdr_screen, HdrOutput::Off, true);
     const gfx::SurfaceFormatChoice on = gfx::chooseOutputFormat(hdr_screen, HdrOutput::Auto, true);
     check(off.ui_format == on.ui_format, "el formato de la UI no cambia al encender el HDR");
+    // (Revision) Con la extension la lista trae los HDR (aqui delante): el
+    // ultimo recurso SDR tiene que seguir en sRGB no lineal.
+    const std::vector<vk::SurfaceFormatKHR> odd = {{F::eR16G16B16A16Sfloat, C::eExtendedSrgbLinearEXT},
+                                                   {F::eB8G8R8A8Srgb, C::eSrgbNonlinear}};
+    c = gfx::chooseOutputFormat(odd, HdrOutput::Off, true);
+    check(c.surface.colorSpace == C::eSrgbNonlinear && c.surface.format == F::eB8G8R8A8Srgb,
+          "ultimo recurso SDR: el primero en sRGB, no uno HDR");
 
     std::printf("Curvas HDR\n");
     check(approx(gfx::pqEncode(0.0f), 0.0f, 1e-4f) && approx(gfx::pqEncode(10000.0f), 1.0f, 1e-4f), "PQ: 0 y 10000 nits");
@@ -334,6 +341,25 @@ void testComponent() {
     blended = with;
     ecs::blendPostProcess(blended, other_lut, 0.6f, ecs::kPostAll);
     check(before_half && blended.color_lut == "b.cube", "entre dos LUT la ruta cambia a mitad");
+    // (Revision) Sin salto al cambiar: la primera baja a 0 y la otra sube desde 0.
+    blended = with;
+    ecs::blendPostProcess(blended, other_lut, 0.25f, ecs::kPostAll);
+    const float a_quarter = blended.color_lut_intensity;
+    blended = with;
+    ecs::blendPostProcess(blended, other_lut, 0.4999f, ecs::kPostAll);
+    const float a_half = blended.color_lut_intensity;
+    blended = with;
+    ecs::blendPostProcess(blended, other_lut, 0.5f, ecs::kPostAll);
+    const float b_half = blended.color_lut_intensity;
+    blended = with;
+    ecs::blendPostProcess(blended, other_lut, 1.0f, ecs::kPostAll);
+    check(approx(a_quarter, 0.4f) && a_half < 0.01f && b_half < 0.01f && approx(blended.color_lut_intensity, 1.0f),
+          "entre dos LUT: la intensidad pasa por 0 en el cambio (0.4, ~0, ~0, 1)",
+          std::to_string(a_quarter) + " " + std::to_string(a_half) + " " + std::to_string(b_half) + " " +
+              std::to_string(blended.color_lut_intensity));
+    blended = with;
+    ecs::blendPostProcess(blended, with, 0.5f, ecs::kPostAll);
+    check(blended.color_lut == "a.cube" && approx(blended.color_lut_intensity, 0.8f), "la misma LUT en los dos: sin bajar");
     blended = base;
     ecs::blendPostProcess(blended, with, 1.0f, ecs::kPostBloom);
     check(blended.color_lut.empty(), "un volumen local que no sobrescribe la gradacion no la cambia");

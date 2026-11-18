@@ -109,8 +109,13 @@ bool VulkanRenderer::prepareSwapchainOutput() {
     LowLatencyMode mode = low_latency_override_ >= 0
                               ? static_cast<LowLatencyMode>(std::clamp(low_latency_override_, 0, 2))
                               : user_graphics_.low_latency;
-    // Modo compatible (moviles, GPU antiguas): ni HDR ni baja latencia.
-    if (device_.compatMode()) {
+    // Modo compatible (moviles, GPU antiguas) y Android: ni HDR ni baja
+    // latencia (sin probar alli; como dicen las notas).
+    bool forced_off = device_.compatMode();
+#if defined(__ANDROID__)
+    forced_off = true;
+#endif
+    if (forced_off) {
         hdr = HdrOutput::Off;
         mode = LowLatencyMode::Off;
     }
@@ -140,6 +145,10 @@ bool VulkanRenderer::prepareSwapchainOutput() {
         latency_mode_ = mode;
         latency_backend_ = backend;
         latency_meter_.reset();
+        // (Revision) Los frames ya presentados no llevaban VkPresentIdKHR (o
+        // eran de otro metodo): present_wait no espera a ninguno de ellos (si
+        // no, el primer frame tras activarla se quedaba los 100 ms del tope).
+        latency_waited_id_ = present_id_;
         reflex_applied_mode_ = -1;
     }
     if (initialized_ && swapchain_.isValid() && !changed) {
@@ -169,7 +178,7 @@ VulkanRenderer::OutputStatus VulkanRenderer::outputStatus() const {
     s.latency_last_ms = latency_meter_.lastMs();
     s.latency_samples = latency_meter_.samples();
     s.latency_measured = latency_backend_ == LatencyBackend::Reflex || latency_backend_ == LatencyBackend::PresentWait;
-    s.color_lut_loaded = !color_lut_path_.empty() && color_lut_size_ >= 2;
+    s.color_lut_loaded = !post_.color_lut.empty() && post_.color_lut == color_lut_path_ && color_lut_size_ >= 2;
     return s;
 }
 
@@ -320,13 +329,17 @@ void VulkanRenderer::latencyBeforePresent(vk::PresentInfoKHR& present) {
     ++present_id_;
     if (current_frame_ < slot_present_id_.size()) slot_present_id_[current_frame_] = present_id_;
     // Solo con baja latencia: apagada, la presentacion va como siempre.
-    if (latency_backend_ == LatencyBackend::None || !device_.outputExtensions().present_id) return;
-    present_id_value_ = present_id_;
-    present_id_info_ = vk::PresentIdKHR{};
-    present_id_info_.swapchainCount = 1;
-    present_id_info_.pPresentIds = &present_id_value_;
-    present_id_info_.pNext = present.pNext;
-    present.pNext = &present_id_info_;
+    if (latency_backend_ == LatencyBackend::None) return;
+    if (device_.outputExtensions().present_id) {
+        present_id_value_ = present_id_;
+        present_id_info_ = vk::PresentIdKHR{};
+        present_id_info_.swapchainCount = 1;
+        present_id_info_.pPresentIds = &present_id_value_;
+        present_id_info_.pNext = present.pNext;
+        present.pNext = &present_id_info_;
+    }
+    // (Revision) Anti-Lag 2 no necesita present_id: antes su marca de
+    // presentacion se saltaba en una GPU sin VK_KHR_present_id.
 #if defined(VK_AMD_anti_lag)
     if (latency_backend_ == LatencyBackend::AntiLag) {
         vk::AntiLagPresentationInfoAMD presentation{};
@@ -608,20 +621,14 @@ bool VulkanRenderer::uploadColorLut(const CubeLut& lut) {
 }
 
 void VulkanRenderer::updateColorLut() {
+    // (Revision) `color_lut_path_` es la LUT que hay en la textura; no se
+    // borra al quedarse sin LUT: la intensidad ya va a 0 (fillColorLutSettings
+    // solo la aplica si la ruta pedida es la cargada). Asi, salir y volver a
+    // entrar en un volumen con la misma LUT no la vuelve a leer del disco ni
+    // hace un waitIdle cada vez.
     const std::string& wanted = user_post_.color_lut;
-    if (wanted == color_lut_path_ && *color_lut_view_) return;
-    if (!wanted.empty() && wanted == color_lut_failed_) return;
-    if (wanted.empty()) {
-        if (color_lut_size_ == 2 && *color_lut_view_) {
-            color_lut_path_.clear();
-            return;
-        }
-        if (uploadColorLut(makeIdentityCubeLut(2))) {
-            color_lut_path_.clear();
-            writeColorLutDescriptors();
-        }
-        return;
-    }
+    if (wanted.empty() || wanted == color_lut_path_) return;
+    if (wanted == color_lut_failed_) return;
     CubeLut lut;
     std::string error;
     if (!loadCubeLut(pathFromUtf8(wanted), lut, error)) {
@@ -658,7 +665,8 @@ void VulkanRenderer::writeColorLutDescriptors() {
 }
 
 void VulkanRenderer::fillColorLutSettings(GpuCompositeSettings& settings) const {
-    const bool active = !color_lut_path_.empty() && color_lut_size_ >= 2 && !post_.color_lut.empty();
+    // Solo la LUT pedida: si la nueva no se pudo leer, no se aplica la anterior.
+    const bool active = !post_.color_lut.empty() && post_.color_lut == color_lut_path_ && color_lut_size_ >= 2;
     const float intensity = active ? std::clamp(post_.color_lut_intensity, 0.0f, 1.0f) : 0.0f;
     settings.lut_min = core::Vec4{color_lut_min_.x, color_lut_min_.y, color_lut_min_.z, intensity};
     settings.lut_max = core::Vec4{color_lut_max_.x, color_lut_max_.y, color_lut_max_.z,

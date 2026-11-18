@@ -121,3 +121,41 @@ fallos; `CramionApiGraphicsApiTests` 69, 0 fallos. Compilan `CramionFX`, `Cramio
    brillan mas que el blanco de la UI; `hdr_paper_white` cambia el brillo general; con Windows en SDR vuelve a SDR.
 4. Un `.cube` en el PostProcessing (p. ej. una LUT de Resolve): se ve igual que en Resolve; intensidad 0..1;
    un volumen local con otra LUT funde al entrar.
+
+## Revision (revisor independiente)
+
+Revisado el diff `horizonz-1031...rm-salida` (logica, retrocompatibilidad, sincronizacion de Vulkan, coste con todo
+apagado, casos limite y pruebas). Lo apagado por defecto se confirma: sin tocar ajustes, el formato SDR, la
+presentacion (sin `VkPresentIdKHR`), la composicion (intensidad de LUT 0 con la identidad 2^3 enlazada) y las escenas
+de antes son las de siempre. Arreglado:
+
+- **LUT anterior aplicada si la nueva fallaba**: con una ruta nueva que no se podia leer, la composicion seguia
+  aplicando la LUT cargada antes. Ahora solo se aplica si la ruta pedida es la cargada (`fillColorLutSettings`,
+  `outputStatus().color_lut_loaded`).
+- **Recarga y `waitIdle` al salir de un volumen**: al quedarse sin LUT se subia la identidad (con `waitIdle`) y al
+  volver a entrar se releia el .cube del disco (otro `waitIdle`): tirones cada vez que se cruzaba el borde. Ahora la
+  textura se queda (la intensidad ya va a 0) y volver a la misma LUT no hace nada.
+- **Salto de color entre dos LUT**: en la mezcla de volumenes la ruta cambiaba a mitad con la intensidad alta.
+  Ahora la primera baja a 0 hasta la mitad y la segunda sube desde 0 (`blendPostProcess`).
+- **Anti-Lag 2 sin `VK_KHR_present_id`**: la marca de presentacion de Anti-Lag 2 iba detras del `return` de
+  "sin present_id" y se saltaba en esas GPU (solo quedaba la de entrada). Ahora va siempre.
+- **present_wait al activarse en marcha**: los frames ya presentados no llevaban id y el primer frame esperaba los
+  100 ms del tope. Al cambiar de metodo ya no se espera a los frames de antes.
+- **Android**: las notas decian que HDR y baja latencia se fuerzan apagados en Android, pero solo se hacia en modo
+  compatible. Ahora tambien con `__ANDROID__`.
+- **Ultimo recurso del formato SDR**: con `VK_EXT_swapchain_colorspace` la lista trae tambien los formatos HDR y el
+  `front()` de ultimo recurso podia ser uno HDR; ahora es el primero en sRGB no lineal (el de antes).
+
+Comprobado y sin cambios: `waitForPresent` con `VK_ERROR_OUT_OF_DATE_KHR` no lanza (el proyecto define
+`VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS`); cuentas de los pools (6 texturas por set de composicion); orden
+`createOutputTargets` -> `updatePostDescriptors` al rehacer la swapchain; barreras de las dos imagenes SDR de la
+salida HDR (una por renderizador, como `ldr_color_`, protegidas por las barreras de la misma cola); los .cube del
+proyecto entran en el .crpack (se empaqueta toda la carpeta Assets).
+
+Pruebas nuevas: ultimo recurso SDR con un HDR delante; mezcla entre dos LUT pasando por 0 y la misma LUT sin bajar.
+Resultado: `CramionOutputTests` 67 comprobaciones, 0 fallos; `CramionCoreTests` 102, 0; `CramionApiGraphicsApiTests`
+69, 0.
+
+Queda (ademas de lo de arriba): cambiar de una LUT a otra (o volver a la primera) sigue leyendo el .cube y haciendo un
+`waitIdle` en el hilo de render en ese frame (una vez por cambio; se podrian guardar dos texturas). Editar el .cube
+en disco no lo recarga hasta cambiar la ruta.

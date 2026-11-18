@@ -34,6 +34,12 @@ vk::SurfaceFormatKHR chooseSdr(const std::vector<vk::SurfaceFormatKHR>& availabl
                           format.format == vk::Format::eA8B8G8R8SrgbPack32;
         if (!srgb && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) return format;
     }
+    // (Revision) Con VK_EXT_swapchain_colorspace la lista trae tambien los
+    // HDR: el ultimo recurso sigue siendo el primero en sRGB no lineal (el
+    // front() de antes, cuando la lista solo tenia esos).
+    for (const auto& format : available) {
+        if (format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) return format;
+    }
     return available.front();
 }
 
