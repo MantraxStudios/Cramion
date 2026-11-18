@@ -2511,10 +2511,20 @@ struct CppScriptSystem::Impl {
     // Quien lo recorre vuelve a buscar cada una: un fallo cambia su estado.
     const std::vector<entt::entity>& liveHandles() {
         live.clear();
-        for (const auto& [h, inst] : instances) {
-            if (inst.created && !faulted.contains(h)) live.push_back(h);
+        if (!g_stable_order.get()) {
+            for (const auto& [h, inst] : instances) {
+                if (inst.created && !faulted.contains(h)) live.push_back(h);
+            }
+            return live;
         }
-        sortByOrder(live);  // orden de ejecucion (prioridad y creacion)
+        // Orden de ejecucion (prioridad y creacion), con la clave a mano: sin
+        // volver a buscar cada instancia (esto va cada frame).
+        order_scratch.clear();
+        for (const auto& [h, inst] : instances) {
+            if (inst.created && !faulted.contains(h)) order_scratch.emplace_back(ScriptOrderKey{inst.order, inst.id}, h);
+        }
+        std::sort(order_scratch.begin(), order_scratch.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (const auto& [key, h] : order_scratch) live.push_back(h);
         return live;
     }
 

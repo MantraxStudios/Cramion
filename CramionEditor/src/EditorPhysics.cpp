@@ -561,6 +561,9 @@ void EditorApp::togglePause() {
 }
 
 void EditorApp::updatePhysics(float delta_seconds) {
+    // Debug.draw*: el editor recoge solo en Play (antes de los scripts de este
+    // frame); en modo edicion nadie lo pintaria y se quedaria guardado.
+    debugdraw::shared().setEditor(playing());
     if (!physics_.running()) return;
     console_events_this_frame_ = 0;
     console_events_skipped_ = 0;
@@ -630,10 +633,9 @@ void EditorApp::updatePhysics(float delta_seconds) {
     }
     renderer_.setParticles(particles_.drawList(scene_.camera().position()));
     // Debug.drawLine/drawSphere/drawText... de los scripts: en Play, en las
-    // vistas de Escena y Juego (el editor siempre los recoge). Sin nada, ni se toca.
+    // vistas de Escena y Juego (setEditor, al empezar). Sin nada, ni se toca.
     {
         debugdraw::DebugDraw& debug_draw = debugdraw::shared();
-        debug_draw.setEditor(true);
         if (playing() && !debug_draw.empty()) {
             gfx::OverlayGeometry geometry;
             debug_draw.build(geometry);

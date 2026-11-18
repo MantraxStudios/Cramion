@@ -88,3 +88,45 @@ Todas `Saved` (van a `ProjectSettings/CVars.json`, que leen el editor, el juego 
 6. Corrutinas en Play: un script con `startCoroutine` + `waitSeconds`, desactivar el objeto (se para), recarga en caliente (avisa y no las conserva, como antes).
 7. Orden: varios scripts con `kExecutionOrder` y `script.ExecutionOrder` en Variables; el orden de sus `update` es el mismo en el editor, en el juego y en el servidor dedicado.
 8. Horizonz: Play de la escena Main sin cambios visibles (orden estable activado) y el servidor dedicado arranca igual.
+
+## Revision (revisor independiente, 18/11/2026)
+
+Revisado el diff `horizonz-1031...rm-scripts` entero (orden, corrutinas, dibujo, renderizador, SDK, pruebas).
+
+Comprobado sin cambios:
+- Sincronizacion de Vulkan: cada `drawFrame` (vista de Escena, de Juego, ojos de VR) espera la valla de su hueco
+  y avanza `current_frame_`, asi que el buffer por hueco de `OverlayPass` no se pisa aunque ahora se dibuje en
+  las dos vistas en el mismo frame. RenderTexture (`render_texture_target_`) y capturas siguen sin dibujo.
+- Hilos: la API nativa (y `debugdraw::shared()`) solo se usa en el hilo principal; los hilos de los scripts
+  pasan por `apiRequest` (onScriptThread).
+- Retrocompatibilidad: sin cambios de serializacion (escenas, prefabs, .crdata); la respuesta de Load anade
+  las prioridades al final (un motor anterior no las lee; un host anterior no las manda: 0); una DLL anterior
+  ignora el evento Time (solo pone el tiempo) y no exporta `cramion_class_order`. `Script` no cambia de
+  tamano (solo metodos). Los scripts de Horizonz (Assets/Scripts) no usan `Task`, `Timer`, `Coroutine`,
+  `invoke`, `waitSeconds`... ni `using namespace cramion::Test`: sin choques de nombres al incluir Coroutine.h.
+- El jugador (`PlayerMain.cpp`) y el servidor (`ServerMain.cpp`) cargan `ProjectSettings/CVars.json`: `script.ExecutionOrder`
+  vale igual en editor, juego y servidor.
+- Pruebas: comprueban de verdad (orden "DC12A" con DLL compilada, corrutinas por frame, invoke, onDisable,
+  colores/alfa y profundidad de lo dibujado).
+
+Arreglado:
+- **Editor: el dibujo de depuracion solo se recoge en Play.** Antes `setEditor(true)` iba siempre: en modo
+  edicion (consola) se guardaba lo dibujado sin que nadie lo pintara ni lo envejeciera, hasta el tope
+  (65536 segmentos), y aparecia de golpe al dar a Play. Ademas se ponia despues de correr los scripts del
+  frame, asi que lo del primer frame de Play se perdia. Ahora `setEditor(playing())` al empezar
+  `updatePhysics`, antes de los scripts (`EditorPhysics.cpp`).
+- **`liveHandles` (cada frame) sin buscar cada instancia otra vez:** construye la clave de orden mientras
+  recorre `instances` y ordena (las claves son unicas: `std::sort` es determinista). Con
+  `script.cpp.StableOrder = false` ni ordena (`CppScripts.cpp`).
+
+Queda (documentado, no arreglado):
+- Una corrutina que se pone a esperar desde un callback o un mensaje (fuera de los eventos con tiempo) usa el
+  numero de frame del ultimo evento, asi que `nextFrame()` ahi puede seguir en el mismo frame. Desde
+  awake/start/update/lateUpdate/fixedUpdate e invoke va bien.
+- La prioridad de cada instancia se calcula al crearla: cambiar `script.ExecutionOrder` en mitad del Play no
+  reordena las ya creadas (como Unity, que lo aplica al cargar).
+- En la vista de Escena durante Play, gizmos y depuracion comparten pase (grosor y rayos X del gizmo).
+
+Tras la revision (build-rm, Release, clang): compilan CramionCore, CramionScriptHost, CramionEditor y
+CramionPlayer (el SDK se regenera sin cambios). CramionCoroutineTests 35/0, CramionApiDebugApiTests 52/0,
+CramionCppScriptTests 90/0 (el orden "DC12A" sigue igual con el `liveHandles` nuevo).
