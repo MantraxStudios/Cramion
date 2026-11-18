@@ -128,6 +128,18 @@ struct KeyframeHook {
     std::string path;  // campo de la peticion
 };
 
+// Cambios propios de prefab en el Inspector (EditorPrefabs.cpp lo rellena):
+// los campos marcados llevan una barra azul y su menu (clic derecho en la
+// etiqueta) pide revertir o aplicar.
+struct OverrideHook {
+    std::function<bool(const std::string& field)> overridden;  // clave del campo en el componente
+    bool in_prefab = false;       // pestana del prefab: la diferencia es respecto a su base
+    bool can_apply_base = false;  // viene de una base (variante) o de un prefab anidado
+    enum class Action { None, Revert, Apply, ApplyBase };
+    Action action = Action::None;
+    std::string field;
+};
+
 // Dibuja las propiedades de un componente con ImGui a partir de su reflect():
 // el mismo codigo que lo guarda en la escena describe su Inspector.
 class ImGuiPropertyVisitor final : public ecs::PropertyVisitor, FieldPath {
@@ -176,6 +188,8 @@ public:
     void setFilter(std::string needle) { filter_ = std::move(needle); }
     // Claves: rombos y menu en las propiedades animables (nullptr = sin ellos).
     void setKeyframeHook(KeyframeHook* hook) { keyframe_hook_ = hook; }
+    // Cambios propios de prefab (nullptr = sin marcas).
+    void setOverrideHook(OverrideHook* hook) { override_hook_ = hook; }
 
 private:
     bool visible(const ecs::Meta& meta) const;
@@ -191,6 +205,8 @@ private:
         ImVec2 label_max{};
     };
     KeyframeHook* keyframe_hook_ = nullptr;
+    OverrideHook* override_hook_ = nullptr;
+    void overrideMark(const ecs::Meta& meta, ImVec2 row_min, float h);
     KeyRow key_row_;
     void finishItem();
     int mixed(const char* key) const;

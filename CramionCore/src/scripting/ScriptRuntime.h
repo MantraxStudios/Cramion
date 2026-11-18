@@ -251,6 +251,7 @@ private:
         std::filesystem::file_time_type stamp{};
         std::string text;
         std::uint64_t last_use = 0;  // reloj de prefab_clock_ (LRU)
+        std::uint64_t writes = 0;    // ecs::prefabWriteGeneration() al leerlo (anidados y variantes)
     };
     std::unordered_map<std::string, PrefabFile> prefabs_;
     // Cache con tope en bytes (kPrefabCacheBytes): antes guardaba el texto de

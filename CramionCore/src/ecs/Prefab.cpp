@@ -4,10 +4,13 @@
 #include "CramionCore/ecs/Prefab.h"
 
 #include "CramionCore/ecs/Components.h"
+#include "PrefabNesting.h"
 #include "SerializerInternal.h"
 
 #include <algorithm>
 #include <fstream>
+#include <optional>
+#include <iostream>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -96,6 +99,7 @@ bool writeText(const std::filesystem::path& file, const std::string& text, std::
         if (error) *error = ec.message();
         return false;
     }
+    detail::notePrefabWrite();
     return true;
 }
 
@@ -208,11 +212,10 @@ void registerPrefabComponents() {
 // --- Archivos ------------------------------------------------------------------
 
 std::string readPrefabFile(const std::filesystem::path& file) {
-    std::ifstream in(file, std::ios::binary);
-    if (!in) return {};
-    std::stringstream text;
-    text << in.rdbuf();
-    return text.str();
+    // Uno de los de siempre sale tal cual (sin parsear: solo se buscan las claves).
+    std::string text = readPrefabFileRaw(file);
+    if (!prefabNeedsResolve(text)) return text;
+    return resolvePrefabText(text, file);
 }
 
 Uuid prefabUuid(const std::string& text) { return Uuid::parse(parse(text).value("uuid", std::string{})); }
@@ -226,11 +229,18 @@ bool createPrefab(World& world, Entity root, const std::filesystem::path& file, 
         if (error) *error = "no hay entidad";
         return false;
     }
-    // Un prefab nuevo: lo que hubiera enlazado a otros prefabs queda suelto.
+    // Un prefab nuevo: lo que hubiera enlazado a otros prefabs queda suelto
+    // (con prefab.SaveNested, las instancias de dentro siguen enlazadas y
+    // applyInstance las guarda como anidados).
     if (root.has<PrefabInstance>()) unpackInstance(world, root);
-    flattenNested(world, root);
-    for (Entity e : subtree(world, root)) {
+    if (!detail::saveNestedEnabled()) flattenNested(world, root);
+    std::vector<Entity> stack{root};
+    while (!stack.empty()) {
+        Entity e = stack.back();
+        stack.pop_back();
+        if (e != root && e.has<PrefabInstance>()) continue;  // instancia anidada: conserva sus enlaces
         if (e.has<PrefabLink>()) e.remove<PrefabLink>();
+        for (const entt::entity child : e.children()) stack.push_back(world.wrap(child));
     }
     PrefabInstance& instance = root.add<PrefabInstance>();
     instance.prefab = assets::AssetRef{Uuid::generate(), assets::AssetType::Prefab};
@@ -239,7 +249,11 @@ bool createPrefab(World& world, Entity root, const std::filesystem::path& file, 
     return !applyInstance(world, root, file, error).empty();
 }
 
-Entity instantiatePrefab(World& world, const std::string& text, Entity parent) {
+Entity instantiatePrefab(World& world, const std::string& raw_text, Entity parent) {
+    // Con anidados o variante, el documento resuelto (plano).
+    std::string resolved;
+    if (prefabNeedsResolve(raw_text)) resolved = resolvePrefabText(raw_text);
+    const std::string& text = resolved.empty() ? raw_text : resolved;
     const json prefab = parse(text);
     // Sin copiar los registros (antes, una copia profunda de todo el JSON en
     // cada instancia: ~45 ms con Valley.crprefab). buildEntities se salta lo
@@ -294,7 +308,10 @@ struct ParsedPrefab {
     int revision = 0;
 };
 
-std::shared_ptr<const ParsedPrefab> parsePrefabText(const std::string& text) {
+std::shared_ptr<const ParsedPrefab> parsePrefabText(const std::string& raw_text) {
+    std::string resolved;
+    if (prefabNeedsResolve(raw_text)) resolved = resolvePrefabText(raw_text);
+    const std::string& text = resolved.empty() ? raw_text : resolved;
     json j = json::parse(text, nullptr, false);
     if (j.is_discarded() || !j.is_object()) return nullptr;
     auto doc = std::make_shared<ParsedPrefab>();
@@ -360,9 +377,11 @@ void recordOverrides(World& world, Entity root, const ParsedPrefab& document) {
     }
 }
 
-void syncInstance(World& world, Entity root, const std::string& text) {
+void syncInstance(World& world, Entity root, const std::string& raw_text) {
     if (!root.valid() || !root.has<PrefabInstance>()) return;
-    const json prefab = parse(text);
+    std::string resolved_text;
+    if (prefabNeedsResolve(raw_text)) resolved_text = resolvePrefabText(raw_text);
+    const json prefab = parse(resolved_text.empty() ? raw_text : resolved_text);
     const std::vector<std::string> list = root.get<PrefabInstance>().overrides;
     const std::unordered_set<std::string> overrides(list.begin(), list.end());
     const auto overridden = [&](const std::string& key) { return overrides.count(key) != 0; };
@@ -437,12 +456,50 @@ void syncInstance(World& world, Entity root, const std::string& text) {
     root.get<PrefabInstance>().revision = prefab.value("revision", 0);
 }
 
+// Con prefab.SaveNested: las instancias de otros prefabs que hay dentro de
+// `root` pasan a ser partes anidadas (sus entidades toman los ids derivados
+// que tendran en el documento resuelto). Rechaza los ciclos.
+static bool linkInnerInstances(World& world, Entity root, const Uuid& self, std::vector<detail::NewNestedPart>& added,
+                        std::string* error) {
+    for (Entity e : subtree(world, root)) {
+        if (e == root || !world.registry().valid(e.handle()) || !e.has<PrefabInstance>()) continue;
+        const Uuid child = e.get<PrefabInstance>().prefab.uuid;
+        const std::filesystem::path child_file = locatePrefab(child);
+        if (child_file.empty()) {
+            std::cerr << "[Prefab] \"" << e.name() << "\": no se encuentra su prefab; se guarda como copia suelta\n";
+            continue;  // flattenNested la deja suelta
+        }
+        if (child == self || (self.valid() && detail::prefabFileDependsOn(child_file, self))) {
+            if (error) *error = "ciclo de prefabs: \"" + e.name() + "\" contiene (o es) el prefab que se guarda";
+            return false;
+        }
+        const std::string nested = Uuid::generate().toString();
+        for (auto& [source, linked] : linkedEntities(world, e)) {
+            linked.get<PrefabLink>().source = linked == e ? nested : detail::nestedEntityId(nested, source);
+        }
+        e.remove<PrefabInstance>();
+        added.push_back(detail::NewNestedPart{nested, child, child_file});
+    }
+    return true;
+}
+
 std::string applyInstance(World& world, Entity root, const std::filesystem::path& file, std::string* error) {
     if (!root.valid() || !root.has<PrefabInstance>()) {
         if (error) *error = "no es una instancia de prefab";
         return {};
     }
-    const json previous = parse(readPrefabFile(file));
+    const json previous = parse(readPrefabFileRaw(file));
+    // Con anidados o variante: la estructura se conserva (lo que difiere de la
+    // base o del anidado queda como diferencia) y la posicion de la raiz y de
+    // los huesos sale del documento resuelto.
+    const bool structured = detail::hasPrefabStructure(previous);
+    json previous_resolved;
+    if (structured && !detail::resolvePrefabJson(previous, file, previous_resolved, error)) return {};
+    const json& previous_flat = structured ? previous_resolved : previous;
+    Uuid self_uuid = Uuid::parse(previous.value("uuid", std::string{}));
+    if (!self_uuid.valid()) self_uuid = root.get<PrefabInstance>().prefab.uuid;
+    std::vector<detail::NewNestedPart> added;
+    if (detail::saveNestedEnabled() && !linkInnerInstances(world, root, self_uuid, added, error)) return {};
     flattenNested(world, root);
     // Lo anadido en la instancia pasa a ser parte del prefab.
     const std::vector<Entity> entities = subtree(world, root);
@@ -452,7 +509,7 @@ std::string applyInstance(World& world, Entity root, const std::filesystem::path
     // La posicion de la raiz es de cada instancia: en el prefab se queda la de
     // antes (o en el origen si es nuevo).
     json root_transform;
-    for (const json& record : entitiesOf(previous)) {
+    for (const json& record : entitiesOf(previous_flat)) {
         const auto parent = record.find("parent");
         if (parent != record.end() && parent->is_string()) continue;
         if (record.contains("components") && record["components"].contains("Transform")) root_transform = record["components"]["Transform"];
@@ -461,7 +518,7 @@ std::string applyInstance(World& world, Entity root, const std::filesystem::path
     // Los que siguen a un hueso guardan la Transform que ya tenian (la de
     // reposo al crearlos), no la pose animada del momento.
     std::unordered_map<std::string, json> bone_transforms;
-    for (const json& record : entitiesOf(previous)) {
+    for (const json& record : entitiesOf(previous_flat)) {
         if (!record.is_object() || !record.contains("components") || !record["components"].is_object()) continue;
         const json& components = record["components"];
         if (components.contains("BoneSocket") && components.contains("Transform")) {
@@ -504,7 +561,7 @@ std::string applyInstance(World& world, Entity root, const std::filesystem::path
     for (auto it = previous.begin(); it != previous.end(); ++it) {
         const std::string& key = it.key();
         if (key == "format" || key == "version" || key == "uuid" || key == "name" || key == "revision" ||
-            key == "entities") {
+            key == "entities" || key == kPrefabVariantKey || key == "patches") {
             continue;
         }
         out[key] = it.value();
@@ -512,15 +569,27 @@ std::string applyInstance(World& world, Entity root, const std::filesystem::path
     out["format"] = "CramionPrefab";
     out["version"] = 1;
     out["uuid"] = uuid.toString();
-    out["name"] = root.name();
+    // Una variante conserva su nombre (el de la raiz es el de la base).
+    out["name"] = previous.contains(kPrefabVariantKey) && previous.contains("name") ? previous["name"] : json(root.name());
     out["revision"] = previous.value("revision", 0) + 1;
-    out["entities"] = std::move(records);
+    const bool keeps_structure = structured || !added.empty();
+    if (keeps_structure) {
+        if (!detail::unresolvePrefab(previous, file, uuid, records, added, out, error)) return {};
+    } else {
+        out["entities"] = std::move(records);
+    }
     const std::string text = out.dump(2);
     if (!writeText(file, text, error)) return {};
     instance.prefab = assets::AssetRef{uuid, assets::AssetType::Prefab};
-    instance.revision = out["revision"].get<int>();
     instance.overrides.clear();
-    return text;
+    if (!keeps_structure) {
+        instance.revision = out["revision"].get<int>();
+        return text;
+    }
+    // Las instancias usan el documento resuelto (y su revision mezclada).
+    std::string resolved = resolvePrefabText(text, file, error);
+    instance.revision = resolved.empty() ? out["revision"].get<int>() : prefabRevision(resolved);
+    return resolved;
 }
 
 void revertInstance(World& world, Entity root, const std::string& text) {
@@ -573,6 +642,258 @@ int syncOutdatedInstances(World& world, const std::function<std::string(const Uu
         ++changed;
     }
     return changed;
+}
+
+// --- Anidados y variantes: instancias y cambios propios sueltos -------------------
+
+namespace {
+
+struct OverrideKey {
+    std::string source;
+    std::string what;       // "Comp|campo", "#clave", "+Comp", "-Comp" o "-"
+    std::string component;  // con "Comp|campo", "+Comp" y "-Comp"
+    std::string field;      // con "Comp|campo" y "#clave"
+    bool info = false;
+};
+
+std::optional<OverrideKey> parseOverrideKey(const std::string& key) {
+    const std::size_t bar = key.find('|');
+    if (bar == std::string::npos || bar == 0 || bar + 1 >= key.size()) return std::nullopt;
+    OverrideKey k;
+    k.source = key.substr(0, bar);
+    k.what = key.substr(bar + 1);
+    if (k.what == "-") return k;
+    if (k.what[0] == '#') {
+        k.info = true;
+        k.field = k.what.substr(1);
+    } else if (k.what[0] == '+' || k.what[0] == '-') {
+        k.component = k.what.substr(1);
+    } else if (const std::size_t f = k.what.find('|'); f != std::string::npos) {
+        k.component = k.what.substr(0, f);
+        k.field = k.what.substr(f + 1);
+    } else {
+        return std::nullopt;
+    }
+    return k;
+}
+
+json infoDefault(const std::string& key) {
+    if (key == "active") return true;
+    if (key == "tag" || key == "name") return std::string{};
+    if (key == "layer") return 0;
+    return false;  // static, static_batched
+}
+
+// El valor de `k` en el registro de una entidad (con los ids del prefab).
+bool valueOf(const json& record, const OverrideKey& k, json& value) {
+    if (k.info) {
+        value = record.contains(k.field) ? record[k.field] : infoDefault(k.field);
+        return true;
+    }
+    if (k.what == "-" || k.what[0] == '-') return true;  // no lleva valor
+    const auto comps = record.find("components");
+    if (comps == record.end() || !comps->contains(k.component)) return false;
+    const json& comp = (*comps)[k.component];
+    if (k.what[0] == '+') {
+        value = comp;
+        return true;
+    }
+    if (!comp.contains(k.field)) return false;
+    value = comp[k.field];
+    return true;
+}
+
+// Pone en los registros (documento resuelto) el cambio `k` con `value`.
+bool writeKey(json& records, const std::string& target, const OverrideKey& k, const json& value) {
+    for (json& r : records) {
+        if (!r.is_object() || r.value("uuid", std::string{}) != target) continue;
+        if (k.info) {
+            r[k.field] = value;
+            return true;
+        }
+        if (k.what == "-") return false;  // borrar entidades: con Aplicar (toda la instancia)
+        if (!r.contains("components") || !r["components"].is_object()) r["components"] = json::object();
+        json& comps = r["components"];
+        if (k.what[0] == '+') {
+            comps[k.component] = value;
+        } else if (k.what[0] == '-') {
+            comps.erase(k.component);
+        } else {
+            if (!comps.contains(k.component) || !comps[k.component].is_object()) return false;
+            comps[k.component][k.field] = value;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Registro de `e` con las referencias pasadas a los ids del prefab.
+json linkedRecord(World& world, Entity root, Entity e) {
+    const auto links = linkedEntities(world, root);
+    json record = entityRecord(world, e, e == root);
+    remapRecordRefs(world, e, record, worldToSource(links));
+    return record;
+}
+
+// Pone en la entidad `e` (de la instancia `root`) el valor `value` de `k`
+// (con ids del prefab, que pasan a los de la instancia).
+bool setOnEntity(World& world, Entity root, Entity e, const OverrideKey& k, const json& value, const json& full_record) {
+    if (k.info) {
+        EntityInfo& info = e.get<EntityInfo>();
+        if (k.field == "name") e.setName(value.is_string() ? value.get<std::string>() : e.name());
+        else if (k.field == "active") info.active = value.is_boolean() ? value.get<bool>() : info.active;
+        else if (k.field == "tag") info.tag = value.is_string() ? value.get<std::string>() : info.tag;
+        else if (k.field == "layer") info.layer = value.is_number_integer() ? value.get<int>() : info.layer;
+        else if (k.field == "static") info.is_static = value.is_boolean() && value.get<bool>();
+        else return false;
+        return true;
+    }
+    if (k.what == "-") return false;
+    const ComponentType* type = ComponentRegistry::instance().find(k.component);
+    if (type == nullptr) return false;
+    if (k.what[0] == '+') {
+        if (type->has(world, e.handle()) && type->removable) type->remove(world, e.handle());
+        return true;
+    }
+    json data;
+    if (k.what[0] == '-') {
+        const auto comps = full_record.find("components");
+        if (comps == full_record.end() || !comps->contains(k.component)) return false;
+        data = (*comps)[k.component];
+    } else {
+        data = json::object();
+        data[k.field] = value;
+    }
+    if (!type->has(world, e.handle())) type->add(world, e.handle());
+    JsonReader reader(data);
+    type->reflect(world, e.handle(), reader);
+    // Referencias con ids del prefab -> entidades de la instancia.
+    std::unordered_map<Uuid, Uuid> refs;
+    for (const auto& [source, linked] : linkedEntities(world, root)) {
+        const Uuid id = Uuid::parse(source);
+        if (id.valid()) refs[id] = linked.uuid();
+    }
+    world.remapEntityRefs(e, refs);
+    return true;
+}
+
+}  // namespace
+
+std::string createVariantFromInstance(World& world, Entity root, const std::filesystem::path& base_file,
+                                      const std::filesystem::path& variant_file, std::string* error) {
+    if (!root.valid() || !root.has<PrefabInstance>()) {
+        if (error) *error = "no es una instancia de prefab";
+        return {};
+    }
+    if (!createPrefabVariant(base_file, variant_file, error)) return {};
+    const Uuid variant = prefabUuid(readPrefabFileRaw(variant_file));
+    root.get<PrefabInstance>().prefab = assets::AssetRef{variant, assets::AssetType::Prefab};
+    // Aplicar contra la variante (vacia): sus cambios propios quedan como
+    // diferencias de la variante respecto a la base.
+    return applyInstance(world, root, variant_file, error);
+}
+
+bool revertOverride(World& world, Entity root, const std::string& key, const std::string& prefab_text) {
+    if (!root.valid() || !root.has<PrefabInstance>()) return false;
+    std::vector<std::string>& overrides = root.get<PrefabInstance>().overrides;
+    const auto it = std::find(overrides.begin(), overrides.end(), key);
+    if (it == overrides.end()) return false;
+    overrides.erase(it);
+    // Sincronizar: lo que ya no es propio toma el valor del prefab.
+    syncInstance(world, root, prefab_text);
+    return true;
+}
+
+std::string applyOverride(World& world, Entity root, const std::string& key, const std::filesystem::path& file,
+                          bool to_base, std::string* error) {
+    if (!root.valid() || !root.has<PrefabInstance>()) {
+        if (error) *error = "no es una instancia de prefab";
+        return {};
+    }
+    const std::optional<OverrideKey> k = parseOverrideKey(key);
+    if (!k || k->what == "-") {
+        if (error) *error = "ese cambio se aplica con Aplicar (toda la instancia)";
+        return {};
+    }
+    const auto links = linkedEntities(world, root);
+    const auto at = links.find(k->source);
+    if (at == links.end()) {
+        if (error) *error = "la entidad ya no esta en la instancia";
+        return {};
+    }
+    const Entity e = at->second;
+    if (k->info && k->field == "name" && e == root) {
+        if (error) *error = "el nombre de la raiz es de cada instancia";
+        return {};
+    }
+    const json record = linkedRecord(world, root, e);
+    json value;
+    if (!valueOf(record, *k, value)) {
+        if (error) *error = "la entidad no tiene ese campo";
+        return {};
+    }
+    std::string resolved;
+    if (!to_base) {
+        if (!detail::editPrefabResolved(file, [&](json& records) { return writeKey(records, k->source, *k, value); }, error,
+                                        &resolved)) {
+            return {};
+        }
+    } else {
+        json base_record;
+        PrefabOrigin where;
+        if (!detail::originRecord(file, k->source, base_record, &where, error)) return {};
+        detail::toOriginSpace(file, k->source, value);
+        if (!detail::editPrefabResolved(where.file, [&](json& records) { return writeKey(records, where.source, *k, value); },
+                                        error, nullptr)) {
+            return {};
+        }
+        // La diferencia que tuviera este prefab en ese campo ya sobra: se hereda.
+        if (!detail::removeOwnPatches(file, k->source, k->what, error)) return {};
+        resolved = readPrefabFile(file);
+    }
+    PrefabInstance& instance = root.get<PrefabInstance>();
+    instance.overrides.erase(std::remove(instance.overrides.begin(), instance.overrides.end(), key), instance.overrides.end());
+    if (!resolved.empty()) instance.revision = prefabRevision(resolved);
+    return resolved;
+}
+
+bool revertInheritedOverride(World& world, Entity root, const std::string& key, const std::filesystem::path& file) {
+    const std::optional<OverrideKey> k = parseOverrideKey(key);
+    if (!root.valid() || !k) return false;
+    const auto links = linkedEntities(world, root);
+    const auto at = links.find(k->source);
+    if (at == links.end()) return false;
+    json base_record;
+    if (!detail::originRecord(file, k->source, base_record, nullptr, nullptr)) return false;
+    json value;
+    if (!valueOf(base_record, *k, value)) return false;
+    return setOnEntity(world, root, at->second, *k, value, base_record);
+}
+
+bool applyInheritedOverride(World& world, Entity root, const std::string& key, const std::filesystem::path& file,
+                            std::string* error) {
+    const std::optional<OverrideKey> k = parseOverrideKey(key);
+    if (!root.valid() || !k || k->what == "-") {
+        if (error) *error = "ese cambio no se puede aplicar suelto";
+        return false;
+    }
+    const auto links = linkedEntities(world, root);
+    const auto at = links.find(k->source);
+    if (at == links.end()) {
+        if (error) *error = "la entidad ya no esta";
+        return false;
+    }
+    json value;
+    if (!valueOf(linkedRecord(world, root, at->second), *k, value)) {
+        if (error) *error = "la entidad no tiene ese campo";
+        return false;
+    }
+    json base_record;
+    PrefabOrigin where;
+    if (!detail::originRecord(file, k->source, base_record, &where, error)) return false;
+    detail::toOriginSpace(file, k->source, value);
+    return detail::editPrefabResolved(where.file, [&](json& records) { return writeKey(records, where.source, *k, value); },
+                                      error, nullptr);
 }
 
 }  // namespace cramion::ecs

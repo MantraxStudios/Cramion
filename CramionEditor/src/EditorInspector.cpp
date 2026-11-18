@@ -531,7 +531,10 @@ void EditorApp::drawInspectorContents() {
             visitor.beginComponent(mixed);
             // Claves (EditorKeyframes.cpp): rombos, I y clic derecho en las propiedades.
             visitor.setKeyframeHook(inspectorKeyframeHook(entity, type.name));
+            // Cambios propios de prefab (EditorPrefabs.cpp): barra azul y Revertir / Aplicar.
+            visitor.setOverrideHook(multi ? nullptr : inspectorOverrideHook(entity, type.name));
             const bool component_changed = type.reflect(world_, entity.handle(), visitor);
+            if (!multi) inspectorOverrideAction(entity, type.name);
             inspectorKeyframes(entity, multi ? selected : std::vector<ecs::Entity>{}, type.name,
                                component_changed && visitor.lastChange() ? &visitor.lastChange()->first : nullptr);
             if (component_changed) {
@@ -757,6 +760,7 @@ void EditorApp::drawInspectorContents() {
     if (visitor.editFinished()) {
         commit();
     }
+    runPrefabOverrideAction();  // lo pedido en el menu de un cambio propio (fuera del bucle)
 
     // --- Guardar un preset (lo pide el menu de Presets) ---
     if (preset_save_request_) {

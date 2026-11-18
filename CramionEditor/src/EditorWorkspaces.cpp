@@ -584,6 +584,8 @@ bool EditorApp::savePrefabWorkspace() {
         std::cerr << "[Prefab] No se pudo guardar " << dialogs::utf8(path.filename()) << ": " << error << "\n";
         return false;
     }
+    // Los prefabs que usan este (anidado o variante) tambien cambian.
+    forgetPrefabTexts();
     prefab_texts_[ws->prefab.toString()] = text;
     // Los enlaces nuevos no son un cambio del usuario.
     history_.sync(world_);

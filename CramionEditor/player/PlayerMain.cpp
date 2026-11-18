@@ -1101,6 +1101,17 @@ int runPlayer() {
 
         assets::AssetDatabase database;
         database.open(project->assetsFolder());
+        // Prefabs anidados y variantes: donde esta cada prefab por su UUID
+        // (si un enlace no esta en su ruta relativa).
+        const auto publish_prefabs = [&database] {
+            std::vector<std::pair<Uuid, std::filesystem::path>> list;
+            for (const assets::AssetInfo& info : database.all()) {
+                if (info.type != assets::AssetType::Prefab || info.path.empty()) continue;
+                list.emplace_back(info.uuid, info.path.is_absolute() ? info.path : database.root() / info.path);
+            }
+            ecs::setPrefabLocations(std::move(list));
+        };
+        publish_prefabs();
         assets::AssetManager asset_manager(database);
         asset_manager.setCacheFolder(std::filesystem::temp_directory_path() / "Cramion" / project->name);
         ecs::RenderSync sync(asset_manager);
@@ -1163,7 +1174,10 @@ int runPlayer() {
         scripts.setAssetsRoot(project->assetsFolder());
         // DataPack.load: lo montado entra en la base de assets (sus modelos,
         // prefabs y escenas se encuentran por UUID).
-        scripts.setAssetsChangedCallback([&database] { database.refresh(); });
+        scripts.setAssetsChangedCallback([&database, publish_prefabs] {
+            database.refresh();
+            publish_prefabs();
+        });
         // Se apuntan para limpiarlos si el juego se cerro de golpe con alguno montado.
         project::cleanupDataPackJournal(project->libraryFolder() / "DataPacks.journal", project->assetsFolder());
         scripts.setDataPackJournal(project->libraryFolder() / "DataPacks.journal");
@@ -1308,7 +1322,10 @@ int runPlayer() {
             project::cleanupDataPackJournal(mods_journal, project->assetsFolder());
             mods.scan();
             std::vector<std::string> mod_errors;
-            if (mods.mountEnabled(project->assetsFolder(), mods_journal, &mod_errors) > 0) database.refresh();
+            if (mods.mountEnabled(project->assetsFolder(), mods_journal, &mod_errors) > 0) {
+                database.refresh();
+                publish_prefabs();
+            }
             for (const std::string& e : mod_errors) std::cerr << "[Mods] " << e << "\n";
             project::setActiveMods(&mods);
         }

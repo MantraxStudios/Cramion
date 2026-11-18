@@ -165,6 +165,17 @@ struct State {
         world = nullptr;
     }
 
+    // Si se escribio algun .crprefab (un prefab con anidados o variante
+    // cambia con lo que usa aunque su archivo no): la cache entera fuera.
+    std::uint64_t prefab_writes = 0;
+    void checkPrefabWrites() {
+        const std::uint64_t writes = ecs::prefabWriteGeneration();
+        if (writes == prefab_writes) return;
+        prefab_writes = writes;
+        cache.clear();
+        cache_bytes = 0;
+    }
+
     void trimCache() {
         const std::size_t limit = static_cast<std::size_t>(std::max(0, g_prefab_cache_mb.get())) * 1024u * 1024u;
         while (cache_bytes > limit && !cache.empty()) {
@@ -186,6 +197,7 @@ Template compileText(const std::string& text, std::size_t& bytes) {
 }
 
 std::shared_ptr<ParseJob> launchParse(State& s, const std::filesystem::path& file, const std::string& key) {
+    s.checkPrefabWrites();
     auto job = std::make_shared<ParseJob>();
     job->file = file;
     if (const auto it = s.cache.find(key); it != s.cache.end()) {
@@ -244,6 +256,7 @@ void remember(State& s, const std::string& key, const ParseJob& job) { remember(
 // lleno): de la cache si esta al dia; si no, se lee, se parsea y se compila
 // aqui (la primera vez cuesta lo de antes; las siguientes, solo crear).
 Template templateNow(State& s, const std::filesystem::path& file, const std::string& key) {
+    s.checkPrefabWrites();
     const auto now = std::chrono::steady_clock::now();
     const auto it = s.cache.find(key);
     if (it != s.cache.end() && now - it->second.checked < kStampCheck) {

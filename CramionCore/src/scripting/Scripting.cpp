@@ -284,10 +284,12 @@ std::string ScriptSystem::Impl::prefabText(const std::filesystem::path& file) {
     const std::string key = file.string();
     PrefabFile& entry = prefabs_[key];
     entry.last_use = ++prefab_clock_;
-    if (entry.text.empty() || entry.stamp != stamp) {
+    const std::uint64_t writes = ecs::prefabWriteGeneration();
+    if (entry.text.empty() || entry.stamp != stamp || entry.writes != writes) {
         prefab_bytes_ -= std::min(prefab_bytes_, entry.text.size());
         entry.text = ecs::readPrefabFile(file);
         entry.stamp = stamp;
+        entry.writes = writes;
         prefab_bytes_ += entry.text.size();
     }
     std::string text = entry.text;  // (entry puede salir abajo)
