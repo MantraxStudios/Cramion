@@ -92,6 +92,15 @@ void Animator::reflect(PropertyVisitor& v) {
     v.field({"blend_time", "Suavizado", "Sin controlador: segundos en que el cuerpo pasa de un clip al otro "
                                         "conservando su impulso (inercializacion; 0 = corte seco)"},
             blend_time, FloatRange{0.0f, 1.0f, 0.01f, "%.2f s"});
+    static constexpr std::array<const char*, 5> kRootMotion = {"Apagado", "Transform", "Character Controller",
+                                                               "Rigidbody", "Script (OnAnimatorMove)"};
+    enumField(v, {"root_motion", "Root motion",
+                  "En Play, lo que la raiz avanza y gira en la animacion mueve al personaje (ataques con avance, "
+                  "esquivas). Script: llega OnAnimatorMove y lo aplica el script"},
+              root_motion, kRootMotion);
+    if (v.wantsAllFields() || root_motion != RootMotionMode::Off) {
+        v.field({"root_bone", "Hueso raiz", "Vacio = el hueso mas alto del esqueleto (Hips)"}, root_bone);
+    }
 }
 
 void Light::reflect(PropertyVisitor& v) {

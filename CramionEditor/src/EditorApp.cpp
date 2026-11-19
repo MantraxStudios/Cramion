@@ -1546,6 +1546,7 @@ void EditorApp::drawUi(float delta_seconds) {
         if (show_statistics_) drawStatistics(delta_seconds);
         if (show_console_) drawConsole();
         if (show_render_settings_) drawRenderSettings();
+        drawClipEditor();  // (tambien suelta la vista previa al cerrarla)
         if (show_animator_) drawAnimatorEditor();
         // Ventana > Maquina de estados (o un objeto que la pide): su pestana.
         if (show_state_machine_ && std::none_of(workspaces_.begin(), workspaces_.end(), [](const Workspace& ws) {
@@ -1867,6 +1868,7 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Consola", nullptr, &show_console_);
         ImGui::MenuItem("Configuración gráfica", nullptr, &show_render_settings_);
         ImGui::MenuItem("Animator", nullptr, &show_animator_);
+        ImGui::MenuItem("Clips de animación (eventos)", nullptr, &show_clip_editor_);
         if (ImGui::MenuItem("Máquina de estados", nullptr, show_state_machine_)) {
             show_state_machine_ = true;
             openStateMachineWorkspace();

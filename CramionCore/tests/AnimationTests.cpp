@@ -21,6 +21,9 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <unordered_map>
 #include <functional>
 #include <map>
 #include <string>
@@ -1320,6 +1323,586 @@ void testInertialization() {
     std::filesystem::remove(file);
 }
 
+namespace {
+// --- Animacion de juego: capas, aditivas, root motion, eventos, curvas, montages ---
+
+// Esqueleto de prueba: "Armature" (escala 0.01 de un FBX en cm) -> "Hips" ->
+// ("mixamorig:Spine" -> "Arm") y "Leg". Huesos en Hips, Spine, Arm y Leg.
+asset::ModelData makeGameplayModel() {
+    asset::ModelData m;
+    m.nodes.push_back({"Armature", -1, core::composeTrs(Vec3{}, Quat{}, Vec3{0.01f, 0.01f, 0.01f})});
+    m.nodes.push_back({"Hips", 0, core::translate(Vec3{0.0f, 100.0f, 0.0f})});
+    m.nodes.push_back({"mixamorig:Spine", 1, core::translate(Vec3{0.0f, 20.0f, 0.0f})});
+    m.nodes.push_back({"Arm", 2, core::translate(Vec3{20.0f, 30.0f, 0.0f})});
+    m.nodes.push_back({"Leg", 1, core::translate(Vec3{10.0f, -10.0f, 0.0f})});
+    for (int i = 1; i <= 4; ++i) m.bones.push_back({m.nodes[static_cast<std::size_t>(i)].name, i, Mat4::identity()});
+
+    // 0 "Andar": la cadera avanza 200 cm en Z en 1 s (2 m en el modelo).
+    asset::AnimationClip walk;
+    walk.name = "Andar";
+    walk.duration = 1.0f;
+    asset::AnimationChannel hips;
+    hips.node = 1;
+    hips.positions = {{0.0f, Vec3{0.0f, 100.0f, 0.0f}}, {1.0f, Vec3{0.0f, 100.0f, 200.0f}}};
+    hips.rotations = {{0.0f, Quat{}}, {1.0f, Quat{}}};
+    walk.channels.push_back(hips);
+    walk.events = {{"PieIzq", 0.25f, ""}, {"PieDer", 0.75f, "{\"lado\":1}"}};
+    asset::ClipCurve curve;
+    curve.name = "Pisada";
+    curve.keys = {{0.0f, 0.0f}, {0.5f, 1.0f}, {1.0f, 0.0f}};
+    walk.curves.push_back(curve);
+    m.animations.push_back(walk);
+
+    // 1 "Girar": la cadera gira 90 grados en Y en el sitio.
+    asset::AnimationClip turn;
+    turn.name = "Girar";
+    turn.duration = 1.0f;
+    asset::AnimationChannel turn_hips;
+    turn_hips.node = 1;
+    turn_hips.positions = {{0.0f, Vec3{0.0f, 100.0f, 0.0f}}};
+    turn_hips.rotations = {{0.0f, Quat{}}, {0.5f, axisAngle(Vec3{0, 1, 0}, 45.0f)}, {1.0f, axisAngle(Vec3{0, 1, 0}, 90.0f)}};
+    turn.channels.push_back(turn_hips);
+    m.animations.push_back(turn);
+
+    // 2 "Saludo": el brazo gira 90 grados en Z.
+    asset::AnimationClip wave;
+    wave.name = "Saludo";
+    wave.duration = 1.0f;
+    asset::AnimationChannel arm;
+    arm.node = 3;
+    arm.rotations = {{0.0f, axisAngle(Vec3{0, 0, 1}, 90.0f)}, {1.0f, axisAngle(Vec3{0, 0, 1}, 90.0f)}};
+    wave.channels.push_back(arm);
+    asset::AnimationChannel leg;  // tambien mueve la pierna (la mascara la quita)
+    leg.node = 4;
+    leg.rotations = {{0.0f, axisAngle(Vec3{1, 0, 0}, 60.0f)}};
+    wave.channels.push_back(leg);
+    m.animations.push_back(wave);
+
+    // 3 "Inclinar": la espalda se inclina de 0 a 30 grados en X (aditiva).
+    asset::AnimationClip lean;
+    lean.name = "Inclinar";
+    lean.duration = 1.0f;
+    asset::AnimationChannel spine;
+    spine.node = 2;
+    spine.rotations = {{0.0f, Quat{}}, {1.0f, axisAngle(Vec3{1, 0, 0}, 30.0f)}};
+    lean.channels.push_back(spine);
+    m.animations.push_back(lean);
+    return m;
+}
+
+float quatAngleDegrees(const Quat& a, const Quat& b) {
+    const float d = std::abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w);
+    return 2.0f * std::acos(std::min(d, 1.0f)) * 180.0f / core::kPi;
+}
+
+bool sameMatrices(const std::vector<Mat4>& a, const std::vector<Mat4>& b, float eps) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        for (int c = 0; c < 4; ++c) {
+            for (int r = 0; r < 4; ++r) {
+                if (std::abs(a[i].m[c][r] - b[i].m[c][r]) > eps) return false;
+            }
+        }
+    }
+    return true;
+}
+
+void testRootMotion() {
+    std::printf("\nRoot motion\n");
+    const asset::ModelData model = makeGameplayModel();
+    const asset::AnimationClip& walk = model.animations[0];
+    anim::RootMotion m = anim::clipRootMotion(model, walk, 1, 0.5f, 0.5f, true);
+    check(std::abs(m.position.z - 1.0f) < 1e-3f && std::abs(m.position.x) < 1e-4f && std::abs(m.yaw) < 1e-4f,
+          "medio segundo de andar: 1 m (con la escala 0.01 del Armature)");
+    m = anim::clipRootMotion(model, walk, 1, 0.2f, 0.4f, true);
+    check(std::abs(m.position.z - 0.8f) < 1e-3f, "en bucle: de 0.8 a 0.2 pasando por el final = 0.8 m");
+    m = anim::clipRootMotion(model, walk, 1, 0.5f, 2.5f, true);
+    check(std::abs(m.position.z - 5.0f) < 1e-2f, "dos vueltas y media en un frame: 5 m");
+    m = anim::clipRootMotion(model, walk, 1, 0.3f, -0.2f, true);
+    check(std::abs(m.position.z + 0.4f) < 1e-3f, "hacia atras: -0.4 m");
+    m = anim::clipRootMotion(model, walk, 1, 1.0f, 0.5f, false);
+    check(std::abs(m.position.z - 1.0f) < 1e-3f, "sin bucle se recorta al final");
+    const asset::AnimationClip& turn = model.animations[1];
+    m = anim::clipRootMotion(model, turn, 1, 1.0f, 1.0f, false);
+    check(std::abs(m.yaw - core::kPi * 0.5f) < 1e-3f && core::length(m.position) < 1e-4f, "girar: 90 grados en Y");
+    const Vec3 r = anim::rotateAboutY(Vec3{0.0f, 0.0f, 1.0f}, core::kPi * 0.5f);
+    check(std::abs(r.x - 1.0f) < 1e-5f && std::abs(r.z) < 1e-5f, "rotateAboutY: +Z girado 90 grados = +X (como un cuaternion en Y)");
+
+    // En el animador: la raiz se queda en el sitio y el movimiento sale aparte.
+    anim::Animator a(model);
+    anim::ClipSample s{0, 0.5f, 1.0f, 0.5f, true};
+    a.evaluateBlend(&s, 1);
+    check(std::abs(positionOf(a.globals()[1]).z - 0.5f * 2.0f) < 1e-3f, "sin root motion la cadera avanza (como siempre)");
+    a.setRootMotionNode(1);
+    a.evaluateBlend(&s, 1);
+    check(std::abs(positionOf(a.globals()[1]).z) < 1e-4f && std::abs(positionOf(a.globals()[1]).y - 1.0f) < 1e-4f,
+          "con root motion la cadera se queda en el sitio (la altura se conserva)");
+    check(std::abs(a.rootMotion().position.z - 1.0f) < 1e-3f, "y el avance sale en rootMotion()");
+    anim::ClipSample spin{1, 0.5f, 1.0f, 0.5f, false};
+    a.evaluateBlend(&spin, 1);
+    Vec3 t, sc;
+    Quat q;
+    // La cadera no gira en la pose (el giro va al personaje).
+    const Mat4 hips = a.globals()[1];
+    const Vec3 fwd{hips.m[2][0], hips.m[2][1], hips.m[2][2]};
+    check(std::abs(fwd.x) < 1e-3f && fwd.z > 0.0f, "con root motion el giro en Y sale de la pose");
+    check(std::abs(a.rootMotion().yaw - core::kPi * 0.25f) < 1e-3f, "y va a rootMotion().yaw (45 grados)");
+    (void)t;
+    (void)sc;
+    (void)q;
+    // Mezcla: la mitad de andar y la mitad de quieto avanza la mitad.
+    anim::ClipSample blend[2] = {{0, 0.5f, 0.5f, 0.5f, true}, {1, 0.0f, 0.5f, 0.0f, false}};
+    a.evaluateBlend(blend, 2);
+    check(std::abs(a.rootMotion().position.z - 0.5f) < 1e-3f, "mezcla por pesos del movimiento");
+    a.setRootMotionNode(-1);
+    a.evaluateBlend(&s, 1);
+    check(a.rootMotion().position.z == 0.0f, "apagado: sin movimiento");
+}
+
+void testLayersAndAdditive() {
+    std::printf("\nCapas, mascaras y aditivas\n");
+    const asset::ModelData model = makeGameplayModel();
+    // Mascaras.
+    std::vector<float> w = ecs::buildMaskWeights(model.nodes, {{"Spine", true, 1.0f}});
+    check(w[0] == 0.0f && w[1] == 0.0f && w[2] == 1.0f && w[3] == 1.0f && w[4] == 0.0f,
+          "mascara Spine con hijos (y el prefijo mixamorig:)");
+    w = ecs::buildMaskWeights(model.nodes, {{"Hips", true, 1.0f}, {"Arm", false, 0.0f}});
+    check(w[1] == 1.0f && w[2] == 1.0f && w[3] == 0.0f && w[4] == 1.0f, "la ultima entrada manda (quitar el brazo)");
+    w = ecs::buildMaskWeights(model.nodes, {{"Spine", false, 0.5f}});
+    check(w[2] == 0.5f && w[3] == 0.0f, "sin hijos y con peso");
+    w = ecs::buildMaskWeights(model.nodes, {});
+    check(w.size() == 5 && w[0] == 1.0f && w[4] == 1.0f, "sin entradas: todo el cuerpo");
+    check(ecs::boneNameMatches("Armature|Hips", "Hips") && !ecs::boneNameMatches("MyHips", "Hips"), "nombres con prefijo");
+
+    // Sin capas, evaluateLayered = evaluateBlend.
+    anim::Animator a(model);
+    anim::Animator b(model);
+    anim::LayeredPosePlan plan;
+    plan.base = {{0, 0.3f, 0.7f}, {2, 0.4f, 0.3f}};
+    a.evaluateLayered(plan);
+    b.evaluateBlend(plan.base);
+    check(sameMatrices(a.boneMatrices(), b.boneMatrices(), 1e-4f), "sin capas, la misma pose que evaluateBlend");
+
+    // evaluateBlend de un clip = evaluate() del clip (la refactorizacion no cambia nada).
+    anim::Animator c(model);
+    c.play(0, true);
+    c.setTime(0.3f);
+    b.evaluateBlend({anim::ClipSample{0, 0.3f, 1.0f}});
+    check(sameMatrices(c.boneMatrices(), b.boneMatrices(), 1e-4f), "evaluateBlend de un clip = evaluate()");
+
+    // Override con mascara: el brazo saluda, la pierna sigue la base.
+    plan.base = {{0, 0.5f, 1.0f}};
+    anim::PoseLayerJob& job = plan.addLayer();
+    job.samples = {{2, 0.0f, 1.0f}};
+    job.weight = 1.0f;
+    job.mask = std::make_shared<const std::vector<float>>(ecs::buildMaskWeights(model.nodes, {{"Spine", true, 1.0f}}));
+    a.evaluateLayered(plan);
+    anim::LocalPose pose;
+    a.samplePose(plan.base.data(), plan.base.size(), pose);
+    const std::vector<Mat4> locals = a.locals();
+    Vec3 tt, ss;
+    (void)tt;
+    (void)ss;
+    const Mat4 arm_expected = core::composeTrs(Vec3{20.0f, 30.0f, 0.0f}, axisAngle(Vec3{0, 0, 1}, 90.0f), Vec3{1, 1, 1});
+    check(sameMatrices({locals[3]}, {arm_expected}, 1e-3f), "override: el brazo de la capa");
+    check(sameMatrices({locals[4]}, {model.nodes[4].local}, 1e-4f), "override: la pierna fuera de la mascara sigue la base");
+    check(std::abs(positionOf(locals[1]).z - 100.0f) < 1e-2f, "override: la cadera fuera de la mascara sigue andando");
+    // A media fuerza: el brazo a 45 grados.
+    job.weight = 0.5f;
+    a.evaluateLayered(plan);
+    const Mat4 arm_half = core::composeTrs(Vec3{20.0f, 30.0f, 0.0f}, axisAngle(Vec3{0, 0, 1}, 45.0f), Vec3{1, 1, 1});
+    check(sameMatrices({a.locals()[3]}, {arm_half}, 1e-3f), "override al 50%: medio giro");
+    // Peso 0: como si no estuviera.
+    job.weight = 0.0f;
+    a.evaluateLayered(plan);
+    b.evaluateBlend(plan.base);
+    check(sameMatrices(a.boneMatrices(), b.boneMatrices(), 1e-4f), "capa a peso 0 = solo la base");
+
+    // Aditiva: inclinar la espalda 30 grados sobre la pose que haya.
+    plan.clear();
+    plan.base = {{2, 0.0f, 1.0f}};  // el saludo (la espalda sin girar)
+    anim::PoseLayerJob& add = plan.addLayer();
+    add.samples = {{3, 1.0f, 1.0f}};
+    add.mode = anim::LayerBlendMode::Additive;
+    add.weight = 1.0f;
+    a.evaluateLayered(plan);
+    anim::LocalPose result;
+    a.samplePose(plan.base.data(), plan.base.size(), result);  // la base sola (para comparar)
+    Quat spine_rot{};
+    {
+        // Rotacion local de la espalda tras la capa: columnas de la matriz.
+        const Mat4& l = a.locals()[2];
+        const Vec3 y_axis{l.m[1][0], l.m[1][1], l.m[1][2]};
+        spine_rot = Quat{};
+        check(std::abs(std::acos(std::clamp(y_axis.y / core::length(y_axis), -1.0f, 1.0f)) * 180.0f / core::kPi - 30.0f) < 0.1f,
+              "aditiva: la espalda se inclina 30 grados (primer fotograma como referencia)");
+    }
+    (void)spine_rot;
+    check(sameMatrices({a.locals()[3]}, {arm_expected}, 1e-3f), "aditiva: el resto de la pose de la base sigue igual");
+    add.weight = 0.5f;
+    a.evaluateLayered(plan);
+    {
+        const Mat4& l = a.locals()[2];
+        const Vec3 y_axis{l.m[1][0], l.m[1][1], l.m[1][2]};
+        check(std::abs(std::acos(std::clamp(y_axis.y / core::length(y_axis), -1.0f, 1.0f)) * 180.0f / core::kPi - 15.0f) < 0.1f,
+              "aditiva al 50%: 15 grados");
+    }
+    // Referencia de otro clip: Inclinar al final menos Inclinar al final = nada.
+    add.weight = 1.0f;
+    add.reference = {{3, 1.0f, 1.0f}};
+    a.evaluateLayered(plan);
+    b.evaluateBlend(plan.base);
+    check(sameMatrices(a.boneMatrices(), b.boneMatrices(), 1e-3f), "aditiva con referencia = la misma pose: no cambia nada");
+    // Funciones sueltas.
+    anim::LocalPose p1, p2;
+    a.restPose(p1);
+    a.restPose(p2);
+    p2.translation[1] = p2.translation[1] + Vec3{0.0f, 0.0f, 10.0f};
+    anim::makeAdditivePose(p2, p1);
+    check(std::abs(p2.translation[1].z - 10.0f) < 1e-4f && quatAngleDegrees(p2.rotation[1], Quat{}) < 1e-2f,
+          "makeAdditivePose resta la referencia");
+    anim::applyAdditivePose(p1, p2, 0.5f, nullptr);
+    check(std::abs(p1.translation[1].z - 5.0f) < 1e-4f, "applyAdditivePose con peso");
+
+    // Root motion por capas: un montage de cuerpo entero manda en el movimiento.
+    a.setRootMotionNode(1);
+    plan.clear();
+    plan.base = {{1, 0.5f, 1.0f, 0.0f, true}};  // quieto (girar sin avanzar)
+    anim::PoseLayerJob& mont = plan.addLayer();
+    mont.samples = {{0, 0.5f, 1.0f, 0.5f, false}};
+    mont.weight = 0.5f;
+    mont.root_motion = true;
+    a.evaluateLayered(plan);
+    check(std::abs(a.rootMotion().position.z - 0.5f) < 1e-3f, "root motion de un montage al 50%: medio metro");
+    mont.mask = std::make_shared<const std::vector<float>>(ecs::buildMaskWeights(model.nodes, {{"Spine", true, 1.0f}}));
+    a.evaluateLayered(plan);
+    check(std::abs(a.rootMotion().position.z) < 1e-4f, "con una mascara sin la raiz no mueve al personaje");
+}
+
+void testClipEvents() {
+    std::printf("\nEventos y curvas de los clips\n");
+    asset::AnimationClip clip;
+    clip.duration = 1.0f;
+    clip.events = {{"A", 0.0f, ""}, {"B", 0.25f, ""}, {"C", 0.75f, ""}};
+    std::vector<std::uint32_t> out;
+    const auto fired = [&](float time, float delta, bool loop, bool start) {
+        out.clear();
+        anim::collectClipEvents(clip, time, delta, loop, start, out);
+        std::string s;
+        for (const std::uint32_t k : out) s += clip.events[k].name;
+        return s;
+    };
+    check(fired(0.3f, 0.1f, true, false) == "B", "pasa por B");
+    check(fired(0.25f, 0.05f, true, false) == "B", "justo en B (intervalo (a, b])");
+    check(fired(0.35f, 0.1f, true, false).empty(), "B no se repite en el frame siguiente");
+    check(fired(0.1f, 0.4f, true, false) == "AC", "al dar la vuelta: C y el A del principio");
+    check(fired(0.5f, 3.2f, true, false) == "ABC", "varias vueltas en un frame: cada evento UNA vez");
+    check(fired(0.0f, 0.0f, true, true) == "A", "al entrar en el estado, los del primer instante");
+    check(fired(0.1f, 0.1f, true, false).empty(), "sin include_start el del principio no se repite");
+    check(fired(0.2f, -0.1f, true, false) == "B", "hacia atras");
+    check(fired(1.0f, 0.5f, false, false) == "C", "sin bucle");
+    check(fired(1.0f, 5.0f, false, false) == "BC", "sin bucle no da vueltas (recorta a [0, duracion])");
+    check(fired(0.5f, 0.0f, true, false).empty(), "quieto: nada");
+
+    // Curvas.
+    asset::ClipCurve curve;
+    curve.keys = {{0.0f, 0.0f}, {0.5f, 1.0f}, {1.0f, 0.0f}};
+    check(std::abs(curve.sample(0.25f) - 0.5f) < 1e-5f && curve.sample(-1.0f) == 0.0f && curve.sample(0.5f) == 1.0f,
+          "curva lineal entre claves");
+
+    // De un juego de muestras: el clip que mas pesa da los eventos; curvas por pesos.
+    const asset::ModelData model = makeGameplayModel();
+    ecs::AnimatorRuntime runtime;
+    std::vector<anim::ClipSample> samples = {{0, 0.3f, 0.7f, 0.1f, true}, {1, 0.3f, 0.3f, 0.1f, true}};
+    ecs::collectSampleEvents(model, samples.data(), samples.size(), false, 0, runtime);
+    check(runtime.events.size() == 1 && runtime.events[0].name == "PieIzq" && runtime.events[0].clip == "Andar",
+          "evento del clip que mas pesa, con el nombre del clip");
+    check(runtime.events[0].params.empty(), "sin parametros");
+    samples[0].weight = 0.2f;
+    runtime.events.clear();
+    ecs::collectSampleEvents(model, samples.data(), samples.size(), false, 0, runtime);
+    check(runtime.events.empty(), "si pesa menos otro clip (sin eventos), no suena");
+    std::unordered_map<std::string, float> curves;
+    samples = {{0, 0.5f, 0.5f}, {1, 0.5f, 0.5f}};
+    ecs::accumulateSampleCurves(model, samples.data(), samples.size(), 1.0f, curves);
+    check(curves.count("Pisada") == 1 && std::abs(curves["Pisada"] - 1.0f) < 1e-5f,
+          "curva: la media de los clips que la tienen");
+    ecs::accumulateSampleCurves(model, samples.data(), 1, 0.5f, curves);
+    check(std::abs(curves["Pisada"] - 1.0f) < 1e-5f, "capa encima con el mismo valor");
+    runtime.events.clear();
+    for (int i = 0; i < 100; ++i) runtime.pushEvent(ecs::AnimatorFiredEvent{"x" + std::to_string(i), "c", "", 0.0f, 0});
+    check(runtime.events.size() == ecs::AnimatorRuntime::kMaxPendingEvents && runtime.events.back().name == "x99",
+          "la cola de eventos tiene tope (sin Play nadie la vacia)");
+}
+
+void testControllerLayers() {
+    std::printf("\nCapas del Animator Controller\n");
+    const asset::ModelData model = makeGameplayModel();
+    ecs::AnimatorController c;
+    c.parameters.push_back({"apuntar", ecs::AnimatorParameterType::Bool, 0.0f});
+    c.parameters.push_back({"golpe", ecs::AnimatorParameterType::Trigger, 0.0f});
+    ecs::AnimatorState idle;
+    idle.name = "Andar";
+    idle.clip_name = "Andar";
+    c.states.push_back(idle);
+    ecs::AnimatorLayer torso;
+    torso.name = "Torso";
+    torso.weight = 0.8f;
+    torso.mask_bones = {{"Spine", true, 1.0f}};
+    ecs::AnimatorState rest;
+    rest.name = "Nada";
+    rest.clip_name = "Saludo";
+    ecs::AnimatorState aim;
+    aim.name = "Apuntar";
+    aim.clip_name = "Inclinar";
+    torso.states = {rest, aim};
+    ecs::AnimatorTransition t;
+    t.from = 0;
+    t.to = 1;
+    t.duration = 0.2f;
+    t.conditions.push_back({"apuntar", ecs::AnimatorConditionMode::If, 0.0f});
+    torso.transitions.push_back(t);
+    c.layers.push_back(torso);
+    ecs::AnimatorLayer synced;
+    synced.name = "Sincronizada";
+    synced.sync_layer = 0;
+    synced.blending = ecs::AnimatorLayerBlend::Additive;
+    ecs::AnimatorState over;
+    over.clip_name = "Girar";
+    synced.states = {over};
+    c.layers.push_back(synced);
+    check(c.findLayer("Base") == 0 && c.findLayer("Torso") == 1 && c.findLayer("Sincronizada") == 2 && c.findLayer("x") == -1,
+          "capas por nombre");
+
+    // Guardar y leer.
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "cramion_anim_tests";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path file = dir / "capas.cranimator";
+    check(ecs::saveAnimatorController(c, file), "guardar con capas");
+    ecs::AnimatorController loaded;
+    check(ecs::loadAnimatorController(file, loaded), "leer con capas");
+    check(loaded.layers.size() == 2 && loaded.layers[0].name == "Torso" && std::abs(loaded.layers[0].weight - 0.8f) < 1e-5f &&
+              loaded.layers[0].mask_bones.size() == 1 && loaded.layers[0].states.size() == 2 &&
+              loaded.layers[0].transitions.size() == 1 && loaded.layers[1].sync_layer == 0 &&
+              loaded.layers[1].blending == ecs::AnimatorLayerBlend::Additive,
+          "las capas vuelven igual");
+    // Sin capas: el archivo de siempre (version 1, sin "layers").
+    ecs::AnimatorController plain = c;
+    plain.layers.clear();
+    const std::filesystem::path plain_file = dir / "sin_capas.cranimator";
+    ecs::saveAnimatorController(plain, plain_file);
+    std::ifstream in(plain_file);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    check(text.find("\"layers\"") == std::string::npos && text.find("\"version\": 1") != std::string::npos,
+          "sin capas se guarda como antes (version 1)");
+    ecs::AnimatorController plain_loaded;
+    ecs::loadAnimatorController(plain_file, plain_loaded);
+    check(plain_loaded.layers.empty() && plain_loaded.states.size() == 1, "un controlador antiguo = una capa base");
+
+    // Paso de una capa.
+    ecs::AnimatorRuntime runtime;
+    const ecs::AnimatorClipLookup lookup{
+        [&](const std::string& name, const assets::AssetRef&) {
+            for (std::size_t i = 0; i < model.animations.size(); ++i) {
+                if (model.animations[i].name == name) return static_cast<int>(i);
+            }
+            return -1;
+        },
+        [&](int clip) { return model.animations[static_cast<std::size_t>(clip)].duration; }};
+    std::vector<anim::ClipSample> out;
+    std::vector<float> scratch;
+    std::size_t begin = 0;
+    ecs::stepAnimatorLayer(c, 1, runtime, 0.1f, 1.0f, lookup, out, begin, nullptr, scratch);
+    check(runtime.layers.size() == 2 && runtime.layers[0].state == 0 && runtime.layers[0].entered &&
+              out.size() == 1 && out[0].clip == 2,
+          "la capa entra en su estado por defecto");
+    check(std::abs(ecs::animatorLayerWeight(c, runtime, 1) - 0.8f) < 1e-5f && ecs::animatorLayerWeight(c, runtime, 0) == 1.0f,
+          "peso del controlador");
+    runtime.layers[0].weight = 0.3f;
+    check(std::abs(ecs::animatorLayerWeight(c, runtime, 1) - 0.3f) < 1e-5f, "peso del juego (setLayerWeight)");
+    ecs::stepAnimatorLayer(c, 1, runtime, 0.1f, 1.0f, lookup, out, begin, nullptr, scratch);
+    check(!runtime.layers[0].entered && std::abs(out[0].delta - 0.1f) < 1e-4f, "avanza (delta del clip)");
+    runtime.values["apuntar"] = 1.0f;
+    ecs::stepAnimatorLayer(c, 1, runtime, 0.1f, 1.0f, lookup, out, begin, nullptr, scratch);
+    float sum = 0.0f;
+    for (const anim::ClipSample& s : out) sum += s.weight;
+    check(runtime.layers[0].state == 1 && runtime.layers[0].state_name == "Apuntar" && out.size() == 2 && begin == 1 &&
+              std::abs(sum - 1.0f) < 1e-4f && out[1].clip == 3,
+          "transicion con fundido: el que se va y el que entra (pesos que suman 1)");
+    ecs::stepAnimatorLayer(c, 1, runtime, 0.3f, 1.0f, lookup, out, begin, nullptr, scratch);
+    check(out.size() == 1 && out[0].clip == 3, "al acabar el fundido, solo el nuevo");
+    runtime.layers[0].cross_fade = "Nada";
+    runtime.layers[0].cross_fade_time = 0.0f;
+    ecs::stepAnimatorLayer(c, 1, runtime, 0.1f, 1.0f, lookup, out, begin, nullptr, scratch);
+    check(runtime.layers[0].state == 0 && out.size() == 1 && out[0].clip == 2, "crossFadeLayer en seco");
+    // Sincronizada con la base.
+    ecs::AnimatorSyncSource sync;
+    sync.state = 0;
+    sync.phase = 0.4f;
+    sync.dphase = 0.1f;
+    ecs::stepAnimatorLayer(c, 2, runtime, 0.1f, 1.0f, lookup, out, begin, &sync, scratch);
+    check(out.size() == 1 && out[0].clip == 1 && std::abs(out[0].time - 0.4f) < 1e-5f && runtime.layers[1].state == 0,
+          "sincronizada: el estado y la fase de la base con su propio clip");
+    // removeAnimatorState en una capa.
+    ecs::AnimatorLayer copy = torso;
+    ecs::removeAnimatorState(copy.states, copy.transitions, copy.default_state, 0);
+    check(copy.states.size() == 1 && copy.transitions.empty() && copy.default_state == 0, "quitar un estado de una capa");
+
+    // Mascara reutilizable (.crmask).
+    ecs::BoneMask mask;
+    mask.bones = {{"Spine", true, 1.0f}, {"Arm", false, 0.0f}};
+    const std::filesystem::path mask_file = dir / "torso.crmask";
+    check(ecs::saveBoneMask(mask, mask_file), "guardar .crmask");
+    ecs::BoneMask mask_loaded;
+    check(ecs::loadBoneMask(mask_file, mask_loaded) && mask_loaded.uuid.valid() && mask_loaded.bones.size() == 2 &&
+              !mask_loaded.bones[1].children && mask_loaded.bones[1].weight == 0.0f,
+          "leer .crmask (con UUID)");
+}
+
+void testMontages() {
+    std::printf("\nMontages\n");
+    asset::AnimationClip clip;
+    clip.name = "Golpe";
+    clip.duration = 1.0f;
+    clip.events = {{"Impacto", 0.4f, ""}, {"Fin", 0.9f, ""}};
+    ecs::AnimatorMontage m;
+    m.blend_in = 0.1f;
+    m.blend_out = 0.2f;
+    ecs::startMontage(m);
+    check(m.active && m.just_started && m.serial == 1, "playMontage lo deja listo");
+    std::vector<std::uint32_t> ev;
+    ecs::stepMontage(m, clip, 0.016f, &ev);
+    check(m.time == 0.0f && m.weight == 0.0f && ev.empty(), "primer paso: empieza en 0 con peso 0");
+    ecs::stepMontage(m, clip, 0.05f, &ev);
+    check(m.weight > 0.0f && m.weight < 1.0f, "entrando (fundido de entrada)");
+    ecs::stepMontage(m, clip, 0.1f, &ev);
+    check(std::abs(m.weight - 1.0f) < 1e-5f, "dentro: peso 1");
+    ev.clear();
+    ecs::stepMontage(m, clip, 0.3f, &ev);
+    check(ev.size() == 1 && clip.events[ev[0]].name == "Impacto" && std::abs(m.delta - 0.3f) < 1e-5f,
+          "el evento del golpe suena una vez");
+    ev.clear();
+    ecs::stepMontage(m, clip, 0.4f, &ev);  // t = 0.85: saliendo
+    check(m.weight < 1.0f && m.weight > 0.0f && m.active, "fundido de salida al final del clip");
+    ecs::stepMontage(m, clip, 0.5f, &ev);
+    check(!m.active && m.weight == 0.0f && ev.size() == 1, "acaba y vuelve al grafo (y suena Fin)");
+
+    // Secciones: Inicio -> Bucle (se repite) -> Final.
+    clip.sections = {{"Inicio", 0.0f, ""}, {"Bucle", 0.3f, "Bucle"}, {"Final", 0.6f, ""}};
+    ecs::startMontage(m);
+    m.blend_in = 0.0f;
+    ecs::stepMontage(m, clip, 0.016f, nullptr);
+    ecs::stepMontage(m, clip, 0.5f, nullptr);  // 0.5: en Bucle
+    check(m.section == "Bucle" && std::abs(m.time - 0.5f) < 1e-5f, "en la seccion Bucle");
+    ecs::stepMontage(m, clip, 0.2f, nullptr);  // pasa de 0.6: vuelve a 0.3 + 0.1
+    check(m.section == "Bucle" && std::abs(m.time - 0.4f) < 1e-4f && m.active && m.weight == 1.0f,
+          "la seccion en bucle vuelve a empezar (sin fundido de salida)");
+    m.jump_section = "Final";
+    ecs::stepMontage(m, clip, 0.016f, nullptr);
+    check(m.section == "Final" && std::abs(m.time - 0.6f) < 1e-5f, "montageJumpToSection");
+    ecs::stepMontage(m, clip, 0.5f, nullptr);
+    check(!m.active, "la ultima seccion acaba el montage");
+    // Empezar en una seccion y pararlo.
+    m.start_section = "Final";
+    ecs::startMontage(m);
+    ecs::stepMontage(m, clip, 0.016f, nullptr);
+    check(std::abs(m.time - 0.6f) < 1e-5f, "empezar en una seccion");
+    m.stopping = true;
+    m.stop_blend = 0.1f;
+    m.stop_elapsed = 0.0f;
+    ecs::stepMontage(m, clip, 0.05f, nullptr);
+    check(m.active && m.weight < 1.0f, "stopMontage se apaga poco a poco");
+    ecs::stepMontage(m, clip, 0.06f, nullptr);
+    check(!m.active, "y se acaba");
+    check(ecs::clipSectionAt(clip, 0.45f) == 1 && ecs::clipSectionAt(clip, 0.0f) == 0, "seccion de un instante");
+}
+
+void testClipMetaFiles() {
+    std::printf("\nEventos y curvas en archivos\n");
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "cramion_anim_tests";
+    std::filesystem::create_directories(dir);
+    asset::ModelData model = makeGameplayModel();
+    // .cranim con meta en la cabecera.
+    const std::filesystem::path file = dir / "andar.cranim";
+    check(ecs::saveAnimationClip(model, model.animations[0], file), "guardar .cranim con eventos");
+    asset::AnimationClip loaded;
+    check(ecs::loadAnimationClip(file, model, loaded), "leer .cranim");
+    check(loaded.events.size() == 2 && loaded.events[1].name == "PieDer" && loaded.events[1].params == "{\"lado\":1}" &&
+              loaded.curves.size() == 1 && loaded.curves[0].keys.size() == 3 && loaded.channels.size() == 1,
+          "los eventos y curvas vuelven con el clip");
+    // La cabecera sigue siendo una linea (la base de datos lee solo esa).
+    {
+        std::ifstream in(file);
+        std::string first, second;
+        std::getline(in, first);
+        std::getline(in, second);
+        check(first.find("\"meta\"") != std::string::npos && first.find("\"uuid\"") != std::string::npos &&
+                  second.find("\"channels\"") != std::string::npos,
+              "meta en la primera linea, pistas en la segunda");
+    }
+    // Un .cranim de antes (sin meta) se lee igual.
+    asset::AnimationClip plain = model.animations[0];
+    plain.events.clear();
+    plain.curves.clear();
+    const std::filesystem::path old_file = dir / "viejo.cranim";
+    ecs::saveAnimationClip(model, plain, old_file);
+    {
+        std::ifstream in(old_file);
+        std::string first;
+        std::getline(in, first);
+        check(first.find("\"meta\"") == std::string::npos, "sin eventos no se escribe meta (archivo como antes)");
+    }
+    // Editar solo la meta.
+    ecs::ClipMeta meta;
+    check(ecs::loadClipMetaFromCranim(old_file, meta) && meta.empty(), "leer meta vacia");
+    const int i0 = ecs::addClipEvent(meta, "Golpe", 0.6f, 1.0f);
+    const int i1 = ecs::addClipEvent(meta, "Paso", 0.2f, 1.0f);
+    check(i0 == 0 && i1 == 0 && meta.events[1].name == "Golpe", "anadir eventos ordenados por tiempo");
+    const int moved = ecs::moveClipEvent(meta, 0, 0.9f, 1.0f);
+    check(moved == 1 && meta.events[1].name == "Paso" && std::abs(meta.events[1].time - 0.9f) < 1e-6f, "mover un evento");
+    check(ecs::moveClipEvent(meta, 0, 5.0f, 1.0f) == 1 && meta.events[1].time == 1.0f, "mover recorta a la duracion");
+    meta.sections.push_back({"Inicio", 0.0f, ""});
+    check(ecs::saveClipMetaToCranim(old_file, meta), "guardar la meta en el .cranim");
+    ecs::ClipMeta again;
+    check(ecs::loadClipMetaFromCranim(old_file, again) && again.events.size() == 2 && again.sections.size() == 1,
+          "la meta vuelve");
+    asset::AnimationClip relo;
+    check(ecs::loadAnimationClip(old_file, model, relo) && relo.channels.size() == 1 && relo.events.size() == 2,
+          "las pistas siguen intactas tras guardar la meta");
+    check(ecs::removeClipEvent(meta, 0) && meta.events.size() == 1 && !ecs::removeClipEvent(meta, 7), "quitar un evento");
+    // Archivo lateral del modelo.
+    const std::filesystem::path sidecar = ecs::clipMetaSidecarPath(dir / "Heroe.crdata");
+    check(sidecar.filename().string() == "Heroe.crdata.crclipmeta", "nombre del archivo lateral");
+    std::map<std::string, ecs::ClipMeta> clips;
+    clips["Andar"] = again;
+    clips["Vacio"] = ecs::ClipMeta{};
+    check(ecs::saveModelClipMeta(sidecar, clips), "guardar el archivo lateral");
+    std::map<std::string, ecs::ClipMeta> clips_loaded;
+    check(ecs::loadModelClipMeta(sidecar, clips_loaded) && clips_loaded.size() == 2 &&
+              clips_loaded["Andar"].events.size() == 2 && clips_loaded["Vacio"].empty(),
+          "leer el archivo lateral (los vacios tambien: al recargar se borran)");
+    asset::AnimationClip target = model.animations[1];
+    ecs::applyClipMeta(target, clips_loaded["Andar"]);
+    check(target.events.size() == 2 && target.events[0].time <= target.events[1].time, "aplicar la meta a un clip");
+
+    // Linea de tiempo y reproduccion de la ventana de clips.
+    check(std::abs(ecs::timelineTimeAt(150.0f, 100.0f, 200.0f, 2.0f, 0.0f) - 0.5f) < 1e-5f, "linea de tiempo: x -> tiempo");
+    check(std::abs(ecs::timelineTimeAt(151.0f, 100.0f, 200.0f, 2.0f, 30.0f) - 15.0f / 30.0f) < 1e-5f, "al fotograma");
+    check(ecs::timelineTimeAt(0.0f, 100.0f, 200.0f, 2.0f, 0.0f) == 0.0f && ecs::timelineTimeAt(999.0f, 100.0f, 200.0f, 2.0f, 0.0f) == 2.0f,
+          "recortada");
+    check(std::abs(ecs::timelineX(1.0f, 100.0f, 200.0f, 2.0f) - 200.0f) < 1e-4f, "tiempo -> x");
+    ecs::ClipPreviewPlayer player;
+    player.playing = true;
+    player.step(0.75f, 1.0f);
+    player.step(0.5f, 1.0f);
+    check(std::abs(player.time - 0.25f) < 1e-5f && player.playing, "vista previa en bucle");
+    player.loop = false;
+    player.step(1.0f, 1.0f);
+    check(player.time == 1.0f && !player.playing, "sin bucle se para al final");
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--dump") return dumpModel(argv[2]);
     testDetection();
@@ -1334,6 +1917,12 @@ int main(int argc, char** argv) {
     testGroundTiltAndLook();
     testBlendTrees();
     testInertialization();
+    testRootMotion();
+    testLayersAndAdditive();
+    testClipEvents();
+    testControllerLayers();
+    testMontages();
+    testClipMetaFiles();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

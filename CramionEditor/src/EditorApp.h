@@ -136,6 +136,7 @@ struct LightingEditorState;  // EditorLighting.cpp: horneado de la luz rebotada
 struct MotionEditorState;    // EditorMotion.cpp: bases de Motion Matching
 struct KeyframeEditorState;  // EditorKeyframes.cpp: Dope Sheet y Graficas
 struct PhysicsToolsState;    // EditorDestruction.cpp: fracturar y asistente de vehiculo
+struct ClipEditorState;      // EditorClips.cpp: ventana de clips (eventos, vista previa)
 
 // std::find sobre Uuid: la STL de MSVC intenta vectorizar la comparacion de
 // 16 bytes y con clang falla una static_assert; find_if la evita.
@@ -1348,6 +1349,12 @@ private:
     void drawAnimatorSidePanel(ecs::Entity preview);
     // Entidad seleccionada que usa el controlador abierto (vista previa).
     ecs::Entity animatorPreviewEntity();
+    // --- Ventana de clips (EditorClips.cpp): elegir un clip, recorrerlo sobre
+    // el modelo y marcar sus eventos ---
+    bool show_clip_editor_ = false;
+    std::shared_ptr<ClipEditorState> clip_editor_;
+    void drawClipEditor();
+    void drawAnimatorLayersPanel();  // capas del controlador (EditorAnimator.cpp)
     // Clips de la entidad (o de su subarbol) para el menu Extraer.
     ecs::Entity animatedEntityIn(ecs::Entity entity);
     void drawExtractAnimationsMenu(ecs::Entity entity);
@@ -2096,6 +2103,7 @@ private:
     float animator_zoom_ = 1.0f;
     int animator_selected_state_ = -1;       // -1 ninguno
     int animator_selected_transition_ = -1;
+    int animator_layer_ = 0;                 // capa que se edita (0 = base; EditorAnimator.cpp)
     int animator_link_from_ = -2;            // -2 = no se crea transicion; kAnyState = desde Any
     int animator_drag_ = -3;                 // estado arrastrado (-1 = Any, -2 = Entry, -3 = nada)
     bool animator_focus_ = false;

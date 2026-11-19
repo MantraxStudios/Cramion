@@ -82,6 +82,133 @@ void decompose(const Mat4& m, Vec3& translation, Quat& rotation, Vec3& scaling) 
     rotation = core::normalize(q);
 }
 
+// --- Cuaterniones y root motion ---------------------------------------------------
+
+Quat qmul(const Quat& a, const Quat& b) {
+    return Quat{a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+}
+
+Quat qconj(const Quat& q) { return Quat{-q.x, -q.y, -q.z, q.w}; }
+
+Quat yawQuat(float angle) { return Quat{0.0f, std::sin(angle * 0.5f), 0.0f, std::cos(angle * 0.5f)}; }
+
+float wrapAngle(float a) {
+    constexpr float kTwoPi = 6.28318530718f;
+    a = std::fmod(a + core::kPi, kTwoPi);
+    if (a < 0.0f) a += kTwoPi;
+    return a - core::kPi;
+}
+
+// Angulo del giro sobre +Y que contiene q (descomposicion swing-twist).
+float twistYaw(const Quat& q) {
+    if (std::abs(q.y) < 1e-8f && std::abs(q.w) < 1e-8f) return 0.0f;
+    return wrapAngle(2.0f * std::atan2(q.y, q.w));
+}
+
+Vec3 transformPoint(const Mat4& m, const Vec3& p) {
+    const Vec4 r = m * Vec4{p, 1.0f};
+    return Vec3{r.x, r.y, r.z};
+}
+
+// Lo que hace falta para pasar la raiz de su padre al espacio del modelo: la
+// global en reposo del padre (los padres de la raiz no suelen animarse: el
+// nodo "Armature" con la escala del FBX) y la pose de reposo de la raiz.
+struct RootFrame {
+    Mat4 parent = Mat4::identity();
+    Mat4 parent_inv = Mat4::identity();
+    Quat parent_rot{};
+    Vec3 rest_t{};
+    Quat rest_r{};
+};
+
+RootFrame rootFrame(const asset::ModelData& model, std::int32_t node) {
+    RootFrame f;
+    Mat4 parent = Mat4::identity();
+    std::int32_t p = model.nodes[static_cast<std::size_t>(node)].parent;
+    // De la raiz hacia abajo: global(padre) = global(abuelo) * local(padre).
+    std::vector<std::int32_t> chain;
+    for (int guard = 0; p >= 0 && static_cast<std::size_t>(p) < model.nodes.size() && guard < 256; ++guard) {
+        chain.push_back(p);
+        p = model.nodes[static_cast<std::size_t>(p)].parent;
+    }
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) parent = parent * model.nodes[static_cast<std::size_t>(*it)].local;
+    f.parent = parent;
+    f.parent_inv = core::inverse(parent);
+    Vec3 t, s;
+    decompose(parent, t, f.parent_rot, s);
+    decompose(model.nodes[static_cast<std::size_t>(node)].local, f.rest_t, f.rest_r, s);
+    return f;
+}
+
+// Posicion (modelo) y giro de la raiz en un instante del clip.
+void sampleRootModel(const RootFrame& f, const asset::AnimationChannel& channel, float time, Vec3& position, Quat& rotation) {
+    const Vec3 t = channel.positions.empty() ? f.rest_t : sampleVector(channel.positions, time);
+    const Quat r = channel.rotations.empty() ? f.rest_r : sampleRotation(channel.rotations, time);
+    position = transformPoint(f.parent, t);
+    rotation = qmul(f.parent_rot, r);
+}
+
+// Deja la raiz como en el primer fotograma del clip en XZ y sin el giro en Y
+// que lleva desde el: el personaje anima en el sitio.
+void stripRootPose(const RootFrame& f, const asset::AnimationChannel& channel, Vec3& t, Quat& r) {
+    Vec3 p0;
+    Quat q0;
+    sampleRootModel(f, channel, 0.0f, p0, q0);
+    const Vec3 p = transformPoint(f.parent, t);
+    const Quat q = qmul(f.parent_rot, r);
+    const float yaw = twistYaw(qmul(q, qconj(q0)));
+    const Quat q2 = qmul(yawQuat(-yaw), q);
+    r = core::normalize(qmul(qconj(f.parent_rot), q2));
+    t = transformPoint(f.parent_inv, Vec3{p0.x, p.y, p0.z});
+}
+
+// Movimiento entre dos instantes del mismo ciclo (a <= b o al reves).
+RootMotion rootSegment(const RootFrame& f, const asset::AnimationChannel& channel, float a, float b) {
+    Vec3 p0, pa, pb;
+    Quat q0, qa, qb;
+    sampleRootModel(f, channel, 0.0f, p0, q0);
+    sampleRootModel(f, channel, a, pa, qa);
+    sampleRootModel(f, channel, b, pb, qb);
+    const float ya = twistYaw(qmul(qa, qconj(q0)));
+    const float yb = twistYaw(qmul(qb, qconj(q0)));
+    Vec3 d = pb - pa;
+    d.y = 0.0f;
+    return RootMotion{rotateAboutY(d, -ya), wrapAngle(yb - ya)};
+}
+
+// Hacia delante desde `start` durante `length` segundos (> 0).
+RootMotion rootForward(const RootFrame& f, const asset::AnimationChannel& channel, float duration, float start,
+                       float length, bool loop) {
+    if (!loop || duration <= 1e-5f) {
+        const float d = std::max(duration, 0.0f);
+        return rootSegment(f, channel, std::clamp(start, 0.0f, d), std::clamp(start + length, 0.0f, d));
+    }
+    RootMotion acc{};
+    float cur = start;
+    const float end = start + std::min(length, duration * 8.0f);  // como mucho 8 vueltas por frame
+    for (int guard = 0; cur < end - 1e-6f && guard < 32; ++guard) {
+        const float cycle = std::floor(cur / duration);
+        const float la = cur - cycle * duration;
+        const float seg_end = std::min(end, (cycle + 1.0f) * duration);
+        const float lb = std::min(seg_end - cycle * duration, duration);
+        const RootMotion seg = rootSegment(f, channel, la, lb);
+        acc.position = acc.position + rotateAboutY(seg.position, acc.yaw);
+        acc.yaw += seg.yaw;
+        cur = seg_end;
+    }
+    return acc;
+}
+
+RootMotion channelRootMotion(const RootFrame& f, const asset::AnimationChannel& channel, float duration, float time,
+                             float delta, bool loop) {
+    if (delta == 0.0f) return {};
+    if (delta > 0.0f) return rootForward(f, channel, duration, time - delta, delta, loop);
+    // Hacia atras (velocidad negativa): lo contrario de ir de `time` a `time - delta`.
+    const RootMotion fwd = rootForward(f, channel, duration, time, -delta, loop);
+    return RootMotion{rotateAboutY(Vec3{-fwd.position.x, 0.0f, -fwd.position.z}, -fwd.yaw), -fwd.yaw};
+}
+
 }  // namespace
 
 Animator::Animator(const asset::ModelData& model) : model_(&model) {
@@ -98,10 +225,7 @@ Animator::Animator(const asset::ModelData& model) : model_(&model) {
     evaluate();
 }
 
-void Animator::evaluateBlend(const ClipSample* samples, std::size_t count) {
-    if (model_ == nullptr) {
-        return;
-    }
+float Animator::gatherActive(const ClipSample* samples, std::size_t count) {
     const std::size_t node_count = model_->nodes.size();
     if (clip_channels_.size() < model_->animations.size()) {
         clip_channels_.resize(model_->animations.size());
@@ -110,6 +234,8 @@ void Animator::evaluateBlend(const ClipSample* samples, std::size_t count) {
     // lista es del animador y se reutiliza (antes, una reserva por frame).
     std::vector<BlendActive>& active = blend_active_;
     active.clear();
+    active_delta_.clear();
+    active_loop_.clear();
     float total = 0.0f;
     for (std::size_t k = 0; k < count; ++k) {
         const ClipSample& s = samples[k];
@@ -129,46 +255,288 @@ void Animator::evaluateBlend(const ClipSample* samples, std::size_t count) {
             a.channels = &map;
         }
         active.push_back(a);
+        if (root_node_ >= 0) {
+            active_delta_.push_back(s.delta);
+            active_loop_.push_back(s.loop ? 1 : 0);
+        }
         total += s.weight;
     }
+    return total;
+}
+
+void Animator::blendNode(std::size_t i, float total, Vec3& translation, Quat& rotation_out, Vec3& scaling) const {
+    translation = Vec3{};
+    scaling = Vec3{};
+    Quat rotation{0.0f, 0.0f, 0.0f, 0.0f};
+    Quat first{};
+    bool have_first = false;
+    const bool root = root_node_ >= 0 && static_cast<std::size_t>(root_node_) == i;
+    for (const BlendActive& a : blend_active_) {
+        Vec3 t = rest_translation_[i];
+        Quat r = rest_rotation_[i];
+        Vec3 sc = rest_scale_[i];
+        const std::int32_t channel_index = a.channels != nullptr ? (*a.channels)[i] : -1;
+        if (channel_index >= 0) {
+            const asset::AnimationChannel& channel = a.clip->channels[static_cast<std::size_t>(channel_index)];
+            if (!channel.positions.empty()) t = sampleVector(channel.positions, a.time);
+            if (!channel.rotations.empty()) r = sampleRotation(channel.rotations, a.time);
+            if (!channel.scales.empty()) sc = sampleVector(channel.scales, a.time);
+            // Root motion: la raiz se queda en el sitio (lo que avanza y gira lo
+            // aplica quien lo pidio).
+            if (root) stripRoot(*a.clip, channel_index, t, r);
+        }
+        const float w = a.weight / total;
+        translation = translation + t * w;
+        scaling = scaling + sc * w;
+        // Mismo hemisferio que la primera: si no, la mezcla da la vuelta larga.
+        if (!have_first) {
+            first = r;
+            have_first = true;
+        } else if (first.x * r.x + first.y * r.y + first.z * r.z + first.w * r.w < 0.0f) {
+            r = Quat{-r.x, -r.y, -r.z, -r.w};
+        }
+        rotation = Quat{rotation.x + r.x * w, rotation.y + r.y * w, rotation.z + r.z * w, rotation.w + r.w * w};
+    }
+    rotation_out = core::normalize(rotation);
+}
+
+void Animator::evaluateBlend(const ClipSample* samples, std::size_t count) {
+    if (model_ == nullptr) {
+        return;
+    }
+    const std::size_t node_count = model_->nodes.size();
+    const float total = gatherActive(samples, count);
+    const bool empty = blend_active_.empty();
     for (std::size_t i = 0; i < node_count; ++i) {
         const asset::Node& node = model_->nodes[i];
-        if (active.empty()) {
+        if (empty) {
             local_[i] = node.local;
         } else {
-            Vec3 translation{};
-            Vec3 scaling{};
-            Quat rotation{0.0f, 0.0f, 0.0f, 0.0f};
-            Quat first{};
-            bool have_first = false;
-            for (const BlendActive& a : active) {
-                Vec3 t = rest_translation_[i];
-                Quat r = rest_rotation_[i];
-                Vec3 sc = rest_scale_[i];
-                const std::int32_t channel_index = a.channels != nullptr ? (*a.channels)[i] : -1;
-                if (channel_index >= 0) {
-                    const asset::AnimationChannel& channel = a.clip->channels[static_cast<std::size_t>(channel_index)];
-                    if (!channel.positions.empty()) t = sampleVector(channel.positions, a.time);
-                    if (!channel.rotations.empty()) r = sampleRotation(channel.rotations, a.time);
-                    if (!channel.scales.empty()) sc = sampleVector(channel.scales, a.time);
-                }
-                const float w = a.weight / total;
-                translation = translation + t * w;
-                scaling = scaling + sc * w;
-                // Mismo hemisferio que la primera: si no, la mezcla da la vuelta larga.
-                if (!have_first) {
-                    first = r;
-                    have_first = true;
-                } else if (first.x * r.x + first.y * r.y + first.z * r.z + first.w * r.w < 0.0f) {
-                    r = Quat{-r.x, -r.y, -r.z, -r.w};
-                }
-                rotation = Quat{rotation.x + r.x * w, rotation.y + r.y * w, rotation.z + r.z * w, rotation.w + r.w * w};
-            }
-            local_[i] = core::composeTrs(translation, core::normalize(rotation), scaling);
+            Vec3 translation;
+            Quat rotation;
+            Vec3 scaling;
+            blendNode(i, total, translation, rotation, scaling);
+            local_[i] = core::composeTrs(translation, rotation, scaling);
         }
         global_[i] = (node.parent >= 0) ? global_[static_cast<std::size_t>(node.parent)] * local_[i] : local_[i];
     }
+    root_motion_ = root_node_ >= 0 && !empty ? activeRootMotion(total) : RootMotion{};
     updateBones();
+}
+
+void Animator::samplePose(const ClipSample* samples, std::size_t count, LocalPose& out, RootMotion* motion) {
+    if (model_ == nullptr) return;
+    const std::size_t node_count = model_->nodes.size();
+    out.resize(node_count);
+    const float total = gatherActive(samples, count);
+    if (blend_active_.empty()) {
+        restPose(out);
+        if (motion != nullptr) *motion = RootMotion{};
+        return;
+    }
+    for (std::size_t i = 0; i < node_count; ++i) {
+        blendNode(i, total, out.translation[i], out.rotation[i], out.scale[i]);
+    }
+    if (motion != nullptr) *motion = root_node_ >= 0 ? activeRootMotion(total) : RootMotion{};
+}
+
+void Animator::restPose(LocalPose& out) const {
+    if (model_ == nullptr) return;
+    out.resize(model_->nodes.size());
+    for (std::size_t i = 0; i < model_->nodes.size() && i < rest_translation_.size(); ++i) {
+        out.translation[i] = rest_translation_[i];
+        out.rotation[i] = rest_rotation_[i];
+        out.scale[i] = rest_scale_[i];
+    }
+}
+
+void Animator::applyPose(const LocalPose& pose) {
+    if (model_ == nullptr || pose.size() < model_->nodes.size()) return;
+    for (std::size_t i = 0; i < model_->nodes.size(); ++i) {
+        const asset::Node& node = model_->nodes[i];
+        local_[i] = core::composeTrs(pose.translation[i], pose.rotation[i], pose.scale[i]);
+        global_[i] = (node.parent >= 0) ? global_[static_cast<std::size_t>(node.parent)] * local_[i] : local_[i];
+    }
+    updateBones();
+}
+
+void Animator::evaluateLayered(const LayeredPosePlan& plan) {
+    if (model_ == nullptr) return;
+    RootMotion motion{};
+    samplePose(plan.base.data(), plan.base.size(), layer_base_, &motion);
+    const std::size_t root = root_node_ >= 0 ? static_cast<std::size_t>(root_node_) : 0;
+    for (std::size_t l = 0; l < plan.layer_count && l < plan.layers.size(); ++l) {
+        const PoseLayerJob& job = plan.layers[l];
+        const float weight = std::clamp(job.weight, 0.0f, 1.0f);
+        if (weight <= 1e-5f || job.samples.empty()) continue;
+        const std::vector<float>* mask = job.mask ? job.mask.get() : nullptr;
+        if (mask != nullptr && mask->size() < model_->nodes.size()) mask = nullptr;  // de otro esqueleto
+        if (job.mode == LayerBlendMode::Additive) {
+            samplePose(job.samples.data(), job.samples.size(), layer_pose_, nullptr);
+            if (!job.reference.empty()) {
+                samplePose(job.reference.data(), job.reference.size(), layer_ref_, nullptr);
+            } else {
+                // Referencia = el primer fotograma de cada clip de la capa.
+                thread_local std::vector<ClipSample> first;
+                first.assign(job.samples.begin(), job.samples.end());
+                for (ClipSample& s : first) {
+                    s.time = 0.0f;
+                    s.delta = 0.0f;
+                }
+                samplePose(first.data(), first.size(), layer_ref_, nullptr);
+            }
+            makeAdditivePose(layer_pose_, layer_ref_);
+            applyAdditivePose(layer_base_, layer_pose_, weight, mask);
+            continue;
+        }
+        RootMotion layer_motion{};
+        samplePose(job.samples.data(), job.samples.size(), layer_pose_, job.root_motion ? &layer_motion : nullptr);
+        blendPoseOverride(layer_base_, layer_pose_, weight, mask);
+        if (job.root_motion && root_node_ >= 0) {
+            const float w = weight * (mask != nullptr ? std::clamp((*mask)[root], 0.0f, 1.0f) : 1.0f);
+            motion.position = core::lerp(motion.position, layer_motion.position, w);
+            motion.yaw = motion.yaw + (layer_motion.yaw - motion.yaw) * w;
+        }
+    }
+    applyPose(layer_base_);
+    root_motion_ = root_node_ >= 0 ? motion : RootMotion{};
+}
+
+void Animator::setRootMotionNode(std::int32_t node) {
+    if (model_ == nullptr || node < 0 || static_cast<std::size_t>(node) >= model_->nodes.size()) {
+        root_node_ = -1;
+        root_motion_ = RootMotion{};
+        return;
+    }
+    if (node == root_node_) return;
+    root_node_ = node;
+    root_motion_ = RootMotion{};
+    const RootFrame frame = rootFrame(*model_, node);
+    root_parent_ = frame.parent;
+    root_parent_inv_ = frame.parent_inv;
+    root_parent_rot_ = frame.parent_rot;
+}
+
+void Animator::stripRoot(const asset::AnimationClip& clip, std::int32_t channel_index, Vec3& t, Quat& r) const {
+    const asset::AnimationChannel& channel = clip.channels[static_cast<std::size_t>(channel_index)];
+    const std::size_t i = static_cast<std::size_t>(root_node_);
+    RootFrame frame{root_parent_, root_parent_inv_, root_parent_rot_, rest_translation_[i], rest_rotation_[i]};
+    stripRootPose(frame, channel, t, r);
+}
+
+RootMotion Animator::activeRootMotion(float total) const {
+    RootMotion sum{};
+    if (total <= 0.0f || root_node_ < 0) return sum;
+    for (std::size_t k = 0; k < blend_active_.size() && k < active_delta_.size(); ++k) {
+        const BlendActive& a = blend_active_[k];
+        if (a.clip == nullptr || active_delta_[k] == 0.0f) continue;
+        const std::int32_t channel_index = a.channels != nullptr ? (*a.channels)[static_cast<std::size_t>(root_node_)] : -1;
+        if (channel_index < 0) continue;
+        const std::size_t i = static_cast<std::size_t>(root_node_);
+        RootFrame frame{root_parent_, root_parent_inv_, root_parent_rot_, rest_translation_[i], rest_rotation_[i]};
+        const RootMotion m = channelRootMotion(frame, a.clip->channels[static_cast<std::size_t>(channel_index)],
+                                               a.clip->duration, a.time, active_delta_[k], active_loop_[k] != 0);
+        const float w = a.weight / total;
+        sum.position = sum.position + m.position * w;
+        sum.yaw += m.yaw * w;
+    }
+    return sum;
+}
+
+// --- Funciones libres -----------------------------------------------------------
+
+Vec3 rotateAboutY(const Vec3& v, float angle) {
+    const float c = std::cos(angle), s = std::sin(angle);
+    return Vec3{v.x * c + v.z * s, v.y, -v.x * s + v.z * c};
+}
+
+RootMotion clipRootMotion(const asset::ModelData& model, const asset::AnimationClip& clip, std::int32_t node,
+                          float time, float delta, bool loop) {
+    if (node < 0 || static_cast<std::size_t>(node) >= model.nodes.size()) return {};
+    for (const asset::AnimationChannel& channel : clip.channels) {
+        if (channel.node != node) continue;
+        const RootFrame frame = rootFrame(model, node);
+        return channelRootMotion(frame, channel, clip.duration, time, delta, loop);
+    }
+    return {};
+}
+
+void blendPoseOverride(LocalPose& base, const LocalPose& layer, float weight, const std::vector<float>* mask) {
+    const std::size_t n = std::min(base.size(), layer.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        const float w = weight * (mask != nullptr && i < mask->size() ? (*mask)[i] : 1.0f);
+        if (w <= 1e-5f) continue;
+        if (w >= 1.0f - 1e-5f) {
+            base.translation[i] = layer.translation[i];
+            base.rotation[i] = layer.rotation[i];
+            base.scale[i] = layer.scale[i];
+            continue;
+        }
+        base.translation[i] = core::lerp(base.translation[i], layer.translation[i], w);
+        base.scale[i] = core::lerp(base.scale[i], layer.scale[i], w);
+        base.rotation[i] = core::slerp(base.rotation[i], layer.rotation[i], w);
+    }
+}
+
+void makeAdditivePose(LocalPose& pose, const LocalPose& reference) {
+    const std::size_t n = std::min(pose.size(), reference.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        pose.translation[i] = pose.translation[i] - reference.translation[i];
+        pose.rotation[i] = core::normalize(qmul(qconj(reference.rotation[i]), pose.rotation[i]));
+        const Vec3& rs = reference.scale[i];
+        const Vec3& s = pose.scale[i];
+        pose.scale[i] = Vec3{std::abs(rs.x) > 1e-8f ? s.x / rs.x : 1.0f, std::abs(rs.y) > 1e-8f ? s.y / rs.y : 1.0f,
+                             std::abs(rs.z) > 1e-8f ? s.z / rs.z : 1.0f};
+    }
+}
+
+void applyAdditivePose(LocalPose& base, const LocalPose& delta, float weight, const std::vector<float>* mask) {
+    const std::size_t n = std::min(base.size(), delta.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        const float w = weight * (mask != nullptr && i < mask->size() ? (*mask)[i] : 1.0f);
+        if (w <= 1e-5f) continue;
+        base.translation[i] = base.translation[i] + delta.translation[i] * w;
+        const Quat d = w >= 1.0f - 1e-5f ? delta.rotation[i] : core::slerp(Quat{}, delta.rotation[i], w);
+        base.rotation[i] = core::normalize(qmul(base.rotation[i], d));
+        const Vec3 one{1.0f, 1.0f, 1.0f};
+        base.scale[i] = base.scale[i] * core::lerp(one, delta.scale[i], w);
+    }
+}
+
+void collectClipEvents(const asset::AnimationClip& clip, float time, float delta, bool loop, bool include_start,
+                       std::vector<std::uint32_t>& out) {
+    if (clip.events.empty()) return;
+    const float duration = clip.duration;
+    constexpr float kEps = 1e-5f;
+    const float a = time - delta;  // de donde viene
+    const float b = time;          // a donde llega
+    for (std::size_t k = 0; k < clip.events.size(); ++k) {
+        const float e = clip.events[k].time;
+        bool fire = false;
+        if (loop && duration > kEps) {
+            if (delta > 0.0f) {
+                // Hay alguna vuelta n con a < e + n*d <= b?
+                const float n = std::floor((a - e) / duration) + 1.0f;
+                fire = e + n * duration <= b + kEps;
+            } else if (delta < 0.0f) {
+                // Hacia atras: b <= e + n*d < a.
+                const float n = std::ceil((b - e) / duration);
+                fire = e + n * duration < a - kEps;
+            }
+            if (!fire && include_start) {
+                const float m = std::fmod(a - e, duration);
+                fire = std::abs(m) <= kEps || std::abs(std::abs(m) - duration) <= kEps;
+            }
+        } else {
+            const float lo = std::clamp(std::min(a, b), 0.0f, std::max(duration, 0.0f));
+            const float hi = std::clamp(std::max(a, b), 0.0f, std::max(duration, 0.0f));
+            if (delta > 0.0f) fire = e > lo + kEps && e <= hi + kEps;
+            else if (delta < 0.0f) fire = e >= lo - kEps && e < hi - kEps;
+            const float start = std::clamp(a, 0.0f, std::max(duration, 0.0f));
+            if (!fire && include_start) fire = std::abs(e - start) <= kEps;
+        }
+        if (fire) out.push_back(static_cast<std::uint32_t>(k));
+    }
 }
 
 void Animator::play(std::int32_t clip, bool loop) {
@@ -311,3 +679,20 @@ Aabb skinnedBounds(const asset::ModelData& model, const std::vector<Mat4>& bones
 }
 
 }  // namespace cramion::anim
+
+namespace cramion::asset {
+
+float ClipCurve::sample(float time) const {
+    if (keys.empty()) return 0.0f;
+    if (keys.size() == 1 || time <= keys.front().time) return keys.front().value;
+    if (time >= keys.back().time) return keys.back().value;
+    const auto next = std::upper_bound(keys.begin(), keys.end(), time,
+                                       [](float t, const CurveKey& key) { return t < key.time; });
+    const auto& k1 = *next;
+    const auto& k0 = *(next - 1);
+    const float span = k1.time - k0.time;
+    const float f = span > 0.0f ? (time - k0.time) / span : 0.0f;
+    return k0.value + (k1.value - k0.value) * f;
+}
+
+}  // namespace cramion::asset

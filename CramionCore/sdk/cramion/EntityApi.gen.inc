@@ -77,6 +77,13 @@ void setAlpha(const Value& v) const { set("alpha", v); }
 /// entity.angularVelocity2D: giro de su Rigidbody2D (grados/s) (numero)
 Value angularVelocity2D() const { return get("angularVelocity2D"); }
 void setAngularVelocity2D(const Value& v) const { set("angularVelocity2D", v); }
+/// entity().animatorCurve("Pisada")
+/// valor de una curva de los clips que suenan (Animator.GetFloat de una curva)
+/// Devuelve: numero
+template <typename T0 = Value>
+Value animatorCurve(const T0& texto = {}) const {
+    return call("animatorCurve", Values{Value(texto)});
+}
 /// entity().animatorState()
 /// nombre del estado actual del Animator
 /// Devuelve: texto
@@ -146,6 +153,12 @@ void setColor(const Value& v) const { set("color", v); }
 template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
 Value crossFade(const T0& texto = {}, const T1& valor = {}, const T2& activar = {}) const {
     return call("crossFade", Values{Value(texto), Value(valor), Value(activar)});
+}
+/// entity().crossFadeLayer("Torso", "Apuntar", 0.2)
+/// salta a un estado de una capa con fundido
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+Value crossFadeLayer(const T0& texto = {}, const T1& texto2 = {}, const T2& valor = {}) const {
+    return call("crossFadeLayer", Values{Value(texto), Value(texto2), Value(valor)});
 }
 /// entity().damage(cantidad, punto, fuerza)
 /// Destructible: quita vida (se rompe al llegar a 0)
@@ -344,6 +357,13 @@ template <typename... Mas>
 Value isMine(Mas&&... mas) const {
     return call("isMine", Values{Value(std::forward<Mas>(mas))...});
 }
+/// entity().isMontagePlaying()
+/// suena un montage?
+/// Devuelve: bool
+template <typename... Mas>
+Value isMontagePlaying(Mas&&... mas) const {
+    return call("isMontagePlaying", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity.isMoving: Su NavAgent va hacia un destino (booleano)
 Value isMoving() const { return get("isMoving"); }
 /// entity().isPlayingSound()
@@ -360,9 +380,43 @@ template <typename... Mas>
 Value isSleeping2D(Mas&&... mas) const {
     return call("isSleeping2D", Values{Value(std::forward<Mas>(mas))...});
 }
+/// entity().layerState("Torso")
+/// estado que suena en una capa del Animator
+/// Devuelve: texto
+template <typename T0 = Value>
+Value layerState(const T0& texto = {}) const {
+    return call("layerState", Values{Value(texto)});
+}
+/// entity().layerWeight("Torso")
+/// peso de una capa del Animator
+/// Devuelve: numero
+template <typename T0 = Value>
+Value layerWeight(const T0& texto = {}) const {
+    return call("layerWeight", Values{Value(texto)});
+}
 /// entity.mesh: malla creada por codigo de su MeshRenderer (Mesh)
 Value mesh() const { return get("mesh"); }
 void setMesh(const Value& v) const { set("mesh", v); }
+/// entity().montageJumpToSection("Final")
+/// salta a una seccion del clip del montage
+template <typename T0 = Value>
+Value montageJumpToSection(const T0& texto = {}) const {
+    return call("montageJumpToSection", Values{Value(texto)});
+}
+/// entity().montageSection()
+/// seccion del montage en la que va
+/// Devuelve: texto
+template <typename... Mas>
+Value montageSection(Mas&&... mas) const {
+    return call("montageSection", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity().montageTime()
+/// segundo del clip del montage
+/// Devuelve: numero
+template <typename... Mas>
+Value montageTime(Mas&&... mas) const {
+    return call("montageTime", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity.motionClip: clip que eligio el Motion Matching (texto)
 Value motionClip() const { return get("motionClip"); }
 /// entity().movePosition2D(Vec3(x, y, 0))
@@ -401,6 +455,13 @@ Value playAnimation(const T0& texto = {}, const T1& activar = {}) const {
 template <typename... Mas>
 Value playEffect(Mas&&... mas) const {
     return call("playEffect", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity().playMontage("Golpe", {slot = "Torso", blendIn = 0.1, blendOut = 0.2, speed = 1, section = "Inicio"})
+/// reproduce un clip puntual sobre el grafo (cuerpo entero o la capa del slot) y vuelve solo
+/// Devuelve: numero (id)
+template <typename T0 = Value, typename T1 = Value>
+Value playMontage(const T0& texto = {}, const T1& tabla = {}) const {
+    return call("playMontage", Values{Value(texto), Value(tabla)});
 }
 /// entity().playSound()
 /// suena su Audio Source
@@ -460,6 +521,13 @@ Value resetCloth(Mas&&... mas) const {
 template <typename... Mas>
 Value resetSoftBody(Mas&&... mas) const {
     return call("resetSoftBody", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity().rootMotionDelta()
+/// root motion del ultimo frame (mundo; yaw en grados)
+/// Devuelve: {position, yaw}
+template <typename... Mas>
+Value rootMotionDelta(Mas&&... mas) const {
+    return call("rootMotionDelta", Values{Value(std::forward<Mas>(mas))...});
 }
 /// entity.rpm: rpm del motor del Vehicle (numero)
 Value rpm() const { return get("rpm"); }
@@ -591,6 +659,12 @@ template <typename T0 = Value, typename T1 = Value>
 Value setIKWeight(const T0& texto = {}, const T1& valor = {}) const {
     return call("setIKWeight", Values{Value(texto), Value(valor)});
 }
+/// entity().setLayerWeight("Torso", 0.5)
+/// peso de una capa del Animator (nombre o numero; 1 = la primera de encima)
+template <typename T0 = Value, typename T1 = Value>
+Value setLayerWeight(const T0& texto = {}, const T1& valor = {}) const {
+    return call("setLayerWeight", Values{Value(texto), Value(valor)});
+}
 /// entity().setLookAt(objetivo, peso)
 /// Mirar con cabeza y cuello
 template <typename T0 = Value, typename T1 = Value>
@@ -634,6 +708,12 @@ Value setMotionVelocity(const T0& vec = {}) const {
 template <typename T0 = Value, typename T1 = Value>
 Value setNetVar(const T0& texto = {}, const T1& valor = {}) const {
     return call("setNetVar", Values{Value(texto), Value(valor)});
+}
+/// entity().setRootMotion("transform")
+/// root motion del Animator: off, transform, character, rigidbody o script
+template <typename T0 = Value>
+Value setRootMotion(const T0& texto = {}) const {
+    return call("setRootMotion", Values{Value(texto)});
 }
 /// entity().setSoundEffect("lowpass", true, 800)
 /// lowpass/highpass/echo/reverb/occlusion
@@ -766,6 +846,12 @@ void setSpriteFrame(const Value& v) const { set("spriteFrame", v); }
 template <typename T0 = Value>
 Value stopEffect(const T0& borrar = {}) const {
     return call("stopEffect", Values{Value(borrar)});
+}
+/// entity().stopMontage(0.2)
+/// apaga el montage en esos segundos
+template <typename T0 = Value>
+Value stopMontage(const T0& valor = {}) const {
+    return call("stopMontage", Values{Value(valor)});
 }
 /// entity().stopMoving()
 /// Se para

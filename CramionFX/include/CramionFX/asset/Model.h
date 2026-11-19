@@ -245,10 +245,47 @@ struct AnimationChannel {
     std::vector<VectorKey> scales;
 };
 
+// Evento (notify) en un instante de un clip: el fotograma del golpe, un paso,
+// el punto de lanzamiento de un hechizo. Llega a los scripts como el mensaje
+// OnAnimationEvent {name, clip, params, time}. `params`: texto libre (o JSON).
+struct ClipEvent {
+    std::string name;
+    float time = 0.0f;  // Segundos.
+    std::string params;
+};
+
+struct CurveKey {
+    float time = 0.0f;
+    float value = 0.0f;
+};
+
+// Curva float de un clip (lineal entre claves; fuera, la clave del extremo):
+// la leen los scripts con entity().animatorCurve("nombre").
+struct ClipCurve {
+    std::string name;
+    std::vector<CurveKey> keys;  // ordenadas por tiempo
+    float sample(float time) const;
+};
+
+// Seccion de un clip para los montages: desde `time` hasta la siguiente. Al
+// terminar salta a `next` (vacio = sigue con la siguiente; su propio nombre =
+// bucle).
+struct ClipSection {
+    std::string name;
+    float time = 0.0f;
+    std::string next;
+};
+
 struct AnimationClip {
     std::string name;
     float duration = 0.0f;  // Segundos.
     std::vector<AnimationChannel> channels;
+    // Metadatos de juego (ver ecs::ClipMeta en AnimatorController.h): NO van
+    // en la cache ni en el .crdata; se leen de la cabecera del .cranim o del
+    // archivo lateral <modelo>.crclipmeta.
+    std::vector<ClipEvent> events;      // ordenados por tiempo
+    std::vector<ClipCurve> curves;
+    std::vector<ClipSection> sections;  // ordenadas por tiempo
 };
 
 // Nivel de detalle simplificado (LOD1, LOD2...) de un modelo estatico. Usa los

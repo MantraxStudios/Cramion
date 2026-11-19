@@ -297,6 +297,29 @@ RenderSync::MotionStep RenderSync::updateMotionMatching(Entity e, anim::MotionMa
     } else {
         evaluateAt(rt.time);
     }
+    // Eventos del clip (como con el Animator): lo que avanzo sin saltar. Van al
+    // Animator de la entidad, si tiene (OnAnimationEvent, capa -2).
+    if (!rt.replay_control && !switched && step > 0.0f && clip >= 0 &&
+        clip < static_cast<int>(data.animations.size()) && !data.animations[static_cast<std::size_t>(clip)].events.empty()) {
+        if (Animator* animator = e.tryGet<Animator>()) {
+            const asset::AnimationClip& source = data.animations[static_cast<std::size_t>(clip)];
+            const float start = f.entry_start[entry];
+            // El tramo del clip de esta entrada, con sus tiempos desde 0.
+            thread_local asset::AnimationClip window;
+            window.duration = duration;
+            window.events.clear();
+            for (const asset::ClipEvent& ev : source.events) {
+                if (ev.time < start - 1e-5f || ev.time > start + duration + 1e-5f) continue;
+                window.events.push_back(asset::ClipEvent{ev.name, ev.time - start, ev.params});
+            }
+            fired_events_.clear();
+            anim::collectClipEvents(window, rt.time, step, loop, false, fired_events_);
+            for (const std::uint32_t k : fired_events_) {
+                const asset::ClipEvent& ev = window.events[k];
+                animator->runtime.pushEvent(AnimatorFiredEvent{ev.name, source.name, ev.params, ev.time + start, -2});
+            }
+        }
+    }
     // El Animator vuelve a elegir su clip si el Motion Matching se apaga.
     state.clip = -3;
     state.controller_state = -1;

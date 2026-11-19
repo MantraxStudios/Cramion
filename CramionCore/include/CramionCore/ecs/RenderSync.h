@@ -206,6 +206,10 @@ public:
     // llama a reload... al guardarlos para que el cambio se vea al momento.
     std::shared_ptr<const AnimatorController> animatorController(const Uuid& uuid);
     void reloadAnimatorController(const Uuid& uuid);
+    // Vuelve a leer los eventos y curvas de los clips de los modelos
+    // (<modelo>.crdata.crclipmeta) la proxima vez que se usen: lo llama el
+    // editor al guardarlos desde la ventana de clips.
+    void reloadClipMeta();
 
     // Bases de Motion Matching (.crmmdb) en uso: se leen una vez; el editor
     // llama a reloadMotionDatabase() al guardarlas (se rehacen sus rasgos).
@@ -376,6 +380,13 @@ private:
         Uuid rig_model{};
         entt::entity rig_ik = entt::null, rig_proc = entt::null, rig_skeleton = entt::null,
                      rig_physbones = entt::null, rig_ragdoll = entt::null, rig_share = entt::null;
+        // Capas del Animator y montages (RenderSyncAnim.cpp): la pose por capas
+        // de este frame (se evalua con las demas, en paralelo).
+        anim::LayeredPosePlan plan;
+        // Root motion: nodo raiz resuelto para `root_bone` (-2 = sin resolver).
+        int root_node = -2;
+        std::string root_bone;
+        const asset::ModelData* root_model = nullptr;
     };
     // El Animator del estado (lo crea si era solo la pose de reposo) y su
     // modelo (sin crearlo).
@@ -428,6 +439,32 @@ private:
     MotionStep updateMotionMatching(Entity e, anim::MotionMatching& mm, std::uint32_t model,
                                     const asset::ModelData& data, AnimationState& state, scene::Scene& scene,
                                     float delta_seconds);
+
+    // --- Capas, montages, eventos, curvas y root motion (RenderSyncAnim.cpp) ---
+    // Eventos y curvas de los clips de dentro de un modelo: su archivo lateral
+    // (<modelo>.crdata.crclipmeta), leido una vez por modelo de la escena.
+    void ensureClipMeta(std::uint32_t model, const Uuid& model_uuid, scene::Scene& scene);
+    std::unordered_set<std::uint32_t> clip_meta_done_;
+    // Peso por nodo de la mascara de una capa (en cache por controlador, capa y modelo).
+    std::shared_ptr<const std::vector<float>> layerMask(const AnimatorController& controller, int layer,
+                                                        std::uint32_t model, const asset::ModelData& data);
+    struct LayerMaskEntry {
+        const AnimatorController* owner = nullptr;
+        const asset::ModelData* data = nullptr;
+        std::shared_ptr<const std::vector<float>> weights;
+    };
+    std::unordered_map<std::uint64_t, LayerMaskEntry> layer_masks_;
+    // Nodo raiz del root motion (cache en el estado).
+    static int rootMotionNode(AnimationState& state, const asset::ModelData& data, const std::string& bone);
+    // Capas de encima, montage, eventos y curvas sobre las muestras de la base
+    // (ya en state.plan.base). `resolve` da el clip de un estado. Devuelve true
+    // si hay algo encima de la base (entonces la pose es evaluateLayered).
+    bool buildAnimationLayers(Entity e, Animator& animator, const AnimatorController* controller,
+                              AnimationState& state, std::uint32_t model, const asset::ModelData& data,
+                              scene::Scene& scene, float dt, const AnimatorSyncSource& base_sync,
+                              std::size_t base_current_begin);
+    std::vector<anim::ClipSample> layer_samples_;
+    std::vector<std::uint32_t> fired_events_;
 
     std::optional<std::uint32_t> resolveModel(const assets::AssetRef& ref, int part,
                                               scene::Scene& scene, bool& added);

@@ -39,6 +39,7 @@ enum class AssetType : std::uint32_t {
     MotionDatabase = 40,  // .crmmdb base de datos de Motion Matching (anim/MotionMatching.h)
     VisualEffect = 50,    // .crvfx efecto de particulas en la GPU (vfx/VisualEffect.h)
     Fracture = 60,        // .crfracture trozos precalculados de un objeto (physics/Fracture.h)
+    BoneMask = 70,        // .crmask mascara de huesos de las capas del Animator (ecs/AnimatorController.h)
 };
 
 inline const char* assetTypeName(AssetType type) {
@@ -57,6 +58,7 @@ inline const char* assetTypeName(AssetType type) {
         case AssetType::MotionDatabase: return "Motion Matching";
         case AssetType::VisualEffect: return "Efecto visual (VFX)";
         case AssetType::Fracture: return "Fractura";
+        case AssetType::BoneMask: return "Mascara de huesos";
         default: return "Desconocido";
     }
 }

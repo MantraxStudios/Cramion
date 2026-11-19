@@ -143,6 +143,7 @@ void EditorApp::openAnimatorEditor(const Uuid& uuid) {
     animator_selected_transition_ = -1;
     animator_link_from_ = -2;
     animator_drag_ = -3;
+    animator_layer_ = 0;
     show_animator_ = true;
     animator_focus_ = true;
 }
@@ -320,16 +321,160 @@ void EditorApp::drawAnimatorEditor() {
     const ecs::Entity preview = animatorPreviewEntity();
 
     ImGui::BeginChild("animator_side", ImVec2(270.0f, 0.0f), ImGuiChildFlags_ResizeX | ImGuiChildFlags_Borders);
+    drawAnimatorLayersPanel();
+    // Una capa de encima se edita con el mismo grafo: sus estados y
+    // transiciones pasan un momento al sitio de los de la base (y vuelven
+    // antes de guardar).
+    ecs::AnimatorController& controller = animator_;
+    const int layer = animator_layer_ >= 1 && animator_layer_ <= static_cast<int>(controller.layers.size()) ? animator_layer_ : 0;
+    animator_layer_ = layer;
+    const auto swapLayer = [&]() {
+        if (layer == 0) return;
+        ecs::AnimatorLayer& l = controller.layers[static_cast<std::size_t>(layer - 1)];
+        std::swap(controller.states, l.states);
+        std::swap(controller.transitions, l.transitions);
+        std::swap(controller.default_state, l.default_state);
+        std::swap(controller.entry_position, l.entry_position);
+        std::swap(controller.any_state_position, l.any_state_position);
+    };
+    swapLayer();
     drawAnimatorSidePanel(preview);
     ImGui::EndChild();
     ImGui::SameLine();
-    drawAnimatorGraph(preview);
+    drawAnimatorGraph(layer == 0 ? preview : ecs::Entity{});  // el estado en vivo es el de la base
+    swapLayer();
 
     // Se guarda solo al terminar cada cambio (no mientras se arrastra/escribe).
     if (animator_dirty_ && !ImGui::IsAnyItemActive() && animator_drag_ == -3) {
         saveAnimatorEditor();
     }
     ImGui::End();
+}
+
+void EditorApp::drawAnimatorLayersPanel() {
+    ecs::AnimatorController& c = animator_;
+    ImGui::SeparatorText("Capas");
+    const auto layerName = [&](int k) -> std::string {
+        return k == 0 ? c.base_layer_name : c.layers[static_cast<std::size_t>(k - 1)].name;
+    };
+    int layer = animator_layer_ >= 1 && animator_layer_ <= static_cast<int>(c.layers.size()) ? animator_layer_ : 0;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 60.0f);
+    if (ImGui::BeginCombo("##layer", layerName(layer).c_str())) {
+        for (int k = 0; k <= static_cast<int>(c.layers.size()); ++k) {
+            ImGui::PushID(k);
+            if (ImGui::Selectable(layerName(k).c_str(), k == layer)) {
+                layer = k;
+                animator_selected_state_ = -1;
+                animator_selected_transition_ = -1;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+")) {
+        ecs::AnimatorLayer l;
+        l.name = "Capa " + std::to_string(c.layers.size() + 1);
+        c.layers.push_back(std::move(l));
+        layer = static_cast<int>(c.layers.size());
+        animator_selected_state_ = -1;
+        animator_selected_transition_ = -1;
+        animator_dirty_ = true;
+    }
+    ImGui::SetItemTooltip("Capa nueva encima (su propia maquina de estados, peso y mascara)");
+    if (layer > 0) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) {
+            c.layers.erase(c.layers.begin() + (layer - 1));
+            // Las que se sincronizaban con ella (o con las de detras) dejan de hacerlo.
+            for (ecs::AnimatorLayer& l : c.layers) {
+                if (l.sync_layer >= layer) l.sync_layer = -1;
+            }
+            layer = 0;
+            animator_selected_state_ = -1;
+            animator_selected_transition_ = -1;
+            animator_dirty_ = true;
+        }
+    }
+    animator_layer_ = layer;
+    if (layer == 0) {
+        ImGui::TextDisabled("Base: la maquina de siempre.");
+        return;
+    }
+    ecs::AnimatorLayer& l = c.layers[static_cast<std::size_t>(layer - 1)];
+    ImGui::PushID("layer_props");
+    ImGui::InputText("Nombre##layer", &l.name);
+    if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
+    if (ImGui::SliderFloat("Peso", &l.weight, 0.0f, 1.0f, "%.2f")) animator_dirty_ = true;
+    int blending = static_cast<int>(l.blending);
+    static constexpr const char* kBlend[] = {"Override", "Aditiva"};
+    if (ImGui::Combo("Mezcla", &blending, kBlend, 2)) {
+        l.blending = static_cast<ecs::AnimatorLayerBlend>(blending);
+        animator_dirty_ = true;
+    }
+    if (l.blending == ecs::AnimatorLayerBlend::Additive) {
+        ImGui::InputTextWithHint("Referencia", "primer fotograma", &l.reference_clip_name);
+        if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
+        ImGui::SetItemTooltip("Clip cuya pose se resta (vacio = el primer fotograma de cada clip de la capa)");
+        if (!l.reference_clip_name.empty() && ImGui::DragFloat("Instante", &l.reference_time, 0.01f, 0.0f, 100.0f, "%.2f s")) {
+            animator_dirty_ = true;
+        }
+    }
+    // Sincronizada con una capa de antes.
+    const std::string sync_label = l.sync_layer < 0 ? std::string("(no)") : layerName(l.sync_layer);
+    if (ImGui::BeginCombo("Sincronizar", sync_label.c_str())) {
+        if (ImGui::Selectable("(no)", l.sync_layer < 0)) {
+            l.sync_layer = -1;
+            animator_dirty_ = true;
+        }
+        for (int k = 0; k < layer; ++k) {
+            ImGui::PushID(k);
+            if (ImGui::Selectable(layerName(k).c_str(), l.sync_layer == k)) {
+                l.sync_layer = k;
+                animator_dirty_ = true;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("Sigue los estados y el ciclo de esa capa; cada estado de esta pone su propio clip\n"
+                          "(el estado i de esta capa = el estado i de la otra; sin clip, el de la otra).");
+    // Mascara: lista de huesos (o un .crmask).
+    if (l.mask.valid()) {
+        const auto info = database_->find(l.mask.uuid);
+        ImGui::Text("Mascara: %s", info ? info->name.c_str() : "(no encontrada)");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Quitar##mask")) {
+            l.mask = assets::AssetRef{{}, assets::AssetType::BoneMask};
+            animator_dirty_ = true;
+        }
+    }
+    ImGui::TextDisabled(l.mask_bones.empty() && !l.mask.valid() ? "Mascara: todo el cuerpo" : "Huesos de la mascara:");
+    int remove = -1;
+    for (std::size_t i = 0; i < l.mask_bones.size(); ++i) {
+        ecs::BoneMaskEntry& b = l.mask_bones[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.45f);
+        ImGui::InputText("##bone", &b.bone);
+        if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
+        ImGui::SameLine();
+        if (ImGui::Checkbox("hijos", &b.children)) animator_dirty_ = true;
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(40.0f);
+        if (ImGui::DragFloat("##w", &b.weight, 0.01f, 0.0f, 1.0f, "%.1f")) animator_dirty_ = true;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (remove >= 0) {
+        l.mask_bones.erase(l.mask_bones.begin() + remove);
+        animator_dirty_ = true;
+    }
+    if (ImGui::SmallButton("+ Hueso")) {
+        l.mask_bones.push_back(ecs::BoneMaskEntry{"Spine", true, 1.0f});
+        animator_dirty_ = true;
+    }
+    ImGui::PopID();
 }
 
 void EditorApp::drawAnimatorSidePanel(ecs::Entity preview) {
