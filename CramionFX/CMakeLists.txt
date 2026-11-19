@@ -205,6 +205,15 @@ set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/vendor/bc7enc/bc7enc.cp
     PROPERTIES COMPILE_OPTIONS "-O2;-w")
 target_include_directories(CramionFX SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/bc7enc")
 
+# ufbx 0.23.1 (Samuli Raivio, MIT, un solo archivo en C, vendor/ufbx): el
+# cargador de FBX nuevo (UfbxLoader.cpp, CVar asset.fbx.Loader). Codigo de
+# terceros: sin avisos y siempre optimizado, como bc7enc.
+enable_language(C)
+target_sources(CramionFX PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ufbx/ufbx.c")
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/vendor/ufbx/ufbx.c"
+    PROPERTIES COMPILE_OPTIONS "-O2;-w")
+target_include_directories(CramionFX SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ufbx")
+
 # Vulkan Memory Allocator (AMD, MIT, un solo archivo): reparte grandes bloques
 # de memoria de la GPU entre los buffers y las texturas (antes, una asignacion
 # de Vulkan por recurso). La implementacion se compila en

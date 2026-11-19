@@ -3,6 +3,7 @@
 #include "CramionFX/asset/ModelCache.h"
 #include "CramionFX/asset/ObjLoader.h"
 #include "CramionFX/asset/TextureCompression.h"
+#include "UfbxLoader.h"
 
 #include <assimp/Importer.hpp>
 #include <assimp/ProgressHandler.hpp>
@@ -28,6 +29,21 @@
 
 namespace cramion::asset {
 namespace {
+
+// Cargador de FBX y formas de mezcla (CVars de CramionCore).
+std::atomic<FbxLoader> g_fbx_loader{FbxLoader::Assimp};
+std::atomic<bool> g_import_blend_shapes{true};
+
+bool isFbx(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return extension == ".fbx";
+}
+
+bool useUfbx(const std::filesystem::path& path) {
+    return g_fbx_loader.load() == FbxLoader::Ufbx && isFbx(path);
+}
 
 using core::Mat4;
 using core::Quat;
@@ -116,6 +132,39 @@ public:
         addMeshes(scene_.mRootNode);
         if (!static_scene_) {
             addAnimations();
+        }
+    }
+
+    // Formas de mezcla de assimp (aiMesh::mAnimMeshes: glTF y FBX). Las
+    // posiciones vienen absolutas: el delta es la resta con la base.
+    void addBlendShapes(const aiMesh& mesh, std::uint32_t base_vertex) {
+        if (static_scene_ || !importBlendShapes()) return;
+        for (unsigned int a = 0; a < mesh.mNumAnimMeshes; ++a) {
+            const aiAnimMesh* anim = mesh.mAnimMeshes[a];
+            if (anim == nullptr || anim->mVertices == nullptr || anim->mNumVertices != mesh.mNumVertices) continue;
+            std::string name = anim->mName.C_Str();
+            if (name.empty()) name = std::string(mesh.mName.C_Str()) + "." + std::to_string(a);
+            const auto [it, inserted] = shape_index_.try_emplace(name, static_cast<std::uint32_t>(out_.blend_shapes.size()));
+            if (inserted) {
+                BlendShape shape{};
+                shape.name = name;
+                shape.default_weight = anim->mWeight;
+                out_.blend_shapes.push_back(std::move(shape));
+            }
+            mesh_shape_[{&mesh, a}] = it->second;
+            BlendShape& shape = out_.blend_shapes[it->second];
+            const bool normals = anim->mNormals != nullptr && mesh.mNormals != nullptr;
+            for (unsigned int v = 0; v < mesh.mNumVertices; ++v) {
+                const Vec3 delta = toVec3(anim->mVertices[v] - mesh.mVertices[v]);
+                const Vec3 normal = normals ? toVec3(anim->mNormals[v] - mesh.mNormals[v]) : Vec3{0.0f, 0.0f, 0.0f};
+                if (core::dot(delta, delta) == 0.0f && core::dot(normal, normal) == 0.0f) continue;
+                if (normals && shape.normal_deltas.size() < shape.position_deltas.size()) {
+                    shape.normal_deltas.resize(shape.position_deltas.size(), Vec3{0.0f, 0.0f, 0.0f});
+                }
+                shape.vertices.push_back(base_vertex + v);
+                shape.position_deltas.push_back(delta);
+                if (normals || !shape.normal_deltas.empty()) shape.normal_deltas.push_back(normal);
+            }
         }
     }
 
@@ -324,6 +373,7 @@ private:
         if (submesh.index_count > 0) {
             out_.submeshes.push_back(submesh);
         }
+        addBlendShapes(mesh, base_vertex);
     }
 
     static void addInfluence(SkinnedVertex& vertex, std::uint32_t bone, float weight) {
@@ -605,6 +655,35 @@ private:
                 clip.channels.push_back(std::move(channel));
             }
 
+            // Pesos de morph (glTF): cada pista nombra el nodo; sus claves
+            // dan el peso de cada malla animada (mAnimMeshes) de sus mallas.
+            for (unsigned int c = 0; c < animation.mNumMorphMeshChannels && !shape_index_.empty(); ++c) {
+                const aiMeshMorphAnim* source = animation.mMorphMeshChannels[c];
+                if (source == nullptr || source->mKeys == nullptr) continue;
+                std::string node_name = source->mName.C_Str();
+                if (const auto star = node_name.find('*'); star != std::string::npos) node_name.resize(star);
+                const aiNode* node = scene_.mRootNode->FindNode(node_name.c_str());
+                if (node == nullptr) continue;
+                std::unordered_map<std::uint32_t, BlendShapeTrack> tracks;
+                for (unsigned int k = 0; k < source->mNumKeys; ++k) {
+                    const aiMeshMorphKey& key = source->mKeys[k];
+                    for (unsigned int v = 0; v < key.mNumValuesAndWeights; ++v) {
+                        for (unsigned int m = 0; m < node->mNumMeshes; ++m) {
+                            const aiMesh* mesh = scene_.mMeshes[node->mMeshes[m]];
+                            const auto it = mesh_shape_.find({mesh, key.mValues[v]});
+                            if (it == mesh_shape_.end()) continue;
+                            BlendShapeTrack& track = tracks[it->second];
+                            track.shape = it->second;
+                            const float time = to_seconds(key.mTime);
+                            if (track.keys.empty() || track.keys.back().time != time) {
+                                track.keys.push_back({time, static_cast<float>(key.mWeights[v])});
+                            }
+                        }
+                    }
+                }
+                for (auto& [shape, track] : tracks) clip.blend_tracks.push_back(std::move(track));
+            }
+
             out_.animations.push_back(std::move(clip));
         }
     }
@@ -620,6 +699,14 @@ private:
     std::unordered_map<std::string, std::int32_t> texture_index_;
     std::unordered_set<unsigned int> skinned_meshes_done_;
     bool static_scene_ = false;
+    // Formas de mezcla: por nombre, y (malla, indice de mAnimMeshes) -> forma.
+    struct MeshShapeHash {
+        std::size_t operator()(const std::pair<const aiMesh*, unsigned int>& k) const {
+            return std::hash<const void*>()(k.first) ^ (static_cast<std::size_t>(k.second) * 0x9E3779B97F4A7C15ull);
+        }
+    };
+    std::unordered_map<std::string, std::uint32_t> shape_index_;
+    std::unordered_map<std::pair<const aiMesh*, unsigned int>, std::uint32_t, MeshShapeHash> mesh_shape_;
 };
 
 // Parte las submallas de un modelo estatico en clusteres (por el centro de
@@ -1285,8 +1372,9 @@ ModelData importModelSource(const std::filesystem::path& path, bool force_static
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     // Los OBJ (escenarios enormes) van por el lector propio en paralelo; el
     // resto de formatos, por assimp.
-    return (extension == ".obj") ? loadObj(path)
-                                 : importWithAssimp(path, force_static, false, on_progress);
+    if (extension == ".obj") return loadObj(path);
+    if (useUfbx(path)) return detail::importFbxWithUfbx(path, force_static, false, on_progress);
+    return importWithAssimp(path, force_static, false, on_progress);
 }
 
 ModelData importModelHierarchy(const std::filesystem::path& path,
@@ -1294,8 +1382,9 @@ ModelData importModelHierarchy(const std::filesystem::path& path,
     std::string extension = path.extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return (extension == ".obj") ? loadObj(path, /*by_object=*/true)
-                                 : importWithAssimp(path, false, /*keep_hierarchy=*/true, on_progress);
+    if (extension == ".obj") return loadObj(path, /*by_object=*/true);
+    if (useUfbx(path)) return detail::importFbxWithUfbx(path, false, /*keep_hierarchy=*/true, on_progress);
+    return importWithAssimp(path, false, /*keep_hierarchy=*/true, on_progress);
 }
 
 void clusterSubmeshes(ModelData& model) {
@@ -1494,6 +1583,7 @@ float fileUnitScale(const std::filesystem::path& path) {
     std::transform(extension.begin(), extension.end(), extension.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (extension != ".fbx") return 1.0f;  // glTF en metros; OBJ sin unidades
+    if (useUfbx(path)) return detail::ufbxFileUnitScale(path);
     Assimp::Importer importer;
     // Sin postproceso: solo la cabecera y los metadatos.
     const aiScene* scene = importer.ReadFile(utf8(path), 0);
@@ -1510,6 +1600,9 @@ void scaleModel(ModelData& model, float scale) {
         m.m[3][2] *= scale;
     };
     for (SkinnedVertex& v : model.vertices) v.position = v.position * scale;
+    for (BlendShape& shape : model.blend_shapes) {
+        for (Vec3& delta : shape.position_deltas) delta = delta * scale;
+    }
     for (Node& n : model.nodes) scaleTranslation(n.local);
     for (Bone& b : model.bones) scaleTranslation(b.offset);
     for (AnimationClip& clip : model.animations) {
@@ -1529,6 +1622,7 @@ void scaleModel(ModelData& model, float scale) {
 
 std::vector<AnimationClip> loadAnimationClips(const std::filesystem::path& path, const std::vector<Node>& target,
                                               std::string* error, float scale, bool convert_units) {
+    if (useUfbx(path)) return detail::ufbxLoadAnimationClips(path, target, error, scale, convert_units);
     std::vector<AnimationClip> clips;
     Assimp::Importer importer;
     importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, false);
@@ -1582,11 +1676,63 @@ std::vector<AnimationClip> loadAnimationClips(const std::filesystem::path& path,
     return clips;
 }
 
+void setFbxLoader(FbxLoader loader) { g_fbx_loader.store(loader); }
+FbxLoader fbxLoader() { return g_fbx_loader.load(); }
+void setImportBlendShapes(bool enabled) { g_import_blend_shapes.store(enabled); }
+bool importBlendShapes() { return g_import_blend_shapes.load(); }
+
+std::vector<SkinnedVertex> applyBlendShapes(const ModelData& model, const std::vector<float>& weights) {
+    std::vector<SkinnedVertex> vertices = model.vertices.get();
+    std::vector<bool> touched(vertices.size(), false);
+    for (std::size_t s = 0; s < model.blend_shapes.size() && s < weights.size(); ++s) {
+        const float weight = weights[s];
+        if (weight == 0.0f) continue;
+        const BlendShape& shape = model.blend_shapes[s];
+        const bool normals = shape.normal_deltas.size() == shape.vertices.size();
+        for (std::size_t i = 0; i < shape.vertices.size() && i < shape.position_deltas.size(); ++i) {
+            const std::uint32_t v = shape.vertices[i];
+            if (v >= vertices.size()) continue;
+            vertices[v].position = vertices[v].position + shape.position_deltas[i] * weight;
+            if (normals) {
+                vertices[v].normal = vertices[v].normal + shape.normal_deltas[i] * weight;
+                touched[v] = true;
+            }
+        }
+    }
+    for (std::size_t v = 0; v < vertices.size(); ++v) {
+        if (!touched[v]) continue;
+        const float length = core::length(vertices[v].normal);
+        if (length > 1e-12f) vertices[v].normal = vertices[v].normal * (1.0f / length);
+    }
+    return vertices;
+}
+
+float sampleBlendShapeTrack(const BlendShapeTrack& track, float time) {
+    if (track.keys.empty()) return 0.0f;
+    if (time <= track.keys.front().time) return track.keys.front().weight;
+    if (time >= track.keys.back().time) return track.keys.back().weight;
+    const auto next = std::upper_bound(track.keys.begin(), track.keys.end(), time,
+                                       [](float t, const BlendShapeKey& key) { return t < key.time; });
+    const BlendShapeKey& b = *next;
+    const BlendShapeKey& a = *(next - 1);
+    const float span = b.time - a.time;
+    const float f = span > 0.0f ? (time - a.time) / span : 0.0f;
+    return a.weight + (b.weight - a.weight) * f;
+}
+
+std::int32_t findBlendShape(const ModelData& model, const std::string& name) {
+    for (std::size_t i = 0; i < model.blend_shapes.size(); ++i) {
+        if (model.blend_shapes[i].name == name) return static_cast<std::int32_t>(i);
+    }
+    return -1;
+}
+
 ModelData loadModel(const std::filesystem::path& path, bool force_static) {
     const auto start = std::chrono::steady_clock::now();
     // La version estatica es otro resultado: cache aparte.
-    const std::filesystem::path cache_path =
-        path.string() + (force_static ? ".static.cramcache" : ".cramcache");
+    // Con ufbx tambien aparte: cambiar de cargador no reutiliza la del otro.
+    const std::filesystem::path cache_path = path.string() + (useUfbx(path) ? ".ufbx" : "") +
+                                             (force_static ? ".static.cramcache" : ".cramcache");
 
     ModelData model{};
     StageTimer timer;
@@ -1602,7 +1748,9 @@ ModelData loadModel(const std::filesystem::path& path, bool force_static) {
         // el resto de formatos, por assimp.
         std::cout << "[Modelo] Importando " << path.filename().string()
                   << " (solo la primera vez; despues se lee de la cache)...\n";
-        model = (extension == ".obj") ? loadObj(path) : importWithAssimp(path, force_static);
+        model = (extension == ".obj") ? loadObj(path)
+                : useUfbx(path)       ? detail::importFbxWithUfbx(path, force_static, false, {})
+                                      : importWithAssimp(path, force_static);
         try {
             writeModelCache(cache_path, path, model);
             std::cout << "[Modelo] Cache guardada en " << cache_path.string() << "\n";

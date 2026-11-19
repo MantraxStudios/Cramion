@@ -1,6 +1,7 @@
 #include "CramionCore/asset/Importer.h"
 
 #include "CrData.h"
+#include "CramionCore/cvar/CVar.h"
 
 #include <CramionFX/asset/Model.h>
 
@@ -28,6 +29,32 @@ using asset::ModelData;
 using core::Mat4;
 using core::Vec3;
 using core::Vec4;
+
+// --- Cargador de FBX (ROADMAP P1 #1) ---
+// "anterior" = assimp, el de siempre; "ufbx" = el nuevo (ufbx 0.23.1). Lo
+// usan la importacion, la reimportacion, loadModel y las tomas sueltas
+// (LocomotionPack). Por defecto el anterior: ver NOTAS-RM-ufbx.md (paridad).
+cvar::CVar<std::string> g_fbx_loader("asset.fbx.Loader", "anterior",
+                                     "Cargador de FBX: anterior (assimp) o ufbx", cvar::Saved);
+// Formas de mezcla (morph targets) al importar FBX/glTF. Solo datos: se
+// guardan en el .crdata (bloque BSHP) y no cambian como se ve el modelo.
+cvar::CVar<bool> g_import_blend_shapes("asset.import.BlendShapes", true,
+                                       "Importar las formas de mezcla (morph targets) de FBX y glTF", cvar::Saved);
+
+void applyFbxLoader(const std::string& value) {
+    std::string v = value;
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    asset::setFbxLoader(v == "ufbx" ? asset::FbxLoader::Ufbx : asset::FbxLoader::Assimp);
+}
+
+[[maybe_unused]] const bool g_fbx_cvars_hooked = [] {
+    applyFbxLoader(g_fbx_loader.get());
+    asset::setImportBlendShapes(g_import_blend_shapes.get());
+    g_fbx_loader.onChanged([](cvar::CVarBase& v) { applyFbxLoader(v.toString()); });
+    g_import_blend_shapes.onChanged(
+        [](cvar::CVarBase&) { asset::setImportBlendShapes(g_import_blend_shapes.get()); });
+    return true;
+}();
 
 // Mas piezas que esto (o texturas muy repetidas entre piezas) y el modelo se
 // agrupa por material en lugar de por nodo/objeto. El renderizador sube las
@@ -868,6 +895,7 @@ bool writeGeneratedModel(const std::filesystem::path& file, const Uuid& uuid, co
 // texturas incrustadas, luces ni camaras: es lo caro de la segunda lectura
 // (la de importModelSource / importModelHierarchy) que aqui no hace falta.
 static bool sourceIsAnimated(const std::filesystem::path& source) {
+    if (const int animated = asset::ufbxSourceIsAnimated(source); animated >= 0) return animated == 1;
     Assimp::Importer importer;
     importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_MATERIALS, false);
     importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_TEXTURES, false);

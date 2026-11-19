@@ -245,10 +245,37 @@ struct AnimationChannel {
     std::vector<VectorKey> scales;
 };
 
+// Clave de peso de una forma de mezcla (0..1; puede pasar de 1).
+struct BlendShapeKey {
+    float time = 0.0f;  // Segundos.
+    float weight = 0.0f;
+};
+
+// Pista que anima el peso de una forma (ModelData::blend_shapes[shape]).
+struct BlendShapeTrack {
+    std::uint32_t shape = 0;
+    std::vector<BlendShapeKey> keys;
+};
+
 struct AnimationClip {
     std::string name;
     float duration = 0.0f;  // Segundos.
     std::vector<AnimationChannel> channels;
+    // Pesos de formas de mezcla animados por la toma (curvas DeformPercent
+    // del FBX, pesos de morph de glTF). Vacio casi siempre.
+    std::vector<BlendShapeTrack> blend_tracks;
+};
+
+// Forma de mezcla (morph target / blend shape): desplazamientos dispersos
+// de los vertices del modelo con peso 1. La posicion final es
+// base + sum(peso * delta). Las de varias mallas con el mismo nombre (la
+// cara y las pestanas con "Blink") son una sola forma.
+struct BlendShape {
+    std::string name;
+    float default_weight = 0.0f;              // el del archivo (0..1)
+    std::vector<std::uint32_t> vertices;      // indices en ModelData::vertices, crecientes
+    std::vector<core::Vec3> position_deltas;  // uno por vertice de la lista
+    std::vector<core::Vec3> normal_deltas;    // vacio, o uno por vertice de la lista
 };
 
 // Nivel de detalle simplificado (LOD1, LOD2...) de un modelo estatico. Usa los
@@ -298,7 +325,42 @@ struct ModelData {
     // ninguna): RenderSync solo usa un registro del lightmap si coincide. Solo
     // en memoria: no se guarda nunca.
     std::uint64_t lightmap_layout_hash = 0;
+
+    // Formas de mezcla (morph targets). Vacio = ninguna. Se guardan en la
+    // cache y en el .crdata (bloque "BSHP" versionado al final de la pieza;
+    // los lectores antiguos lo ignoran). Solo las importa la lectura con
+    // esqueleto (personajes), no la partida en piezas.
+    std::vector<BlendShape> blend_shapes;
 };
+
+// Aplica formas de mezcla en la CPU (la referencia de la de la GPU y de las
+// pruebas): `weights[i]` es el peso de blend_shapes[i] (los que falten, 0).
+// Devuelve los vertices del modelo con las posiciones y normales movidas
+// (las normales, renormalizadas).
+std::vector<SkinnedVertex> applyBlendShapes(const ModelData& model, const std::vector<float>& weights);
+
+// Peso de una pista de forma en `time` (segundos), interpolando lineal entre
+// claves; antes de la primera y despues de la ultima, la de ese extremo.
+float sampleBlendShapeTrack(const BlendShapeTrack& track, float time);
+
+// Indice de la forma `name` en el modelo, o -1.
+std::int32_t findBlendShape(const ModelData& model, const std::string& name);
+
+// --- Cargador de FBX (CVar asset.fbx.Loader en CramionCore) ---
+// Assimp es el de siempre; Ufbx el nuevo (ufbx 0.23.1). Solo cambia como se
+// leen los .fbx: glTF y DAE siguen con assimp y OBJ con el lector propio.
+enum class FbxLoader : std::uint8_t { Assimp, Ufbx };
+void setFbxLoader(FbxLoader loader);
+FbxLoader fbxLoader();
+// Si la importacion guarda las formas de mezcla (CVar
+// asset.import.BlendShapes). Con false, como antes.
+void setImportBlendShapes(bool enabled);
+bool importBlendShapes();
+
+// Lo que hace sourceIsAnimated en el importador de CramionCore (tomas, o
+// piel con 2 huesos distintos) leido con ufbx: -1 si no aplica (no es FBX o
+// el cargador es assimp), 0 no, 1 si.
+int ufbxSourceIsAnimated(const std::filesystem::path& path);
 
 // Genera los LODs de un modelo estatico (sin animaciones, un hueso) con
 // meshoptimizer: cada nivel con ~la mitad de triangulos que el anterior,
