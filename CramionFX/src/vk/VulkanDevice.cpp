@@ -582,6 +582,81 @@ void VulkanDevice::createLogicalDevice() {
     // Instancias en los comandos indirectos (batching por material).
     features.features.drawIndirectFirstInstance = VK_TRUE;
 
+    // --- Salida de imagen (DisplayOutput.h): todas opcionales ---
+    // present_id + present_wait (ritmo de frames esperando a la
+    // presentacion), NVIDIA Reflex (VK_NV_low_latency2), AMD Anti-Lag 2
+    // (VK_AMD_anti_lag) y metadatos HDR (VK_EXT_hdr_metadata). Activarlas no
+    // cambia nada: solo se usan con low_latency / hdr_output encendidos.
+    output_extensions_ = OutputExtensions{};
+    vk::PhysicalDevicePresentIdFeaturesKHR present_id_features{};
+    vk::PhysicalDevicePresentWaitFeaturesKHR present_wait_features{};
+#if defined(VK_AMD_anti_lag)
+    vk::PhysicalDeviceAntiLagFeaturesAMD anti_lag_features{};
+#endif
+    {
+        const char* env = std::getenv("CRAMION_OUTPUT_EXTENSIONS");
+        const bool allowed = env == nullptr || std::string_view(env) != "0";
+        const auto available = physical_device_.enumerateDeviceExtensionProperties();
+        const auto add = [&](const char* name) {
+            if (std::none_of(extensions.begin(), extensions.end(), [&](const char* e) { return std::strcmp(e, name) == 0; })) {
+                extensions.push_back(name);
+            }
+        };
+        const auto link = [&](auto& features) {
+            features.pNext = const_cast<void*>(create_info.pNext);
+            create_info.pNext = &features;
+        };
+        if (allowed && hasExtension(available, VK_KHR_PRESENT_ID_EXTENSION_NAME)) {
+            const auto f = physical_device_.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDevicePresentIdFeaturesKHR>();
+            if (f.get<vk::PhysicalDevicePresentIdFeaturesKHR>().presentId) {
+                output_extensions_.present_id = true;
+                present_id_features.presentId = VK_TRUE;
+                add(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+                link(present_id_features);
+            }
+        }
+        if (output_extensions_.present_id && hasExtension(available, VK_KHR_PRESENT_WAIT_EXTENSION_NAME)) {
+            const auto f = physical_device_.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDevicePresentWaitFeaturesKHR>();
+            if (f.get<vk::PhysicalDevicePresentWaitFeaturesKHR>().presentWait) {
+                output_extensions_.present_wait = true;
+                present_wait_features.presentWait = VK_TRUE;
+                add(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+                link(present_wait_features);
+            }
+        }
+#if defined(VK_NV_low_latency2)
+        // Reflex marca los frames por su present_id y duerme con un semaforo
+        // de linea de tiempo (obligatorios en Vulkan 1.2).
+        if (output_extensions_.present_id && features12.timelineSemaphore &&
+            hasExtension(available, VK_NV_LOW_LATENCY_2_EXTENSION_NAME)) {
+            output_extensions_.nv_low_latency2 = true;
+            add(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+        }
+#endif
+#if defined(VK_AMD_anti_lag)
+        if (allowed && hasExtension(available, VK_AMD_ANTI_LAG_EXTENSION_NAME)) {
+            const auto f = physical_device_.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceAntiLagFeaturesAMD>();
+            if (f.get<vk::PhysicalDeviceAntiLagFeaturesAMD>().antiLag) {
+                output_extensions_.amd_anti_lag = true;
+                anti_lag_features.antiLag = VK_TRUE;
+                add(VK_AMD_ANTI_LAG_EXTENSION_NAME);
+                link(anti_lag_features);
+            }
+        }
+#endif
+        if (allowed && hasExtension(available, VK_EXT_HDR_METADATA_EXTENSION_NAME)) {
+            output_extensions_.hdr_metadata = true;
+            add(VK_EXT_HDR_METADATA_EXTENSION_NAME);
+        }
+        create_info.setPEnabledExtensionNames(extensions);
+        enabled_extensions_.assign(extensions.begin(), extensions.end());
+        std::cout << "[Vulkan] Salida: present_id " << (output_extensions_.present_id ? "si" : "no") << ", present_wait "
+                  << (output_extensions_.present_wait ? "si" : "no") << ", Reflex "
+                  << (output_extensions_.nv_low_latency2 ? "si" : "no") << ", Anti-Lag 2 "
+                  << (output_extensions_.amd_anti_lag ? "si" : "no") << ", metadatos HDR "
+                  << (output_extensions_.hdr_metadata ? "si" : "no") << "\n";
+    }
+
     device_ = vk::raii::Device(physical_device_, create_info);
 
     graphics_queue_ = vk::raii::Queue(device_, queue_families_.graphics, 0);

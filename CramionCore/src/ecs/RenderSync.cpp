@@ -79,6 +79,16 @@ cvar::CVar<float> g_voxel_tess_density("voxel.tess.Density", 16.0f,
 cvar::CVar<bool> g_game_unlit("render.Unlit", false,
                               "Modo Unlit del juego (equipos de gama ultra baja): color de los materiales con una "
                               "luz minima, sin sombras, SSAO, GI, reflejos, nubes volumetricas, bloom ni TAA");
+// SALIDA: baja latencia y salida HDR (DisplayOutput.h). -1 = lo que diga el ajuste grafico
+// (Graphics.set("low_latency" / "hdr_output"), que es lo que se guarda en el Graphics.ini).
+cvar::CVar<int> g_output_low_latency("render.output.LowLatency", -1,
+                                     "Baja latencia: -1 el ajuste grafico, 0 apagada, 1 activada, 2 activada + boost "
+                                     "(NVIDIA Reflex, AMD Anti-Lag 2 o present_wait, el que tenga la GPU)",
+                                     cvar::None, -1, 2);
+cvar::CVar<int> g_output_hdr("render.output.Hdr", -1,
+                             "Salida HDR: -1 el ajuste grafico, 0 SDR, 1 automatica (HDR10 o scRGB), 2 HDR10, 3 scRGB "
+                             "(si la pantalla no la ofrece, SDR)",
+                             cvar::None, -1, 3);
 cvar::CVar<int> g_debug_skip("render.debug.Skip", 0,
                              "Pruebas: lo que no se dibuja (mascara: 1 voxeles, 2 actores animados, 4 iluminacion, "
                              "8 escenario, 16 terreno, 32 vegetacion, 64 agua/vidrio, 128 particulas/VFX)");
@@ -3882,6 +3892,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
     renderer.setDynamicProbes(g_dynamic_probes.get(), static_cast<std::uint32_t>(g_probes_per_frame.get()));
     renderer.setDebugSkip(static_cast<std::uint32_t>(std::max(g_debug_skip.get(), 0)));
     renderer.setGameUnlit(g_game_unlit.get());  // UNLIT
+    renderer.setOutputOverrides(g_output_low_latency.get(), g_output_hdr.get());  // SALIDA
     renderer.setMobileActorDistance(g_mobile_actor_distance.get());  // NOCHE-PERF
     renderer.setActorDetail(g_actor_detail.get());  // MALLAS-DETALLE
     renderer.setVoxelPlantDistance(g_plant_distance.get());
@@ -5088,6 +5099,15 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
     for (const Volume& v : volumes) {
         const float t = v.post->influence(v.entity.worldMatrix(), eye);
         blendPostProcess(blended, v.post->settings, t, v.post->isGlobal() ? kPostAll : v.post->overrides);
+    }
+    // LUT .cube: el renderizador la lee por ruta absoluta (la del componente
+    // es relativa al proyecto).
+    if (!blended.color_lut.empty()) {
+        const std::filesystem::path lut = fromUtf8(blended.color_lut);
+        if (lut.is_relative()) {
+            const std::u8string text = (assets_.database().root() / lut).lexically_normal().u8string();
+            blended.color_lut.assign(text.begin(), text.end());
+        }
     }
     renderer.setPostProcess(blended);
 

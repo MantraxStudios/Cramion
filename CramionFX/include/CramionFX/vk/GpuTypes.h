@@ -326,6 +326,22 @@ struct GpuCompositeSettings {
     // x = el sol cuenta (0..1: en pantalla y sobre el horizonte), y = aspecto,
     // z = vision nocturna (0..1), w = luminancia de adaptacion con exposicion manual
     core::Vec4 flare{0.0f, 1.0f, 0.0f, 0.0f};
+    // LUT 3D (.cube): xyz = DOMAIN_MIN, w = intensidad (0 = sin LUT);
+    // xyz = DOMAIN_MAX, w = lado del cubo.
+    core::Vec4 lut_min{0.0f, 0.0f, 0.0f, 0.0f};
+    core::Vec4 lut_max{1.0f, 1.0f, 1.0f, 2.0f};
+};
+
+// Constante de push de la salida HDR (hdr_output.frag): 32 de los 128 bytes.
+struct GpuHdrOutputPush {
+    float encoding = 1.0f;      // 1 = HDR10 (PQ, BT.2020), 2 = scRGB lineal
+    float paper_white = 200.0f; // nits del blanco SDR y de la UI
+    float max_nits = 1000.0f;   // brillo maximo de la pantalla
+    float manual_exposure = 1.0f;
+    float auto_exposure = 1.0f;  // 1 = la del histograma (buffer)
+    float exposure_compensation = 0.0f;  // EV
+    float gain_strength = 1.0f;  // 0 = sin luces por encima del papel
+    float tonemapper = 0.0f;     // el de la escena (la curva SDR del mapa de ganancia)
 };
 
 // Constante de push del motion blur y la profundidad de campo (camera_fx.frag).
@@ -564,8 +580,9 @@ struct GpuExposureState {
     float initialized = 0.0f;
 };
 
-static_assert(sizeof(GpuCompositeSettings) == 13 * 16,
+static_assert(sizeof(GpuCompositeSettings) == 15 * 16,
               "GpuCompositeSettings debe coincidir con composite.frag (std140)");
+static_assert(sizeof(GpuHdrOutputPush) == 32, "GpuHdrOutputPush debe coincidir con hdr_output.frag");
 static_assert(sizeof(GpuExposurePush) == 36, "GpuExposurePush debe coincidir con exposure_average.comp");
 static_assert(sizeof(GpuCameraFxPush) == 128, "GpuCameraFxPush debe coincidir con camera_fx.frag");
 

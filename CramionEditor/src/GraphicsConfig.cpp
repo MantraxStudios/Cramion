@@ -58,6 +58,9 @@ void setGameUnlitWanted(gfx::VulkanRenderer& renderer, bool unlit) {
 
 // Nombres de los enums en la API (en el orden del enum).
 constexpr std::array<const char*, 5> kUpscalerNames = {"off", "taa", "fsr1", "fsr3", "dlss"};
+// SALIDA: baja latencia y salida HDR (indices de gfx::LowLatencyMode y gfx::HdrOutput).
+constexpr std::array<const char*, 3> kLowLatencyNames = {"off", "on", "boost"};
+constexpr std::array<const char*, 4> kHdrOutputNames = {"off", "auto", "hdr10", "scrgb"};
 constexpr std::array<const char*, 6> kResolutionNames = {"native", "quality", "balanced",
                                                          "performance", "ultra_performance", "custom"};
 constexpr std::array<const char*, kWindowModeCount> kWindowModeNames = {"maximized", "fullscreen", "windowed",
@@ -206,6 +209,11 @@ int loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& rend
         if (key == "texture_filtering") g.texture_filtering = std::clamp(static_cast<int>(value), 0, 16);
         if (key == "texture_lod_bias" && std::isfinite(value)) g.texture_lod_bias = std::clamp(value, -1.0f, 2.0f);
         if (key == "vr_render_scale" && std::isfinite(value)) g.vr_render_scale = std::clamp(value, 0.5f, 1.0f);
+        // SALIDA (los ini de antes no las traen: apagadas).
+        if (key == "low_latency") g.low_latency = static_cast<gfx::LowLatencyMode>(std::clamp(static_cast<int>(value), 0, 2));
+        if (key == "hdr_output") g.hdr_output = static_cast<gfx::HdrOutput>(std::clamp(static_cast<int>(value), 0, 3));
+        if (key == "hdr_paper_white" && std::isfinite(value)) g.hdr_paper_white = gfx::clampPaperWhite(value);
+        if (key == "hdr_max_nits" && std::isfinite(value)) g.hdr_max_nits = std::clamp(value, 80.0f, 10000.0f);
         if (key == "shadows") renderer.setShadowsEnabled(value != 0.0f);
         if (key == "ray_tracing" && renderer.rayTracingSupported()) renderer.setRayTracingEnabled(value != 0.0f);
         if (key == "reflection_probe") renderer.setReflectionProbeEnabled(value != 0.0f);
@@ -247,6 +255,10 @@ bool saveGraphicsIni(const std::filesystem::path& file, const gfx::VulkanRendere
     out << "texture_filtering=" << g.texture_filtering << "\n";
     out << "texture_lod_bias=" << g.texture_lod_bias << "\n";
     out << "vr_render_scale=" << g.vr_render_scale << "\n";
+    out << "low_latency=" << static_cast<int>(g.low_latency) << "\n";  // SALIDA
+    out << "hdr_output=" << static_cast<int>(g.hdr_output) << "\n";
+    out << "hdr_paper_white=" << g.hdr_paper_white << "\n";
+    out << "hdr_max_nits=" << g.hdr_max_nits << "\n";
     out << "shadows=" << (renderer.shadowsEnabled() ? 1 : 0) << "\n";
     out << "ray_tracing=" << (renderer.rayTracingEnabled() ? 1 : 0) << "\n";
     out << "reflection_probe=" << (renderer.reflectionProbeEnabled() ? 1 : 0) << "\n";
@@ -756,6 +768,31 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
     add("vsync", g.vsync, "Sincronizar con la pantalla");
     add("adaptive", g.adaptive, "Presupuesto adaptativo: baja la calidad sola para llegar a target_fps");
     add("target_fps", number(g.target_fps), "FPS objetivo del presupuesto adaptativo (15..360)");
+    // SALIDA: baja latencia y HDR (DisplayOutput.h).
+    {
+        const gfx::VulkanRenderer::OutputStatus out = renderer_.outputStatus();
+        add("low_latency", std::string(kLowLatencyNames[std::min<std::size_t>(static_cast<std::size_t>(g.low_latency), 2)]),
+            "Baja latencia: off, on (la CPU no se adelanta a la GPU) o boost (ademas reloj alto de la GPU con Reflex). "
+            "Usa NVIDIA Reflex, AMD Anti-Lag 2 o present_wait, el que tenga la GPU; sin ninguno no cambia nada. "
+            "CVar render.output.LowLatency",
+            names(kLowLatencyNames));
+        add("low_latency_active", std::string(gfx::latencyBackendName(out.backend)),
+            "Con que se baja la latencia de verdad: Reflex, Anti-Lag 2, present_wait o ninguno (lectura)", {}, false);
+        add("latency_ms", number(out.latency_ms),
+            "Latencia media de los ultimos frames, de la entrada a la pantalla (ms; estimada sin Reflex ni "
+            "present_wait) (lectura)",
+            {}, false);
+        add("hdr_output", std::string(kHdrOutputNames[std::min<std::size_t>(static_cast<std::size_t>(g.hdr_output), 3)]),
+            "Salida HDR: off (SDR), auto (HDR10 o scRGB, lo que de la pantalla), hdr10 o scrgb. Si la pantalla o el "
+            "driver no la ofrecen, SDR. CVar render.output.Hdr",
+            names(kHdrOutputNames));
+        add("hdr_active", std::string(gfx::outputEncodingName(out.encoding)), "La salida que se usa de verdad (lectura)",
+            {}, false);
+        add("hdr_paper_white", number(g.hdr_paper_white),
+            "HDR: brillo del blanco de papel en nits (80..500): la UI y el blanco normal de la escena");
+        add("hdr_max_nits", number(g.hdr_max_nits),
+            "HDR: brillo maximo de la pantalla en nits (hasta 10000): las luces de la escena llegan hasta aqui");
+    }
     add("fps_limit", number(fps_limit_),
         "Tope de FPS del juego exportado: 0 = sin tope, 15..360 (espera al final de cada frame; con vsync manda "
         "tambien la pantalla). Se guarda con Graphics.save(). En el editor no se aplica");
@@ -940,6 +977,38 @@ bool RendererGraphicsHost::set(const std::string& key, const GraphicsValue& valu
         if (!need_number(15.0, 360.0)) return false;
         g.target_fps = static_cast<float>(n);
         settings_changed = true;
+    } else if (key == "low_latency") {  // SALIDA
+        if (std::holds_alternative<bool>(value)) {
+            g.low_latency = std::get<bool>(value) ? gfx::LowLatencyMode::On : gfx::LowLatencyMode::Off;
+        } else {
+            if (!need_choice(names(kLowLatencyNames))) return false;
+            const int i = indexOf(kLowLatencyNames, text);
+            if (i < 0) return bad_choice(names(kLowLatencyNames));
+            g.low_latency = static_cast<gfx::LowLatencyMode>(i);
+        }
+        renderer_.setGraphicsSettings(g);
+        return true;  // no cambia la calidad elegida
+    } else if (key == "hdr_output") {
+        if (std::holds_alternative<bool>(value)) {
+            g.hdr_output = std::get<bool>(value) ? gfx::HdrOutput::Auto : gfx::HdrOutput::Off;
+        } else {
+            if (!need_choice(names(kHdrOutputNames))) return false;
+            const int i = indexOf(kHdrOutputNames, text);
+            if (i < 0) return bad_choice(names(kHdrOutputNames));
+            g.hdr_output = static_cast<gfx::HdrOutput>(i);
+        }
+        renderer_.setGraphicsSettings(g);
+        return true;
+    } else if (key == "hdr_paper_white") {
+        if (!need_number(80.0, 500.0)) return false;
+        g.hdr_paper_white = static_cast<float>(n);
+        renderer_.setGraphicsSettings(g);
+        return true;
+    } else if (key == "hdr_max_nits") {
+        if (!need_number(80.0, 10000.0)) return false;
+        g.hdr_max_nits = static_cast<float>(n);
+        renderer_.setGraphicsSettings(g);
+        return true;
     } else if (key == "fps_limit") {
         // No es del renderizador: lo aplica el bucle del reproductor.
         if (!need_number(0.0, static_cast<double>(kFpsLimitMax))) return false;

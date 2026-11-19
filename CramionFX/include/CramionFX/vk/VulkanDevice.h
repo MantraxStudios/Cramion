@@ -1,6 +1,7 @@
 #ifndef CRAMION_VK_VULKAN_DEVICE_H
 #define CRAMION_VK_VULKAN_DEVICE_H
 
+#include "CramionFX/vk/DisplayOutput.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
 #include <atomic>
@@ -97,6 +98,10 @@ public:
     // RenderDoc, Nsight y los mensajes de la validacion). Solo con la
     // validacion activa: es cuando la instancia trae la extension.
     bool debugLabelsEnabled() const { return debug_labels_enabled_; }
+    // Extensiones de salida activadas (DisplayOutput.h): present_id,
+    // present_wait, NVIDIA Reflex, AMD Anti-Lag 2 y metadatos HDR. Todas
+    // opcionales; CRAMION_OUTPUT_EXTENSIONS=0 no activa ninguna.
+    const OutputExtensions& outputExtensions() const { return output_extensions_; }
     // Nombre de un objeto de Vulkan (buffer, imagen, pipeline, command
     // buffer...) para RenderDoc, Nsight y los mensajes de la validacion
     // (vkSetDebugUtilsObjectNameEXT). No hace nada sin VK_EXT_debug_utils (la
@@ -343,6 +348,7 @@ private:
     bool memory_budget_supported_ = false;
     bool checkpoints_enabled_ = false;
     bool device_fault_enabled_ = false;
+    OutputExtensions output_extensions_{};
     bool debug_labels_enabled_ = false;
     // El texto de VK_EXT_device_fault (vacio si no lo hay o no dice nada).
     std::string deviceFaultText() const;

@@ -2,6 +2,7 @@
 #define CRAMION_VK_VULKAN_RENDERER_H
 
 #include "CramionFX/vk/CloudNoise.h"
+#include "CramionFX/vk/CubeLut.h"
 #include "CramionFX/vk/EnvironmentMap.h"
 #include "CramionFX/vk/FrameBudget.h"
 #include "CramionFX/vk/ComputePass.h"
@@ -329,6 +330,28 @@ public:
     // sin profiler de GPU mediria la espera del tope como frame lento y
     // bajaria la calidad sin motivo. En VR manda el casco.
     void setFrameRateCap(float fps);
+
+    // --- Salida de imagen (VulkanRendererOutput.cpp, DisplayOutput.h) ---
+    // Las CVars render.output.LowLatency / render.output.Hdr: -1 = lo que
+    // diga el ajuste grafico (low_latency / hdr_output); 0.. = ese modo.
+    void setOutputOverrides(int low_latency, int hdr_output);
+    // Llamar al empezar cada frame del bucle, ANTES de leer la entrada: con
+    // baja latencia es donde se espera (Reflex duerme, Anti-Lag 2 marca la
+    // entrada, present_wait espera a la presentacion). Si nadie la llama,
+    // drawFrame lo hace al principio (menos ganancia: la entrada ya se leyo).
+    void beginLatencyFrame();
+    struct OutputStatus {
+        LowLatencyMode low_latency = LowLatencyMode::Off;  // el que se usa
+        LatencyBackend backend = LatencyBackend::None;
+        OutputEncoding encoding = OutputEncoding::Sdr;
+        bool hdr_fell_back = false;  // se pidio HDR y la pantalla no lo da
+        float latency_ms = 0.0f;     // media (0 = sin medidas)
+        float latency_last_ms = 0.0f;
+        std::size_t latency_samples = 0;
+        bool latency_measured = false;  // false: estimada (sin present_wait ni Reflex)
+        bool color_lut_loaded = false;  // hay una LUT .cube en uso
+    };
+    OutputStatus outputStatus() const;
 
     // --- Presupuesto adaptativo (FrameBudget.h) ---
     const HardwareProfile& hardwareProfile() const { return hardware_; }
@@ -2978,6 +3001,70 @@ private:
     TextureFiltering applied_texture_filtering_{};
     TextureFiltering desiredTextureFiltering() const;
     void applyTextureFiltering();
+
+    // --- Salida de imagen (VulkanRendererOutput.cpp) ---
+    // Baja latencia.
+    int low_latency_override_ = -1;
+    int hdr_output_override_ = -1;
+    LowLatencyMode latency_mode_ = LowLatencyMode::Off;
+    LatencyBackend latency_backend_ = LatencyBackend::None;
+    std::uint64_t present_id_ = 0;  // el ultimo enviado (0 = ninguno)
+    bool latency_frame_begun_ = false;
+    int reflex_applied_mode_ = -1;  // setLatencySleepModeNV aplicado a esta swapchain
+    vk::raii::Semaphore latency_semaphore_{nullptr};  // Reflex (linea de tiempo)
+    std::uint64_t latency_sleep_value_ = 0;
+    LatencyMeter latency_meter_;
+    std::array<std::uint64_t, kMaxFramesInFlight> slot_present_id_{};
+    std::uint64_t latency_reported_id_ = 0;  // Reflex: ultimo frame medido
+    std::uint64_t latency_waited_id_ = 0;    // present_wait: ultimo frame esperado
+    // pNext de los envios (deben vivir hasta la llamada).
+    vk::PresentIdKHR present_id_info_{};
+    std::uint64_t present_id_value_ = 0;
+#if defined(VK_NV_low_latency2)
+    vk::LatencySubmissionPresentIdNV latency_submit_info_{};
+#endif
+    // Lo que la swapchain debe pedir (HDR, modo de latencia de Reflex) con los
+    // ajustes y las CVars de ahora. true si cambia (hay que rehacerla).
+    bool prepareSwapchainOutput();
+    void applyLatencyMode();          // tras crear la swapchain o cambiar el modo
+    void latencySleep();              // espera de baja latencia (una vez por frame)
+    void latencyFenceDone(std::uint32_t slot);  // la fence del hueco acabo (medida estimada)
+    void latencyBeforeSubmit(vk::SubmitInfo& submit);
+    void latencyAfterSubmit();
+    void latencyBeforePresent(vk::PresentInfoKHR& present);
+    void latencyAfterPresent();
+    void latencyMarker(int marker) const;  // VkLatencyMarkerNV (Reflex)
+    // Salida HDR: la escena (FXAA) y la UI van a dos imagenes SDR y
+    // hdr_output.frag las compone en la swapchain (PQ o scRGB) con el brillo
+    // de papel; las luces de la escena salen del mapa de ganancia (la imagen
+    // HDR antes del tono). Sin HDR, nada de esto existe.
+    VulkanImage hdr_ui_scene_{};
+    VulkanImage hdr_ui_layer_{};
+    FullscreenPass hdr_output_pass_{};
+    vk::Format hdr_output_format_ = vk::Format::eUndefined;
+    vk::raii::DescriptorPool hdr_output_pool_{nullptr};
+    std::vector<vk::raii::DescriptorSet> hdr_output_sets_;
+    bool hdrOutputReady() const;
+    GpuPostProcessPush postProcessPush() const;  // FXAA y nitidez (VulkanRenderer.cpp)
+    void createOutputTargets();   // tras crear la swapchain
+    void destroyOutputResources();
+    void writeOutputDescriptors();  // desde updatePostDescriptors
+    void recordHdrPostProcess(const vk::raii::CommandBuffer& cmd, std::uint32_t image_index);
+    // LUT 3D (.cube) de la gradacion (PostProcessSettings::color_lut): una
+    // textura 3D enlazada siempre en composite.frag (binding 7; identidad de
+    // 2x2x2 sin LUT). Se carga al cambiar la ruta.
+    vk::raii::DeviceMemory color_lut_memory_{nullptr};
+    vk::raii::Image color_lut_image_{nullptr};
+    vk::raii::ImageView color_lut_view_{nullptr};
+    std::string color_lut_path_;        // la cargada ("" = identidad)
+    std::string color_lut_failed_;      // la ultima que no se pudo leer (no reintentar cada frame)
+    core::Vec3 color_lut_min_{0.0f, 0.0f, 0.0f};
+    core::Vec3 color_lut_max_{1.0f, 1.0f, 1.0f};
+    std::uint32_t color_lut_size_ = 0;
+    bool uploadColorLut(const CubeLut& lut);
+    void updateColorLut();          // al empezar el frame: otra ruta -> cargar
+    void writeColorLutDescriptors();
+    void fillColorLutSettings(GpuCompositeSettings& settings) const;
 };
 
 }  // namespace cramion::gfx

@@ -17,6 +17,7 @@
 //   6. Tono:      Khronos PBR Neutral (por defecto), ACES, AgX / AgX Punchy
 //                 o ninguno.
 //   7. Saturacion y viveza (satura mas lo apagado).
+//   7b. LUT 3D (.cube) importada, en sRGB, mezclada por su intensidad.
 //   8. Vineta (intensidad, suavidad y color).
 //   9. Curva sRGB, grano de pelicula (sobre la imagen codificada) y ruido de
 //                 +-1/255 contra el bandeado de los 8 bits.
@@ -35,6 +36,8 @@ layout(set = 0, binding = 5) uniform sampler2D distortion_map;
 // Los destellos solo salen donde el sol se ve: los voxeles, los modelos y el
 // terreno escriben aqui; el agua no, pero tiene el fondo detras.
 layout(set = 0, binding = 6) uniform sampler2D g_depth;
+// LUT 3D de la gradacion (.cube; identidad de 2x2x2 si no hay ninguna).
+layout(set = 0, binding = 7) uniform sampler3D color_lut;
 
 layout(set = 0, binding = 3) readonly buffer Exposure {
     float exposure;
@@ -59,6 +62,8 @@ layout(set = 0, binding = 4) uniform Settings {
     vec4 lens;            // x = distorsion, y = destellos del sol, zw = sol en pantalla (UV)
     vec4 flare;           // x = el sol cuenta (0..1), y = ancho / alto, z = vision nocturna,
                           // w = luminancia de adaptacion con exposicion manual
+    vec4 lut_min;         // xyz = DOMAIN_MIN de la LUT, w = intensidad (0 = sin LUT)
+    vec4 lut_max;         // xyz = DOMAIN_MAX, w = lado del cubo
 } settings;
 
 layout(location = 0) in vec2 v_uv;
@@ -401,6 +406,22 @@ void main() {
     color = max(mix(vec3(luminance(color)), color, 1.0 + settings.look.x * (1.0 - chroma)),
                 vec3(0.0));
     color = min(color, vec3(1.0));
+
+    // --- LUT 3D (.cube) ---
+    // Las LUT de Resolve / Photoshop se hacen sobre la imagen codificada en
+    // sRGB: se codifica, se lee (con medio texel de margen en cada borde para
+    // que 0 y 1 caigan en el centro de los texels de los extremos) y se
+    // vuelve a lineal.
+    if (settings.lut_min.w > 0.0) {
+        vec3 encoded = mix(color * 12.92, 1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
+        vec3 t = clamp((encoded - settings.lut_min.xyz) / max(settings.lut_max.xyz - settings.lut_min.xyz, vec3(1e-6)),
+                       0.0, 1.0);
+        float n = max(settings.lut_max.w, 2.0);
+        vec3 graded = textureLod(color_lut, t * ((n - 1.0) / n) + 0.5 / n, 0.0).rgb;
+        graded = clamp(graded, 0.0, 1.0);
+        graded = mix(graded / 12.92, pow((graded + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), graded));
+        color = mix(color, graded, clamp(settings.lut_min.w, 0.0, 1.0));
+    }
 
     // --- Accesibilidad: daltonismo (Machado et al. 2009, severidad total) ---
     // color_filter.w = modo, lift.w = fuerza, gamma.w = 1 corregir / 0 simular.

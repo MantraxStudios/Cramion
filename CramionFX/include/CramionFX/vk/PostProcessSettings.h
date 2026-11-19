@@ -7,6 +7,7 @@
 #include "CramionFX/core/Math.h"
 
 #include <cstdint>
+#include <string>
 
 namespace cramion::gfx {
 
@@ -64,6 +65,12 @@ struct PostProcessSettings {
     core::Vec3 lift{0.0f, 0.0f, 0.0f};   // sombras (suma)
     core::Vec3 gamma{1.0f, 1.0f, 1.0f};  // medios (potencia)
     core::Vec3 gain{1.0f, 1.0f, 1.0f};   // luces (multiplica)
+    // LUT 3D (.cube, como la de Resolve o Photoshop) sobre la imagen ya con
+    // el tono, en sRGB. Ruta del archivo (RenderSync la pasa absoluta al
+    // renderizador); vacia = ninguna. `color_lut_intensity` mezcla con la
+    // imagen sin LUT (0 = sin efecto).
+    std::string color_lut;
+    float color_lut_intensity = 1.0f;
 
     // --- Vineta ---
     bool vignette = true;

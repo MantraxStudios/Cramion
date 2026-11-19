@@ -2343,6 +2343,9 @@ int runPlayer() {
             const float clock_dt = clock.tick();  // sin recortar (el Profiler mide los frames reales)
             const float dt = std::min(clock_dt, 0.1f);
             touch_time += clock_dt;
+            // SALIDA: con baja latencia, la espera (Reflex / Anti-Lag 2 /
+            // present_wait) va antes de leer la entrada. Apagada no hace nada.
+            if (!vr) renderer.beginLatencyFrame();
             window.pumpEvents();
             // Lo que un script apago con un dedo encima se suelta.
             synthesized.clear();
@@ -2721,6 +2724,16 @@ int runPlayer() {
                     }
                     std::cout << " | zonas:";
                     for (const prof::ZoneCost& z : prof::topZones(300, 8)) std::cout << " " << z.name << " " << z.self_ms;
+                    // SALIDA (al final: lo de antes no se mueve): latencia media
+                    // de la entrada a la pantalla (~ = estimada por las fences),
+                    // con que se baja y la salida (SDR / HDR10 / scRGB).
+                    {
+                        const gfx::VulkanRenderer::OutputStatus out = renderer.outputStatus();
+                        std::cout << " | latencia " << (out.latency_measured ? "" : "~") << out.latency_ms << " ms ("
+                                  << gfx::lowLatencyModeName(out.low_latency) << ", "
+                                  << gfx::latencyBackendName(out.backend) << ") | salida "
+                                  << gfx::outputEncodingName(out.encoding) << (out.hdr_fell_back ? " (HDR no disponible)" : "");
+                    }
                     std::cout << std::endl;
 #if defined(__ANDROID__)
                     printRenderTimings(frames);

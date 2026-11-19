@@ -13,6 +13,8 @@
 //   Calidad     resolucion interna respecto a la de pantalla, con los mismos
 //               factores que DLSS y FSR (Calidad 67 %, Equilibrado 58 %...).
 
+#include "CramionFX/vk/DisplayOutput.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -64,6 +66,17 @@ struct GraphicsSettings {
     // (0.5..1). Con el casco en marcha sustituye a la calidad del escalador
     // de escritorio (los presets Baja/Media/Alta no bajan los ojos).
     float vr_render_scale = 1.0f;
+    // --- Salida de imagen (DisplayOutput.h); apagado = como siempre ---
+    // Baja latencia: NVIDIA Reflex (VK_NV_low_latency2), AMD Anti-Lag 2
+    // (VK_AMD_anti_lag) o, si no, esperar a la presentacion (present_wait)
+    // en vez de acumular frames. Sin ninguna extension no cambia nada.
+    LowLatencyMode low_latency = LowLatencyMode::Off;
+    // Salida HDR10 / scRGB si la pantalla y el driver la ofrecen (si no, SDR).
+    HdrOutput hdr_output = HdrOutput::Off;
+    // Brillo del blanco de papel (la UI y el blanco SDR de la escena), en nits.
+    float hdr_paper_white = 200.0f;
+    // Brillo maximo de la pantalla (las luces de la escena llegan hasta aqui).
+    float hdr_max_nits = 1000.0f;
 
     friend bool operator==(const GraphicsSettings&, const GraphicsSettings&) = default;
 };
