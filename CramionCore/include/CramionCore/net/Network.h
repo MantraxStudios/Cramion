@@ -240,6 +240,11 @@ public:
     void overrideProtocol(std::uint32_t version) { protocol_ = version; }
     std::uint32_t protocol() const { return protocol_; }
 
+    // Pruebas y fuzzing (CramionCore/fuzz): procesa `data` como un paquete que
+    // llega de `from` haciendo de `role`, sin red. Solo con la sesion cerrada:
+    // lo que habria que reenviar no sale (no hay conexiones).
+    void receiveForTest(NetRole role, std::uint32_t from, const std::string& data);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

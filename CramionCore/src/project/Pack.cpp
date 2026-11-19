@@ -51,10 +51,45 @@ struct DCtxDeleter {
     void operator()(ZSTD_DCtx* d) const { ZSTD_freeDCtx(d); }
 };
 
+// UTF-8 bien formado (sin secuencias cortadas, largas ni sustitutos): asi
+// std::filesystem::path no lanza al convertir rutas que vienen de un paquete.
+bool validUtf8(const std::string& text) {
+    std::size_t i = 0;
+    const std::size_t n = text.size();
+    while (i < n) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        std::size_t len = 0;
+        std::uint32_t cp = 0;
+        if (c < 0x80) { ++i; continue; }
+        if ((c & 0xE0) == 0xC0) { len = 2; cp = c & 0x1F; }
+        else if ((c & 0xF0) == 0xE0) { len = 3; cp = c & 0x0F; }
+        else if ((c & 0xF8) == 0xF0) { len = 4; cp = c & 0x07; }
+        else return false;
+        if (i + len > n) return false;
+        for (std::size_t k = 1; k < len; ++k) {
+            const auto d = static_cast<unsigned char>(text[i + k]);
+            if ((d & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (d & 0x3F);
+        }
+        if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) || (len == 4 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+            (cp >= 0xD800 && cp <= 0xDFFF))
+            return false;
+        i += len;
+    }
+    return true;
+}
+
 // Ruta segura dentro del paquete: relativa y sin "..".
 bool safeRelative(const std::string& path) {
-    if (path.empty() || path.size() > 4096) return false;
-    const std::filesystem::path p = fromUtf8(path);
+    if (path.empty() || path.size() > 4096 || !validUtf8(path)) return false;
+    // UTF-8 no valido (paquete danado): std::filesystem::path lanza
+    // std::system_error al convertirlo (fuzzing, ROADMAP 3.6).
+    std::filesystem::path p;
+    try {
+        p = fromUtf8(path);
+    } catch (const std::exception&) {
+        return false;
+    }
     if (p.is_absolute() || p.has_root_name() || p.has_root_directory()) return false;
     for (const auto& part : p) {
         if (part == "..") return false;
@@ -219,6 +254,13 @@ bool readPackIndex(const std::filesystem::path& file, std::vector<PackEntry>& en
         fail(error, "Paquete danado (indice)");
         return false;
     }
+    // Cada entrada del indice ocupa al menos 26 bytes (u16 + 3 x u64): un
+    // numero de archivos que no cabe en lo que queda es un paquete danado y
+    // no se reserva memoria para el (fuzzing, ROADMAP 3.6).
+    if (count > (file_size - index) / 26) {
+        fail(error, "Paquete danado (indice incompleto)");
+        return false;
+    }
     in.seekg(static_cast<std::streamoff>(base + index));
     entries.reserve(count);
     for (std::uint32_t i = 0; i < count; ++i) {
@@ -280,6 +322,11 @@ bool extractEntry(std::ifstream& in, ZSTD_DCtx* dctx, std::vector<char>& in_buff
             out.write(out_buffer.data(), static_cast<std::streamsize>(zout.pos));
             written += zout.pos;
             done += zout.pos;
+            // Mas de lo que dice el indice: danado (no se llena el disco).
+            if (written > e.size) {
+                error = "Paquete danado (" + e.path + ", tamano)";
+                return false;
+            }
         }
     }
     // Lo que quede en el descompresor (sin mas entrada).
@@ -322,7 +369,9 @@ bool readPackFile(const std::filesystem::path& file, const std::string& path, st
     std::vector<char> in_buffer(ZSTD_DStreamInSize());
     std::vector<char> out_buffer(ZSTD_DStreamOutSize());
     data.clear();
-    data.reserve(static_cast<std::size_t>(it->size));
+    // El tamano viene del indice (de fuera): se reserva como mucho 64 MiB y
+    // se corta si lo descomprimido pasa de lo que dice (fuzzing, ROADMAP 3.6).
+    data.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(it->size, 64ull << 20)));
     in.seekg(static_cast<std::streamoff>(it->offset));
     std::uint64_t left = it->compressed;
     std::size_t last_result = 1;
@@ -343,6 +392,10 @@ bool readPackFile(const std::filesystem::path& file, const std::string& path, st
                 return false;
             }
             data.append(out_buffer.data(), zout.pos);
+            if (data.size() > it->size) {
+                fail(error, "Paquete danado (" + path + ", tamano)");
+                return false;
+            }
         }
     }
     if (data.size() != it->size) {

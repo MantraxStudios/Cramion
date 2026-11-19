@@ -173,6 +173,9 @@ std::string headerOf(const net::HttpResponse& r, const std::string& name) {
 
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    // Con ASan (CRAMION_SANITIZE) no: ASan usa los fallos de pagina para su
+    // memoria sombra y este manejador, el primero, los tomaba por cuelgues.
+#if !defined(CRAMION_SANITIZE)
     AddVectoredExceptionHandler(1, [](EXCEPTION_POINTERS* info) -> LONG {
         const DWORD code = info->ExceptionRecord->ExceptionCode;
         if (code != EXCEPTION_ACCESS_VIOLATION && code != 0xC0000409) return EXCEPTION_CONTINUE_SEARCH;
@@ -186,6 +189,7 @@ int main(int argc, char** argv) {
         }
         return EXCEPTION_CONTINUE_SEARCH;
     });
+#endif
     const bool online = argc > 1 && std::strcmp(argv[1], "--online") == 0;
 
     std::printf("Direcciones y cabeceras\n");

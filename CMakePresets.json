@@ -42,6 +42,54 @@
         "CMAKE_CXX_COMPILER": "clang++",
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "ci-windows",
+      "inherits": "clang-ninja-release",
+      "displayName": "CI Windows (Clang + Ninja, Release)",
+      "description": "La de .github/workflows/ci.yml: sin Android, sin escenas de ejemplo, sin el compilador incluido de los scripts ni .pdb (PRUEBAS.md).",
+      "binaryDir": "${sourceDir}/build-ci",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CRAMION_ANDROID": "OFF",
+        "CRAMION_EXTRACT_SCENES": "OFF",
+        "CRAMION_BUNDLE_TOOLCHAIN": "OFF",
+        "CRAMION_RELEASE_PDB": "OFF"
+      }
+    },
+    {
+      "name": "ci-linux",
+      "inherits": "linux-release",
+      "displayName": "CI Linux (Clang + Ninja, Release)",
+      "description": "La de .github/workflows/ci.yml en Linux: CramionCore, el servidor dedicado y sus pruebas.",
+      "binaryDir": "${sourceDir}/build-ci"
+    },
+    {
+      "name": "clang-asan",
+      "inherits": "clang-ninja-release",
+      "displayName": "Clang + ASan + UBSan (Release)",
+      "description": "CRAMION_SANITIZE: las pruebas con AddressSanitizer y UndefinedBehaviorSanitizer (ctest --preset rapidos-asan). Ver PRUEBAS.md.",
+      "binaryDir": "${sourceDir}/build-asan",
+      "cacheVariables": {
+        "CRAMION_ANDROID": "OFF",
+        "CRAMION_EXTRACT_SCENES": "OFF",
+        "CRAMION_SANITIZE": "ON",
+        "CRAMION_RELEASE_PDB": "OFF"
+      }
+    },
+    {
+      "name": "clang-fuzz",
+      "inherits": "clang-asan",
+      "displayName": "Clang + libFuzzer (ASan + UBSan)",
+      "description": "CRAMION_FUZZ: objetivos de libFuzzer de los formatos externos (cmake --build --preset clang-fuzz --target cramion_fuzz). Ver PRUEBAS.md.",
+      "binaryDir": "${sourceDir}/build-fuzz",
+      "cacheVariables": {
+        "CRAMION_FUZZ": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -56,6 +104,149 @@
     {
       "name": "linux-release",
       "configurePreset": "linux-release"
+    },
+    {
+      "name": "ci-windows",
+      "configurePreset": "ci-windows"
+    },
+    {
+      "name": "ci-linux",
+      "configurePreset": "ci-linux"
+    },
+    {
+      "name": "clang-asan",
+      "configurePreset": "clang-asan",
+      "targets": [
+        "cramion_tests"
+      ]
+    },
+    {
+      "name": "clang-fuzz",
+      "configurePreset": "clang-fuzz",
+      "targets": [
+        "cramion_fuzz"
+      ]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "rapidos",
+      "displayName": "Pruebas rapidas (sin GPU)",
+      "configurePreset": "clang-ninja-release",
+      "filter": {
+        "include": {
+          "label": "rapidos"
+        },
+        "exclude": {
+          "label": "gpu"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 4
+      }
+    },
+    {
+      "name": "todas-sin-gpu",
+      "displayName": "Todas las pruebas sin GPU (rapidas y lentas)",
+      "configurePreset": "clang-ninja-release",
+      "filter": {
+        "exclude": {
+          "label": "gpu|fuzz"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 2
+      }
+    },
+    {
+      "name": "gpu",
+      "displayName": "Pruebas con GPU (a mano, nunca en la CI)",
+      "configurePreset": "clang-ninja-release",
+      "filter": {
+        "include": {
+          "label": "gpu"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1
+      }
+    },
+    {
+      "name": "ci-windows",
+      "configurePreset": "ci-windows",
+      "filter": {
+        "include": {
+          "label": "rapidos"
+        },
+        "exclude": {
+          "label": "gpu"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 2
+      }
+    },
+    {
+      "name": "ci-linux",
+      "configurePreset": "ci-linux",
+      "filter": {
+        "exclude": {
+          "label": "gpu|editor"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 2
+      }
+    },
+    {
+      "name": "rapidos-asan",
+      "displayName": "Pruebas rapidas con ASan + UBSan",
+      "configurePreset": "clang-asan",
+      "filter": {
+        "include": {
+          "label": "rapidos"
+        },
+        "exclude": {
+          "label": "gpu"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 2
+      }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "Fuzzing: 20 s por objetivo (humo)",
+      "configurePreset": "clang-fuzz",
+      "filter": {
+        "include": {
+          "label": "fuzz"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1
+      }
     }
   ]
 }

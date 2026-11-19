@@ -118,7 +118,10 @@ void testPrimitives(ApiFixture& t) {
           "Mesh.plane del ejemplo de terreno (6561 vertices, 12800 triangulos)");
     const Value sphere = t.call("Mesh.sphere", {Value(1), Value(16), Value(8)});
     bool on_sphere = true;
-    for (const Value& p : t.get("vertices", sphere).items()) on_sphere = on_sphere && std::abs(core::length(p.asVec3()) - 1.0f) < 1e-4f;
+    // La lista en una variable: el temporal de t.get() moria antes del bucle
+    // (uso tras liberar, lo encontro ASan).
+    const Value vertices = t.get("vertices", sphere);
+    for (const Value& p : vertices.items()) on_sphere = on_sphere && std::abs(core::length(p.asVec3()) - 1.0f) < 1e-4f;
     check(on_sphere, "Mesh.sphere: los vertices a su radio");
     check(t.call("validate", {}, t.call("Mesh.cylinder")).asString().empty() &&
               t.call("validate", {}, t.call("Mesh.capsule", {Value(0.5), Value(2)})).asString().empty(),
