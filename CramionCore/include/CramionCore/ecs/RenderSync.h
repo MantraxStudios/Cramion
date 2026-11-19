@@ -210,6 +210,11 @@ public:
     // (<modelo>.crdata.crclipmeta) la proxima vez que se usen: lo llama el
     // editor al guardarlos desde la ventana de clips.
     void reloadClipMeta();
+    // Ventana de clips: el .cranim del que salio el clip `clip` del modelo del
+    // actor (vacio = es de dentro del modelo) y poner al momento sus eventos,
+    // curvas y secciones en el clip ya cargado (sin esperar a releerlo).
+    Uuid actorClipAsset(Entity entity, int clip) const;
+    void setActorClipMeta(Entity entity, int clip, const ClipMeta& meta, scene::Scene& scene);
 
     // Bases de Motion Matching (.crmmdb) en uso: se leen una vez; el editor
     // llama a reloadMotionDatabase() al guardarlas (se rehacen sus rasgos).

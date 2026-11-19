@@ -303,6 +303,17 @@ struct AnimatorRuntime {
     // --- Capas, montages, eventos, curvas y root motion ---
     std::vector<AnimatorLayerRuntime> layers;  // una por controller.layers
     std::vector<std::string> layer_names;      // 0 = base (lo pone RenderSync; para buscar por nombre)
+    // Peticiones por nombre de capa que llegaron antes de que RenderSync
+    // conociera las capas (setLayerWeight / crossFadeLayer en Start): las
+    // aplica el primer frame que anima (tope kMaxLayerRequests).
+    struct LayerRequest {
+        std::string layer;
+        float weight = -1.0f;      // < 0 = no cambia el peso
+        std::string cross_fade;    // vacio = sin crossFade
+        float cross_fade_time = 0.15f;
+    };
+    static constexpr std::size_t kMaxLayerRequests = 16;
+    std::vector<LayerRequest> layer_requests;
     AnimatorMontage montage;
     // Eventos que ya sonaron y aun no han llegado a los scripts (los saca la
     // fase Events del juego). Tope kMaxPendingEvents: fuera de Play nadie los
@@ -318,6 +329,9 @@ struct AnimatorRuntime {
     // El ultimo aplicado (rootMotionDelta() en los scripts).
     core::Vec3 last_root_position{};
     float last_root_yaw = 0.0f;
+    // Modo Rigidbody: el ultimo frame puso la velocidad (al pararse la
+    // animacion se quita una vez; si no, el cuerpo seguiria deslizando).
+    bool root_body_driven = false;
     // Vista previa del editor (ventana de clips): este clip del modelo en este
     // instante, por encima de todo. -1 = nada.
     int preview_clip = -1;

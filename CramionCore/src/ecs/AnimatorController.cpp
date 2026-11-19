@@ -888,9 +888,15 @@ void stepAnimatorLayer(const AnimatorController& controller, int layer, Animator
         if (cycle <= 0.0f) return 0.0f;
         const AnimatorState& s = states[static_cast<std::size_t>(index)];
         const float step = dt * speed * s.speed / cycle;
-        phase += step;
-        phase = s.loop ? phase - std::floor(phase) : std::clamp(phase, 0.0f, 1.0f);
-        return step;
+        if (s.loop) {
+            phase += step;
+            phase -= std::floor(phase);
+            return step;
+        }
+        // Sin bucle, lo que avanzo de verdad: parado al final no repite eventos.
+        const float before = phase;
+        phase = std::clamp(phase + step, 0.0f, 1.0f);
+        return phase - before;
     };
     lr.state_time += dt * std::abs(speed * st.speed);
     const float dphase = advance(lr.state, lr.phase);

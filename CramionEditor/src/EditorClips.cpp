@@ -43,13 +43,16 @@ struct ClipTarget {
     std::filesystem::path sidecar;
 };
 
-ClipTarget clipTarget(const assets::AssetDatabase& database, const Uuid& model, const std::string& clip_name) {
+// `cranim`: el .cranim del que salio el clip (lo sabe el RenderSync); vacio =
+// clip de dentro del modelo. (Antes se buscaba por nombre: un .cranim suelto
+// que se llamara igual que un clip del modelo se llevaba sus eventos.)
+ClipTarget clipTarget(const assets::AssetDatabase& database, const Uuid& model, const Uuid& cranim) {
     ClipTarget t;
-    for (const assets::AssetInfo& info : database.all()) {
-        if (info.type == assets::AssetType::AnimationClip && info.name == clip_name) {
-            t.cranim = info.path;
-            return t;
+    if (cranim.valid()) {
+        if (const auto info = database.find(cranim); info && info->type == assets::AssetType::AnimationClip) {
+            t.cranim = info->path;
         }
+        return t;
     }
     if (const auto info = database.find(model)) t.sidecar = ecs::clipMetaSidecarPath(info->path);
     return t;
@@ -277,7 +280,8 @@ void EditorApp::drawClipEditor() {
     // --- Guardar ---
     ImGui::Separator();
     const ecs::MeshRenderer* renderer = target.tryGet<ecs::MeshRenderer>();
-    const ClipTarget where = clipTarget(*database_, renderer != nullptr ? renderer->model.uuid : Uuid{}, clip.name);
+    const ClipTarget where = clipTarget(*database_, renderer != nullptr ? renderer->model.uuid : Uuid{},
+                                       sync_->actorClipAsset(target, st.clip));
     ImGui::BeginDisabled(!st.dirty);
     if (ImGui::Button("Guardar")) {
         st.meta.sort();
@@ -291,10 +295,11 @@ void EditorApp::drawClipEditor() {
             if (std::filesystem::exists(where.sidecar, ec)) ecs::loadModelClipMeta(where.sidecar, clips, &error);
             clips[clip.name] = st.meta;
             ok = ecs::saveModelClipMeta(where.sidecar, clips, &error);
-            sync_->reloadClipMeta();
         } else {
             error = "no se sabe de que archivo es el clip";
         }
+        // Al momento en el clip cargado (el .cranim ya cargado no se relee solo).
+        if (ok) sync_->setActorClipMeta(target, st.clip, st.meta, scene_);
         st.dirty = !ok;
         st.status = ok ? "Guardado." : "No se pudo guardar: " + error;
     }

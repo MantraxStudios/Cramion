@@ -1748,6 +1748,39 @@ void testControllerLayers() {
     ecs::removeAnimatorState(copy.states, copy.transitions, copy.default_state, 0);
     check(copy.states.size() == 1 && copy.transitions.empty() && copy.default_state == 0, "quitar un estado de una capa");
 
+    // Revision: un estado sin bucle parado al final no sigue avanzando (antes
+    // el delta seguia siendo dt: el evento del ultimo fotograma sonaba en cada
+    // frame y el root motion seguia moviendo al personaje).
+    {
+        ecs::AnimatorController once;
+        once.states.push_back(idle);
+        ecs::AnimatorLayer layer;
+        layer.name = "Una vez";
+        ecs::AnimatorState walk_once;
+        walk_once.name = "Andar una vez";
+        walk_once.clip_name = "Andar";
+        walk_once.loop = false;
+        layer.states = {walk_once};
+        once.layers.push_back(layer);
+        ecs::AnimatorRuntime r;
+        std::vector<anim::ClipSample> o;
+        std::size_t b = 0;
+        ecs::stepAnimatorLayer(once, 1, r, 0.0f, 1.0f, lookup, o, b, nullptr, scratch);  // entra
+        ecs::stepAnimatorLayer(once, 1, r, 0.9f, 1.0f, lookup, o, b, nullptr, scratch);
+        ecs::stepAnimatorLayer(once, 1, r, 0.3f, 1.0f, lookup, o, b, nullptr, scratch);
+        check(o.size() == 1 && std::abs(o[0].time - 1.0f) < 1e-4f && std::abs(o[0].delta - 0.1f) < 1e-4f && !o[0].loop,
+              "sin bucle: al llegar al final el delta es solo lo que quedaba");
+        ecs::AnimatorRuntime events_rt;
+        ecs::collectSampleEvents(model, o.data(), o.size(), false, 1, events_rt);
+        ecs::stepAnimatorLayer(once, 1, r, 0.1f, 1.0f, lookup, o, b, nullptr, scratch);
+        check(o.size() == 1 && o[0].delta == 0.0f, "sin bucle y parado al final: delta 0");
+        events_rt.events.clear();
+        ecs::collectSampleEvents(model, o.data(), o.size(), false, 1, events_rt);
+        check(events_rt.events.empty(), "parado al final: los eventos no se repiten cada frame");
+        check(anim::clipRootMotion(model, model.animations[0], 1, o[0].time, o[0].delta, false).position.z == 0.0f,
+              "parado al final: sin root motion");
+    }
+
     // Mascara reutilizable (.crmask).
     ecs::BoneMask mask;
     mask.bones = {{"Spine", true, 1.0f}, {"Arm", false, 0.0f}};

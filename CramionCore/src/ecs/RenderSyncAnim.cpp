@@ -38,6 +38,26 @@ void RenderSync::reloadClipMeta() {
     clip_meta_done_.clear();
 }
 
+Uuid RenderSync::actorClipAsset(Entity entity, int clip) const {
+    const int actor = actorIndex(entity);
+    if (actor < 0 || static_cast<std::size_t>(actor) >= actor_models_.size() || clip < 0) return {};
+    const std::uint32_t model = actor_models_[static_cast<std::size_t>(actor)];
+    for (const auto& [key, index] : external_clips_) {
+        if (key.model == model && index == clip) return key.clip;
+    }
+    return {};
+}
+
+void RenderSync::setActorClipMeta(Entity entity, int clip, const ClipMeta& meta, scene::Scene& scene) {
+    const int actor = actorIndex(entity);
+    if (actor < 0 || static_cast<std::size_t>(actor) >= actor_models_.size() || clip < 0) return;
+    const std::uint32_t model = actor_models_[static_cast<std::size_t>(actor)];
+    if (model >= scene.models().size()) return;
+    asset::ModelData* data = scene.modelData(model);  // (avisa al streaming)
+    if (data == nullptr || static_cast<std::size_t>(clip) >= data->animations.size()) return;
+    applyClipMeta(data->animations[static_cast<std::size_t>(clip)], meta);
+}
+
 std::shared_ptr<const std::vector<float>> RenderSync::layerMask(const AnimatorController& controller, int layer,
                                                                 std::uint32_t model, const asset::ModelData& data) {
     if (layer < 1 || layer > static_cast<int>(controller.layers.size())) return nullptr;
@@ -112,6 +132,9 @@ bool RenderSync::buildAnimationLayers(Entity e, Animator& animator, const Animat
     const float step = animator.playing ? dt : 0.0f;
 
     // Lo normal (sin capas, montage, eventos ni curvas): nada que hacer.
+    if (controller == nullptr || controller->layers.empty()) {
+        if (!runtime.layer_requests.empty()) runtime.layer_requests.clear();  // capas que no hay
+    }
     if ((controller == nullptr || controller->layers.empty()) && !runtime.montage.active) {
         bool meta = false;
         for (const anim::ClipSample& s : plan.base) {
@@ -153,11 +176,34 @@ bool RenderSync::buildAnimationLayers(Entity e, Animator& animator, const Animat
     // --- Capas de encima ---
     if (controller != nullptr && !controller->layers.empty()) {
         if (runtime.layers.size() < controller->layers.size()) runtime.layers.resize(controller->layers.size());
-        if (runtime.layer_names.size() != controller->layers.size() + 1) {
+        // Nombres para buscar desde los scripts (tambien si el controlador se
+        // recargo con otros nombres).
+        bool names_ok = runtime.layer_names.size() == controller->layers.size() + 1 &&
+                        runtime.layer_names[0] == controller->base_layer_name;
+        for (std::size_t i = 0; names_ok && i < controller->layers.size(); ++i) {
+            names_ok = runtime.layer_names[i + 1] == controller->layers[i].name;
+        }
+        if (!names_ok) {
             runtime.layer_names.clear();
             runtime.layer_names.push_back(controller->base_layer_name);
             for (const AnimatorLayer& l : controller->layers) runtime.layer_names.push_back(l.name);
         }
+        // Lo que pidieron los scripts antes de conocer las capas.
+        for (const AnimatorRuntime::LayerRequest& request : runtime.layer_requests) {
+            const int k = controller->findLayer(request.layer);
+            if (k == 0 && !request.cross_fade.empty()) {
+                runtime.cross_fade = request.cross_fade;
+                runtime.cross_fade_time = request.cross_fade_time;
+            }
+            if (k < 1) continue;
+            AnimatorLayerRuntime& lr = runtime.layers[static_cast<std::size_t>(k - 1)];
+            if (request.weight >= 0.0f) lr.weight = request.weight;
+            if (!request.cross_fade.empty()) {
+                lr.cross_fade = request.cross_fade;
+                lr.cross_fade_time = request.cross_fade_time;
+            }
+        }
+        runtime.layer_requests.clear();
         for (int k = 1; k <= static_cast<int>(controller->layers.size()); ++k) {
             const AnimatorLayer& def = controller->layers[static_cast<std::size_t>(k - 1)];
             AnimatorSyncSource sync{};

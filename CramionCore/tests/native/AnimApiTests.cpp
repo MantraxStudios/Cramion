@@ -27,6 +27,14 @@ void testLayersAndMontage() {
     check(t.call("layerWeight", {Value("Torso")}, self).asNumber() == 0.0 && !t.call("isMontagePlaying", {}, self).truthy(),
           "sin Animator: no falla");
     ecs::Animator& a = e.add<ecs::Animator>();
+    // Revision: en Start (el Animator aun no animo y no se saben las capas) la
+    // peticion por nombre se guarda para el primer frame en vez de perderse.
+    t.call("setLayerWeight", {Value("Torso"), Value(0.4)}, self);
+    t.call("crossFadeLayer", {Value("Torso"), Value("Apuntar"), Value(0.1)}, self);
+    check(a.runtime.layers.empty() && a.runtime.layer_requests.size() == 2 && a.runtime.layer_requests[0].layer == "Torso" &&
+              near(a.runtime.layer_requests[0].weight, 0.4f) && a.runtime.layer_requests[1].cross_fade == "Apuntar",
+          "antes del primer frame: peticiones por nombre pendientes");
+    a.runtime.layer_requests.clear();
     a.runtime.layer_names = {"Base", "Torso"};
     t.call("setLayerWeight", {Value("Torso"), Value(0.25)}, self);
     check(a.runtime.layers.size() == 1 && near(a.runtime.layers[0].weight, 0.25f), "setLayerWeight por nombre");

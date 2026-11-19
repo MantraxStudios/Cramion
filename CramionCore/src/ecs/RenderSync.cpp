@@ -4249,9 +4249,16 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     if (cycle <= 0.0f) return 0.0f;
                     const AnimatorState& st = controller->states[static_cast<std::size_t>(index)];
                     const float step = dt * animator->speed * st.speed / cycle;
-                    phase += step;
-                    phase = st.loop ? phase - std::floor(phase) : std::clamp(phase, 0.0f, 1.0f);
-                    return step;
+                    if (st.loop) {
+                        phase += step;
+                        phase -= std::floor(phase);
+                        return step;
+                    }
+                    // Sin bucle, lo que avanzo de verdad: parado al final no
+                    // repite eventos ni root motion.
+                    const float before = phase;
+                    phase = std::clamp(phase + step, 0.0f, 1.0f);
+                    return phase - before;
                 };
 
                 // CrossFade pedido por el juego: manda sobre las transiciones.
@@ -4329,7 +4336,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 float base_dphase = 0.0f, fade_dphase = 0.0f;
                 if (animator->playing) {
                     runtime.state_time += anim_dt * std::abs(animator->speed * st.speed);
-                    base_dphase = runtime.replay_control ? 0.0f : advance(runtime.state, state.phase, anim_dt);
+                    const float advanced = advance(runtime.state, state.phase, anim_dt);  // (como antes, tambien en repeticion)
+                    base_dphase = runtime.replay_control ? 0.0f : advanced;
                     if (state.fade_state >= 0) {
                         fade_dphase = advance(state.fade_state, state.fade_phase, anim_dt);
                         state.fade_time += anim_dt;
@@ -4420,6 +4428,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 state.animator.setSpeed(speed);
                 if (animator->playing) {
                     const bool inertial_switch = switched && animator->blend_time > 0.0f && state.inertial.hasHistory();
+                    const float time_before = state.animator.time();
                     if (inertial_switch) {
                         state.animator.update(anim_dt);
                     } else {
@@ -4433,7 +4442,9 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                         // Montage, root motion y eventos del clip: con muestras.
                         const bool loop_clip = state.loop;
                         state.plan.base.clear();
-                        state.plan.base.push_back(anim::ClipSample{clip, state.animator.time(), 1.0f, anim_dt * speed, loop_clip});
+                        // Sin bucle, lo que avanzo de verdad (parado al final: nada).
+                        const float clip_delta = loop_clip ? anim_dt * speed : state.animator.time() - time_before;
+                        state.plan.base.push_back(anim::ClipSample{clip, state.animator.time(), 1.0f, clip_delta, loop_clip});
                         const AnimatorSyncSource base_sync{-1, 0.0f, 0.0f, -1, 0.0f, 0.0f, switched || restart};
                         const bool layered = buildAnimationLayers(e, *animator, nullptr, state, *model, data, scene,
                                                                   anim_dt, base_sync, 0);

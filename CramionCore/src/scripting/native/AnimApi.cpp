@@ -46,6 +46,16 @@ int layerIndex(const ecs::Animator& a, const api::Value& v) {
     return -1;
 }
 
+// Capa por nombre que aun no se conoce (el Animator no ha animado todavia):
+// se guarda la peticion y la aplica RenderSync en cuanto sepa sus capas.
+ecs::AnimatorRuntime::LayerRequest* layerRequest(ecs::Animator& a, const api::Value& v) {
+    if (v.isNumber() || !a.runtime.layer_names.empty()) return nullptr;
+    std::vector<ecs::AnimatorRuntime::LayerRequest>& list = a.runtime.layer_requests;
+    if (list.size() >= ecs::AnimatorRuntime::kMaxLayerRequests) list.erase(list.begin());
+    list.push_back({v.asString()});
+    return &list.back();
+}
+
 ecs::AnimatorLayerRuntime* layerRuntime(ecs::Animator& a, int layer) {
     if (layer < 1 || layer > 64) return nullptr;
     if (a.runtime.layers.size() < static_cast<std::size_t>(layer)) a.runtime.layers.resize(static_cast<std::size_t>(layer));
@@ -86,9 +96,21 @@ void applyRootMotion(Runtime& rt, ecs::Entity e, ecs::Animator& a, float dt) {
     r.root_delta_yaw = 0.0f;
     r.last_root_position = delta;
     r.last_root_yaw = yaw;
-    if (a.root_motion == ecs::RootMotionMode::Off || (delta.x == 0.0f && delta.y == 0.0f && delta.z == 0.0f && yaw == 0.0f)) {
-        return;
+    const bool still = delta.x == 0.0f && delta.y == 0.0f && delta.z == 0.0f && yaw == 0.0f;
+    if (a.root_motion != ecs::RootMotionMode::Rigidbody || !still) {
+        // (sigue abajo; el Rigidbody parado se trata aqui)
+    } else if (r.root_body_driven) {
+        // La animacion dejo de mover: se quita la velocidad que puso (una vez).
+        r.root_body_driven = false;
+        const ecs::Entity body = selfOrAncestorWith<physics::Rigidbody>(e);
+        if (body.valid() && rt.physics != nullptr) {
+            const Vec3 v = rt.physics->linearVelocity(body);
+            rt.physics->setLinearVelocity(body, Vec3{0.0f, v.y, 0.0f});
+            rt.physics->setAngularVelocity(body, Vec3{});
+        }
     }
+    if (a.root_motion != ecs::RootMotionMode::Rigidbody) r.root_body_driven = false;
+    if (a.root_motion == ecs::RootMotionMode::Off || still) return;
     switch (a.root_motion) {
         case ecs::RootMotionMode::Transform:
             e.setWorldPosition(e.worldPosition() + delta);
@@ -108,6 +130,7 @@ void applyRootMotion(Runtime& rt, ecs::Entity e, ecs::Animator& a, float dt) {
             const Vec3 v = rt.physics->linearVelocity(body);
             rt.physics->setLinearVelocity(body, Vec3{delta.x / dt, v.y, delta.z / dt});
             rt.physics->setAngularVelocity(body, Vec3{0.0f, yaw / dt, 0.0f});
+            r.root_body_driven = true;
             break;
         }
         case ecs::RootMotionMode::Script: {
@@ -124,9 +147,19 @@ void applyRootMotion(Runtime& rt, ecs::Entity e, ecs::Animator& a, float dt) {
 
 void dispatchAnimation(Runtime& rt, float dt) {
     if (rt.world == nullptr) return;
-    // Copia de las entidades: un mensaje puede crear o destruir objetos.
+    // Solo los que tienen algo (lo normal: ninguno, sin reservar memoria). Se
+    // copian: un mensaje puede crear o destruir objetos.
     std::vector<entt::entity> handles;
-    for (const entt::entity h : rt.world->registry().view<ecs::Animator>()) handles.push_back(h);
+    for (const entt::entity h : rt.world->registry().view<ecs::Animator>()) {
+        const ecs::Animator& a = rt.world->registry().get<ecs::Animator>(h);
+        const ecs::AnimatorRuntime& r = a.runtime;
+        const bool pending = !r.events.empty() || r.root_body_driven || r.root_delta_yaw != 0.0f ||
+                             r.root_delta_position.x != 0.0f || r.root_delta_position.y != 0.0f ||
+                             r.root_delta_position.z != 0.0f || r.last_root_yaw != 0.0f ||
+                             r.last_root_position.x != 0.0f || r.last_root_position.y != 0.0f ||
+                             r.last_root_position.z != 0.0f;
+        if (pending) handles.push_back(h);
+    }
     for (const entt::entity h : handles) {
         if (!rt.world->valid(h)) continue;
         const ecs::Entity e = rt.world->wrap(h);
@@ -164,7 +197,12 @@ void registerAnimApi(Runtime& rt) {
         ecs::Animator* a = animatorOf(c);
         if (a == nullptr) return api::Value{};
         const int layer = layerIndex(*a, c.arg(0));
-        if (ecs::AnimatorLayerRuntime* l = layerRuntime(*a, layer)) l->weight = std::clamp(static_cast<float>(c.number(1)), 0.0f, 1.0f);
+        const float weight = std::clamp(static_cast<float>(c.number(1)), 0.0f, 1.0f);
+        if (ecs::AnimatorLayerRuntime* l = layerRuntime(*a, layer)) {
+            l->weight = weight;
+        } else if (layer < 0) {
+            if (ecs::AnimatorRuntime::LayerRequest* r = layerRequest(*a, c.arg(0))) r->weight = weight;
+        }
         return api::Value{};
     }, {"\"Torso\", 0.5", "peso de una capa del Animator (nombre o numero; 1 = la primera de encima)"});
     api.method("Entity", "layerWeight", [animatorOf](api::Call& c) {
@@ -197,6 +235,9 @@ void registerAnimApi(Runtime& rt) {
         } else if (ecs::AnimatorLayerRuntime* l = layerRuntime(*a, layer)) {
             l->cross_fade = state;
             l->cross_fade_time = seconds;
+        } else if (ecs::AnimatorRuntime::LayerRequest* r = layerRequest(*a, c.arg(0))) {
+            r->cross_fade = state;
+            r->cross_fade_time = seconds;
         }
         a->playing = true;
         return api::Value{};
