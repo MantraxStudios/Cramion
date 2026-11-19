@@ -468,6 +468,8 @@ target_link_libraries(CramionUiTests PRIVATE Cramion::Core)
 # --- Pruebas de los vehiculos (consola) ---
 add_executable(CramionPackTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/PackTests.cpp")
 target_link_libraries(CramionPackTests PRIVATE Cramion::Core)
+# src/: asset/CrData.h (los .crdata danados, ROADMAP 3.6).
+target_include_directories(CramionPackTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 add_executable(CramionVehicleTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleTests.cpp")
 target_link_libraries(CramionVehicleTests PRIVATE Cramion::Core)
@@ -614,3 +616,9 @@ add_executable(cramion_stream_bench "${CMAKE_CURRENT_SOURCE_DIR}/tools/Streaming
 target_link_libraries(cramion_stream_bench PRIVATE Cramion::Core $<$<PLATFORM_ID:Windows>:psapi>)
 set_target_properties(cramion_stream_bench PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/streambench")
 cramionfx_deploy(cramion_stream_bench)
+
+# --- Fuzzing (CRAMION_FUZZ, cmake/CramionSanitize.cmake): objetivos de libFuzzer
+# para los formatos que llegan de fuera (ver PRUEBAS.md) ---
+if(CRAMION_FUZZ)
+    add_subdirectory(fuzz)
+endif()

@@ -940,6 +940,12 @@ void NetworkSession::update() {
     }
 }
 
+void NetworkSession::receiveForTest(NetRole role, std::uint32_t from, const std::string& data) {
+    if (impl_->host != nullptr) return;  // con red de verdad, no
+    role_ = role;
+    handlePacket(from, data);
+}
+
 void NetworkSession::handlePacket(std::uint32_t from, const std::string& data) {
     Reader r{data};
     const std::uint8_t kind = r.u8();

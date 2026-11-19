@@ -56,10 +56,14 @@ FetchContent_Declare(assimp
     GIT_SHALLOW TRUE
 )
 
+# Version fija (ROADMAP 3.6): un commit concreto en vez de master, para que
+# dos configuraciones en dias distintos compilen lo mismo. Es el commit que
+# usaba build-release (06/11/2026). Para subirlo: cambiar el hash del commit
+# y el SHA256 del .tar.gz (cmake -E sha256sum).
 FetchContent_Declare(stb
-    GIT_REPOSITORY https://github.com/nothings/stb.git
-    GIT_TAG master
-    GIT_SHALLOW TRUE
+    URL https://github.com/nothings/stb/archive/4e9b368bfc071e97206ea5c6adba68dd0cbf8897.tar.gz
+    URL_HASH SHA256=e60706ab084e0cae35ee7282deb4a7f283e4a28be1896d097437205da01a0683
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 FetchContent_MakeAvailable(assimp stb)
@@ -78,10 +82,11 @@ target_compile_options(meshoptimizer PRIVATE -O2)
 
 # AMD FidelityFX Super Resolution 1 (MIT): solo las cabeceras de shader
 # (ffx_a.h, ffx_fsr1.h), que incluyen fsr_easu.frag y fsr_rcas.frag.
+# Version fija: el ultimo commit de master (FSR 1.0.2, 15/11/2021).
 FetchContent_Declare(fidelityfx_fsr1
-    GIT_REPOSITORY https://github.com/GPUOpen-Effects/FidelityFX-FSR.git
-    GIT_TAG master
-    GIT_SHALLOW TRUE
+    URL https://github.com/GPUOpen-Effects/FidelityFX-FSR/archive/a21ffb8f6c13233ba336352bdff293894c706575.tar.gz
+    URL_HASH SHA256=b529a31d21971ee9f2a3231bbe17e31d183ccbb7fb6e3f7b0508b2624f61c2d9
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR ffx-fsr
 )
 FetchContent_MakeAvailable(fidelityfx_fsr1)

@@ -46,6 +46,15 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# --- CI y calidad (ROADMAP 3.6): CTest, sanitizers y fuzzing ---
+# Pruebas en CTest (cmake/CramionTests.cmake, PRUEBAS.md). CRAMION_SANITIZE
+# (ASan + UBSan) y CRAMION_FUZZ (libFuzzer) van apagados por defecto: el build
+# normal no cambia. Antes de los add_subdirectory: las opciones de los
+# sanitizers valen para todo el motor y sus dependencias.
+enable_testing()
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CramionSanitize.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CramionTests.cmake")
+
 # Release con simbolos (PDB) en Windows con Clang (ROADMAP 2 #4): sin ellos
 # los minidumps solo dan modulo y desplazamiento. -gcodeview no cambia el
 # codigo que se genera (las mismas -O3 -DNDEBUG); /DEBUG:FULL deja cada .pdb
@@ -122,6 +131,7 @@ if(UNIX AND NOT APPLE)
         COMMENT "Empaquetando Cramion ${CRAMION_VERSION_FULL} (Cramion-linux64.tar.gz)"
         VERBATIM)
     add_dependencies(cramion_package CramionEditor CramionPlayer CramionServer CramionMcp CramionScriptHost crwpack)
+    cramion_register_tests()
     return()
 endif()
 
@@ -330,3 +340,6 @@ if(CRAMION_ANDROID)
         add_dependencies(cramion_package cramion_android_${_abi})
     endforeach()
 endif()
+
+# Pruebas de CTest (cmake/CramionTests.cmake): al final, con todos los objetivos.
+cramion_register_tests()

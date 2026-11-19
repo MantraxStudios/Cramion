@@ -1,0 +1,11 @@
+# Supresiones de UBSan (CRAMION_SANITIZE): avisos de codigo de terceros que no
+# son fallos en las plataformas del motor. Solo de dependencias, nunca del
+# codigo de Cramion. Formato: <comprobacion>:<funcion o archivo>.
+
+# ENet: offsetof hecho a mano, (size_t) & ((ENetProtocolHeader *) 0) -> sentTime.
+null:*enet-src*protocol.c
+
+# Recast/Detour con DT_POLYREF64: dtLink (con un dtPolyRef de 64 bits) se
+# coloca en los datos de la tesela alineado a 4 bytes (dtAlign4). x86 y ARM64
+# leen sin alinear sin problema.
+alignment:*Detour*

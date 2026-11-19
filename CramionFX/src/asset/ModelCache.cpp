@@ -82,6 +82,7 @@ public:
         static_assert(std::is_trivially_copyable_v<T>);
         std::uint64_t count = 0;
         pod(count);
+        checkCount(count, sizeof(T));
         values.resize(static_cast<std::size_t>(count));
         read(values.data(), values.size() * sizeof(T));
     }
@@ -89,8 +90,28 @@ public:
     void string(std::string& text) {
         std::uint64_t count = 0;
         pod(count);
+        checkCount(count, 1);
         text.resize(static_cast<std::size_t>(count));
         read(text.data(), text.size());
+    }
+
+    // Un tamano leido del archivo no puede pedir mas bytes de los que quedan
+    // en el (archivo danado o hecho a mala fe; lo encontro el fuzzing,
+    // ROADMAP 3.6): sin esto se reservaban terabytes antes de ver que faltaban.
+    // El final del flujo se mira una vez (buscarlo en cada lectura vaciaria
+    // el bufer del archivo).
+    void checkCount(std::uint64_t count, std::size_t element) {
+        if (count == 0) return;
+        const std::streampos here = file_.tellg();
+        if (stream_end_ < 0 && here >= 0) {
+            file_.seekg(0, std::ios::end);
+            stream_end_ = file_.tellg();
+            file_.seekg(here);
+        }
+        const std::int64_t left = (here < 0 || stream_end_ < 0) ? 0 : static_cast<std::int64_t>(stream_end_ - here);
+        if (left <= 0 || count > static_cast<std::uint64_t>(left) / element) {
+            throw std::runtime_error("datos del modelo truncados");
+        }
     }
 
     // Bytes que quedan hasta `end` (posicion absoluta; -1 = sin limite: el
@@ -137,6 +158,7 @@ private:
     }
 
     std::istream& file_;
+    std::streampos stream_end_ = -1;
 };
 
 // Los tipos que se guardan como bloques de bytes.
@@ -257,12 +279,14 @@ void readPayload(Reader& in, ModelData& model, bool skip_texture_bytes = false, 
 
     std::uint64_t count = 0;
     in.pod(count);
+    in.checkCount(count, 8);  // cada uno ocupa al menos 8 bytes
     model.materials.resize(static_cast<std::size_t>(count));
     for (MaterialData& material : model.materials) {
         readMaterial(in, material);
     }
 
     in.pod(count);
+    in.checkCount(count, 8);  // cada uno ocupa al menos 8 bytes
     model.textures.resize(static_cast<std::size_t>(count));
     for (TextureData& texture : model.textures) {
         in.string(texture.name);
@@ -284,6 +308,7 @@ void readPayload(Reader& in, ModelData& model, bool skip_texture_bytes = false, 
     }
 
     in.pod(count);
+    in.checkCount(count, 8);  // cada uno ocupa al menos 8 bytes
     model.nodes.resize(static_cast<std::size_t>(count));
     for (Node& node : model.nodes) {
         in.string(node.name);
@@ -292,6 +317,7 @@ void readPayload(Reader& in, ModelData& model, bool skip_texture_bytes = false, 
     }
 
     in.pod(count);
+    in.checkCount(count, 8);  // cada uno ocupa al menos 8 bytes
     model.bones.resize(static_cast<std::size_t>(count));
     for (Bone& bone : model.bones) {
         in.string(bone.name);
@@ -300,12 +326,14 @@ void readPayload(Reader& in, ModelData& model, bool skip_texture_bytes = false, 
     }
 
     in.pod(count);
+    in.checkCount(count, 8);  // cada uno ocupa al menos 8 bytes
     model.animations.resize(static_cast<std::size_t>(count));
     for (AnimationClip& clip : model.animations) {
         in.string(clip.name);
         in.pod(clip.duration);
         std::uint64_t channels = 0;
         in.pod(channels);
+        in.checkCount(channels, 8);  // cada uno ocupa al menos 8 bytes
         clip.channels.resize(static_cast<std::size_t>(channels));
         for (AnimationChannel& channel : clip.channels) {
             in.pod(channel.node);

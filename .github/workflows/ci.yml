@@ -1,0 +1,137 @@
+# CI del motor (ROADMAP 3.6). Ver PRUEBAS.md.
+#
+#   windows  Clang + Ninja + Vulkan SDK: librerias, todas las pruebas sin GPU,
+#            los shaders (tambien los del modo compatible, SPIR-V 1.0) y el
+#            SDK de los scripts de C++ regenerado sin diferencias.
+#   linux    Clang + Ninja: CramionCore, el servidor dedicado y sus pruebas.
+#
+# Las pruebas con GPU (etiqueta gpu) no corren aqui: no hay GPU en los
+# runners. Cache de compilacion: sccache (Windows) / ccache (Linux); las
+# dependencias de FetchContent tienen version fija (se descargan en cada
+# pasada, son pocos MB salvo assimp).
+
+name: CI
+
+on:
+  push:
+    branches: [main, "horizonz-*", "rm-*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Version del Vulkan SDK de LunarG (glslc y shaderc_shared.dll).
+  VULKAN_SDK_VERSION: "1.4.309.0"
+
+jobs:
+  windows:
+    name: Windows (Clang + Ninja)
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: LLVM / Clang
+        run: |
+          choco upgrade llvm -y --no-progress
+          echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Vulkan SDK (glslc, shaderc)
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: ${{ env.VULKAN_SDK_VERSION }}
+          install_runtime: false
+          cache: true
+          stripdown: true
+
+      - name: Cache de compilacion (sccache)
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          variant: sccache
+          key: windows-clang
+          max-size: 2G
+
+      - name: Configurar
+        run: cmake --preset ci-windows -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      - name: Shaders (normales y modo compatible)
+        run: cmake --build --preset ci-windows --target CramionFX_shaders
+
+      - name: Librerias y pruebas
+        run: cmake --build --preset ci-windows --target cramion_tests CramionServer crwpack cramion_sdkgen
+
+      - name: Pruebas rapidas (sin GPU)
+        run: ctest --preset ci-windows
+
+      - name: SDK de C++ al dia (cramion_sdkgen sin diferencias)
+        shell: bash
+        run: |
+          ./build-ci/CramionCore/cramion_sdkgen CramionCore/sdk/cramion
+          git diff --ignore-cr-at-eol --exit-code -- CramionCore/sdk || {
+            echo "::error::CramionCore/sdk/cramion no esta al dia: ejecuta cramion_sdkgen CramionCore/sdk/cramion y sube el resultado"
+            exit 1
+          }
+
+      - name: Registro de las pruebas que fallan
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-windows
+          path: build-ci/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+
+  linux:
+    name: Linux (CramionCore + servidor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CLANG: "19"
+      # Las pruebas que se compilan y pasan en Linux: el nucleo y lo que usa
+      # el servidor dedicado (red, escenas, prefabs, fisica, scripts).
+      LINUX_TESTS: >-
+        CramionCoreTests CramionPhysicsTests CramionNetworkTests CramionWsProtocolTests
+        CramionWebSocketTests CramionPackTests CramionPrefabTests CramionSceneLoadTests
+        CramionSceneChangeTests CramionNavigationTests CramionStateMachineTests
+        CramionNativeApiTests CramionApiNetworkApiTests CramionApiCoreApiTests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Paquetes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libx11-dev libvulkan-dev glslc libssl-dev
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh "$CLANG"
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-$CLANG 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-$CLANG 100
+
+      - name: Cache de compilacion (ccache)
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-clang
+          max-size: 2G
+
+      - name: Configurar
+        run: cmake --preset ci-linux -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: CramionCore, servidor y pruebas
+        run: cmake --build --preset ci-linux --target CramionCore CramionServer crwpack $LINUX_TESTS
+
+      - name: Pruebas
+        run: |
+          regex="^($(echo $LINUX_TESTS | tr ' ' '|'))$"
+          ctest --preset ci-linux -R "$regex"
+
+      - name: Registro de las pruebas que fallan
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-linux
+          path: build-ci/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore

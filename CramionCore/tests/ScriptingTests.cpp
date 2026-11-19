@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -111,7 +112,8 @@ void testAudio() {
 
     audio::AudioSystem system;
     system.setAssetsRoot(kRoot);
-    if (!system.available()) {
+    // CRAMION_TESTS_SILENT (CTest): sin abrir los altavoces, nada suena.
+    if (!system.available() || std::getenv("CRAMION_TESTS_SILENT") != nullptr) {
         std::printf("  (sin dispositivo de audio: se saltan las pruebas de reproduccion)\n");
         return;
     }
@@ -163,7 +165,8 @@ void testAudioOcclusion() {
 
     audio::AudioSystem system;
     system.setAssetsRoot(kRoot);
-    if (!system.available()) {
+    // CRAMION_TESTS_SILENT (CTest): sin abrir los altavoces, nada suena.
+    if (!system.available() || std::getenv("CRAMION_TESTS_SILENT") != nullptr) {
         std::printf("  (sin dispositivo de audio: se saltan las pruebas de reproduccion)\n");
         return;
     }

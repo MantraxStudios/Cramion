@@ -34,6 +34,16 @@ bool get(std::istream& in, T& value) {
 // Tope para cadenas: una cabecera danada no debe pedir gigas de memoria.
 constexpr std::uint64_t kMaxString = 1ull << 26;
 
+// Bytes que quedan en el archivo desde la posicion actual (0 si no se sabe).
+std::uint64_t remainingBytes(std::istream& in) {
+    const std::streampos here = in.tellg();
+    if (here < 0) return 0;
+    in.seekg(0, std::ios::end);
+    const std::streampos end = in.tellg();
+    in.seekg(here);
+    return end < here ? 0 : static_cast<std::uint64_t>(end - here);
+}
+
 bool getString(std::istream& in, std::string& text) {
     std::uint64_t size = 0;
     if (!get(in, size) || size > kMaxString) {
@@ -181,7 +191,9 @@ bool readModelFrom(const std::filesystem::path& file, Header& header, ModelConte
 
     ModelContent result{};
     std::uint32_t count = 0;
-    if (!get(in, count) || count > (1u << 24)) {
+    // Cada nodo ocupa al menos 80 bytes en el archivo: no se reservan mas de
+    // los que caben en lo que queda.
+    if (!get(in, count) || count > (1u << 24) || count > remainingBytes(in) / 80) {
         return false;
     }
     result.nodes.resize(count);
@@ -262,7 +274,10 @@ bool readEnvironment(const std::filesystem::path& file, Header& header, std::str
         return false;
     }
     std::uint64_t size = 0;
-    if (!getString(in, extension) || !get(in, size) || size > header.payload_bytes) {
+    // payload_bytes tambien viene del archivo: el tope de verdad es lo que
+    // queda en el (fuzzing, ROADMAP 3.6; antes un tamano enorme reservaba
+    // memoria sin limite y se caia con bad_alloc).
+    if (!getString(in, extension) || !get(in, size) || size > header.payload_bytes || size > remainingBytes(in)) {
         return false;
     }
     bytes.resize(static_cast<std::size_t>(size));

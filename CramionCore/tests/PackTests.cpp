@@ -3,6 +3,9 @@
 #include "CramionCore/asset/AssetDatabase.h"
 #include "CramionCore/project/DataPack.h"
 #include "CramionCore/project/Pack.h"
+#include "asset/CrData.h"  // interna de CramionAssets (src/asset)
+
+#include <nlohmann/json.hpp>
 
 #include <cstdio>
 #include <fstream>
@@ -175,6 +178,120 @@ int main() {
                   project::readDataPackManifest(object_pack, objects, &error) && objects.scenes.empty() &&
                   objects.objects.size() == 1 && objects.objects[0] == "Prefabs/Coche.crprefab",
               "DataPack: objetos (prefab) con sus dependencias en \"objects\"");
+    }
+
+    // --- Tamanos enormes en el indice de un .crpack (fuzzing): readPackFile
+    // y extractPack fallan sin reservar memoria de mas ---
+    {
+        const std::filesystem::path dir = root / "tam";
+        std::filesystem::create_directories(dir);
+        std::ofstream(dir / "a.txt", std::ios::binary) << "contenido corto";
+        const std::filesystem::path big = dir / "Grande.crpack";
+        check(project::writePack(big, {{dir / "a.txt", "a.txt"}}, 3, {}, &error), "paquete de un archivo");
+        // El indice va al final: su ultimo campo es el tamano original.
+        {
+            std::fstream f(big, std::ios::binary | std::ios::in | std::ios::out);
+            f.seekp(-8, std::ios::end);
+            const std::uint64_t huge = 1ull << 40;
+            f.write(reinterpret_cast<const char*>(&huge), sizeof(huge));
+        }
+        std::string data;
+        check(!project::readPackFile(big, "a.txt", data, &error), "tamano enorme: readPackFile falla (sin reservar 1 TB)");
+        check(!project::extractPack(big, dir / "out", {}, &error), "tamano enorme: extractPack falla");
+
+        // Ruta del indice con UTF-8 no valido: antes std::filesystem::path lanzaba.
+        const std::filesystem::path bad = dir / "Utf8.crpack";
+        check(project::writePack(bad, {{dir / "a.txt", "a.txt"}}, 3, {}, &error), "paquete para romper la ruta");
+        {
+            std::fstream f(bad, std::ios::binary | std::ios::in | std::ios::out);
+            std::uint64_t index = 0;
+            f.seekg(12);
+            f.read(reinterpret_cast<char*>(&index), sizeof(index));
+            f.seekp(static_cast<std::streamoff>(index + 2));  // tras el u16 del largo
+            const char invalid[2] = {static_cast<char>(0xC3), static_cast<char>(0x28)};
+            f.write(invalid, 2);
+        }
+        std::vector<project::PackEntry> bad_entries;
+        check(!project::readPackIndex(bad, bad_entries, &error), "ruta con UTF-8 no valido: paquete danado (sin excepcion)");
+
+        // Manifiestos de DataPack con otros tipos: no son DataPacks (antes type_error).
+        for (const char* text : {"[1, 2]", "{\"format\": 5}", "{\"format\": \"cramion-datapack\", \"files\": 5}"}) {
+            std::ofstream(dir / "datapack.json", std::ios::binary) << text;
+            const std::filesystem::path odd = dir / "Raro.datapack";
+            project::DataPackManifest m;
+            check(project::writePack(odd, {{dir / "datapack.json", "datapack.json"}}, 3, {}, &error) &&
+                      !project::readDataPackManifest(odd, m, &error),
+                  "manifiesto con otro tipo: no es un DataPack (sin excepcion)");
+        }
+    }
+
+    // --- .crdata con tamanos enormes (fuzzing): se rechazan sin reservar ---
+    {
+        const std::filesystem::path dir = root / "crdata";
+        std::filesystem::create_directories(dir);
+        assets::crdata::Header header;
+        header.type = assets::AssetType::Environment;
+        header.name = "Cielo";
+        header.source = "cielo.hdr";
+        header.settings_json = "{}";
+        // Cabecera: firma, version, tipo, UUID y tres cadenas (u64 + texto).
+        const std::streamoff header_size = 8 + 4 + 4 + 16 + (8 + 5) + (8 + 9) + (8 + 2);
+        const auto patch = [](const std::filesystem::path& f, std::streamoff at, const void* value, std::size_t n) {
+            std::fstream s(f, std::ios::binary | std::ios::in | std::ios::out);
+            s.seekp(at);
+            s.write(static_cast<const char*>(value), static_cast<std::streamsize>(n));
+        };
+        const std::filesystem::path sky = dir / "cielo.crdata";
+        assets::crdata::writeEnvironment(sky, header, ".hdr", std::vector<std::uint8_t>(10, 7));
+        assets::crdata::Header h;
+        std::string extension;
+        std::vector<std::uint8_t> bytes;
+        check(assets::crdata::readEnvironment(sky, h, extension, bytes) && bytes.size() == 10 && extension == ".hdr",
+              ".crdata: cielo de ida y vuelta");
+        const std::uint64_t huge = 1ull << 50;
+        patch(sky, header_size, &huge, 8);                 // payload_bytes
+        patch(sky, header_size + 8 + 8 + 4, &huge, 8);     // bytes del .hdr
+        check(!assets::crdata::readEnvironment(sky, h, extension, bytes), ".crdata: cielo con tamano enorme se rechaza");
+
+        header.type = assets::AssetType::Model;
+        assets::crdata::ModelContent model;
+        model.nodes.resize(1);
+        model.nodes[0].name = "Raiz";
+        const std::filesystem::path mesh = dir / "modelo.crdata";
+        assets::crdata::writeModel(mesh, header, model);
+        assets::crdata::ModelContent read;
+        check(assets::crdata::readModel(mesh, h, read) && read.nodes.size() == 1 && read.nodes[0].name == "Raiz",
+              ".crdata: modelo de ida y vuelta");
+        const std::uint32_t many = (1u << 24) - 1;
+        patch(mesh, header_size + 8, &many, 4);            // numero de nodos
+        check(!assets::crdata::readModel(mesh, h, read), ".crdata: 16 M de nodos en un archivo pequeno se rechaza");
+    }
+
+    // --- DataPack con rutas absolutas en el manifiesto (fuzzing): se saltan
+    // esas entradas y el resto se monta; nada se escribe fuera de Assets ---
+    {
+        const std::filesystem::path dir = root / "dp_abs";
+        std::filesystem::create_directories(dir);
+        const std::filesystem::path outside = dir / "fuera.txt";
+        std::string outside_text;
+        for (char8_t c : outside.generic_u8string()) outside_text += static_cast<char>(c);
+        const nlohmann::json manifest = {{"format", "cramion-datapack"},
+                                         {"name", "Abs"},
+                                         {"files", {"bueno.txt", outside_text, "/raiz.txt", "C:relativa.txt"}}};
+        std::ofstream(dir / "datapack.json", std::ios::binary) << manifest.dump();
+        std::ofstream(dir / "bueno.txt", std::ios::binary) << "bien";
+        const std::vector<project::PackInput> dp_inputs = {{dir / "datapack.json", "datapack.json"},
+                                                           {dir / "bueno.txt", "Assets/bueno.txt"}};
+        const std::filesystem::path dp_file = dir / "Abs.datapack";
+        const std::filesystem::path assets = dir / "Assets";
+        std::filesystem::create_directories(assets);
+        project::DataPackMount mount;
+        check(project::writePack(dp_file, dp_inputs, 3, {}, &error) &&
+                  project::mountDataPack(dp_file, assets, mount, &error) && mount.written.size() == 1 &&
+                  readAll(assets / "bueno.txt") == "bien",
+              "DataPack: rutas absolutas del manifiesto se saltan (el resto se monta)");
+        check(!std::filesystem::exists(outside), "DataPack: nada fuera de Assets");
+        project::unmountDataPack(mount, assets);
     }
 
     std::filesystem::remove_all(root);

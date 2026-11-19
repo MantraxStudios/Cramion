@@ -20,15 +20,23 @@ Cramion uses the following libraries, each under its own license. Exported games
 | zstd | BSD-3-Clause | https://github.com/facebook/zstd |
 | nlohmann/json | MIT | https://github.com/nlohmann/json |
 | assimp | BSD-3-Clause | https://github.com/assimp/assimp |
-| stb | Dominio público o MIT | https://github.com/nothings/stb |
+| stb (commit 4e9b368bfc071e97206ea5c6adba68dd0cbf8897) | Dominio público o MIT | https://github.com/nothings/stb |
 | OpenXR SDK (loader) | Apache-2.0 | https://github.com/KhronosGroup/OpenXR-SDK |
 | Vulkan SDK / headers | Apache-2.0 | https://vulkan.lunarg.com |
 | glslang | BSD-3-Clause y otras (ver su repositorio) | https://github.com/KhronosGroup/glslang |
+| shaderc (`shaderc_shared.dll` del Vulkan SDK, compila los `.crshader` en tiempo de ejecución; va con el editor, el paquete y los juegos exportados) | Apache-2.0 | https://github.com/google/shaderc |
+| SPIRV-Tools (dentro de `shaderc_shared.dll`: validación y optimización de SPIR-V) | Apache-2.0 | https://github.com/KhronosGroup/SPIRV-Tools |
 | DirectX Shader Compiler | LLVM (Apache-2.0 con excepción LLVM) / NCSA | https://github.com/microsoft/DirectXShaderCompiler |
-| AMD FidelityFX (FSR) | MIT | https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK |
+| AMD FidelityFX (FSR 3.1, SDK 1.1.4) | MIT | https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK |
+| AMD FidelityFX FSR 1 (cabeceras de shader `ffx_a.h` y `ffx_fsr1.h`, commit a21ffb8f6c13233ba336352bdff293894c706575) | MIT | https://github.com/GPUOpen-Effects/FidelityFX-FSR |
 | NVIDIA DLSS | NVIDIA RTX SDKs License (ver `licencias/NVIDIA-DLSS-LICENSE.txt`) | https://github.com/NVIDIA/DLSS |
 | bundletool (solo exportación Android) | Apache-2.0 | https://github.com/google/bundletool |
+| llvm-mingw (compilador de los scripts de C++ incluido con el editor, `toolchain/`; no va en los juegos exportados) | Apache-2.0 con excepción LLVM; las cabeceras y librerías de mingw-w64 con las suyas (ver `licencias/llvm-mingw-LICENSE.txt`) | https://github.com/mstorsjo/llvm-mingw |
 | WebXR Input Profiles (modelos de los mandos de Meta Quest 3) | MIT | https://github.com/immersive-web/webxr-input-profiles |
+
+SPIRV-Cross no se enlaza: en `CramionFX/vendor/include` solo hay cabeceras del Vulkan SDK que el motor no incluye.
+
+SPIRV-Cross is not linked: `CramionFX/vendor/include` only holds Vulkan SDK headers the engine does not include.
 
 Estas licencias se aplican solo a esos componentes. El resto de Cramion se rige por [LICENSE](LICENSE).
 

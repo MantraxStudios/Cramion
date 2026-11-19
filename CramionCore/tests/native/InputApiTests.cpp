@@ -492,13 +492,16 @@ void testDocs() {
     std::printf("Documentacion\n");
     ApiFixture t(false);
     int missing = 0;
-    int count = 0;
+    int input = 0, screen = 0, xr = 0;
     for (const auto& e : t.api().entries()) {
         if (e.owner != "Input" && e.owner != "Screen" && e.owner != "XR") continue;
-        ++count;
+        ++(e.owner == "Input" ? input : e.owner == "Screen" ? screen : xr);
         if (e.doc.description.empty()) ++missing;
     }
-    check(count == 56 + 5 + 22, "56 de Input, 5 de Screen y 22 de XR");  // +5 del mando en PC (2.5.2 R3), +4 del modo del cursor (2.6.3)
+    std::printf("  (%d de Input, %d de Screen y %d de XR)\n", input, screen, xr);
+    // +5 del mando en PC (2.5.2 R3), +4 del modo del cursor (2.6.3), +12 de
+    // los controles tactiles editables (Horizonz 1.0.31).
+    check(input == 68 && screen == 5 && xr == 22, "68 de Input, 5 de Screen y 22 de XR");
     check(missing == 0, "todas con descripcion");
 }
 

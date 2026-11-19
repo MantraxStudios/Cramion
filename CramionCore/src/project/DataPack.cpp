@@ -29,6 +29,34 @@ std::filesystem::path fromUtf8(const std::string& text) {
     return std::filesystem::path(std::u8string(text.begin(), text.end()));
 }
 
+// UTF-8 bien formado (sin secuencias cortadas, largas ni sustitutos): asi
+// std::filesystem::path no lanza al convertir rutas que vienen de un paquete.
+bool validUtf8(const std::string& text) {
+    std::size_t i = 0;
+    const std::size_t n = text.size();
+    while (i < n) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        std::size_t len = 0;
+        std::uint32_t cp = 0;
+        if (c < 0x80) { ++i; continue; }
+        if ((c & 0xE0) == 0xC0) { len = 2; cp = c & 0x1F; }
+        else if ((c & 0xF0) == 0xE0) { len = 3; cp = c & 0x0F; }
+        else if ((c & 0xF8) == 0xF0) { len = 4; cp = c & 0x07; }
+        else return false;
+        if (i + len > n) return false;
+        for (std::size_t k = 1; k < len; ++k) {
+            const auto d = static_cast<unsigned char>(text[i + k]);
+            if ((d & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (d & 0x3F);
+        }
+        if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) || (len == 4 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+            (cp >= 0xD800 && cp <= 0xDFFF))
+            return false;
+        i += len;
+    }
+    return true;
+}
+
 std::string lower(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return text;
@@ -242,18 +270,56 @@ bool readDataPackManifest(const std::filesystem::path& file, DataPackManifest& m
     std::string data;
     if (!readPackFile(file, kDataPackManifest, data, error)) return false;
     const nlohmann::json json = nlohmann::json::parse(data, nullptr, false);
-    if (json.is_discarded() || json.value("format", std::string()) != "cramion-datapack") {
+    // Un manifiesto que no es un objeto o con un campo de otro tipo ("files": 5)
+    // hace que nlohmann lance type_error: no es un DataPack, no un cierre
+    // (fuzzing, ROADMAP 3.6).
+    if (json.is_discarded() || !json.is_object() || !json.contains("format") || !json["format"].is_string() ||
+        json["format"].get<std::string>() != "cramion-datapack") {
         if (error) *error = "No es un DataPack de Cramion";
         return false;
     }
-    manifest.name = json.value("name", std::string());
-    manifest.version = json.value("version", std::string("1.0"));
-    manifest.engine = json.value("engine", std::string());
-    manifest.created = json.value("created", std::string());
-    manifest.scenes = json.value("scenes", std::vector<std::string>{});
-    manifest.objects = json.value("objects", std::vector<std::string>{});
-    manifest.files = json.value("files", std::vector<std::string>{});
-    manifest.bytes = json.value("bytes", std::uint64_t{0});
+    // Los tipos se comprueban antes de leer (sin excepciones).
+    bool ok = true;
+    const auto text = [&](const char* key, const std::string& fallback) {
+        if (!json.contains(key)) return fallback;
+        if (!json[key].is_string()) {
+            ok = false;
+            return fallback;
+        }
+        return json[key].get<std::string>();
+    };
+    const auto list = [&](const char* key) {
+        std::vector<std::string> out;
+        if (!json.contains(key)) return out;
+        if (!json[key].is_array()) {
+            ok = false;
+            return out;
+        }
+        for (const nlohmann::json& item : json[key]) {
+            if (!item.is_string()) {
+                ok = false;
+                return std::vector<std::string>{};
+            }
+            out.push_back(item.get<std::string>());
+        }
+        return out;
+    };
+    manifest.name = text("name", std::string());
+    manifest.version = text("version", std::string("1.0"));
+    manifest.engine = text("engine", std::string());
+    manifest.created = text("created", std::string());
+    manifest.scenes = list("scenes");
+    manifest.objects = list("objects");
+    manifest.files = list("files");
+    manifest.bytes = 0;
+    if (json.contains("bytes")) {
+        if (json["bytes"].is_number_unsigned()) manifest.bytes = json["bytes"].get<std::uint64_t>();
+        else if (!json["bytes"].is_number()) ok = false;  // otro numero: informativo, se deja en 0
+    }
+    if (!ok) {
+        if (error) *error = "Manifiesto del DataPack no valido";
+        return false;
+    }
     return true;
 }
 
@@ -282,6 +348,18 @@ bool mountDataPack(const std::filesystem::path& file, const std::filesystem::pat
     }
     for (const std::string& relative : manifest.files) {
         if (relative.find("..") != std::string::npos) continue;
+        // Solo rutas relativas dentro de Assets (fuzzing, ROADMAP 3.6): una
+        // absoluta ("C:/...", "/etc/...", "\\servidor") sustituiria a
+        // assets_root al juntarlas y el montaje fallaba entero por una entrada
+        // del manifiesto que ni siquiera esta en el paquete.
+        if (relative.empty() || relative.find(':') != std::string::npos || relative.front() == '/' ||
+            relative.front() == '\\' || !validUtf8(relative))
+            continue;
+        try {  // UTF-8 no valido: std::filesystem::path lanza std::system_error
+            if (fromUtf8(relative).has_root_path()) continue;
+        } catch (const std::exception&) {
+            continue;
+        }
         const std::filesystem::path from = staging / "Assets" / fromUtf8(relative);
         const std::filesystem::path to = assets_root / fromUtf8(relative);
         std::error_code fe;
