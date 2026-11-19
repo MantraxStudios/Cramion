@@ -1424,7 +1424,8 @@ OneShotListener& oneShotListener() {
 
 void setOneShotListener(OneShotListener listener) { oneShotListener() = std::move(listener); }
 
-void AudioSystem::playOneShot(const std::string& clip, const Vec3& position, float volume, bool spatial) {
+void AudioSystem::playOneShot(const std::string& clip, const Vec3& position, float volume, bool spatial,
+                              const std::string& bus) {
     if (const OneShotListener& listener = oneShotListener()) listener(clip, position, volume, spatial);
     Impl& d = *impl_;
     auto voice = std::make_unique<Impl::Voice>();
@@ -1433,6 +1434,7 @@ void AudioSystem::playOneShot(const std::string& clip, const Vec3& position, flo
     source.volume = volume;
     source.spatial = spatial;
     source.max_distance = 100.0f;
+    source.bus = bus;
     voice->settings = source;
     voice->position = position;
     d.apply(*voice, source, position, 0.0f, {});
@@ -1599,6 +1601,9 @@ int AudioSystem::addDucking(const std::string& trigger, const std::string& targe
     d.trigger = m.find(trigger);
     d.target = m.find(target);
     if (d.trigger < 0 || d.target < 0 || d.trigger == d.target) return -1;
+    // Revision: si uno cuelga del otro, lo que suena por el disparador ya
+    // lleva la bajada (o es el mismo sonido): se bajaria a si mismo y oscilaria.
+    if (m.ancestorOf(d.target, d.trigger) || m.ancestorOf(d.trigger, d.target)) return -1;
     d.amount_db = std::clamp(amount_db, -80.0f, 0.0f);
     d.attack = std::max(attack, 0.0f);
     d.release = std::max(release, 0.0f);

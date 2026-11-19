@@ -120,11 +120,11 @@ template <typename... Mas>
 inline Value occlusion(Mas&&... mas) {
     return detail::api("Audio.occlusion", Values{Value(std::forward<Mas>(mas))...});
 }
-/// Audio.playOneShot("Audio/golpe.wav", posicion, volumen)
-/// Sonido suelto (sin posicion = 2D)
-template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
-inline Value playOneShot(const T0& texto = {}, const T1& posicion = {}, const T2& volumen = {}) {
-    return detail::api("Audio.playOneShot", Values{Value(texto), Value(posicion), Value(volumen)});
+/// Audio.playOneShot("Audio/golpe.wav", posicion, volumen, bus)
+/// Sonido suelto (sin posicion = 2D; bus: vacio = Efectos)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value playOneShot(const T0& texto = {}, const T1& posicion = {}, const T2& volumen = {}, const T3& bus = {}) {
+    return detail::api("Audio.playOneShot", Values{Value(texto), Value(posicion), Value(volumen), Value(bus)});
 }
 /// Audio.removeDucking(id)
 /// Quita un ducking (sin id: todos)

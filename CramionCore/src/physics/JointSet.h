@@ -42,6 +42,10 @@ public:
     // Antes de destruir un cuerpo: sus constraints fuera (se rehacen en el
     // siguiente sync si el cuerpo vuelve; el marco se conserva).
     void removeBody(JPH::PhysicsSystem& system, const JPH::BodyID& id);
+    // Origen flotante: las juntas unidas al mundo (sin cuerpo conectado)
+    // guardan su punto del mundo; se mueve y su constraint se rehace en el
+    // siguiente sync (antes del paso). Las que unen dos cuerpos no cambian.
+    void shiftOrigin(JPH::PhysicsSystem& system, JPH::Vec3Arg offset);
     // Todo fuera (stop): constraints, marcos y roturas.
     void clear(JPH::PhysicsSystem* system);
 

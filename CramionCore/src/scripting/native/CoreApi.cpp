@@ -711,9 +711,10 @@ void registerPhysicsAndAudio(Runtime& rt) {
         const bool spatial = c.has(1);
         const Vec3 position = c.vec3(1, Vec3{});
         const float volume = static_cast<float>(c.number(2, 1.0));
-        if (rt.audio != nullptr) rt.audio->playOneShot(clip, position, volume, spatial);
+        const std::string bus = c.has(3) ? c.string(3) : std::string();  // audiofis: bus del mezclador
+        if (rt.audio != nullptr) rt.audio->playOneShot(clip, position, volume, spatial, bus);
         return api::Value{};
-    }, {"\"Audio/golpe.wav\", posicion, volumen", "Sonido suelto (sin posicion = 2D)"});
+    }, {"\"Audio/golpe.wav\", posicion, volumen, bus", "Sonido suelto (sin posicion = 2D; bus: vacio = Efectos)"});
     // Oclusion y paso bajo general de los AudioListener de la escena.
     rt.native.function("Audio.setOcclusion", [&rt](api::Call& c) {
         const bool on = c.boolean(0);

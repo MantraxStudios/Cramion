@@ -47,7 +47,6 @@ Compilado en `build-rm` (Release, clang++): `CramionCore`, `CramionEditor`, `Cra
 
 ## Pendiente
 - Buses definidos por proyecto en un archivo (`Audio.json` en Project Settings) y una ventana **Mezclador** en el editor con deslizadores y vumetros; hoy los buses del juego se crean por API o al usarlos en `AudioSource::bus`.
-- En el editor los volumenes de los buses que cambie un script en Play siguen al parar el Play (no los toca `AudioSystem::stop()` a proposito, para que sobrevivan a los cambios de escena del juego). Falta que el editor llame a `resetBuses()` al parar el Play.
 - Efectos por bus (paso bajo/reverb en un bus), envios entre buses y medidores de nivel.
 - Juntas: `ConfigurableJoint` no tiene drives por eje separados (uno lineal y uno de giro para todos los ejes no bloqueados) ni limites de giro blandos; `HingeJoint` no tiene "free spin". `connectedMassScale`/`massScale` de Unity no estan. Las juntas no se replican por red (cada cliente simula las suyas como el resto de la fisica).
 - Gizmo de las juntas: solo punto, linea y eje (sin arcos de limites ni manipuladores para mover el anclaje).
@@ -62,3 +61,20 @@ Compilado en `build-rm` (Release, clang++): `CramionCore`, `CramionEditor`, `Cra
 - Play: puerta con `HingeJoint` (limites 0..100), una cadena de `DistanceJoint`, un puente con `FixedJoint` y `break_force`; un script con `on("OnJointBreak", ...)`.
 - Gizmos de las juntas con el objeto seleccionado (anclaje, linea al conectado, eje).
 - Audio en el juego: `Audio.setBusVolume("Musica", 0)` en un menu de opciones; ducking de Musica con Voces; instantanea de pausa; la lluvia baja con el bus Ambiente.
+
+## Revision (segundo agente)
+Revisado el diff `horizonz-1031...rm-audiofis` entero. Lo que estaba mal y se arreglo:
+- **Rotura con `collision_steps` > 1**: Jolt da los impulsos de las constraints del ultimo subpaso, y la fuerza se calculaba con el paso entero (`lambda / dt`): con 4 subpasos una junta aguantaba 4 veces su `break_force`. Ahora `afterStepJoints(dt / collision_steps)` (`PhysicsSystem.cpp`).
+- **Origen flotante** (Horizonz lo usa): las juntas unidas al mundo guardaban su punto en coordenadas del mundo y `PhysicsSystem::shiftOrigin` mueve todos los cuerpos, asi que el cuerpo se iba de golpe hacia el punto viejo. Nuevo `JointSet::shiftOrigin`: mueve ese punto y rehace la constraint en el siguiente `sync` (antes del paso; la bisagra no pierde el angulo porque Jolt lo mide con los ejes locales).
+- **`OnJointBreak` sin oyente**: el oyente de roturas solo se enganchaba en `onStart` si la fisica ya estaba puesta; con `setPhysics` despues de `start` (como en las pruebas de la API) no llegaba ningun evento. Ahora tambien se engancha en la fase Events si la fisica llego o cambio (`JointsApi.cpp`).
+- **Ducking que se baja a si mismo**: `addDucking` con un bus y su padre (p. ej. Voces -> Master o Master -> Musica) medía un nivel que ya llevaba la bajada y oscilaba. Ahora devuelve -1 en ese caso.
+- **Sonidos sueltos sin bus**: `playOneShot` iba siempre por Efectos, tambien el audio de las lineas de dialogo. Nuevo parametro opcional `bus` en `AudioSystem::playOneShot` y en `Audio.playOneShot(clip, posicion, volumen, bus)`; los dialogos (`GameplayApi.cpp`) van por **Voces**. Con los valores por defecto se oye igual.
+- **Editor**: al parar el Play se llama a `audio_.resetBuses()` (`EditorPhysics.cpp`): un juego que bajaba Master o callaba un bus dejaba el editor asi. En los cambios de escena dentro del Play no se toca (opciones del juego).
+- SDK regenerado con `cramion_sdkgen` (solo cambia la firma de `Audio.playOneShot`).
+
+Revisado sin cambios: serializacion (campo `bus` nuevo opcional; juntas solo si se anaden; `connected_body` es un campo de entidad y lo remapean los prefabs como los demas), coste por frame sin uso (el mezclador recalcula 6 buses; `syncJoints` recorre 6 vistas vacias), hilos (las parejas sin colision solo cambian fuera de `system->Update`, como `ignored_pairs`), orden de destruccion (constraints antes que cuerpos en `destroyEntry` y `stop`).
+
+Pruebas nuevas de la revision: `testJoints` (bisagra al mundo con origen desplazado 100 m; rotura con 4 subpasos: rompe la de 5 N y no la de 20 N, fuerza medida ~9.8 N), `testAudioBuses` (ducking padre/hijo rechazado; `playOneShot` por Voces con Efectos callado), `testJointsApi` en CoreApiTests (createJoint con opciones y campo desconocido, tipo invalido, jointState, breakJoint -> OnJointBreak una vez con la fisica puesta tras start, repairJoint, removeJoint).
+Resultado: `CramionPhysicsTests` 174/0, `CramionScriptingTests` 51/0, `CramionApiCoreApiTests` 159/0, `CramionVehicleTests` 0 fallos, `CramionCppScriptTests` 76/1 (el mismo fallo del toolchain no incluido de `build-rm`). Compilan `CramionEditor`, `CramionPlayer`, `CramionScriptHost` y `cramion_sdkgen`.
+
+Queda (de la revision): las repeticiones (`OneShotListener`) no guardan el bus de un sonido suelto (al reproducirlas va por Efectos); `setBusParent` puede crear despues una pareja de ducking padre/hijo (solo se comprueba en `addDucking`); si la voz no pudo crear su nodo de efectos (`fx_ok` falso, fallo de miniaudio) el volumen del bus no le llega.

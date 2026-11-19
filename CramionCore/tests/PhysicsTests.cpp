@@ -1165,6 +1165,51 @@ void testJoints() {
         p2.stop();
     }
 
+    // Revision: con el origen flotante (Horizonz) la bisagra unida al mundo
+    // sigue en el mismo punto real (su punto del mundo se mueve con el origen).
+    {
+        ecs::World w3;
+        ecs::Entity bob = makeBox(w3, "PenduloLejos", Vec3{1.0f, 10.0f, 0.0f});
+        HingeJoint& h3 = bob.add<HingeJoint>();
+        h3.anchor = Vec3{-1.0f, 0.0f, 0.0f};
+        h3.axis = Vec3{0.0f, 0.0f, 1.0f};
+        PhysicsSystem p3;
+        p3.start(w3);
+        run(p3, w3, 0.3f);
+        const Vec3 shift{100.0f, 0.0f, 0.0f};
+        w3.shiftOrigin(shift);
+        p3.shiftOrigin(shift);
+        run(p3, w3, 0.7f);
+        const Vec3 pivot3 = Vec3{0.0f, 10.0f, 0.0f} - shift;
+        const float arm3 = core::length(bob.worldPosition() - pivot3);
+        std::printf("  origen desplazado: brazo %.3f m (x %.2f)\n", arm3, bob.worldPosition().x);
+        check(std::abs(arm3 - 1.0f) < 0.03f && p3.jointState(bob, JointType::Hinge).active,
+              "origen flotante: la bisagra al mundo sigue girando en su punto real");
+        p3.stop();
+    }
+
+    // Revision: la fuerza de rotura no depende de collision_steps (los
+    // impulsos de Jolt son del ultimo subpaso).
+    {
+        ecs::World w4;
+        ecs::Entity weak4 = makeBox(w4, "Debil4", Vec3{0.0f, 10.0f, 0.0f});
+        weak4.add<FixedJoint>().break_force = 5.0f;  // 1 kg: ~9.8 N
+        ecs::Entity strong4 = makeBox(w4, "Fuerte4", Vec3{5.0f, 10.0f, 0.0f});
+        strong4.add<FixedJoint>().break_force = 20.0f;
+        PhysicsSystem p4;
+        PhysicsSettings s4 = p4.settings();
+        s4.collision_steps = 4;
+        p4.setSettings(s4);
+        p4.start(w4);
+        run(p4, w4, 0.5f);
+        const JointState weak_state = p4.jointState(weak4, JointType::Fixed);
+        const JointState strong_state = p4.jointState(strong4, JointType::Fixed);
+        std::printf("  4 subpasos: fuerte %.2f N\n", strong_state.force);
+        check(weak_state.broken && !strong_state.broken && std::abs(strong_state.force - 9.81f) < 1.5f,
+              "con 4 subpasos la fuerza es la real (~9.8 N): rompe la de 5 N y no la de 20 N");
+        p4.stop();
+    }
+
     // De ida y vuelta por la escena (y las escenas sin juntas se abren igual).
     const std::string json = ecs::serializeWorld(world);
     ecs::World copy;

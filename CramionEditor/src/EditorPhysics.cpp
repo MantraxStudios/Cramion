@@ -310,6 +310,7 @@ void EditorApp::exitPlay() {
     scripts_.shutdownNetwork();  // salir de Play cierra la partida en red
     video_.stop();  // ANTES que el audio: suelta sus voces de stream
     audio_.stop();
+    audio_.resetBuses();  // audiofis: los buses que toco el juego (Master a 0...) no se quedan en el editor
     ui_.reset();
     physics_.stop();
     particles_.clear();

@@ -403,6 +403,8 @@ void testAudioBuses() {
     system.setBusVolume("Musica", 1.0f);
     const int duck = system.addDucking("Voces", "Musica", -12.0f, 0.05f, 0.3f);
     check(duck > 0 && system.addDucking("Voces", "NoExiste") == -1, "addDucking devuelve su id (-1 con un bus que no existe)");
+    check(system.addDucking("Voces", "Master") == -1 && system.addDucking("Master", "Musica") == -1,
+          "addDucking rechaza un bus y su padre (se bajaria a si mismo)");
     rms(10);
     const double music_alone = rms(5);
     ecs::Entity speaker = world.create("Voz");
@@ -456,6 +458,21 @@ void testAudioBuses() {
     std::printf("  RMS: clima %.4f, Ambiente a 0 %.6f\n", weather, weather_off);
     check(weather > 0.005 && weather_off < weather * 0.05, "la lluvia y el viento van por el bus Ambiente");
     system.stop();
+
+    // Revision: un sonido suelto puede ir por otro bus (los dialogos van por Voces).
+    world.findByName("Clima").remove<environment::Environment>();
+    system.resetBuses();
+    system.start(world);
+    system.setBusMute("Efectos", true);
+    system.setBusMute("Ambiente", true);
+    system.playOneShot("Audio/voz.wav", Vec3{}, 1.0f, false, "Voces");
+    const double shot = rms(0);
+    system.setBusMute("Voces", true);
+    const double shot_muted = rms(5);
+    std::printf("  sonido suelto por Voces: %.4f, Voces callado %.6f\n", shot, shot_muted);
+    check(shot > 0.01 && shot_muted < shot * 0.05, "playOneShot con bus: suena con Efectos callado y calla con su bus");
+    system.stop();
+    system.resetBuses();
 
     // Se guarda con la escena; sin el campo (escenas viejas) queda vacio = Efectos.
     source.bus = "Musica";

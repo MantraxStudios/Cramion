@@ -3515,7 +3515,8 @@ struct PhysicsSystem::Impl {
         applyBuoyancy(w, dt);
         applyVehicleInputs(dt);
         system->Update(dt, std::max(settings.collision_steps, 1), temp_allocator.get(), job_system.get());
-        afterStepJoints(dt);
+        // Los impulsos de las constraints son del ultimo subpaso (dt / collision_steps).
+        afterStepJoints(dt / static_cast<float>(std::max(settings.collision_steps, 1)));
         ++steps;
         simulated_time += static_cast<double>(dt);
         capturePoses();
@@ -4343,6 +4344,8 @@ void PhysicsSystem::shiftOrigin(const core::Vec3& offset) {
         if (d.isInnerBody(id)) continue;
         bodies.SetPosition(id, bodies.GetPosition(id) - JPH::RVec3(delta), JPH::EActivation::DontActivate);
     }
+    // Las juntas al mundo guardan su punto en coordenadas del mundo: se mueven con el.
+    d.joints.shiftOrigin(*d.system, delta);
 }
 
 void PhysicsSystem::clearStaticMeshes() {

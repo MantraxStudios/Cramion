@@ -715,6 +715,19 @@ void JointSet::removeBody(JPH::PhysicsSystem& system, const JPH::BodyID& id) {
     }
 }
 
+void JointSet::shiftOrigin(JPH::PhysicsSystem& system, JPH::Vec3Arg offset) {
+    for (auto& [key, entry] : joints_) {
+        if (!entry.framed || entry.connected != entt::null) continue;
+        entry.frame1.point -= offset;
+        if (entry.constraint) {
+            // Sin despertar a nadie: se rehace igual en el siguiente sync.
+            system.RemoveConstraint(entry.constraint.GetPtr());
+            entry.constraint = nullptr;
+        }
+        entry.build_sig = 0;
+    }
+}
+
 void JointSet::clear(JPH::PhysicsSystem* system) {
     if (system != nullptr) {
         for (auto& [key, entry] : joints_) {

@@ -184,7 +184,9 @@ public:
     void pause(ecs::Entity entity);
     bool isPlaying(ecs::Entity entity) const;
     // Un sonido suelto (disparo, golpe): en `position` (3D) o sin posicion (2D).
-    void playOneShot(const std::string& clip, const core::Vec3& position, float volume = 1.0f, bool spatial = true);
+    // `bus`: el del mezclador (vacio = Efectos; las lineas de dialogo van por Voces).
+    void playOneShot(const std::string& clip, const core::Vec3& position, float volume = 1.0f, bool spatial = true,
+                     const std::string& bus = {});
 
     void setOcclusionQuery(OcclusionQuery query);
     // Paredes (suavizado) que tapan el sonido de la entidad ahora; -1 si no suena.
@@ -231,7 +233,8 @@ public:
 
     // Ducking (sidechain): mientras suena algo por `trigger` (lo que llega
     // pasa de `threshold`), `target` baja `amount_db` decibelios en
-    // `attack` segundos y vuelve en `release`. Devuelve su id (-1 si un bus no existe).
+    // `attack` segundos y vuelve en `release`. Devuelve su id (-1 si un bus no
+    // existe, o si uno cuelga del otro: se bajaria a si mismo y oscilaria).
     int addDucking(const std::string& trigger, const std::string& target, float amount_db = -12.0f,
                    float attack = 0.08f, float release = 0.6f, float threshold = 0.01f);
     void removeDucking(int id);

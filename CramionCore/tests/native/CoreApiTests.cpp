@@ -10,6 +10,7 @@
 #include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/ecs/PrefabSpawn.h"
 #include "CramionCore/ecs/SceneSerializer.h"
+#include "CramionCore/physics/Joints.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/profiling/Profiler.h"
@@ -427,6 +428,63 @@ void testPhysicsAndAudio() {
     t.call("Audio.resetBuses");
     check(near(sound.busVolume("Master"), 1.0) && !sound.hasBus("Pasos"), "Audio.resetBuses");
     t.scripts.setAudio(nullptr);
+}
+
+// Revision audiofis: juntas desde los scripts (Physics.createJoint...) y el
+// evento OnJointBreak, con la fisica puesta DESPUES de start (como aqui arriba).
+void testJointsApi() {
+    std::printf("Physics: juntas y OnJointBreak\n");
+    physics::registerPhysicsComponents();
+    ApiFixture t(false);
+    std::vector<std::pair<std::string, json>> messages;
+    t.scripts.setMessageListener([&](ecs::Entity, const std::string& method, const std::string& value) {
+        messages.emplace_back(method, json::parse(value, nullptr, false));
+    });
+    ecs::Entity door = t.world.create("Puerta");
+    door.setWorldPosition(Vec3{1.0f, 5.0f, 0.0f});
+    door.add<physics::BoxCollider>();
+    door.add<physics::Rigidbody>();
+    const Value self = ApiFixture::entity(door);
+    t.scripts.start(t.world);
+    physics::PhysicsSystem physics;
+    physics.start(t.world);
+    t.scripts.setPhysics(&physics);
+
+    Value options = Value::object();
+    options.set("anchor", Vec3{-1.0f, 0.0f, 0.0f});
+    options.set("axis", Vec3{0.0f, 1.0f, 0.0f});
+    options.set("use_limits", true);
+    options.set("min_angle", -100.0);
+    options.set("no_existe", 1.0);
+    check(t.call("Physics.createJoint", {self, Value("Hinge"), Value(), options}).truthy() && door.has<physics::HingeJoint>() &&
+              door.get<physics::HingeJoint>().use_limits && door.get<physics::HingeJoint>().axis.y == 1.0f &&
+              door.get<physics::HingeJoint>().min_angle == -100.0f && !door.get<physics::HingeJoint>().connected_body.valid(),
+          "Physics.createJoint con opciones (al mundo)");
+    check(t.logged("no tiene 'no_existe'"), "Physics.createJoint avisa de un campo que no existe");
+    check(throws(t, "Physics.createJoint", {self, Value("Nada")}), "un tipo de junta que no existe lanza error");
+    physics.update(t.world, 1.0f / 60.0f);
+    const Value state = t.call("Physics.jointState", {self, Value("HingeJoint")});
+    check(state["exists"].truthy() && state["active"].truthy() && !state["broken"].truthy(), "Physics.jointState: activa");
+    t.frame();  // engancha el oyente de roturas (la fisica llego tras start)
+    check(t.call("Physics.breakJoint", {self, Value("Hinge")}).truthy(), "Physics.breakJoint");
+    t.frame();
+    int breaks = 0;
+    for (const auto& [method, value] : messages) {
+        if (method == "OnJointBreak" && value.is_object() && value.value("joint", "") == "HingeJoint") ++breaks;
+    }
+    check(breaks == 1, "OnJointBreak llega al script una vez {joint = \"HingeJoint\"}");
+    check(t.call("Physics.jointState", {self, Value("Hinge")})["broken"].truthy() &&
+              t.call("Physics.repairJoint", {self}).truthy(),
+          "rota y Physics.repairJoint (sin tipo: todas)");
+    physics.update(t.world, 1.0f / 60.0f);
+    check(t.call("Physics.jointState", {self, Value("Hinge")})["active"].truthy(), "reparada vuelve a unir");
+    check(t.call("Physics.removeJoint", {self, Value("Hinge")}).truthy() && !door.has<physics::HingeJoint>() &&
+              !t.call("Physics.removeJoint", {self, Value("Hinge")}).truthy(),
+          "Physics.removeJoint (false si ya no esta)");
+    physics.update(t.world, 1.0f / 60.0f);
+    check(physics.activeJointCount() == 0, "sin el componente no queda constraint");
+    t.scripts.setPhysics(nullptr);
+    physics.stop();
 }
 
 void testRandom() {
@@ -847,6 +905,7 @@ int main() {
     testProfiler();
     testCVar();
     testPhysicsAndAudio();
+    testJointsApi();
     testRandom();
     testPrefabTemplate();
     testPool();

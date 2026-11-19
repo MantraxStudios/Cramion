@@ -165,15 +165,18 @@ void registerJointsApi(Runtime& rt) {
         return out;
     }, {"entidad, \"Hinge\"", "{exists, active, broken, force (N), torque (N m), angle (grados), position (m)}", "objeto"});
 
-    // Roturas: el oyente de la fisica vive mientras corre el juego.
-    rt.onStart([&rt, state] {
-        if (rt.physics == nullptr || state->listener >= 0) return;
+    // Roturas: el oyente de la fisica vive mientras corre el juego. Se engancha
+    // al empezar y, si la fisica llega despues (setPhysics tras start) o
+    // cambia, en el siguiente frame.
+    const auto attach = [&rt, state] {
+        if (rt.physics == nullptr || (state->listener >= 0 && state->physics == rt.physics)) return;
         const std::weak_ptr<JointsState> weak = state;
         state->physics = rt.physics;
         state->listener = rt.physics->addJointBreakListener([weak](const physics::JointBreakEvent& event) {
             if (const auto s = weak.lock()) s->breaks.push_back(event);
         });
-    });
+    };
+    rt.onStart(attach);
     rt.onStop([&rt, state](bool) {
         if (state->listener >= 0 && state->physics != nullptr && state->physics == rt.physics) {
             state->physics->removeJointBreakListener(state->listener);
@@ -182,7 +185,10 @@ void registerJointsApi(Runtime& rt) {
         state->listener = -1;
         state->breaks.clear();
     });
-    rt.onFrame(Phase::Events, [&rt, state](float) { dispatchJointBreaks(rt, *state); });
+    rt.onFrame(Phase::Events, [&rt, state, attach](float) {
+        attach();
+        dispatchJointBreaks(rt, *state);
+    });
 }
 
 }  // namespace cramion::scripting::native
