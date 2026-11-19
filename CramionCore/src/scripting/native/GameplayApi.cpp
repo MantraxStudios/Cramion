@@ -273,7 +273,7 @@ void gameplayUpdate(Runtime& rt, GameplayState& s, float dt) {
                 break;
             case gameplay::DialogueEvent::Kind::Line:
                 if (s.dialogue_auto_audio && !ev.line.audio.empty() && rt.audio != nullptr) {
-                    rt.audio->playOneShot(ev.line.audio, core::Vec3{}, 1.0f, false);
+                    rt.audio->playOneShot(ev.line.audio, core::Vec3{}, 1.0f, false, audio::mixer::kVoices);
                 }
                 invokeAll(rt, s.dialogue_on_line, {dialogueLineValue(ev.line)});
                 break;

@@ -10,6 +10,7 @@
 #include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/ecs/PrefabSpawn.h"
 #include "CramionCore/ecs/SceneSerializer.h"
+#include "CramionCore/physics/Joints.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/profiling/Profiler.h"
@@ -355,6 +356,23 @@ void testPhysicsAndAudio() {
         check(near_roof.isArray() && near_roof.size() == 1 && near_roof[0].asEntity() == roof.handle(), "Physics.overlapSphere");
         check(t.call("Physics.overlapSphere", {Value(Vec3{5, 3, 5}), Value(0.5), Value("Default")}).size() == 0,
               "Physics.overlapSphere con mascara");
+        // Barridos y solapes con forma (boxCast, capsuleCast, *All, overlapBox/Capsule).
+        const Value box = t.call("Physics.boxCast", {Value(Vec3{6.3f, 6, 5}), Value(Vec3{0.5f, 0.1f, 0.5f}), Value(), down, Value(100)});
+        check(box.isObject() && box["entity"].asEntity() == roof.handle(), "Physics.boxCast: la caja roza el techo");
+        const Value capsule = t.call("Physics.capsuleCast", {Value(Vec3{6.3f, 6, 4.5f}), Value(Vec3{6.3f, 6, 5.5f}), Value(0.5),
+                                                             down, Value(100)});
+        check(capsule.isObject() && capsule["entity"].asEntity() == roof.handle(), "Physics.capsuleCast");
+        const Value all = t.call("Physics.raycastAll", {Value(Vec3{5, 6, 5}), down, Value(100)});
+        check(all.isArray() && all.size() == 2 && all[0]["entity"].asEntity() == roof.handle() &&
+                  all[1]["entity"].asEntity() == ground.handle(),
+              "Physics.raycastAll: techo y suelo en orden");
+        check(t.call("Physics.sphereCastAll", {Value(Vec3{5, 6, 5}), Value(0.2), down, Value(100)}).size() == 2 &&
+                  t.call("Physics.boxCastAll", {Value(Vec3{5, 6, 5}), Value(Vec3{0.2f, 0.2f, 0.2f}), Value(), down, Value(100)}).size() == 2 &&
+                  t.call("Physics.capsuleCastAll", {Value(Vec3{5, 6, 5}), Value(Vec3{5, 7, 5}), Value(0.2), down, Value(100)}).size() == 2,
+              "Physics.sphereCastAll / boxCastAll / capsuleCastAll");
+        check(t.call("Physics.overlapBox", {Value(Vec3{5, 3, 5}), Value(Vec3{0.5f, 0.5f, 0.5f})}).size() == 1 &&
+                  t.call("Physics.overlapCapsule", {Value(Vec3{5, 3, 5}), Value(Vec3{5, 0.2f, 5}), Value(0.3)}).size() == 2,
+              "Physics.overlapBox / overlapCapsule");
     }
     t.scripts.setPhysics(nullptr);
     physics.stop();
@@ -388,7 +406,85 @@ void testPhysicsAndAudio() {
     t.call("Audio.setLowPass", {Value(false)});
     check(!listener.low_pass && near(listener.low_pass_cutoff, 500.0), "Audio.setLowPass sin frecuencia la conserva");
     check(t.call("Audio.reverbLevel").asNumber() == 0.0, "Audio.reverbLevel");
+    // Buses del mezclador.
+    check(near(t.call("Audio.getVolume").asNumber(), 1.0) && near(t.call("Audio.getBusVolume", {Value("Musica")}).asNumber(), 1.0),
+          "Audio.getVolume / getBusVolume: todo a 1");
+    t.call("Audio.setVolume", {Value(0.8)});
+    t.call("Audio.setBusVolumeDb", {Value("Music"), Value(-6.0206)});
+    t.call("Audio.setBusMute", {Value("UI"), Value(true)});
+    check(near(sound.busVolume("Master"), 0.8) && near(sound.busVolume("Musica"), 0.5) && sound.busMuted("UI") &&
+              t.call("Audio.isBusMuted", {Value("ui")}).truthy() &&
+              near(t.call("Audio.getBusGain", {Value("Musica")}).asNumber(), 0.4),
+          "Audio.setVolume (Master), setBusVolumeDb, setBusMute, getBusGain");
+    check(t.call("Audio.addBus", {Value("Pasos"), Value("Efectos")}).truthy() && t.call("Audio.getBuses").size() == 7,
+          "Audio.addBus / getBuses");
+    check(t.call("Audio.addDucking", {Value("Voces"), Value("Musica"), Value(-10)}).asNumber() > 0, "Audio.addDucking");
+    Value snap = Value::object();
+    snap.set("Musica", Value(0.25));
+    t.call("Audio.setSnapshot", {Value("Pausa"), snap});
+    check(t.call("Audio.transitionToSnapshot", {Value("Pausa")}).truthy() && near(sound.busVolume("Musica"), 0.25) &&
+              t.call("Audio.getSnapshots").size() == 1,
+          "Audio.setSnapshot / transitionToSnapshot");
+    t.call("Audio.resetBuses");
+    check(near(sound.busVolume("Master"), 1.0) && !sound.hasBus("Pasos"), "Audio.resetBuses");
     t.scripts.setAudio(nullptr);
+}
+
+// Revision audiofis: juntas desde los scripts (Physics.createJoint...) y el
+// evento OnJointBreak, con la fisica puesta DESPUES de start (como aqui arriba).
+void testJointsApi() {
+    std::printf("Physics: juntas y OnJointBreak\n");
+    physics::registerPhysicsComponents();
+    ApiFixture t(false);
+    std::vector<std::pair<std::string, json>> messages;
+    t.scripts.setMessageListener([&](ecs::Entity, const std::string& method, const std::string& value) {
+        messages.emplace_back(method, json::parse(value, nullptr, false));
+    });
+    ecs::Entity door = t.world.create("Puerta");
+    door.setWorldPosition(Vec3{1.0f, 5.0f, 0.0f});
+    door.add<physics::BoxCollider>();
+    door.add<physics::Rigidbody>();
+    const Value self = ApiFixture::entity(door);
+    t.scripts.start(t.world);
+    physics::PhysicsSystem physics;
+    physics.start(t.world);
+    t.scripts.setPhysics(&physics);
+
+    Value options = Value::object();
+    options.set("anchor", Vec3{-1.0f, 0.0f, 0.0f});
+    options.set("axis", Vec3{0.0f, 1.0f, 0.0f});
+    options.set("use_limits", true);
+    options.set("min_angle", -100.0);
+    options.set("no_existe", 1.0);
+    check(t.call("Physics.createJoint", {self, Value("Hinge"), Value(), options}).truthy() && door.has<physics::HingeJoint>() &&
+              door.get<physics::HingeJoint>().use_limits && door.get<physics::HingeJoint>().axis.y == 1.0f &&
+              door.get<physics::HingeJoint>().min_angle == -100.0f && !door.get<physics::HingeJoint>().connected_body.valid(),
+          "Physics.createJoint con opciones (al mundo)");
+    check(t.logged("no tiene 'no_existe'"), "Physics.createJoint avisa de un campo que no existe");
+    check(throws(t, "Physics.createJoint", {self, Value("Nada")}), "un tipo de junta que no existe lanza error");
+    physics.update(t.world, 1.0f / 60.0f);
+    const Value state = t.call("Physics.jointState", {self, Value("HingeJoint")});
+    check(state["exists"].truthy() && state["active"].truthy() && !state["broken"].truthy(), "Physics.jointState: activa");
+    t.frame();  // engancha el oyente de roturas (la fisica llego tras start)
+    check(t.call("Physics.breakJoint", {self, Value("Hinge")}).truthy(), "Physics.breakJoint");
+    t.frame();
+    int breaks = 0;
+    for (const auto& [method, value] : messages) {
+        if (method == "OnJointBreak" && value.is_object() && value.value("joint", "") == "HingeJoint") ++breaks;
+    }
+    check(breaks == 1, "OnJointBreak llega al script una vez {joint = \"HingeJoint\"}");
+    check(t.call("Physics.jointState", {self, Value("Hinge")})["broken"].truthy() &&
+              t.call("Physics.repairJoint", {self}).truthy(),
+          "rota y Physics.repairJoint (sin tipo: todas)");
+    physics.update(t.world, 1.0f / 60.0f);
+    check(t.call("Physics.jointState", {self, Value("Hinge")})["active"].truthy(), "reparada vuelve a unir");
+    check(t.call("Physics.removeJoint", {self, Value("Hinge")}).truthy() && !door.has<physics::HingeJoint>() &&
+              !t.call("Physics.removeJoint", {self, Value("Hinge")}).truthy(),
+          "Physics.removeJoint (false si ya no esta)");
+    physics.update(t.world, 1.0f / 60.0f);
+    check(physics.activeJointCount() == 0, "sin el componente no queda constraint");
+    t.scripts.setPhysics(nullptr);
+    physics.stop();
 }
 
 void testRandom() {
@@ -809,6 +905,7 @@ int main() {
     testProfiler();
     testCVar();
     testPhysicsAndAudio();
+    testJointsApi();
     testRandom();
     testPrefabTemplate();
     testPool();

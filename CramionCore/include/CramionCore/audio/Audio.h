@@ -30,6 +30,8 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace cramion::audio {
 
@@ -59,9 +61,41 @@ struct AudioSource {
     float echo_decay = 0.45f;      // cada repeticion (0..0.95)
     float echo_wet = 0.5f;         // cuanto eco se oye
     float reverb_send = 1.0f;      // cuanto va a la reverberacion de las AudioReverbZone
+    // Bus del mezclador por el que sale (vacio = "Efectos"; ver AudioSystem::setBusVolume).
+    std::string bus;
 
     void reflect(ecs::PropertyVisitor& v);
 };
+
+// --- Buses (el mezclador: AudioMixer de Unity, Submix de Unreal, AudioServer de Godot) ---
+// Arbol de buses con volumen y silencio; el volumen que llega es el producto
+// del bus y de sus padres (y del ducking). Siempre existen estos; el juego
+// puede anadir los suyos (addBus, o usando un nombre nuevo en AudioSource::bus).
+//   Master
+//   +- Musica   +- Efectos (las AudioSource sin bus y los sonidos sueltos)
+//   +- Ambiente (lluvia, viento y truenos del clima)   +- Voces   +- UI
+namespace mixer {
+inline constexpr const char* kMaster = "Master";
+inline constexpr const char* kMusic = "Musica";
+inline constexpr const char* kEffects = "Efectos";
+inline constexpr const char* kAmbient = "Ambiente";
+inline constexpr const char* kVoices = "Voces";
+inline constexpr const char* kUi = "UI";
+}  // namespace mixer
+
+struct AudioBusInfo {
+    std::string name;
+    std::string parent;  // vacio en Master
+    float volume = 1.0f;  // lineal (el suyo)
+    bool mute = false;
+    float duck = 1.0f;    // lo que le quita el ducking ahora (1 = nada)
+    float gain = 1.0f;    // el que llega: con los padres, el silencio y el ducking
+    bool builtin = false;
+};
+
+// Decibelios <-> lineal (-80 dB o menos = 0).
+float linearToDb(float linear);
+float dbToLinear(float db);
 
 struct AudioListener {
     float volume = 1.0f;  // volumen general
@@ -150,7 +184,9 @@ public:
     void pause(ecs::Entity entity);
     bool isPlaying(ecs::Entity entity) const;
     // Un sonido suelto (disparo, golpe): en `position` (3D) o sin posicion (2D).
-    void playOneShot(const std::string& clip, const core::Vec3& position, float volume = 1.0f, bool spatial = true);
+    // `bus`: el del mezclador (vacio = Efectos; las lineas de dialogo van por Voces).
+    void playOneShot(const std::string& clip, const core::Vec3& position, float volume = 1.0f, bool spatial = true,
+                     const std::string& bus = {});
 
     void setOcclusionQuery(OcclusionQuery query);
     // Paredes (suavizado) que tapan el sonido de la entidad ahora; -1 si no suena.
@@ -175,6 +211,44 @@ public:
     std::uint32_t channelCount() const;
     // Latencia de salida del dispositivo (para el reloj del video); 0 sin dispositivo.
     double outputLatencySeconds() const;
+
+    // --- Buses del mezclador (ver AudioBusInfo) ---
+    // Los nombres no distinguen mayusculas y aceptan los de Unity/Unreal en
+    // ingles ("Music", "SFX", "Ambient", "Voice"...). Los cambios duran lo que
+    // el AudioSystem (no los toca stop(): son las opciones del juego);
+    // resetBuses() lo deja todo como al empezar. Con los valores por defecto
+    // (todo a 1, sin silencio ni ducking) se oye exactamente igual que sin buses.
+    bool addBus(const std::string& name, const std::string& parent = mixer::kMaster);  // false si ya existe o el padre no
+    bool hasBus(const std::string& name) const;
+    bool setBusParent(const std::string& name, const std::string& parent);  // no con Master ni haciendo un ciclo
+    void setBusVolume(const std::string& name, float linear);  // 0..4
+    float busVolume(const std::string& name) const;            // -1 si no existe
+    void setBusVolumeDb(const std::string& name, float db);
+    float busVolumeDb(const std::string& name) const;
+    void setBusMute(const std::string& name, bool mute);
+    bool busMuted(const std::string& name) const;
+    float busGain(const std::string& name) const;  // el que llega ahora (padres, silencio, ducking)
+    std::vector<AudioBusInfo> buses() const;       // en orden de creacion (Master primero)
+    void resetBuses();                              // los de serie a 1, sin los del juego, ducking ni instantaneas
+
+    // Ducking (sidechain): mientras suena algo por `trigger` (lo que llega
+    // pasa de `threshold`), `target` baja `amount_db` decibelios en
+    // `attack` segundos y vuelve en `release`. Devuelve su id (-1 si un bus no
+    // existe, o si uno cuelga del otro: se bajaria a si mismo y oscilaria).
+    int addDucking(const std::string& trigger, const std::string& target, float amount_db = -12.0f,
+                   float attack = 0.08f, float release = 0.6f, float threshold = 0.01f);
+    void removeDucking(int id);
+    void clearDucking();
+
+    // Instantaneas (Snapshots del AudioMixer): volumenes de varios buses con
+    // un nombre; transitionToSnapshot los lleva alli en `seconds` (en dB, sin
+    // saltos). saveSnapshot guarda los de ahora.
+    void setSnapshot(const std::string& name, const std::vector<std::pair<std::string, float>>& volumes);
+    void saveSnapshot(const std::string& name);
+    bool transitionToSnapshot(const std::string& name, float seconds);
+    std::vector<std::string> snapshots() const;
+    // Avanza fundidos, ducking e instantaneas sin el resto de update() (pruebas).
+    void updateBuses(float delta_seconds);
 
 private:
     struct Impl;

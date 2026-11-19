@@ -311,6 +311,7 @@ void EditorApp::exitPlay() {
     scripts_.shutdownNetwork();  // salir de Play cierra la partida en red
     video_.stop();  // ANTES que el audio: suelta sus voces de stream
     audio_.stop();
+    audio_.resetBuses();  // audiofis: los buses que toco el juego (Master a 0...) no se quedan en el editor
     ui_.reset();
     physics_.stop();
     particles_.clear();
@@ -1495,6 +1496,20 @@ void EditorApp::drawPhysicsGizmos() {
             const Vec3 to = from + v * 0.25f;
             overlayLine(from, to, kVelocityColor);
             overlayCone(to, v, std::min(0.25f, speed * 0.05f + 0.05f), 0.04f, kVelocityColor);
+        }
+    }
+
+    // --- Juntas (Joints.h) de lo seleccionado: anclaje, punto conectado y eje ---
+    for (const physics::JointDebug& j : physics_.jointDebug(world_)) {
+        if (std::find(selected.begin(), selected.end(), j.entity) == selected.end()) continue;
+        const ImU32 color = j.broken ? kRayMiss : kCharacterColor;
+        overlayScreenDisc(j.anchor, gizmoWorldSize(j.anchor) * 0.03f, color);
+        overlayLine(j.anchor, j.connected_anchor, color);
+        if (j.type != physics::JointType::Distance && j.type != physics::JointType::Spring &&
+            j.type != physics::JointType::Fixed) {
+            const float size = gizmoWorldSize(j.anchor) * 0.25f;
+            overlayLine(j.anchor - j.axis * size, j.anchor + j.axis * size, fade(color, 0.8f));
+            overlayCone(j.anchor + j.axis * size, j.axis, size * 0.25f, size * 0.08f, color);
         }
     }
 

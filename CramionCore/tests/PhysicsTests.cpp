@@ -12,6 +12,7 @@
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/ecs/RuntimeMesh.h"
 #include "CramionCore/physics/Cloth.h"
+#include "CramionCore/physics/Joints.h"
 #include "CramionCore/physics/SoftBody.h"
 #include "CramionCore/physics/Particles.h"
 #include "CramionCore/physics/PhysicsComponents.h"
@@ -951,6 +952,284 @@ void testAsyncTerrain() {
     physics.stop();
 }
 
+// boxCast, capsuleCast, sphereCastAll, boxCastAll, capsuleCastAll y
+// overlapCapsule: distancias, orden, mascaras y triggers como raycast.
+void testShapeQueries() {
+    std::printf("Barridos y solapes con caja y capsula\n");
+    ecs::World world;
+    makeFloor(world);
+    ecs::Entity near_box = makeBox(world, "Cerca", Vec3{0.0f, 1.0f, -5.0f}, BodyType::Static);
+    ecs::Entity far_box = makeBox(world, "Lejos", Vec3{0.0f, 1.0f, -9.0f}, BodyType::Static);
+    ecs::Entity sensor = world.create("Sensor");
+    sensor.setWorldPosition(Vec3{0.0f, 1.0f, -2.0f});
+    sensor.add<BoxCollider>().material.is_trigger = true;
+    PhysicsSystem physics;
+    physics.start(world);
+    physics.update(world, 1.0f / 60.0f, false);
+
+    const Vec3 origin{0.0f, 1.0f, 0.0f};
+    const Vec3 forward{0.0f, 0.0f, -1.0f};
+    QueryFilter solid;
+    solid.triggers = QueryTriggers::Ignore;
+    RaycastHit hit;
+    check(physics.boxCast(origin, Vec3{0.25f, 0.25f, 0.25f}, core::Quat{}, forward, 20.0f, hit, solid) &&
+              hit.entity == near_box && std::abs(hit.distance - 4.25f) < 0.05f && hit.normal.z > 0.9f,
+          "boxCast toca la caja cercana a la distancia correcta");
+    // Caja girada 45 grados en Y: su esquina llega antes (0.25 * sqrt(2)).
+    const core::Quat turned = ecs::quatFromEulerDegrees(Vec3{0.0f, 45.0f, 0.0f});
+    check(physics.boxCast(origin, Vec3{0.25f, 0.25f, 0.25f}, turned, forward, 20.0f, hit, solid) &&
+              std::abs(hit.distance - (4.5f - 0.3536f)) < 0.05f,
+          "boxCast con giro (llega la esquina)");
+    check(physics.boxCast(origin, Vec3{0.25f, 0.25f, 0.25f}, core::Quat{}, forward, 20.0f, hit) && hit.entity == sensor &&
+              hit.trigger,
+          "boxCast toca el trigger con los ajustes por defecto");
+    check(physics.capsuleCast(Vec3{0.0f, 0.6f, 0.0f}, Vec3{0.0f, 1.4f, 0.0f}, 0.3f, forward, 20.0f, hit, solid) &&
+              hit.entity == near_box && std::abs(hit.distance - 4.2f) < 0.05f,
+          "capsuleCast (centros de las semiesferas) a la distancia correcta");
+    check(physics.capsuleCast(Vec3{-0.4f, 1.0f, 0.0f}, Vec3{0.4f, 1.0f, 0.0f}, 0.2f, forward, 20.0f, hit, solid) &&
+              std::abs(hit.distance - 4.3f) < 0.05f,
+          "capsuleCast tumbada");
+    check(!physics.capsuleCast(Vec3{0.0f, 0.6f, 0.0f}, Vec3{0.0f, 1.4f, 0.0f}, 0.3f, Vec3{0.0f, 0.0f, 1.0f}, 20.0f, hit, solid),
+          "capsuleCast hacia donde no hay nada");
+    const auto spheres = physics.sphereCastAll(origin, 0.2f, forward, 20.0f, solid);
+    check(spheres.size() == 2 && spheres[0].entity == near_box && spheres[1].entity == far_box &&
+              spheres[0].distance < spheres[1].distance,
+          "sphereCastAll: las dos cajas, de la mas cercana a la mas lejana");
+    const auto boxes = physics.boxCastAll(origin, Vec3{0.2f, 0.2f, 0.2f}, core::Quat{}, forward, 20.0f);
+    check(boxes.size() == 3 && boxes[0].entity == sensor && boxes[2].entity == far_box, "boxCastAll con el trigger delante");
+    const auto capsules =
+        physics.capsuleCastAll(Vec3{0.0f, 0.6f, 0.0f}, Vec3{0.0f, 1.4f, 0.0f}, 0.3f, forward, 6.0f, solid);
+    check(capsules.size() == 1 && capsules[0].entity == near_box, "capsuleCastAll respeta la distancia");
+    QueryFilter nothing;
+    nothing.layer_mask = 0;
+    check(!physics.boxCast(origin, Vec3{0.25f, 0.25f, 0.25f}, core::Quat{}, forward, 20.0f, hit, nothing) &&
+              physics.capsuleCastAll(Vec3{0.0f, 0.6f, 0.0f}, Vec3{0.0f, 1.4f, 0.0f}, 0.3f, forward, 20.0f, nothing).empty(),
+          "la mascara sin capas no toca nada");
+    QueryFilter ignore_near = solid;
+    ignore_near.ignore = near_box;
+    check(physics.boxCast(origin, Vec3{0.25f, 0.25f, 0.25f}, core::Quat{}, forward, 20.0f, hit, ignore_near) &&
+              hit.entity == far_box,
+          "ignorar una entidad");
+
+    const auto touching = physics.overlapCapsule(Vec3{0.0f, 1.0f, -3.0f}, Vec3{0.0f, 1.0f, -5.0f}, 0.3f);
+    check(touching.size() == 1 && touching[0] == near_box, "overlapCapsule (de lado) toca la caja cercana");
+    const auto with_trigger = physics.overlapCapsule(Vec3{0.0f, 1.0f, -1.5f}, Vec3{0.0f, 1.0f, -5.0f}, 0.3f);
+    check(with_trigger.size() == 2, "overlapCapsule con el trigger");
+    check(physics.overlapCapsule(Vec3{0.0f, 1.0f, -1.5f}, Vec3{0.0f, 1.0f, -5.0f}, 0.3f, solid).size() == 1,
+          "overlapCapsule ignorando triggers");
+    check(physics.overlapCapsule(Vec3{3.0f, 1.0f, 0.0f}, Vec3{3.0f, 1.0f, 0.0f}, 0.5f).empty(),
+          "overlapCapsule degenerada (esfera) en el aire");
+    physics.stop();
+}
+
+// Juntas de Jolt: bisagra (pendulo, limites, motor), fija (y su rotura),
+// corredera con limites, distancia, 6DOF, romper/reparar desde codigo y
+// guardarlas con la escena.
+void testJoints() {
+    std::printf("Juntas (Fixed, Hinge, Slider, Distance, Spring, Configurable)\n");
+    registerPhysicsComponents();
+    ecs::World world;
+    // Pendulo: caja a 1 m del eje, horizontal al empezar.
+    ecs::Entity pendulum = makeBox(world, "Pendulo", Vec3{1.0f, 10.0f, 0.0f});
+    HingeJoint& hinge = pendulum.add<HingeJoint>();
+    hinge.anchor = Vec3{-1.0f, 0.0f, 0.0f};
+    hinge.axis = Vec3{0.0f, 0.0f, 1.0f};
+    // Bisagra con limites (+-10 grados): apenas cae.
+    ecs::Entity limited = makeBox(world, "Limitada", Vec3{11.0f, 10.0f, 0.0f});
+    HingeJoint& limits = limited.add<HingeJoint>();
+    limits.anchor = Vec3{-1.0f, 0.0f, 0.0f};
+    limits.axis = Vec3{0.0f, 0.0f, 1.0f};
+    limits.use_limits = true;
+    limits.min_angle = -10.0f;
+    limits.max_angle = 10.0f;
+    // Motor: gira en su sitio a 90 grados/s (eje Y, anclada en su centro).
+    ecs::Entity rotor = makeBox(world, "Rotor", Vec3{20.0f, 10.0f, 0.0f});
+    HingeJoint& motor = rotor.add<HingeJoint>();
+    motor.axis = Vec3{0.0f, 1.0f, 0.0f};
+    motor.use_motor = true;
+    motor.motor_speed = 90.0f;
+    motor.motor_force = 1000.0f;
+    // Fija al mundo: no cae. Otra unida a ella tampoco.
+    ecs::Entity fixed = makeBox(world, "Fija", Vec3{30.0f, 10.0f, 0.0f});
+    fixed.add<FixedJoint>();
+    ecs::Entity hanging = makeBox(world, "Colgada", Vec3{30.0f, 8.9f, 0.0f});
+    hanging.add<FixedJoint>().connected_body = fixed.uuid();
+    // Fija que se rompe con su peso (1 kg: ~9.8 N > 5 N).
+    ecs::Entity weak = makeBox(world, "Debil", Vec3{40.0f, 10.0f, 0.0f});
+    weak.add<FixedJoint>().break_force = 5.0f;
+    // Corredera vertical con limites: baja 1 m y para.
+    ecs::Entity slider = makeBox(world, "Corredera", Vec3{50.0f, 10.0f, 0.0f});
+    SliderJoint& slide = slider.add<SliderJoint>();
+    slide.axis = Vec3{0.0f, 1.0f, 0.0f};
+    slide.use_limits = true;
+    slide.min_distance = -1.0f;
+    slide.max_distance = 0.0f;
+    // Cuerda rigida de 3 m a un techo estatico, con empujon lateral.
+    ecs::Entity ceiling = makeBox(world, "Techo", Vec3{60.0f, 13.0f, 0.0f}, BodyType::Static);
+    ecs::Entity rope = makeBox(world, "Cuerda", Vec3{60.0f, 10.0f, 0.0f});
+    rope.get<Rigidbody>().initial_velocity = Vec3{3.0f, 0.0f, 0.0f};
+    rope.add<DistanceJoint>().connected_body = ceiling.uuid();
+    // Muelle: cuelga y oscila alrededor de su largo, se estira con el peso.
+    ecs::Entity spring_box = makeBox(world, "Muelle", Vec3{70.0f, 10.0f, 0.0f});
+    ecs::Entity spring_top = makeBox(world, "TechoMuelle", Vec3{70.0f, 13.0f, 0.0f}, BodyType::Static);
+    spring_box.add<SpringJoint>().connected_body = spring_top.uuid();
+    spring_box.get<SpringJoint>().spring_frequency = 0.5f;  // blando: se estira ~1 m
+    // 6DOF: solo se mueve en Y (como una corredera libre).
+    ecs::Entity six = makeBox(world, "SeisGrados", Vec3{80.0f, 10.0f, 0.0f});
+    six.get<Rigidbody>().initial_velocity = Vec3{2.0f, 0.0f, 2.0f};
+    ConfigurableJoint& cfg = six.add<ConfigurableJoint>();
+    cfg.y_motion = JointMotion::Free;
+
+    PhysicsSystem physics;
+    int break_events = 0;
+    JointBreakEvent last{};
+    physics.addJointBreakListener([&](const JointBreakEvent& e) {
+        ++break_events;
+        last = e;
+    });
+    physics.start(world);
+    physics.update(world, 1.0f / 60.0f);
+    check(physics.activeJointCount() == 10 || physics.activeJointCount() == 9,
+          "las juntas se crean al empezar (la debil puede romperse en el primer paso)");
+    run(physics, world, 1.0f);
+
+    const Vec3 pivot{0.0f, 10.0f, 0.0f};
+    const float arm = core::length(pendulum.worldPosition() - pivot);
+    const JointState hs = physics.jointState(pendulum, JointType::Hinge);
+    std::printf("  pendulo: brazo %.3f m, y %.2f, angulo %.1f\n", arm, pendulum.worldPosition().y, hs.angle);
+    check(std::abs(arm - 1.0f) < 0.03f && pendulum.worldPosition().x < 0.9f, "el pendulo gira alrededor de su eje sin separarse");
+    check(hs.exists && hs.active && !hs.broken && std::abs(hs.angle) > 20.0f, "jointState: activa y con angulo");
+    check(std::abs(pendulum.worldPosition().z) < 0.02f, "la bisagra no deja salir del plano de giro");
+    const JointState ls = physics.jointState(limited, JointType::Hinge);
+    check(std::abs(ls.angle) < 12.0f && limited.worldPosition().y > 9.75f, "los limites de la bisagra la paran a 10 grados");
+    const JointState ms = physics.jointState(rotor, JointType::Hinge);
+    std::printf("  motor: %.1f grados en 1 s, y %.3f\n", ms.angle, rotor.worldPosition().y);
+    check(std::abs(std::abs(ms.angle) - 90.0f) < 15.0f && std::abs(rotor.worldPosition().y - 10.0f) < 0.02f,
+          "el motor la gira ~90 grados en 1 s sin que caiga");
+    check(std::abs(fixed.worldPosition().y - 10.0f) < 0.02f && std::abs(hanging.worldPosition().y - 8.9f) < 0.03f,
+          "la fija no cae y la unida a ella tampoco");
+    check(break_events >= 1 && last.entity == weak && last.type == JointType::Fixed && last.force > 5.0f,
+          "la fija debil se rompe con su peso (evento con la fuerza)");
+    check(physics.jointState(weak, JointType::Fixed).broken && weak.worldPosition().y < 7.0f, "y cae");
+    check(std::abs(slider.worldPosition().y - 9.0f) < 0.05f && std::abs(slider.worldPosition().x - 50.0f) < 0.01f,
+          "la corredera baja hasta su limite y no se sale del eje");
+    const float rope_length = core::length(rope.worldPosition() - ceiling.worldPosition());
+    std::printf("  cuerda: %.3f m (posicion %.3f)\n", rope_length, physics.jointState(rope, JointType::Distance).position);
+    check(std::abs(rope_length - 3.0f) < 0.05f && rope.worldPosition().x > 60.2f, "la cuerda mantiene 3 m mientras balancea");
+    check(std::abs(physics.jointState(rope, JointType::Distance).position - 3.0f) < 0.05f, "jointState: distancia actual");
+    check(physics.collisionIgnored(rope, ceiling), "unidos sin enable_collision: collisionIgnored lo dice");
+    const float spring_length = core::length(spring_box.worldPosition() - spring_top.worldPosition());
+    check(spring_length > 3.3f && spring_length < 6.0f, "el muelle se estira con el peso (no es rigido)");
+    check(std::abs(six.worldPosition().x - 80.0f) < 0.02f && std::abs(six.worldPosition().z) < 0.02f &&
+              six.worldPosition().y < 8.0f,
+          "6DOF con solo Y libre: cae recto");
+
+    // Romper y reparar desde codigo; quitar el componente quita la constraint.
+    const int before = break_events;
+    check(physics.breakJoint(fixed) && break_events == before + 1 && !physics.breakJoint(fixed), "breakJoint (y avisa una vez)");
+    run(physics, world, 0.5f);
+    check(fixed.worldPosition().y < 9.0f, "rota, cae (y arrastra a la colgada)");
+    check(physics.repairJoint(fixed) && !physics.jointState(fixed, JointType::Fixed).broken, "repairJoint");
+    run(physics, world, 0.1f);
+    check(physics.jointState(fixed, JointType::Fixed).active, "reparada vuelve a unir");
+    const std::size_t count = physics.activeJointCount();
+    six.remove<ConfigurableJoint>();
+    physics.update(world, 1.0f / 60.0f);
+    check(physics.activeJointCount() == count - 1, "quitar el componente quita la junta");
+    const auto gizmos = physics.jointDebug(world);
+    check(gizmos.size() == 9 && std::abs(core::length(gizmos[0].anchor - gizmos[0].connected_anchor)) < 0.05f,
+          "jointDebug para los gizmos");
+
+    // Si se destruye el cuerpo conectado la constraint se quita antes que el cuerpo.
+    world.destroy(spring_top);
+    physics.update(world, 1.0f / 60.0f);
+    run(physics, world, 0.3f);
+    check(!physics.jointState(spring_box, JointType::Spring).active, "sin el cuerpo conectado la junta no une (y no peta)");
+    physics.stop();
+    check(physics.activeJointCount() == 0, "stop quita todas");
+
+    // Con enable_collision = false (por defecto) los dos unidos no chocan.
+    {
+        ecs::World w2;
+        ecs::Entity base = makeBox(w2, "Base", Vec3{0.0f, 5.0f, 0.0f}, BodyType::Static);
+        ecs::Entity inside = makeBox(w2, "Dentro", Vec3{0.3f, 5.0f, 0.0f});  // metida en la base, a un lado
+        inside.add<DistanceJoint>().connected_body = base.uuid();  // 0.3 m del centro de la base
+        PhysicsSystem p2;
+        p2.start(w2);
+        run(p2, w2, 0.27f);  // un cuarto de periodo: abajo
+        const float d = core::length(inside.worldPosition() - base.worldPosition());
+        std::printf("  unidos sin colision: y %.3f, a %.3f m\n", inside.worldPosition().y, d);
+        check(inside.worldPosition().y < 4.85f && std::abs(d - 0.3f) < 0.02f,
+              "unidos sin colision: oscila a 0.3 m dentro de la base sin que los empuje");
+        check(p2.collisionIgnored(inside, base), "collisionIgnored lo dice");
+        p2.stop();
+    }
+
+    // Revision: con el origen flotante (Horizonz) la bisagra unida al mundo
+    // sigue en el mismo punto real (su punto del mundo se mueve con el origen).
+    {
+        ecs::World w3;
+        ecs::Entity bob = makeBox(w3, "PenduloLejos", Vec3{1.0f, 10.0f, 0.0f});
+        HingeJoint& h3 = bob.add<HingeJoint>();
+        h3.anchor = Vec3{-1.0f, 0.0f, 0.0f};
+        h3.axis = Vec3{0.0f, 0.0f, 1.0f};
+        PhysicsSystem p3;
+        p3.start(w3);
+        run(p3, w3, 0.3f);
+        const Vec3 shift{100.0f, 0.0f, 0.0f};
+        w3.shiftOrigin(shift);
+        p3.shiftOrigin(shift);
+        run(p3, w3, 0.7f);
+        const Vec3 pivot3 = Vec3{0.0f, 10.0f, 0.0f} - shift;
+        const float arm3 = core::length(bob.worldPosition() - pivot3);
+        std::printf("  origen desplazado: brazo %.3f m (x %.2f)\n", arm3, bob.worldPosition().x);
+        check(std::abs(arm3 - 1.0f) < 0.03f && p3.jointState(bob, JointType::Hinge).active,
+              "origen flotante: la bisagra al mundo sigue girando en su punto real");
+        p3.stop();
+    }
+
+    // Revision: la fuerza de rotura no depende de collision_steps (los
+    // impulsos de Jolt son del ultimo subpaso).
+    {
+        ecs::World w4;
+        ecs::Entity weak4 = makeBox(w4, "Debil4", Vec3{0.0f, 10.0f, 0.0f});
+        weak4.add<FixedJoint>().break_force = 5.0f;  // 1 kg: ~9.8 N
+        ecs::Entity strong4 = makeBox(w4, "Fuerte4", Vec3{5.0f, 10.0f, 0.0f});
+        strong4.add<FixedJoint>().break_force = 20.0f;
+        PhysicsSystem p4;
+        PhysicsSettings s4 = p4.settings();
+        s4.collision_steps = 4;
+        p4.setSettings(s4);
+        p4.start(w4);
+        run(p4, w4, 0.5f);
+        const JointState weak_state = p4.jointState(weak4, JointType::Fixed);
+        const JointState strong_state = p4.jointState(strong4, JointType::Fixed);
+        std::printf("  4 subpasos: fuerte %.2f N\n", strong_state.force);
+        check(weak_state.broken && !strong_state.broken && std::abs(strong_state.force - 9.81f) < 1.5f,
+              "con 4 subpasos la fuerza es la real (~9.8 N): rompe la de 5 N y no la de 20 N");
+        p4.stop();
+    }
+
+    // De ida y vuelta por la escena (y las escenas sin juntas se abren igual).
+    const std::string json = ecs::serializeWorld(world);
+    ecs::World copy;
+    ecs::deserializeWorld(copy, json);
+    const ecs::Entity c = copy.findByName("Limitada");
+    check(c.valid() && c.has<HingeJoint>() && c.get<HingeJoint>().use_limits && c.get<HingeJoint>().min_angle == -10.0f &&
+              c.get<HingeJoint>().axis.z == 1.0f,
+          "HingeJoint de ida y vuelta");
+    const ecs::Entity r = copy.findByName("Cuerda");
+    check(r.valid() && r.has<DistanceJoint>() && r.get<DistanceJoint>().connected_body == ceiling.uuid(),
+          "la referencia al cuerpo conectado se guarda");
+    const ecs::Entity s = copy.findByName("Muelle");
+    check(s.valid() && s.has<SpringJoint>() && s.get<SpringJoint>().spring_frequency == 0.5f && SpringJoint{}.spring_frequency == 2.0f,
+          "SpringJoint con su muelle (2 Hz por defecto)");
+    JointType t{};
+    check(jointTypeFromName("HingeJoint", t) && t == JointType::Hinge && jointTypeFromName("6dof", t) &&
+              t == JointType::Configurable && !jointTypeFromName("nada", t),
+          "nombres de los tipos");
+}
+
 int main() {
     testIgnoreCollision();
     testCharacterController();
@@ -966,6 +1245,8 @@ int main() {
     testSoftBody();
     testFitColliders();
     testAsyncTerrain();
+    testShapeQueries();
+    testJoints();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

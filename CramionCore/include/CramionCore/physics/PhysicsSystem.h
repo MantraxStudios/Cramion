@@ -40,6 +40,7 @@
 // cabeceras.
 
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/physics/Joints.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSettings.h"
 
@@ -274,6 +275,25 @@ public:
     std::vector<ecs::Entity> overlapBox(const core::Vec3& center, const core::Vec3& half_extents,
                                         const core::Quat& rotation,
                                         const QueryFilter& filter = {}) const;
+    // Barridos como los de Unity (Physics.BoxCast, CapsuleCast, *CastAll):
+    // la forma avanza `max_distance` por `direction`; el primer impacto o
+    // todos (uno por cuerpo, del mas cercano al mas lejano). Lo que ya toca
+    // al salir da distancia 0. La capsula va por los centros de sus dos
+    // semiesferas (point1, point2) y su radio.
+    std::vector<RaycastHit> sphereCastAll(const core::Vec3& origin, float radius, const core::Vec3& direction,
+                                          float max_distance, const QueryFilter& filter = {}) const;
+    bool boxCast(const core::Vec3& center, const core::Vec3& half_extents, const core::Quat& rotation,
+                 const core::Vec3& direction, float max_distance, RaycastHit& hit, const QueryFilter& filter = {}) const;
+    std::vector<RaycastHit> boxCastAll(const core::Vec3& center, const core::Vec3& half_extents,
+                                       const core::Quat& rotation, const core::Vec3& direction, float max_distance,
+                                       const QueryFilter& filter = {}, bool all = true) const;
+    bool capsuleCast(const core::Vec3& point1, const core::Vec3& point2, float radius, const core::Vec3& direction,
+                     float max_distance, RaycastHit& hit, const QueryFilter& filter = {}) const;
+    std::vector<RaycastHit> capsuleCastAll(const core::Vec3& point1, const core::Vec3& point2, float radius,
+                                           const core::Vec3& direction, float max_distance,
+                                           const QueryFilter& filter = {}, bool all = true) const;
+    std::vector<ecs::Entity> overlapCapsule(const core::Vec3& point1, const core::Vec3& point2, float radius,
+                                            const QueryFilter& filter = {}) const;
 
     // Guarda las ultimas consultas para dibujarlas (gizmos). Las que llevan
     // QueryFilter::record = false (las de las particulas) no se guardan.
@@ -409,6 +429,21 @@ public:
     // Para otros sistemas (las particulas): lo anade a events() y avisa a los
     // oyentes.
     void reportEvent(const PhysicsEvent& event);
+
+    // --- Juntas (FixedJoint, HingeJoint... de Joints.h) ---
+    // Se rompio una junta (por fuerza o con breakJoint); en el hilo de update().
+    using JointBreakCallback = std::function<void(const JointBreakEvent&)>;
+    int addJointBreakListener(JointBreakCallback callback);
+    void removeJointBreakListener(int id);
+    // Rompe ya una junta de la entidad (type: static_cast<int>(JointType); -1
+    // = todas). Avisa a los oyentes. false si no habia ninguna sin romper.
+    bool breakJoint(ecs::Entity entity, int type = -1);
+    // Una junta rota vuelve a unir en el siguiente paso (con su pose de partida).
+    bool repairJoint(ecs::Entity entity, int type = -1);
+    JointState jointState(ecs::Entity entity, JointType type) const;
+    // Las juntas para dibujarlas (gizmos): en Play, donde estan sus anclajes.
+    std::vector<JointDebug> jointDebug(ecs::World& world) const;
+    std::size_t activeJointCount() const;
 
     // --- Depuracion ---
     // Contactos del ultimo paso (para dibujarlos).

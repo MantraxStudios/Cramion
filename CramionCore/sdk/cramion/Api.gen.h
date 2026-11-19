@@ -50,6 +50,69 @@ inline Value set(const T0& tabla = {}) {
 }  // namespace Accessibility
 
 namespace Audio {
+/// Audio.addBus("Pasos", "Efectos")
+/// Bus nuevo del juego bajo otro (por defecto Master)
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value addBus(const T0& texto = {}, const T1& texto2 = {}) {
+    return detail::api("Audio.addBus", Values{Value(texto), Value(texto2)});
+}
+/// Audio.addDucking("Voces", "Musica", -12, 0.08, 0.6, 0.01)
+/// Mientras suena el primero, el segundo baja esos dB (ataque y liberacion en s, umbral); devuelve su id
+/// Devuelve: numero
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value, typename T4 = Value, typename T5 = Value>
+inline Value addDucking(const T0& texto = {}, const T1& texto2 = {}, const T2& valor = {}, const T3& valor2 = {}, const T4& valor3 = {}, const T5& valor4 = {}) {
+    return detail::api("Audio.addDucking", Values{Value(texto), Value(texto2), Value(valor), Value(valor2), Value(valor3), Value(valor4)});
+}
+/// Audio.getBusGain("Musica")
+/// Volumen que llega a ese bus ahora (con sus padres, el silencio y el ducking)
+/// Devuelve: numero
+template <typename T0 = Value>
+inline Value getBusGain(const T0& texto = {}) {
+    return detail::api("Audio.getBusGain", Values{Value(texto)});
+}
+/// Audio.getBusVolume("Musica")
+/// Volumen de un bus (lineal; -1 si no existe)
+/// Devuelve: numero
+template <typename T0 = Value>
+inline Value getBusVolume(const T0& texto = {}) {
+    return detail::api("Audio.getBusVolume", Values{Value(texto)});
+}
+/// Audio.getBusVolumeDb("Musica")
+/// Volumen de un bus en decibelios
+/// Devuelve: numero
+template <typename T0 = Value>
+inline Value getBusVolumeDb(const T0& texto = {}) {
+    return detail::api("Audio.getBusVolumeDb", Values{Value(texto)});
+}
+/// Audio.getBuses()
+/// Los buses: {name, parent, volume, mute, gain, duck}
+/// Devuelve: lista de objetos
+template <typename... Mas>
+inline Value getBuses(Mas&&... mas) {
+    return detail::api("Audio.getBuses", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Audio.getSnapshots()
+/// Nombres de las instantaneas
+/// Devuelve: lista de texto
+template <typename... Mas>
+inline Value getSnapshots(Mas&&... mas) {
+    return detail::api("Audio.getSnapshots", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Audio.getVolume()
+/// Volumen general (el bus Master)
+/// Devuelve: numero
+template <typename... Mas>
+inline Value getVolume(Mas&&... mas) {
+    return detail::api("Audio.getVolume", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Audio.isBusMuted("Musica")
+/// Esta callado ese bus?
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value isBusMuted(const T0& texto = {}) {
+    return detail::api("Audio.isBusMuted", Values{Value(texto)});
+}
 /// Audio.occlusion()
 /// Esta la oclusion activa?
 /// Devuelve: bool
@@ -57,11 +120,23 @@ template <typename... Mas>
 inline Value occlusion(Mas&&... mas) {
     return detail::api("Audio.occlusion", Values{Value(std::forward<Mas>(mas))...});
 }
-/// Audio.playOneShot("Audio/golpe.wav", posicion, volumen)
-/// Sonido suelto (sin posicion = 2D)
-template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
-inline Value playOneShot(const T0& texto = {}, const T1& posicion = {}, const T2& volumen = {}) {
-    return detail::api("Audio.playOneShot", Values{Value(texto), Value(posicion), Value(volumen)});
+/// Audio.playOneShot("Audio/golpe.wav", posicion, volumen, bus)
+/// Sonido suelto (sin posicion = 2D; bus: vacio = Efectos)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value playOneShot(const T0& texto = {}, const T1& posicion = {}, const T2& volumen = {}, const T3& bus = {}) {
+    return detail::api("Audio.playOneShot", Values{Value(texto), Value(posicion), Value(volumen), Value(bus)});
+}
+/// Audio.removeDucking(id)
+/// Quita un ducking (sin id: todos)
+template <typename T0 = Value>
+inline Value removeDucking(const T0& id = {}) {
+    return detail::api("Audio.removeDucking", Values{Value(id)});
+}
+/// Audio.resetBuses()
+/// Todos los buses a 1, sin los del juego, ducking ni instantaneas
+template <typename... Mas>
+inline Value resetBuses(Mas&&... mas) {
+    return detail::api("Audio.resetBuses", Values{Value(std::forward<Mas>(mas))...});
 }
 /// Audio.reverbLevel()
 /// Reverberacion que se oye ahora (zonas)
@@ -69,6 +144,37 @@ inline Value playOneShot(const T0& texto = {}, const T1& posicion = {}, const T2
 template <typename... Mas>
 inline Value reverbLevel(Mas&&... mas) {
     return detail::api("Audio.reverbLevel", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Audio.saveSnapshot("Normal")
+/// Guarda los volumenes de ahora como instantanea
+template <typename T0 = Value>
+inline Value saveSnapshot(const T0& texto = {}) {
+    return detail::api("Audio.saveSnapshot", Values{Value(texto)});
+}
+/// Audio.setBusMute("Musica", true)
+/// Calla (o no) un bus y todo lo que cuelga de el
+template <typename T0 = Value, typename T1 = Value>
+inline Value setBusMute(const T0& texto = {}, const T1& activar = {}) {
+    return detail::api("Audio.setBusMute", Values{Value(texto), Value(activar)});
+}
+/// Audio.setBusParent("Pasos", "Ambiente")
+/// Cambia el padre de un bus
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value setBusParent(const T0& texto = {}, const T1& texto2 = {}) {
+    return detail::api("Audio.setBusParent", Values{Value(texto), Value(texto2)});
+}
+/// Audio.setBusVolume("Musica", 0.5)
+/// Volumen de un bus (lineal, 0..4): Master, Musica, Efectos, Ambiente, Voces, UI o uno del juego
+template <typename T0 = Value, typename T1 = Value>
+inline Value setBusVolume(const T0& texto = {}, const T1& valor = {}) {
+    return detail::api("Audio.setBusVolume", Values{Value(texto), Value(valor)});
+}
+/// Audio.setBusVolumeDb("Musica", -6)
+/// Volumen de un bus en decibelios (-80 = nada, 0 = normal)
+template <typename T0 = Value, typename T1 = Value>
+inline Value setBusVolumeDb(const T0& texto = {}, const T1& valor = {}) {
+    return detail::api("Audio.setBusVolumeDb", Values{Value(texto), Value(valor)});
 }
 /// Audio.setLowPass(true, 800)
 /// Todo apagado (bajo el agua, pausa)
@@ -81,6 +187,25 @@ inline Value setLowPass(const T0& activar = {}, const T1& valor = {}) {
 template <typename T0 = Value>
 inline Value setOcclusion(const T0& activar = {}) {
     return detail::api("Audio.setOcclusion", Values{Value(activar)});
+}
+/// Audio.setSnapshot("Pausa", {Musica = 0.3, Efectos = 0})
+/// Define una instantanea (volumen lineal de cada bus)
+template <typename T0 = Value, typename T1 = Value>
+inline Value setSnapshot(const T0& texto = {}, const T1& tabla = {}) {
+    return detail::api("Audio.setSnapshot", Values{Value(texto), Value(tabla)});
+}
+/// Audio.setVolume(0.8)
+/// Volumen general (el bus Master, 0..4)
+template <typename T0 = Value>
+inline Value setVolume(const T0& valor = {}) {
+    return detail::api("Audio.setVolume", Values{Value(valor)});
+}
+/// Audio.transitionToSnapshot("Pausa", 0.5)
+/// Lleva los buses a una instantanea en esos segundos
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value transitionToSnapshot(const T0& texto = {}, const T1& valor = {}) {
+    return detail::api("Audio.transitionToSnapshot", Values{Value(texto), Value(valor)});
 }
 }  // namespace Audio
 
@@ -1764,11 +1889,32 @@ inline Value stats(Mas&&... mas) {
 }  // namespace Network
 
 namespace Physics {
+/// Physics.breakJoint(entidad, "Hinge")
+/// Rompe ya la junta (sin tipo: todas las de la entidad); llega OnJointBreak
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value breakJoint(const T0& entidad = {}, const T1& texto = {}) {
+    return detail::api("Physics.breakJoint", Values{Value(entidad), Value(texto)});
+}
+/// Physics.createJoint(entidad, "Hinge", conectado, {anchor = Vec3(0, 1, 0), axis = Vec3(0, 1, 0), break_force = 500})
+/// Une la entidad a otra (nil = al mundo) con una junta: Fixed, Hinge, Slider, Distance, Spring o Configurable
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value createJoint(const T0& entidad = {}, const T1& texto = {}, const T2& conectado = {}, const T3& tabla = {}) {
+    return detail::api("Physics.createJoint", Values{Value(entidad), Value(texto), Value(conectado), Value(tabla)});
+}
 /// Physics.ignoreCollision(a, b, true)
 /// a y b no chocan entre si (false lo deshace)
 template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
 inline Value ignoreCollision(const T0& a = {}, const T1& b = {}, const T2& activar = {}) {
     return detail::api("Physics.ignoreCollision", Values{Value(a), Value(b), Value(activar)});
+}
+/// Physics.jointState(entidad, "Hinge")
+/// {exists, active, broken, force (N), torque (N m), angle (grados), position (m)}
+/// Devuelve: objeto
+template <typename T0 = Value, typename T1 = Value>
+inline Value jointState(const T0& entidad = {}, const T1& texto = {}) {
+    return detail::api("Physics.jointState", Values{Value(entidad), Value(texto)});
 }
 /// Physics.layerMask("Default", "Terreno", ...)
 /// mascara (bit i = capa i) de esas capas
@@ -1777,12 +1923,40 @@ template <typename T0 = Value, typename T1 = Value, typename... Mas>
 inline Value layerMask(const T0& texto = {}, const T1& texto2 = {}, Mas&&... mas) {
     return detail::api("Physics.layerMask", Values{Value(texto), Value(texto2), Value(std::forward<Mas>(mas))...});
 }
+/// Physics.overlapBox(centro, semiejes, giro, mascara, ignorar, triggers)
+/// los objetos que tocan la caja
+/// Devuelve: lista de Entity
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value, typename T4 = Value, typename T5 = Value>
+inline Value overlapBox(const T0& centro = {}, const T1& semiejes = {}, const T2& giro = {}, const T3& mascara = {}, const T4& ignorar = {}, const T5& triggers = {}) {
+    return detail::api("Physics.overlapBox", Values{Value(centro), Value(semiejes), Value(giro), Value(mascara), Value(ignorar), Value(triggers)});
+}
+/// Physics.overlapCapsule(punto1, punto2, radio, mascara, ignorar, triggers)
+/// los objetos que tocan la capsula
+/// Devuelve: lista de Entity
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value, typename T4 = Value, typename T5 = Value>
+inline Value overlapCapsule(const T0& punto1 = {}, const T1& punto2 = {}, const T2& radio = {}, const T3& mascara = {}, const T4& ignorar = {}, const T5& triggers = {}) {
+    return detail::api("Physics.overlapCapsule", Values{Value(punto1), Value(punto2), Value(radio), Value(mascara), Value(ignorar), Value(triggers)});
+}
 /// Physics.overlapSphere(centro, radio, mascara, ignorar, triggers)
 /// los objetos que tocan la esfera (triggers como en raycast)
 /// Devuelve: lista de Entity
 template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value, typename T4 = Value>
 inline Value overlapSphere(const T0& centro = {}, const T1& radio = {}, const T2& mascara = {}, const T3& ignorar = {}, const T4& triggers = {}) {
     return detail::api("Physics.overlapSphere", Values{Value(centro), Value(radio), Value(mascara), Value(ignorar), Value(triggers)});
+}
+/// Physics.removeJoint(entidad, "Hinge")
+/// Quita la junta (deja de unir sin OnJointBreak)
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value removeJoint(const T0& entidad = {}, const T1& texto = {}) {
+    return detail::api("Physics.removeJoint", Values{Value(entidad), Value(texto)});
+}
+/// Physics.repairJoint(entidad, "Hinge")
+/// Una junta rota vuelve a unir (con su pose de partida)
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value repairJoint(const T0& entidad = {}, const T1& texto = {}) {
+    return detail::api("Physics.repairJoint", Values{Value(entidad), Value(texto)});
 }
 /// Physics.simulatedTime()
 /// Segundos de fisica simulados desde el Play (pasos fijos dados)

@@ -28,6 +28,7 @@
 #include "CramionCore/physics/Particles.h"
 #include "CramionCore/physics/Ragdoll.h"
 #include "CramionCore/physics/SoftBody.h"
+#include "JointSet.h"
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/water/Water.h"
 
@@ -755,7 +756,29 @@ struct PhysicsSystem::Impl {
         return (high << 32) | low;
     }
     bool pairIgnored(std::uint64_t a, std::uint64_t b) const {
-        return !ignored_pairs.empty() && ignored_pairs.contains(pairKey(a, b));
+        return (!ignored_pairs.empty() && ignored_pairs.contains(pairKey(a, b))) || joints.collisionDisabled(a, b);
+    }
+
+    // --- Juntas (Joints.h): constraints de Jolt, roturas y sus oyentes ---
+    JointSet joints;
+    std::vector<std::pair<int, std::function<void(const JointBreakEvent&)>>> joint_break_listeners;
+    int next_joint_listener = 1;
+    void syncJoints(ecs::World& w) {
+        if (!system) return;
+        joints.sync(w, *system, [this](entt::entity h) {
+            const auto it = entries.find(h);
+            return it != entries.end() ? it->second.solid : JPH::BodyID();
+        });
+    }
+    void afterStepJoints(float dt) {
+        joints.afterStep(world, *system, dt);
+        for (const JointBreakEvent& event : joints.takeBreaks()) dispatchJointBreak(event);
+    }
+    void dispatchJointBreak(const JointBreakEvent& event) {
+        const auto listeners = joint_break_listeners;  // un oyente puede quitarse dentro
+        for (const auto& [id, fn] : listeners) {
+            if (fn) fn(event);
+        }
     }
 
     PhysicsSettings settings;
@@ -2635,6 +2658,7 @@ struct PhysicsSystem::Impl {
 
     void destroyEntry(BodyEntry& entry) {
         if (!entry.solid.IsInvalid()) removeVehiclesOf(entry.solid);
+        if (!entry.solid.IsInvalid()) joints.removeBody(*system, entry.solid);  // antes de destruir el cuerpo
         for (JPH::BodyID* id : {&entry.solid, &entry.sensor}) {
             if (id->IsInvalid()) continue;
             const std::uint32_t key = id->GetIndexAndSequenceNumber();
@@ -3491,6 +3515,8 @@ struct PhysicsSystem::Impl {
         applyBuoyancy(w, dt);
         applyVehicleInputs(dt);
         system->Update(dt, std::max(settings.collision_steps, 1), temp_allocator.get(), job_system.get());
+        // Los impulsos de las constraints son del ultimo subpaso (dt / collision_steps).
+        afterStepJoints(dt / static_cast<float>(std::max(settings.collision_steps, 1)));
         ++steps;
         simulated_time += static_cast<double>(dt);
         capturePoses();
@@ -4001,7 +4027,110 @@ struct PhysicsSystem::Impl {
         }
         return hit;
     }
+
+    // Barrido de una forma convexa (boxCast, capsuleCast, sphereCastAll...):
+    // el primer impacto (all = false) o uno por cuerpo del mas cercano al mas
+    // lejano. Mismos filtros (capas, triggers, ignorar) que sphereCast.
+    std::vector<RaycastHit> castShape(const JPH::Shape& shape, const JPH::RMat44& start, const Vec3& dir,
+                                      float max_distance, const QueryFilter& filter, bool all) const {
+        std::vector<RaycastHit> result;
+        const JPH::RShapeCast cast(&shape, JPH::Vec3::sReplicate(1.0f), start, toJolt(dir * max_distance));
+        JPH::ShapeCastSettings settings;
+        settings.mBackFaceModeTriangles = JPH::EBackFaceMode::CollideWithBackFaces;
+        settings.mBackFaceModeConvex = JPH::EBackFaceMode::CollideWithBackFaces;
+        JPH::BodyID ignore_a, ignore_b;
+        ignoreIds(filter, ignore_a, ignore_b);
+        const MaskLayerFilter layers(filter.layer_mask);
+        const QueryBodyFilter body_filter(hitTriggers(filter), ignore_a, ignore_b);
+        std::vector<JPH::ShapeCastResult> raw;
+        if (all) {
+            JPH::AllHitCollisionCollector<JPH::CastShapeCollector> collector;
+            system->GetNarrowPhaseQuery().CastShape(cast, settings, JPH::RVec3::sZero(), collector, {}, layers, body_filter);
+            collector.Sort();
+            raw.assign(collector.mHits.begin(), collector.mHits.end());
+        } else {
+            JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
+            system->GetNarrowPhaseQuery().CastShape(cast, settings, JPH::RVec3::sZero(), collector, {}, layers, body_filter);
+            if (collector.HadHit()) raw.push_back(collector.mHit);
+        }
+        std::unordered_set<std::uint32_t> seen;  // un impacto por cuerpo (el mas cercano)
+        for (const JPH::ShapeCastResult& r : raw) {
+            if (!seen.insert(r.mBodyID2.GetIndexAndSequenceNumber()).second) continue;
+            RaycastHit hit;
+            hit.entity = entityOfBody(r.mBodyID2);
+            hit.distance = r.mFraction * max_distance;
+            hit.point = fromJolt(JPH::Vec3(r.mContactPointOn2));
+            const JPH::Vec3 axis = r.mPenetrationAxis;
+            hit.normal = axis.LengthSq() > 1e-12f ? fromJolt(-axis.Normalized()) : -dir;
+            JPH::BodyLockRead lock(system->GetBodyLockInterface(), r.mBodyID2);
+            if (lock.Succeeded()) {
+                hit.trigger = lock.GetBody().IsSensor();
+                hit.layer = lock.GetBody().GetObjectLayer() & 31;
+            }
+            result.push_back(hit);
+        }
+        return result;
+    }
+
+    // Entidades cuyos cuerpos solapan una forma (overlapCapsule...).
+    std::vector<ecs::Entity> overlapShape(const JPH::Shape& shape, const JPH::RMat44& transform,
+                                          const QueryFilter& filter) const {
+        std::vector<ecs::Entity> result;
+        JPH::BodyID ignore_a, ignore_b;
+        ignoreIds(filter, ignore_a, ignore_b);
+        const MaskLayerFilter layers(filter.layer_mask);
+        const QueryBodyFilter body_filter(hitTriggers(filter), ignore_a, ignore_b);
+        JPH::CollideShapeSettings settings;
+        settings.mBackFaceMode = JPH::EBackFaceMode::CollideWithBackFaces;
+        JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+        system->GetNarrowPhaseQuery().CollideShape(&shape, JPH::Vec3::sReplicate(1.0f), transform, settings,
+                                                   JPH::RVec3::sZero(), collector, {}, layers, body_filter);
+        std::unordered_set<std::uint32_t> seen;
+        for (const JPH::CollideShapeResult& r : collector.mHits) {
+            const ecs::Entity e = entityOfBody(r.mBodyID2);
+            if (e.valid() && seen.insert(static_cast<std::uint32_t>(entt::to_integral(e.handle()))).second) {
+                result.push_back(e);
+            }
+        }
+        return result;
+    }
+
+    // Gizmo de un barrido: la linea del recorrido y la forma donde acaba
+    // (con los tipos de QueryDebug de siempre: el editor ya los dibuja).
+    void recordCast(const Vec3& origin, const Vec3& dir, float max_distance, const std::vector<RaycastHit>& hits,
+                    const QueryDebug& shape_at_end, const QueryFilter& filter) const {
+        if (!filter.record || !record_queries) return;
+        QueryDebug ray;
+        ray.kind = QueryDebug::Kind::Ray;
+        ray.origin = origin;
+        ray.end = origin + dir * (hits.empty() ? max_distance : hits.front().distance);
+        ray.hit = !hits.empty();
+        ray.hits = static_cast<int>(hits.size());
+        if (!hits.empty()) {
+            ray.hit_point = hits.front().point;
+            ray.hit_normal = hits.front().normal;
+        }
+        recordQuery(ray);
+        QueryDebug end = shape_at_end;
+        end.origin = end.origin + (ray.end - origin);
+        end.end = end.origin;
+        end.hit = ray.hit;
+        recordQuery(end);
+    }
 };
+
+namespace {
+// Capsula de Unity (dos centros de semiesfera y radio) a una forma de Jolt
+// (eje Y) y su giro; con los dos puntos casi iguales, una esfera.
+JPH::Ref<JPH::Shape> capsuleShape(const Vec3& point1, const Vec3& point2, float radius, JPH::Quat& rotation) {
+    const Vec3 axis = point2 - point1;
+    const float length = core::length(axis);
+    rotation = JPH::Quat::sIdentity();
+    if (length < 1e-5f) return new JPH::SphereShape(radius);
+    rotation = JPH::Quat::sFromTo(JPH::Vec3::sAxisY(), toJolt(axis * (1.0f / length)));
+    return new JPH::CapsuleShape(length * 0.5f, radius);
+}
+}  // namespace
 
 // -----------------------------------------------------------------------------
 // PhysicsSystem
@@ -4089,6 +4218,7 @@ void PhysicsSystem::stop() {
     d.soft_bodies.clear();
     for (auto& [handle, vehicle] : d.vehicles) d.removeVehicle(vehicle);
     d.vehicles.clear();
+    d.joints.clear(d.system.get());  // las constraints antes que sus cuerpos
     d.destruction->reset();
     d.pairs.clear();  // sin eventos Exit al parar
     for (auto& [handle, character] : d.characters) {
@@ -4214,6 +4344,8 @@ void PhysicsSystem::shiftOrigin(const core::Vec3& offset) {
         if (d.isInnerBody(id)) continue;
         bodies.SetPosition(id, bodies.GetPosition(id) - JPH::RVec3(delta), JPH::EActivation::DontActivate);
     }
+    // Las juntas al mundo guardan su punto en coordenadas del mundo: se mueven con el.
+    d.joints.shiftOrigin(*d.system, delta);
 }
 
 void PhysicsSystem::clearStaticMeshes() {
@@ -4262,6 +4394,7 @@ int PhysicsSystem::update(ecs::World& world, float delta_seconds, bool simulate)
     d.syncRagdolls(world, simulate);
     d.syncCloths(world, simulate);
     d.syncSoftBodies(world, simulate);
+    if (simulate) d.syncJoints(world);  // en edicion no hay juntas (la pose de partida es la del Play)
     int steps = 0;
     if (simulate) {
         const float step = d.settings.fixed_step;
@@ -4303,6 +4436,7 @@ void PhysicsSystem::singleStep(ecs::World& world) {
     d.syncRagdolls(world, true);  // como en update(): sin esto el ragdoll no avanza
     d.syncCloths(world, true);
     d.syncSoftBodies(world, true);
+    d.syncJoints(world);
     d.stepOnce(world);
     d.writeBack(world, 1.0f);
     d.writeCharacters(world, 1.0f);
@@ -4522,6 +4656,153 @@ std::vector<ecs::Entity> PhysicsSystem::overlapBox(const Vec3& center, const Vec
     if (filter.record) d.recordQuery(debug);
     return result;
 }
+
+// --- Barridos y solapes con caja y capsula (boxCast, capsuleCast...) ---------
+
+std::vector<RaycastHit> PhysicsSystem::sphereCastAll(const Vec3& origin, float radius, const Vec3& direction,
+                                                     float max_distance, const QueryFilter& filter) const {
+    const Impl& d = *impl_;
+    const float length = core::length(direction);
+    if (!d.system || length < 1e-8f || radius <= 0.0f || max_distance < 0.0f) return {};
+    const Vec3 dir = direction * (1.0f / length);
+    JPH::SphereShape sphere(radius);
+    sphere.SetEmbedded();
+    std::vector<RaycastHit> hits =
+        d.castShape(sphere, JPH::RMat44::sTranslation(JPH::RVec3(toJolt(origin))), dir, max_distance, filter, true);
+    QueryDebug end;
+    end.kind = QueryDebug::Kind::OverlapSphere;
+    end.origin = origin;
+    end.extents = Vec3{radius, radius, radius};
+    d.recordCast(origin, dir, max_distance, hits, end, filter);
+    return hits;
+}
+
+std::vector<RaycastHit> PhysicsSystem::boxCastAll(const Vec3& center, const Vec3& half_extents, const Quat& rotation,
+                                                  const Vec3& direction, float max_distance, const QueryFilter& filter,
+                                                  bool all) const {
+    const Impl& d = *impl_;
+    const float length = core::length(direction);
+    if (!d.system || length < 1e-8f || max_distance < 0.0f) return {};
+    const Vec3 dir = direction * (1.0f / length);
+    const Vec3 half{std::max(half_extents.x, 1e-3f), std::max(half_extents.y, 1e-3f), std::max(half_extents.z, 1e-3f)};
+    JPH::BoxShape box(toJolt(half), std::min({JPH::cDefaultConvexRadius, half.x * 0.5f, half.y * 0.5f, half.z * 0.5f}));
+    box.SetEmbedded();
+    const Quat r = core::normalize(rotation);
+    std::vector<RaycastHit> hits = d.castShape(
+        box, JPH::RMat44::sRotationTranslation(toJolt(r), JPH::RVec3(toJolt(center))), dir, max_distance, filter, all);
+    QueryDebug end;
+    end.kind = QueryDebug::Kind::OverlapBox;
+    end.origin = center;
+    end.extents = half;
+    end.rotation = r;
+    d.recordCast(center, dir, max_distance, hits, end, filter);
+    return hits;
+}
+
+bool PhysicsSystem::boxCast(const Vec3& center, const Vec3& half_extents, const Quat& rotation, const Vec3& direction,
+                            float max_distance, RaycastHit& hit, const QueryFilter& filter) const {
+    const std::vector<RaycastHit> hits = boxCastAll(center, half_extents, rotation, direction, max_distance, filter, false);
+    if (hits.empty()) return false;
+    hit = hits.front();
+    return true;
+}
+
+std::vector<RaycastHit> PhysicsSystem::capsuleCastAll(const Vec3& point1, const Vec3& point2, float radius,
+                                                      const Vec3& direction, float max_distance,
+                                                      const QueryFilter& filter, bool all) const {
+    const Impl& d = *impl_;
+    const float length = core::length(direction);
+    if (!d.system || length < 1e-8f || radius <= 0.0f || max_distance < 0.0f) return {};
+    const Vec3 dir = direction * (1.0f / length);
+    JPH::Quat rotation;
+    const JPH::Ref<JPH::Shape> shape = capsuleShape(point1, point2, radius, rotation);
+    const Vec3 center = (point1 + point2) * 0.5f;
+    std::vector<RaycastHit> hits = d.castShape(
+        *shape, JPH::RMat44::sRotationTranslation(rotation, JPH::RVec3(toJolt(center))), dir, max_distance, filter, all);
+    // Gizmo: las dos semiesferas donde acaba.
+    QueryDebug end;
+    end.kind = QueryDebug::Kind::OverlapSphere;
+    end.extents = Vec3{radius, radius, radius};
+    end.origin = point1;
+    d.recordCast(point1, dir, max_distance, hits, end, filter);
+    if (filter.record && d.record_queries) {
+        const float travelled = hits.empty() ? max_distance : hits.front().distance;
+        QueryDebug top = end;
+        top.origin = point2 + dir * travelled;
+        top.end = top.origin;
+        top.hit = !hits.empty();
+        d.recordQuery(top);
+    }
+    return hits;
+}
+
+bool PhysicsSystem::capsuleCast(const Vec3& point1, const Vec3& point2, float radius, const Vec3& direction,
+                                float max_distance, RaycastHit& hit, const QueryFilter& filter) const {
+    const std::vector<RaycastHit> hits = capsuleCastAll(point1, point2, radius, direction, max_distance, filter, false);
+    if (hits.empty()) return false;
+    hit = hits.front();
+    return true;
+}
+
+std::vector<ecs::Entity> PhysicsSystem::overlapCapsule(const Vec3& point1, const Vec3& point2, float radius,
+                                                       const QueryFilter& filter) const {
+    const Impl& d = *impl_;
+    if (!d.system || radius <= 0.0f) return {};
+    JPH::Quat rotation;
+    const JPH::Ref<JPH::Shape> shape = capsuleShape(point1, point2, radius, rotation);
+    const Vec3 center = (point1 + point2) * 0.5f;
+    std::vector<ecs::Entity> result =
+        d.overlapShape(*shape, JPH::RMat44::sRotationTranslation(rotation, JPH::RVec3(toJolt(center))), filter);
+    if (filter.record) {
+        for (const Vec3& p : {point1, point2}) {
+            QueryDebug debug;
+            debug.kind = QueryDebug::Kind::OverlapSphere;
+            debug.origin = p;
+            debug.end = p;
+            debug.extents = Vec3{radius, radius, radius};
+            debug.hit = !result.empty();
+            debug.hits = static_cast<int>(result.size());
+            d.recordQuery(debug);
+        }
+    }
+    return result;
+}
+
+// --- Juntas ------------------------------------------------------------------
+
+int PhysicsSystem::addJointBreakListener(JointBreakCallback callback) {
+    const int id = impl_->next_joint_listener++;
+    impl_->joint_break_listeners.emplace_back(id, std::move(callback));
+    return id;
+}
+
+void PhysicsSystem::removeJointBreakListener(int id) {
+    auto& list = impl_->joint_break_listeners;
+    list.erase(std::remove_if(list.begin(), list.end(), [id](const auto& l) { return l.first == id; }), list.end());
+}
+
+bool PhysicsSystem::breakJoint(ecs::Entity entity, int type) {
+    Impl& d = *impl_;
+    if (!d.system || !entity.valid()) return false;
+    const bool any = d.joints.breakJoint(d.world, *d.system, entity.handle(), type, true);
+    for (const JointBreakEvent& event : d.joints.takeBreaks()) d.dispatchJointBreak(event);
+    return any;
+}
+
+bool PhysicsSystem::repairJoint(ecs::Entity entity, int type) {
+    return entity.valid() && impl_->joints.repair(entity.handle(), type);
+}
+
+JointState PhysicsSystem::jointState(ecs::Entity entity, JointType type) const {
+    if (!entity.valid() || entity.world() == nullptr) return {};
+    return impl_->joints.state(*entity.world(), entity.handle(), type, impl_->system.get());
+}
+
+std::vector<JointDebug> PhysicsSystem::jointDebug(ecs::World& world) const {
+    return impl_->joints.debug(world, impl_->system.get());
+}
+
+std::size_t PhysicsSystem::activeJointCount() const { return impl_->joints.activeCount(); }
 
 void PhysicsSystem::setRecordQueries(bool record) {
     impl_->record_queries = record;
