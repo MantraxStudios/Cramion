@@ -71,6 +71,7 @@ std::string EditorApp::mcpTools21(const std::string& name, const std::string& ar
         return lightingStateJson();
     }
     if (name == "lighting_state") return lightingStateJson();
+    if (name == "bake_reflection_probes") return bakeReflectionProbesJson(args_json);
     if (name == "set_lighting_mode") return setLightingModeJson(args_json);
     if (name == "generate_lightmap_uvs") return generateLightmapUvsJson(args_json);
 

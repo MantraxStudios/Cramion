@@ -20,6 +20,7 @@
 #include <CramionCore/asset/LightmapUv.h>
 #include <CramionCore/lighting/Lightmapper.h>
 #include <CramionCore/lighting/ProbeBaker.h>
+#include <CramionCore/lighting/ReflectionProbes.h>
 #include <CramionCore/physics/PhysicsComponents.h>
 #include <CramionCore/terrain/Terrain.h>
 #include <CramionCore/terrain/TerrainGrid.h>
@@ -151,6 +152,8 @@ void EditorApp::loadSceneLighting(const std::filesystem::path& scene) {
     }
     renderer_.setBakedLighting(std::move(data));
     renderer_.setLightingMode(mode);
+    // Sondas de reflexion colocadas: su <escena>.crrefl (sin el, ninguna).
+    lighting::loadSceneReflectionProbes(scene, renderer_);
 }
 
 namespace {
@@ -867,6 +870,16 @@ void EditorApp::drawLightingWindow() {
         const scene::Camera& camera = scene_.camera();
         e.setLocalPosition(camera.position() + camera.forward() * 10.0f);
         e.add<lighting::LightProbeVolume>();
+        selectOnly(e.uuid());
+        commit();
+    }
+    // Sonda de reflexion con caja (ReflectionProbes.h): se hornea desde el Inspector.
+    ImGui::SameLine();
+    if (ImGui::Button("+ Reflection Probe")) {
+        ecs::Entity e = world_.create("Reflection Probe");
+        const scene::Camera& camera = scene_.camera();
+        e.setLocalPosition(camera.position() + camera.forward() * 5.0f);
+        e.add<lighting::ReflectionProbeBox>();
         selectOnly(e.uuid());
         commit();
     }

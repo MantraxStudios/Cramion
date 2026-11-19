@@ -5,6 +5,7 @@
 #include "CramionFX/scene/Light.h"
 #include "CramionFX/scene/LocalLightShadows.h"
 #include "CramionFX/scene/ShadowCascades.h"
+#include "CramionFX/vk/ReflectionProbeSet.h"
 
 #include <cstdint>
 
@@ -122,6 +123,11 @@ struct GpuLights {
     // uvec4 point_tiles[kMaxLightTiles / 4].
     std::uint32_t light_tiles[4]{};
     std::uint32_t point_tiles[kMaxLightTiles]{};
+    // Sondas de reflexion colocadas (ReflectionProbeSet.h; lighting.frag,
+    // binding 31): las de este frame en orden de prioridad. placed_info[0] =
+    // cuantas (0 = ninguna: como antes). Solo las lee lighting.frag.
+    std::uint32_t placed_info[4]{};
+    GpuPlacedProbe placed[kMaxActivePlacedProbes]{};
 };
 static_assert(kMaxLightTiles % 4 == 0, "point_tiles va en uvec4 en lighting.frag");
 

@@ -1,4 +1,5 @@
 #include "CramionCore/lighting/ProbeBaker.h"
+#include "CramionCore/lighting/ReflectionProbes.h"
 
 #include "CramionCore/asset/AssetDatabase.h"
 #include "CramionCore/asset/AssetManager.h"
@@ -460,6 +461,7 @@ void registerLightingComponents() {
     if (registry.find("LightProbeVolume") == nullptr) {
         registry.registerComponent<LightProbeVolume>("LightProbeVolume", "Light Probe Volume", "Iluminacion");
     }
+    registerReflectionProbeComponent();  // sondas de reflexion colocadas (ReflectionProbes.h)
 }
 
 // --- Lightmap de superficie --------------------------------------------------------------

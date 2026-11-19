@@ -2389,6 +2389,10 @@ private:
     // 1 irradiancia, 2 visibilidad del sol, 3 UV de lightmap.
     int lightmap_debug_view_ = 0;
     std::string lightingStateJson();
+    // Sondas de reflexion colocadas (EditorReflectionProbes.cpp): el estado y
+    // el boton Hornear del Inspector, y la herramienta MCP bake_reflection_probes.
+    void drawReflectionProbeInspector(ecs::Entity entity);
+    std::string bakeReflectionProbesJson(const std::string& args_json);
     // MCP de la 2.1 (EditorMcp21.cpp): pruebas, horneado, VFX, grafos y arboles.
     std::string mcpTools21(const std::string& name, const std::string& args_json, std::string& error);
     // --- Motion Matching (EditorMotion.cpp) ---

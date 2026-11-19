@@ -673,11 +673,26 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         FullscreenPassDesc ssao{};
         ssao.fragment_shader = "ssao.frag.spv";
         ssao.bindings = ssao_bindings;
-        ssao.color_format = kSsaoFormat;
+        ssao.color_format = ssaoFormat();
         // Profundidades exactas: interpolar el depth en los bordes de los
         // objetos inventaria superficies intermedias.
         ssao.filter = vk::Filter::eNearest;
         ssao_pass_.create(device_, ssao);
+        // GTAO (gtao.frag, CVar render.ao.Gtao): los mismos descriptores (usa
+        // ssao_sets_) y la misma imagen, con el radio y el patron temporal por
+        // push constant. Sin el shader (instalacion antigua), solo SSAO. Ni en
+        // el modo compatible ni en gama baja (ssaoFormat: alli solo SSAO).
+        if (ssaoFormat() == kGtaoFormat) {
+            FullscreenPassDesc gtao = ssao;
+            gtao.fragment_shader = "gtao.frag.spv";
+            gtao.push_constant_size = sizeof(GpuBloomPush);
+            try {
+                gtao_pass_.create(device_, gtao);
+            } catch (const std::exception& e) {
+                std::cerr << "[Vulkan] Sin GTAO (gtao.frag): " << e.what() << "\n";
+                gtao_pass_.destroy();
+            }
+        }
 
         // Luz volumetrica: camara, luces, cascadas + su mapa, la profundidad,
         // las sombras de focos y puntuales + sus matrices, y la irradiancia
@@ -1242,6 +1257,7 @@ void VulkanRenderer::shutdown() {
     bloom_up_pass_.destroy();
     bloom_down_pass_.destroy();
     ssao_pass_.destroy();
+    gtao_pass_.destroy();
     volumetric_pass_.destroy();
     terrain_pass_.destroy();
     voxel_pass_.destroy();
@@ -1625,7 +1641,8 @@ void VulkanRenderer::createDescriptors() {
     // (+ las cascadas sin comparacion para las sombras suaves.)
     // (+ las sombras por rayos de las luces locales.)
     // (+ los dos mapas de la oclusion del cielo vista desde arriba.)
-    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 21);
+    // (+ el array de cubos de las sondas colocadas, binding 31.)
+    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 22);
 
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -3663,6 +3680,7 @@ void VulkanRenderer::updateLightingDescriptors() {
         device_.handle().updateDescriptorSets(write, nullptr);
     }
 
+    writePlacedProbeDescriptors();  // sondas colocadas (binding 31)
     updateGlassDescriptors();
 }
 
@@ -4599,7 +4617,7 @@ void VulkanRenderer::createRenderTargets() {
                                           vk::PipelineStageFlagBits2::eFragmentShader,
                                           vk::AccessFlagBits2::eShaderSampledRead));
     });
-    ssao_image_.create(device_, extent, kSsaoFormat, target_usage,
+    ssao_image_.create(device_, extent, ssaoFormat(), target_usage,
                        vk::ImageAspectFlagBits::eColor);
     // Vistas del editor: copias del resultado (texturas de ImGui). Se dejan
     // como textura desde el principio (una vista que aun no se dibujo).
@@ -5591,7 +5609,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     }
     // Con el path tracing pintando la vista no se calculan (ver pathTraceReplacesLighting).
     const bool path_traced = pathTraceReplacesLighting();
-    light_data.ssao_enabled = post_.ambient_occlusion && !path_traced && !rayTracedGiActive() ? 1 : 0;
+    // 1 = SSAO, 2 = GTAO (lighting.frag lee ademas la normal doblada).
+    light_data.ssao_enabled = post_.ambient_occlusion && !path_traced && !rayTracedGiActive() ? (gtaoActive() ? 2 : 1) : 0;
     light_data.gi_enabled = (post_.global_illumination || bakedGiActive()) && !path_traced ? 1 : 0;
     // --- Lluvia ---
     if (!isolated()) {
@@ -5909,6 +5928,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // Disco solar tenido y peso del degradado del cielo (lighting.frag).
     light_data.sky_tint = core::Vec4{sky_push_.sun_tint.x, sky_push_.sun_tint.y, sky_push_.sun_tint.z,
                                      sky_push_.custom.x};
+    // Sondas de reflexion colocadas de esta vista (VulkanRendererReflectionProbes.cpp).
+    fillPlacedProbes(light_data, camera.position());
     light_buffers_[frame_index].write(&light_data, sizeof(light_data));
     // Luces que ve el path tracing (sin lo que cambia cada frame: lluvia).
     if (!isolated()) {
@@ -8551,6 +8572,19 @@ void VulkanRenderer::recordSsaoPass(const vk::raii::CommandBuffer& cmd,
     // lo lee (lights.counts.z = 0): las barreras de arriba siguen (el G-buffer
     // pasa a textura aqui), el dibujo no.
     if (!post_.ambient_occlusion || pathTraceReplacesLighting() || rayTracedGiActive()) return;
+    if (gtaoActive()) {
+        // GTAO: con TAA o escalado temporal el patron de 4x4 cambia cada
+        // frame y la historia lo acumula; si no, fijo (sin parpadeo).
+        const bool temporal = upscaling_ && graphics_.upscaler != Upscaler::Fsr1 && !isolated();
+        const vk::Extent2D size = ssao_image_.extent();
+        GpuBloomPush push{};
+        push.source_texel = core::Vec2{1.0f / static_cast<float>(std::max(size.width, 1u)),
+                                       1.0f / static_cast<float>(std::max(size.height, 1u))};
+        push.first_level = temporal ? static_cast<float>(frame_count_ % 64 + 1) : 0.0f;
+        push.radius = 0.6f;  // m, como el SSAO (1 = un bloque)
+        drawFullscreen<GpuBloomPush>(cmd, gtao_pass_, &ssao_sets_[frame_index], ssao_image_, &push);
+        return;
+    }
     drawFullscreen<GpuBloomPush>(cmd, ssao_pass_, &ssao_sets_[frame_index], ssao_image_,
                                  nullptr);
 }

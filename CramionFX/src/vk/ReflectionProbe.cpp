@@ -101,23 +101,10 @@ void ReflectionProbe::create(const VulkanDevice& device) {
     probe_info.usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
                        vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc;
     for (Cube& cube : cubes_) {
-        cube.image = createImage(device, probe_info);
-
-        vk::ImageViewCreateInfo probe_view = capture_view;
-        probe_view.image = *cube.image.image;
-        probe_view.subresourceRange.levelCount = kMips;
-        cube.view = vk::raii::ImageView(device.handle(), probe_view);
-
-        for (std::uint32_t mip = 0; mip < kMips; ++mip) {
-            vk::ImageViewCreateInfo mip_view{};
-            mip_view.image = *cube.image.image;
-            mip_view.viewType = vk::ImageViewType::e2DArray;
-            mip_view.format = kFormat;
-            mip_view.subresourceRange =
-                vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6};
-            cube.mip_views.emplace_back(device.handle(), mip_view);
-        }
+        createCube(device, cube, probe_info, capture_view);
     }
+    // El del horneado de las sondas colocadas (recordBakePrefilter).
+    createCube(device, bake_cube_, probe_info, capture_view);
 
     // Trilineal con todos los mips: la rugosidad (iluminacion) o el angulo
     // solido de cada muestra (prefiltrado) eligen un mip fraccionario.
@@ -140,18 +127,23 @@ void ReflectionProbe::create(const VulkanDevice& device) {
     prefilter.push_constant_size = sizeof(PrefilterPush);
     prefilter_pass_.create(device, prefilter);
 
+    // (+ el cubo del horneado de las sondas colocadas.)
     const std::array<vk::DescriptorPoolSize, 2> pool_sizes = {
-        vk::DescriptorPoolSize{Type::eCombinedImageSampler, kMips * kCubeCount},
-        vk::DescriptorPoolSize{Type::eStorageImage, kMips * kCubeCount}};
+        vk::DescriptorPoolSize{Type::eCombinedImageSampler, kMips * (kCubeCount + 1)},
+        vk::DescriptorPoolSize{Type::eStorageImage, kMips * (kCubeCount + 1)}};
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    pool_info.maxSets = kMips * kCubeCount;
+    pool_info.maxSets = kMips * (kCubeCount + 1);
     pool_info.setPoolSizes(pool_sizes);
     pool_ = vk::raii::DescriptorPool(device.handle(), pool_info);
 
     const std::vector<vk::DescriptorSetLayout> layouts(kMips,
                                                        *prefilter_pass_.descriptorSetLayout());
-    for (Cube& cube : cubes_) {
+    std::array<Cube*, kCubeCount + 1> all_cubes{};
+    for (std::uint32_t i = 0; i < kCubeCount; ++i) all_cubes[i] = &cubes_[i];
+    all_cubes[kCubeCount] = &bake_cube_;
+    for (Cube* cube_pointer : all_cubes) {
+        Cube& cube = *cube_pointer;
         vk::DescriptorSetAllocateInfo alloc{};
         alloc.descriptorPool = *pool_;
         alloc.setSetLayouts(layouts);
@@ -186,8 +178,8 @@ void ReflectionProbe::create(const VulkanDevice& device) {
     device.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
         using Stage = vk::PipelineStageFlagBits2;
         using Access = vk::AccessFlagBits2;
-        for (const Cube& cube : cubes_) {
-            const vk::Image probe_image = *cube.image.image;
+        for (const Cube* cube_pointer : all_cubes) {
+            const vk::Image probe_image = *cube_pointer->image.image;
             pipelineBarrier(cmd,
                             barrier(probe_image, 0, kMips, 0, 6, vk::ImageLayout::eUndefined,
                                     vk::ImageLayout::eTransferDstOptimal, Stage::eNone,
@@ -207,12 +199,51 @@ void ReflectionProbe::create(const VulkanDevice& device) {
     distance_readback_.create(device, 6ull * kDistanceSize * kDistanceSize * 4 * sizeof(std::uint16_t),
                               vk::BufferUsageFlagBits::eTransferDst,
                               vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+    // El cubo horneado entero (todos sus mips) para la CPU: ~1 MB.
+    bake_readback_.create(device, bakedCubeTexelCount(kSize, kMips) * sizeof(std::uint16_t),
+                          vk::BufferUsageFlagBits::eTransferDst,
+                          vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+    // Sondas colocadas: el array de cubos de la iluminacion (una capa en
+    // negro hasta que se carga un horneado). Necesita imageCubeArray; el modo
+    // compatible no lo usa (lighting.frag no declara el binding 31).
+    placed_layers_ = 0;
+    if (!device.compatMode() && device.physicalDevice().getFeatures().imageCubeArray == VK_TRUE) {
+        uploadPlacedCubes(device, {});
+    }
 
     std::cout << "[Vulkan] Sonda de reflexion lista: captura de " << kCaptureSize << " px, "
               << kCubeCount << " cubos de " << kSize << " px con " << kMips << " niveles\n";
 }
 
+void ReflectionProbe::createCube(const VulkanDevice& device, Cube& cube, const vk::ImageCreateInfo& info,
+                                 const vk::ImageViewCreateInfo& view_info) {
+    cube.image = createImage(device, info);
+
+    vk::ImageViewCreateInfo probe_view = view_info;
+    probe_view.image = *cube.image.image;
+    probe_view.subresourceRange.levelCount = kMips;
+    cube.view = vk::raii::ImageView(device.handle(), probe_view);
+
+    for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+        vk::ImageViewCreateInfo mip_view{};
+        mip_view.image = *cube.image.image;
+        mip_view.viewType = vk::ImageViewType::e2DArray;
+        mip_view.format = kFormat;
+        mip_view.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6};
+        cube.mip_views.emplace_back(device.handle(), mip_view);
+    }
+}
+
 void ReflectionProbe::destroy() {
+    placed_.view = nullptr;
+    placed_.image = Image{};
+    placed_layers_ = 0;
+    bake_readback_.destroy();
+    bake_cube_.prefilter_sets.clear();
+    bake_cube_.mip_views.clear();
+    bake_cube_.view = nullptr;
+    bake_cube_.image = Image{};
     distance_readback_.destroy();
     for (Cube& cube : cubes_) {
         cube.prefilter_sets.clear();
@@ -260,10 +291,14 @@ void ReflectionProbe::recordFaceCopy(const vk::raii::CommandBuffer& cmd, vk::Ima
 
 void ReflectionProbe::recordPrefilter(const vk::raii::CommandBuffer& cmd,
                                       std::uint32_t cube) const {
+    recordPrefilterInto(cmd, cubes_[cube]);
+}
+
+void ReflectionProbe::recordPrefilterInto(const vk::raii::CommandBuffer& cmd, const Cube& target) const {
     using Stage = vk::PipelineStageFlagBits2;
     using Access = vk::AccessFlagBits2;
     const vk::Image capture = *capture_.image;
-    const vk::Image probe = *cubes_[cube].image.image;
+    const vk::Image probe = *target.image.image;
 
     // --- Mips de la captura, cada uno a partir del anterior ---
     pipelineBarrier(cmd, barrier(capture, 0, 1, 0, 6, vk::ImageLayout::eTransferDstOptimal,
@@ -314,7 +349,7 @@ void ReflectionProbe::recordPrefilter(const vk::raii::CommandBuffer& cmd,
         push.face_size = size;
 
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter_pass_.layout(), 0,
-                               *cubes_[cube].prefilter_sets[mip], nullptr);
+                               *target.prefilter_sets[mip], nullptr);
         cmd.pushConstants<PrefilterPush>(*prefilter_pass_.layout(),
                                          vk::ShaderStageFlagBits::eCompute, 0, push);
         cmd.dispatch((size + 7) / 8, (size + 7) / 8, 6);
@@ -470,6 +505,144 @@ float ReflectionProbe::distanceToward(const std::vector<float>& distances, float
         }
     }
     return seen;
+}
+
+// --- Sondas colocadas ---------------------------------------------------------
+
+void ReflectionProbe::recordBakePrefilter(const vk::raii::CommandBuffer& cmd) const {
+    recordPrefilterInto(cmd, bake_cube_);
+    if (!bake_readback_.isValid()) return;
+    using Stage = vk::PipelineStageFlagBits2;
+    using Access = vk::AccessFlagBits2;
+    const vk::Image probe = *bake_cube_.image.image;
+
+    // Todos los mips, de textura (lo dejo asi el prefiltrado) a origen de la
+    // copia y de vuelta.
+    pipelineBarrier(cmd, barrier(probe, 0, kMips, 0, 6, vk::ImageLayout::eShaderReadOnlyOptimal,
+                                 vk::ImageLayout::eTransferSrcOptimal,
+                                 Stage::eComputeShader | Stage::eFragmentShader,
+                                 Access::eShaderStorageWrite | Access::eShaderSampledRead, Stage::eTransfer,
+                                 Access::eTransferRead));
+    std::array<vk::BufferImageCopy, kMips> regions{};
+    for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+        const std::uint32_t side = std::max(kSize >> mip, 1u);
+        regions[mip].bufferOffset = bakedCubeMipOffset(kSize, mip) * sizeof(std::uint16_t);
+        regions[mip].imageSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 6};
+        regions[mip].imageExtent = vk::Extent3D{side, side, 1};
+    }
+    cmd.copyImageToBuffer(probe, vk::ImageLayout::eTransferSrcOptimal, *bake_readback_.handle(), regions);
+    pipelineBarrier(cmd, barrier(probe, 0, kMips, 0, 6, vk::ImageLayout::eTransferSrcOptimal,
+                                 vk::ImageLayout::eShaderReadOnlyOptimal, Stage::eTransfer, Access::eTransferRead,
+                                 Stage::eComputeShader, Access::eShaderSampledRead));
+
+    vk::MemoryBarrier2 to_host{};
+    to_host.srcStageMask = Stage::eTransfer;
+    to_host.srcAccessMask = Access::eTransferWrite;
+    to_host.dstStageMask = Stage::eHost;
+    to_host.dstAccessMask = Access::eHostRead;
+    vk::DependencyInfo dependency{};
+    dependency.setMemoryBarriers(to_host);
+    compat::pipelineBarrier(cmd, dependency);
+}
+
+bool ReflectionProbe::readBake(std::vector<std::uint16_t>& texels) const {
+    texels.clear();
+    if (!bake_readback_.isValid() || bake_readback_.mapped() == nullptr) return false;
+    const std::size_t count = bakedCubeTexelCount(kSize, kMips);
+    const auto* data = static_cast<const std::uint16_t*>(bake_readback_.mapped());
+    texels.assign(data, data + count);
+    // El alfa de la captura es la distancia (paralaje de la sonda de la
+    // camara); las colocadas usan su caja: fuera (se guarda 0).
+    for (std::size_t i = 3; i < count; i += 4) texels[i] = 0;
+    return true;
+}
+
+void ReflectionProbe::uploadPlacedCubes(const VulkanDevice& device,
+                                        const std::vector<const BakedReflectionCube*>& cubes) {
+    const auto layers = static_cast<std::uint32_t>(
+        std::clamp<std::size_t>(cubes.size(), 1, kMaxPlacedProbeCubes));
+
+    vk::ImageCreateInfo info{};
+    info.flags = vk::ImageCreateFlagBits::eCubeCompatible;
+    info.imageType = vk::ImageType::e2D;
+    info.format = kFormat;
+    info.extent = vk::Extent3D{kSize, kSize, 1};
+    info.mipLevels = kMips;
+    info.arrayLayers = 6 * layers;
+    info.samples = vk::SampleCountFlagBits::e1;
+    info.tiling = vk::ImageTiling::eOptimal;
+    info.usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;
+    info.initialLayout = vk::ImageLayout::eUndefined;
+    PlacedArray fresh;
+    fresh.image = createImage(device, info);
+
+    vk::ImageViewCreateInfo view{};
+    view.image = *fresh.image.image;
+    view.viewType = vk::ImageViewType::eCubeArray;
+    view.format = kFormat;
+    view.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, kMips, 0, 6 * layers};
+    fresh.view = vk::raii::ImageView(device.handle(), view);
+
+    // Los que valen (kSize y kMips), seguidos en un buffer de subida.
+    const std::size_t cube_texels = bakedCubeTexelCount(kSize, kMips);
+    std::vector<std::uint32_t> valid;
+    for (std::uint32_t i = 0; i < std::min<std::size_t>(cubes.size(), kMaxPlacedProbeCubes); ++i) {
+        const BakedReflectionCube* cube = cubes[i];
+        if (cube != nullptr && cube->size == kSize && cube->mips == kMips && cube->texels.size() == cube_texels) {
+            valid.push_back(i);
+        }
+    }
+    VulkanBuffer staging;
+    if (!valid.empty()) {
+        staging.create(device, valid.size() * cube_texels * sizeof(std::uint16_t), vk::BufferUsageFlagBits::eTransferSrc,
+                       vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        for (std::size_t k = 0; k < valid.size(); ++k) {
+            staging.write(cubes[valid[k]]->texels.data(), cube_texels * sizeof(std::uint16_t),
+                          k * cube_texels * sizeof(std::uint16_t));
+        }
+    }
+
+    device.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+        using Stage = vk::PipelineStageFlagBits2;
+        using Access = vk::AccessFlagBits2;
+        const vk::Image image = *fresh.image.image;
+        pipelineBarrier(cmd, barrier(image, 0, kMips, 0, 6 * layers, vk::ImageLayout::eUndefined,
+                                     vk::ImageLayout::eTransferDstOptimal, Stage::eNone, Access::eNone,
+                                     Stage::eTransfer, Access::eTransferWrite));
+        // En negro lo que no tiene horneado (no se elige, pero el array entero
+        // tiene que estar definido).
+        const vk::ClearColorValue black{0.0f, 0.0f, 0.0f, 0.0f};
+        const vk::ImageSubresourceRange all{vk::ImageAspectFlagBits::eColor, 0, kMips, 0, 6 * layers};
+        cmd.clearColorImage(image, vk::ImageLayout::eTransferDstOptimal, black, all);
+        if (!valid.empty()) {
+            pipelineBarrier(cmd, barrier(image, 0, kMips, 0, 6 * layers, vk::ImageLayout::eTransferDstOptimal,
+                                         vk::ImageLayout::eTransferDstOptimal, Stage::eTransfer,
+                                         Access::eTransferWrite, Stage::eTransfer, Access::eTransferWrite));
+            std::vector<vk::BufferImageCopy> regions;
+            regions.reserve(valid.size() * kMips);
+            for (std::size_t k = 0; k < valid.size(); ++k) {
+                for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+                    const std::uint32_t side = std::max(kSize >> mip, 1u);
+                    vk::BufferImageCopy region{};
+                    region.bufferOffset = (k * cube_texels + bakedCubeMipOffset(kSize, mip)) * sizeof(std::uint16_t);
+                    region.imageSubresource =
+                        vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 6 * valid[k], 6};
+                    region.imageExtent = vk::Extent3D{side, side, 1};
+                    regions.push_back(region);
+                }
+            }
+            cmd.copyBufferToImage(*staging.handle(), image, vk::ImageLayout::eTransferDstOptimal, regions);
+        }
+        pipelineBarrier(cmd, barrier(image, 0, kMips, 0, 6 * layers, vk::ImageLayout::eTransferDstOptimal,
+                                     vk::ImageLayout::eShaderReadOnlyOptimal, Stage::eTransfer,
+                                     Access::eTransferWrite, Stage::eFragmentShader, Access::eShaderSampledRead));
+    });
+    staging.destroy();
+
+    placed_.view = nullptr;
+    placed_.image = Image{};
+    placed_ = std::move(fresh);
+    placed_layers_ = layers;
 }
 
 }  // namespace cramion::gfx

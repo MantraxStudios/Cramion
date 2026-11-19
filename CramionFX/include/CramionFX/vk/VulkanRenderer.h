@@ -196,6 +196,7 @@ public:
     static constexpr vk::Format kHdrFormat = vk::Format::eR16G16B16A16Sfloat;
     static constexpr vk::Format kLdrFormat = vk::Format::eR8G8B8A8Unorm;
     static constexpr vk::Format kSsaoFormat = vk::Format::eR16G16Sfloat;
+    static constexpr vk::Format kGtaoFormat = vk::Format::eR16G16B16A16Sfloat;
     // Mascara reactiva de FSR 3 (upscaler_reactive.frag).
     static constexpr vk::Format kReactiveFormat = vk::Format::eR8Unorm;
     static constexpr vk::Extent2D kSkyLutExtent{256, 128};
@@ -919,6 +920,40 @@ public:
     };
     void setReflectionProbeLimits(const ReflectionProbeLimits& limits) { probe_limits_ = limits; }
     const ReflectionProbeLimits& reflectionProbeLimits() const { return probe_limits_; }
+
+    // --- Sondas de reflexion colocadas (ReflectionProbeSet.h; el codigo en
+    // VulkanRendererReflectionProbes.cpp) ---
+    // Las de la escena, cada frame (RenderSync, componente ReflectionProbeBox).
+    void setPlacedReflectionProbes(std::vector<PlacedReflectionProbe> probes) { placed_probes_ = std::move(probes); }
+    const std::vector<PlacedReflectionProbe>& placedReflectionProbes() const { return placed_probes_; }
+    // CVar render.probe.Placed (apagada: los reflejos de siempre, solo la
+    // sonda que sigue a la camara).
+    void setPlacedProbesEnabled(bool enabled) { placed_probes_enabled_ = enabled; }
+    bool placedProbesEnabled() const { return placed_probes_enabled_; }
+    // La GPU puede (fuera del modo compatible y con imageCubeArray).
+    bool placedProbesSupported() const { return reflection_probe_.placedSupported(); }
+    // Los cubos horneados (el .crrefl de la escena): sustituyen a los que
+    // hubiera (como mucho kMaxPlacedProbeCubes). Espera a la GPU: al abrir la
+    // escena o tras hornear. Vacio: ninguna sonda colocada se usa.
+    void setBakedReflectionCubes(std::vector<BakedReflectionCube> cubes);
+    const std::vector<BakedReflectionCube>& bakedReflectionCubes() const { return placed_cubes_; }
+    // Hornea un cubo desde `position` con la escena tal como se ve ahora: las
+    // seis caras (como la sonda de la camara), el prefiltrado por rugosidad y
+    // la lectura a la CPU. Espera a la GPU; entre frames (no en medio de uno).
+    // false con el motivo si no se puede (modo compatible, trazado de rayos,
+    // sin un frame dibujado antes).
+    bool bakeReflectionCube(const scene::Scene& scene, const core::Vec3& position, BakedReflectionCube& out,
+                            std::string* error = nullptr);
+    // Cuantas sondas colocadas leyo la iluminacion en el ultimo frame de pantalla.
+    std::uint32_t activePlacedProbes() const { return placed_active_count_; }
+
+    // GTAO (gtao.frag, CVar render.ao.Gtao) en lugar del SSAO de siempre, con
+    // normales dobladas y oclusion especular. Solo con el SSAO encendido,
+    // desde el nivel Medio y fuera del modo compatible (gtaoActive); en gama
+    // baja sigue el SSAO. Con GI por rayos no hay ninguno de los dos.
+    void setGtaoEnabled(bool enabled) { gtao_requested_ = enabled; }
+    bool gtaoEnabled() const { return gtao_requested_; }
+    bool gtaoActive() const;
     // Oclusion del cielo vista desde arriba (sin trazado de rayos): el
     // sotobosque y lo que esta bajo tejados no reciben todo el cielo aunque lo
     // que los tapa no salga en pantalla.
@@ -1778,6 +1813,28 @@ private:
     // cara antes de copiarla al cubo (no se usa la del frame: el SSR y la GI
     // del siguiente la leen como frame anterior).
     ReflectionProbe reflection_probe_{};
+    // Sondas colocadas: las de la escena, los cubos horneados (copia en la
+    // CPU: se vuelven a guardar al hornear solo algunas) y el id de cada capa.
+    std::vector<PlacedReflectionProbe> placed_probes_;
+    std::vector<BakedReflectionCube> placed_cubes_;
+    std::vector<PlacedProbeId> placed_cube_ids_;
+    bool placed_probes_enabled_ = true;
+    bool baking_reflection_ = false;  // horneando: la captura no se refleja en las sondas colocadas
+    std::uint32_t placed_active_count_ = 0;
+    // Las sondas colocadas de esta vista en el UBO de las luces (al final).
+    void fillPlacedProbes(GpuLights& light_data, const core::Vec3& eye);
+    // El array de cubos en el binding 31 de la iluminacion (todos los sets).
+    void writePlacedProbeDescriptors();
+    // GTAO: misma disposicion que ssao_pass_ (usa ssao_sets_), con push constants.
+    FullscreenPass gtao_pass_{};
+    bool gtao_requested_ = false;
+    // Formato de la imagen del SSAO: RGBA16F donde puede ir el GTAO (guarda la
+    // normal doblada en ba); RG16F, como antes, en el modo compatible y en
+    // gama baja (solo SSAO: sin el doble de memoria y ancho de banda). El
+    // nivel de la GPU se decide antes de crear la imagen y no cambia.
+    vk::Format ssaoFormat() const {
+        return device_.compatMode() || hardware_.tier == HardwareTier::Low ? kSsaoFormat : kGtaoFormat;
+    }
     // Trazado de rayos: estructuras de aceleracion y pases de GI y reflejos.
     RayTracing ray_tracing_{};
     VulkanImage probe_capture_{};

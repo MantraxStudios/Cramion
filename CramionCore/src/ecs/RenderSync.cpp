@@ -22,6 +22,7 @@
 #include "CramionCore/spline/Spline.h"
 #include "CramionCore/gameplay/Accessibility.h"
 #include "CramionCore/environment/FogVolume.h"
+#include "CramionCore/lighting/ReflectionProbes.h"
 #include "CramionCore/terrain/TerrainGrid.h"
 #include "CramionCore/terrain/TerrainTools.h"
 
@@ -132,6 +133,16 @@ cvar::CVar<bool> g_probe_terrain("render.probe.Terrain", true,
                                  "Sonda de reflexion: dibujar el terreno en la captura (apagado: mas barato con "
                                  "terrenos grandes, el suelo no se refleja ni rebota luz desde fuera de pantalla)",
                                  cvar::Saved);
+// Sondas de reflexion colocadas (Reflection Probe con caja, lighting/ReflectionProbes.h).
+cvar::CVar<bool> g_probe_placed("render.probe.Placed", true,
+                                "Sondas de reflexion colocadas (Reflection Probe): dentro de su caja los reflejos salen "
+                                "de su cubo horneado (apagado: solo la sonda que sigue a la camara, como antes)",
+                                cvar::Saved);
+// GTAO (gtao.frag): oclusion por horizontes con normales dobladas y oclusion especular.
+cvar::CVar<bool> g_ao_gtao("render.ao.Gtao", false,
+                           "Oclusion ambiental GTAO (horizontes, con normales dobladas y oclusion especular) en lugar "
+                           "del SSAO, desde el nivel Medio (en Bajo y en el movil sigue el SSAO)",
+                           cvar::Saved);
 // Render Textures (camaras con Target Texture): cada una es otro frame entero
 // (dos portales eran 3 frames por frame). 0 = automatico segun el nivel de la
 // GPU (gfx::renderTextureIntervalFor).
@@ -2931,6 +2942,7 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
     {
         CR_PROFILE_SCOPE("Niebla");
         environment::syncFogVolumes(world, renderer, scene.camera().position());  // niebla local (FogVolume)
+        lighting::syncReflectionProbes(world, renderer);  // sondas de reflexion colocadas
     }
     {
         CR_PROFILE_SCOPE("Terrenos");
@@ -3905,6 +3917,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         probe_limits.draw_distance = g_probe_draw_distance.get();
         probe_limits.terrain = g_probe_terrain.get();
         renderer.setReflectionProbeLimits(probe_limits);
+        renderer.setPlacedProbesEnabled(g_probe_placed.get());
+        renderer.setGtaoEnabled(g_ao_gtao.get());
     }
     // Shaders de superficie compilados en segundo plano: sus materiales se rehacen.
     pollSurfaceShaders();

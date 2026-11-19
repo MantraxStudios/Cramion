@@ -581,6 +581,8 @@ void EditorApp::drawInspectorContents() {
                     }
                 }
             }
+            // Reflection Probe: estado del horneado y boton Hornear (EditorReflectionProbes.cpp).
+            if (type.name == "ReflectionProbeBox" && !multi) drawReflectionProbeInspector(entity);
             // Decal: elegir la imagen (dialogo o arrastrarla desde el Proyecto).
             if (type.name == "Decal") {
                 if (ecs::Decal* decal = entity.tryGet<ecs::Decal>(); decal != nullptr) {

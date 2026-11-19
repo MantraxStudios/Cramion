@@ -2,6 +2,7 @@
 #define CRAMION_VK_REFLECTION_PROBE_H
 
 #include "CramionFX/vk/ComputePass.h"
+#include "CramionFX/vk/ReflectionProbeSet.h"
 #include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
@@ -76,6 +77,24 @@ public:
     const vk::raii::ImageView& view(std::uint32_t cube) const { return cubes_[cube].view; }
     const vk::raii::Sampler& sampler() const { return sampler_; }
 
+    // --- Sondas colocadas (ReflectionProbeSet.h) ---
+    // Horneado: con las seis caras copiadas (recordFaceCopy), prefiltra la
+    // captura a un cubo aparte (no toca los dos de la camara) y copia todos
+    // sus mips al buffer de lectura. readBake, cuando su fence haya acabado:
+    // kSize, kMips, RGBA16F (BakedReflectionCube::texels).
+    void recordBakePrefilter(const vk::raii::CommandBuffer& cmd) const;
+    bool readBake(std::vector<std::uint16_t>& texels) const;
+
+    // Array de cubos que lee la iluminacion (binding 31 de lighting.frag):
+    // una capa por cubo horneado, en el orden de `cubes` (los que no tienen
+    // kSize y kMips quedan en negro). Sin cubos, una capa en negro. Espera a
+    // la GPU (submitOneTime): solo al cargar o al hornear. Sin imageCubeArray
+    // (o en el modo compatible) no hay array: placedSupported() = false.
+    void uploadPlacedCubes(const VulkanDevice& device, const std::vector<const BakedReflectionCube*>& cubes);
+    bool placedSupported() const { return *placed_.view != VK_NULL_HANDLE; }
+    const vk::raii::ImageView& placedView() const { return placed_.view; }
+    std::uint32_t placedLayers() const { return placed_layers_; }
+
 private:
     struct Image {
         vk::raii::DeviceMemory memory{nullptr};
@@ -103,6 +122,21 @@ private:
     ComputePass prefilter_pass_;
     // Distancias de la ultima captura para la CPU (visible y coherente).
     VulkanBuffer distance_readback_;
+
+    // Sondas colocadas: cubo del horneado (con sus sets de prefiltrado, del
+    // mismo pool), su lectura y el array de cubos de la iluminacion.
+    Cube bake_cube_;
+    VulkanBuffer bake_readback_;
+    struct PlacedArray {
+        Image image;
+        vk::raii::ImageView view{nullptr};
+    };
+    PlacedArray placed_;
+    std::uint32_t placed_layers_ = 0;
+
+    void createCube(const VulkanDevice& device, Cube& cube, const vk::ImageCreateInfo& info,
+                    const vk::ImageViewCreateInfo& view_info);
+    void recordPrefilterInto(const vk::raii::CommandBuffer& cmd, const Cube& target) const;
 };
 
 }  // namespace cramion::gfx
