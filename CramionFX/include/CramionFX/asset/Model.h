@@ -49,9 +49,13 @@ enum class TextureFormat : std::uint8_t {
     Bc4,    // un canal
     Bc5,    // dos canales (normal maps: X e Y)
     Bc7,    // color de alta calidad
+    // Los de movil (MobileTextures.h): solo en memoria, nunca en un .crdata.
+    // Los dos en bloques de 4x4 de 16 bytes, como BC7.
+    Astc4x4,   // ASTC LDR 4x4
+    Etc2Rgba8, // ETC2 RGB + alfa EAC
 };
 
-// Bytes por bloque de 4x4 de un formato BC (0 para Rgba8).
+// Bytes por bloque de 4x4 de un formato BC, ASTC 4x4 o ETC2 (0 para Rgba8).
 std::uint32_t blockBytes(TextureFormat format);
 // Bytes de un nivel de mip de `width` x `height`.
 std::size_t mipByteSize(TextureFormat format, std::uint32_t width, std::uint32_t height);

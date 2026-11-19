@@ -570,6 +570,10 @@ void VulkanDevice::createLogicalDevice() {
     features.features.depthClamp = depth_clamp_supported_ ? VK_TRUE : VK_FALSE;
     features.features.textureCompressionBC =
         texture_compression_bc_supported_ ? VK_TRUE : VK_FALSE;
+    // ASTC LDR y ETC2 (las de movil): solo si la GPU las tiene (las texturas
+    // exportadas a Android en ASTC/ETC2, MobileTextures.h).
+    features.features.textureCompressionASTC_LDR = texture_compression_astc_supported_ ? VK_TRUE : VK_FALSE;
+    features.features.textureCompressionETC2 = texture_compression_etc2_supported_ ? VK_TRUE : VK_FALSE;
     features.features.multiDrawIndirect = indirect_count_supported_ ? VK_TRUE : VK_FALSE;
     // Lineas (modo Wireframe de la vista Escena del editor).
     fill_mode_non_solid_supported_ = physical_device_.getFeatures().fillModeNonSolid == VK_TRUE;
@@ -767,8 +771,11 @@ void VulkanDevice::createCompatLogicalDevice(const char* reason) {
     enabled.shaderStorageBufferArrayDynamicIndexing = base.shaderStorageBufferArrayDynamicIndexing;
     enabled.drawIndirectFirstInstance = base.drawIndirectFirstInstance;
     draw_indirect_first_instance_ = base.drawIndirectFirstInstance == VK_TRUE;
-    // (ETC2 y ASTC, las de movil, se piden cuando el motor las use.)
+    // ETC2 y ASTC (las de movil): las texturas exportadas a Android
+    // (MobileTextures.h) se suben tal cual si la GPU las tiene.
     enabled.textureCompressionBC = base.textureCompressionBC;
+    enabled.textureCompressionASTC_LDR = base.textureCompressionASTC_LDR;
+    enabled.textureCompressionETC2 = base.textureCompressionETC2;
     depth_clamp_supported_ = base.depthClamp == VK_TRUE;
     texture_compression_bc_supported_ = base.textureCompressionBC == VK_TRUE;
     fill_mode_non_solid_supported_ = base.fillModeNonSolid == VK_TRUE;

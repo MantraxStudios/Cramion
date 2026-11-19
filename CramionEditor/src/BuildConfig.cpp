@@ -56,6 +56,7 @@ BuildConfigs loadBuildConfigs(const std::filesystem::path& file) {
                 b.dedicated_server = c.value("dedicated_server", b.dedicated_server);
                 b.allow_mods = c.value("allow_mods", b.allow_mods);
                 b.graphics_lock = c.value("graphics_lock", b.graphics_lock);
+                b.crash_report_url = c.value("crash_report_url", b.crash_report_url);
                 {
                     const std::string platform = c.value("platform", std::string("windows"));
                     b.platform = platform == "android" ? BuildPlatform::Android
@@ -91,6 +92,7 @@ BuildConfigs loadBuildConfigs(const std::filesystem::path& file) {
                     s.quality = std::clamp(a->value("quality", s.quality), 0, 3);
                     s.target_fps = std::clamp(a->value("target_fps", s.target_fps), 15, 240);
                     s.resolution = std::clamp(a->value("resolution", s.resolution), -1, 4320);
+                    s.texture_format = std::clamp(a->value("texture_format", s.texture_format), 0, 2);
                 }
                 out.configs.push_back(std::move(b));
             }
@@ -122,6 +124,7 @@ bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& con
                         {"dedicated_server", b.dedicated_server},
                         {"allow_mods", b.allow_mods},
                         {"graphics_lock", b.graphics_lock},
+                        {"crash_report_url", b.crash_report_url},
                         {"platform", b.platform == BuildPlatform::Android ? "android"
                                      : b.platform == BuildPlatform::Linux ? "linux"
                                                                           : "windows"}});
@@ -149,7 +152,8 @@ bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& con
                                   {"key_alias", s.key_alias},
                                   {"quality", s.quality},
                                   {"target_fps", s.target_fps},
-                                  {"resolution", s.resolution}};
+                                  {"resolution", s.resolution},
+                                  {"texture_format", s.texture_format}};
     }
     const json root = {{"format", "CramionBuildConfigs"}, {"version", 1}, {"active", configs.active}, {"configs", list}};
     std::error_code e;
@@ -175,6 +179,11 @@ std::string buildConfigIni(const BuildConfig& config, const std::string& game_na
     // Android tiene su propio perfil (android_quality); el bloqueo es del escritorio.
     if (config.graphics_lock && config.platform != BuildPlatform::Android) ini << "graphics_lock=1\n";
     if (config.vr && config.platform == BuildPlatform::Windows) ini << "vr=1\n";
+    // Sin saltos de linea ni espacios (una linea de game.ini).
+    if (!config.crash_report_url.empty() &&
+        config.crash_report_url.find_first_of(" \t\r\n") == std::string::npos) {
+        ini << "crash_report_url=" << config.crash_report_url << "\n";
+    }
     if (config.steam.enabled && config.platform != BuildPlatform::Android) {
         ini << "steam_app_id=" << config.steam.app_id << "\n";
         if (config.steam.restart_if_necessary) ini << "steam_restart=1\n";

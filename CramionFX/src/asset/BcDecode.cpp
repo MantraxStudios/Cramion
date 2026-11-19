@@ -12,6 +12,7 @@
 //   BC7  8 modos con particiones de 1-3 subconjuntos, p-bits y rotacion.
 
 #include "CramionFX/asset/Dds.h"
+#include "CramionFX/asset/MobileTextures.h"
 
 #include <algorithm>
 #include <array>
@@ -24,6 +25,13 @@ namespace {
 
 using Texel = std::array<std::uint8_t, 4>;
 using Block = std::array<Texel, 16>;
+
+// ETC2 RGBA8 (las texturas de movil): MobileTextures.cpp, texeles por filas.
+void decodeEtc2Block(const std::uint8_t* block, Block& out) {
+    std::uint8_t rgba[64];
+    decodeEtc2Rgba8Block(block, rgba);
+    for (unsigned i = 0; i < 16; ++i) std::memcpy(out[i].data(), rgba + i * 4, 4);
+}
 
 // --- BC1-BC5 ------------------------------------------------------------------
 
@@ -323,6 +331,8 @@ void decodeBlock(TextureFormat format, const std::uint8_t* block, Block& out) {
             decodeChannel(block + 8, out, 1);
             break;
         case TextureFormat::Bc7: decodeBc7(block, out); break;
+        case TextureFormat::Etc2Rgba8: decodeEtc2Block(block, out); break;
+        case TextureFormat::Astc4x4:  // (no se decodifica en la CPU: decodeBlockCompressed devuelve vacio)
         case TextureFormat::Rgba8: break;
     }
 }
@@ -331,7 +341,7 @@ void decodeBlock(TextureFormat format, const std::uint8_t* block, Block& out) {
 
 std::vector<std::uint8_t> decodeBlockCompressed(const TextureData& texture) {
     const std::uint32_t block_bytes = blockBytes(texture.format);
-    if (block_bytes == 0 || texture.width == 0 || texture.height == 0) return {};
+    if (block_bytes == 0 || texture.format == TextureFormat::Astc4x4 || texture.width == 0 || texture.height == 0) return {};
     const std::uint32_t blocks_x = std::max(1u, (texture.width + 3) / 4);
     const std::uint32_t blocks_y = std::max(1u, (texture.height + 3) / 4);
     if (texture.pixels.size() < static_cast<std::size_t>(blocks_x) * blocks_y * block_bytes) return {};

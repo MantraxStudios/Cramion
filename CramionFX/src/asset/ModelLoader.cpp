@@ -1,5 +1,6 @@
 #include "CramionFX/asset/Model.h"
 #include "CramionFX/asset/Dds.h"
+#include "CramionFX/asset/MobileTextures.h"
 #include "CramionFX/asset/ModelCache.h"
 #include "CramionFX/asset/ObjLoader.h"
 #include "CramionFX/asset/TextureCompression.h"
@@ -964,6 +965,17 @@ std::filesystem::path sourceFilePath(const std::string& source) {
 // blanco).
 bool decodeTexture(TextureData& texture, std::mutex& log_mutex) {
     bool ok = true;
+    // Movil con texturas exportadas en ASTC/ETC2 (MobileTextures.h): si esta
+    // la suya, tal cual (sin decodificar nada en la CPU).
+    if (mobileTextureCacheActive()) {
+        TextureData mobile;
+        if (loadMobileTexture(texture, mobile)) {
+            mobile.name = texture.name;
+            texture = std::move(mobile);
+            limitTextureSize(texture, g_max_texture_size.load());
+            return true;
+        }
+    }
     // Con su archivo: la clave de la cache sale de su ruta, tamano y fecha,
     // y si ya esta comprimida ni se lee la imagen.
     std::uint64_t file_key = 0;
@@ -1532,6 +1544,12 @@ bool resolveLazyTexture(const TextureData& lazy, TextureData& out) {
     out.name = lazy.name;
     out.height_map = lazy.height_map;
     out.usage = lazy.usage;
+    // Movil: la version ASTC/ETC2 del paquete (MobileTextures.h), si esta.
+    if (mobileTextureCacheActive() && loadMobileTexture(lazy, out)) {
+        out.name = lazy.name;
+        limitTextureSize(out, g_max_texture_size.load());
+        return true;
+    }
     TextureResolver resolver;
     {
         const std::lock_guard<std::mutex> lock(g_resolver_mutex);

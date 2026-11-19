@@ -280,6 +280,14 @@ void EditorApp::drawBuildConfigsWindow() {
                               "la ventana hace de espejo. Sin casco se juega normal. Ver Manual > Realidad virtual.");
     }
     drawPlatformBuildSettings(c, changed);  // Steam y Linux (EditorPlatform.cpp)
+    if (ImGui::CollapsingHeader("Informes de cierre")) {
+        ImGui::TextWrapped("Si el juego se cierra por un error, guarda un informe (motivo, pila, ultimas lineas del "
+                           "registro). Con una direccion, al volver a abrirlo lo envia a tu servidor en segundo plano.");
+        changed |= ImGui::InputTextWithHint("Direccion (https)", "vacia = no se envia nada", &c.crash_report_url);
+        ImGui::SetItemTooltip("POST con JSON {format, app, version, platform, report_name, report} y la cabecera\n"
+                              "X-Cramion-Crash: 1. Solo https:// (http:// solo a este PC, para probar).\n"
+                              "Avisa a tus jugadores (politica de privacidad): el informe lleva el final del registro.");
+    }
 
     ImGui::Separator();
     const bool is_active = build_config_selected_ == build_configs_.active;

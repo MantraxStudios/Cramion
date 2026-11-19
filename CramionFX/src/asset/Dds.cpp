@@ -100,7 +100,9 @@ std::uint32_t blockBytes(TextureFormat format) {
         case TextureFormat::Bc2:
         case TextureFormat::Bc3:
         case TextureFormat::Bc5:
-        case TextureFormat::Bc7: return 16;
+        case TextureFormat::Bc7:
+        case TextureFormat::Astc4x4:
+        case TextureFormat::Etc2Rgba8: return 16;
         case TextureFormat::Rgba8: return 0;
     }
     return 0;

@@ -93,7 +93,10 @@ AssetManager::AssetManager(AssetDatabase& database) : database_(database) {}
 AssetManager::~AssetManager() = default;
 
 std::shared_ptr<const ModelAsset> AssetManager::requestModel(const Uuid& uuid) {
-    if (const auto it = models_.find(uuid); it != models_.end()) return it->second;
+    if (const auto it = models_.find(uuid); it != models_.end()) {
+        touch(uuid);
+        return it->second;
+    }
     if (primitives::isBuiltin(uuid)) return loadModel(uuid);  // se generan al momento
     if (failed_loads_.contains(uuid)) return nullptr;
     if (!loader_) loader_ = std::make_unique<Loader>();
@@ -140,6 +143,7 @@ void AssetManager::takeFinished(const Uuid* only) {
         if (d.generation != generation) continue;  // de antes de un clear()/unload()
         if (d.asset) {
             models_.emplace(d.uuid, std::move(d.asset));
+            touch(d.uuid);
         } else {
             failed_loads_.insert(d.uuid);
         }
@@ -433,6 +437,7 @@ std::shared_ptr<ModelAsset> AssetManager::readModelGeometry(const Uuid& uuid, co
 
 std::shared_ptr<const ModelAsset> AssetManager::loadModel(const Uuid& uuid) {
     if (const auto it = models_.find(uuid); it != models_.end()) {
+        touch(uuid);
         return it->second;
     }
     // Se esta leyendo en segundo plano: se espera a ese hilo (no dos veces).
@@ -449,7 +454,10 @@ std::shared_ptr<const ModelAsset> AssetManager::loadModel(const Uuid& uuid) {
         }
         if (waited) {
             takeFinished(&uuid);
-            if (const auto it = models_.find(uuid); it != models_.end()) return it->second;
+            if (const auto it = models_.find(uuid); it != models_.end()) {
+                touch(uuid);
+                return it->second;
+            }
             if (failed_loads_.contains(uuid)) return nullptr;
         }
     }
@@ -457,6 +465,7 @@ std::shared_ptr<const ModelAsset> AssetManager::loadModel(const Uuid& uuid) {
     if (primitives::isBuiltin(uuid)) {
         std::shared_ptr<ModelAsset> asset = readModel(uuid, {}, {}, true, lightmap_uvs_.get());
         models_.emplace(uuid, asset);
+        touch(uuid);
         return asset;
     }
 
@@ -469,6 +478,7 @@ std::shared_ptr<const ModelAsset> AssetManager::loadModel(const Uuid& uuid) {
     std::shared_ptr<ModelAsset> asset = readModel(uuid, info->path, info->name, true, lightmap_uvs_.get());
     if (!asset) return nullptr;
     models_.emplace(uuid, asset);
+    touch(uuid);
     return asset;
 }
 
@@ -524,6 +534,7 @@ std::filesystem::path AssetManager::environmentFile(const Uuid& uuid) {
 
 void AssetManager::unload(const Uuid& uuid) {
     models_.erase(uuid);
+    last_use_.erase(uuid);
     failed_loads_.erase(uuid);
     if (loader_) {
         // Lo que se este leyendo de antes ya no vale (p. ej. se reimporto): se
@@ -537,6 +548,7 @@ void AssetManager::unload(const Uuid& uuid) {
 
 void AssetManager::clear() {
     models_.clear();
+    last_use_.clear();
     failed_loads_.clear();
     if (loader_) {
         std::lock_guard lock(loader_->mutex);
@@ -545,6 +557,111 @@ void AssetManager::clear() {
         loader_->in_flight.clear();
         loader_->done.clear();
     }
+}
+
+// --- RAM ---------------------------------------------------------------------
+
+std::uint64_t AssetManager::modelBytes(const ModelAsset& model) {
+    std::uint64_t bytes = sizeof(ModelAsset) + model.nodes.capacity() * sizeof(ModelNode);
+    for (const std::shared_ptr<asset::ModelData>& part : model.parts) {
+        if (!part) continue;
+        const asset::ModelData& d = *part;
+        bytes += sizeof(asset::ModelData);
+        bytes += d.vertices.capacity() * sizeof(asset::SkinnedVertex);
+        bytes += d.indices.capacity() * sizeof(std::uint32_t);
+        bytes += d.vertex_colors.capacity() * sizeof(std::uint32_t);
+        bytes += d.lod_indices.capacity() * sizeof(std::uint32_t);
+        bytes += d.lightmap_uvs.capacity() * sizeof(core::Vec2);
+        bytes += d.submeshes.capacity() * sizeof(asset::SubMesh);
+        bytes += d.materials.capacity() * sizeof(asset::MaterialData);
+        bytes += d.bones.capacity() * sizeof(asset::Bone);
+        bytes += d.nodes.capacity() * sizeof(asset::Node);
+        for (const asset::TextureData& t : d.textures) {
+            bytes += sizeof(asset::TextureData) + t.pixels.capacity() + t.encoded.capacity();
+        }
+        for (const asset::AnimationClip& clip : d.animations) {
+            for (const asset::AnimationChannel& c : clip.channels) {
+                bytes += sizeof(asset::AnimationChannel) + c.positions.capacity() * sizeof(asset::VectorKey) +
+                         c.rotations.capacity() * sizeof(asset::QuatKey) + c.scales.capacity() * sizeof(asset::VectorKey);
+            }
+        }
+    }
+    return bytes;
+}
+
+AssetRamStats AssetManager::ramStats() const {
+    AssetRamStats stats;
+    stats.models = models_.size();
+    stats.budget = ram_budget_;
+    stats.evicted = evicted_;
+    stats.evicted_bytes = evicted_bytes_;
+    stats.trims = trims_;
+    for (const auto& [uuid, asset] : models_) {
+        if (!asset) continue;
+        const std::uint64_t bytes = modelBytes(*asset);
+        stats.bytes += bytes;
+        // Solo el AssetManager lo tiene (las primitivas se rehacen al momento).
+        if (asset.use_count() == 1) {
+            ++stats.evictable;
+            stats.evictable_bytes += bytes;
+        }
+    }
+    return stats;
+}
+
+namespace {
+std::uint64_t nowMs() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+}  // namespace
+
+void AssetManager::touch(const Uuid& uuid) { last_use_[uuid] = nowMs(); }
+
+std::uint64_t AssetManager::release(std::uint64_t target, std::uint64_t min_idle_ms) {
+    // Candidatos: nadie mas los usa y no se han usado en `min_idle_ms`.
+    const std::uint64_t now = nowMs();
+    struct Candidate {
+        Uuid uuid{};
+        std::uint64_t last = 0;
+        std::uint64_t bytes = 0;
+    };
+    std::vector<Candidate> candidates;
+    std::uint64_t total = 0;
+    for (const auto& [uuid, asset] : models_) {
+        if (!asset) continue;
+        const std::uint64_t bytes = modelBytes(*asset);
+        total += bytes;
+        if (asset.use_count() != 1) continue;
+        const auto it = last_use_.find(uuid);
+        const std::uint64_t last = it != last_use_.end() ? it->second : 0;
+        if (now - std::min(now, last) < min_idle_ms) continue;
+        candidates.push_back(Candidate{uuid, last, bytes});
+    }
+    // El usado hace mas tiempo primero (LRU).
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) { return a.last < b.last; });
+    std::uint64_t freed = 0;
+    for (const Candidate& c : candidates) {
+        if (total - freed <= target) break;
+        models_.erase(c.uuid);
+        last_use_.erase(c.uuid);
+        freed += c.bytes;
+        ++evicted_;
+        evicted_bytes_ += c.bytes;
+    }
+    return freed;
+}
+
+std::uint64_t AssetManager::enforceRamBudget(std::uint64_t min_idle_ms) {
+    if (ram_budget_ == 0) return 0;
+    return release(ram_budget_, min_idle_ms);
+}
+
+std::uint64_t AssetManager::trim(TrimLevel level, std::uint64_t idle_ms) {
+    ++trims_;
+    // Moderado: lo que no se usa desde hace un rato (hasta quedar en cero si
+    // hace falta); bajo y critico: todo lo que nadie usa.
+    return release(0, level == TrimLevel::Moderate ? idle_ms : 0);
 }
 
 }  // namespace cramion::assets

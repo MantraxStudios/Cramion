@@ -69,6 +69,11 @@ struct AndroidBuildSettings {
     // 0 = segun la calidad (720 Baja, 900 Media, 1080 Alta, nativa en Ultra),
     // -1 = la nativa de la pantalla.
     int resolution = 0;
+    // Texturas de movil (MobileTextures.h): 0 = como antes (el movil
+    // descomprime a RGBA8), 1 = ASTC 4x4, 2 = ASTC 4x4 + ETC2 de respaldo
+    // (para las GPU sin ASTC; el paquete pesa mas). Se convierten al exportar
+    // (con cache en Library/Cache/MobileTextures).
+    int texture_format = 0;
 };
 
 struct BuildConfig {
@@ -94,6 +99,10 @@ struct BuildConfig {
     // presupuesto siempre activo, objetivo hasta los Hz de la pantalla,
     // sombras y texturas como tope de la gama...). graphics_lock=1 en game.ini.
     bool graphics_lock = false;
+    // Informes de cierre: direccion https del servidor del proyecto a la que
+    // el juego envia el informe del cierre anterior al arrancar
+    // (CrashUpload.h). Vacia = no se envia nada (crash_report_url en game.ini).
+    std::string crash_report_url;
     BuildPlatform platform = BuildPlatform::Windows;
     AndroidBuildSettings android;
     SteamBuildSettings steam;

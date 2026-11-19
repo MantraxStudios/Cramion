@@ -31,6 +31,7 @@
 #include <CramionCore/asset/BakedLightingFile.h>
 #include <CramionCore/lighting/ProbeBaker.h>
 #include <CramionFX/asset/TextureCompression.h>
+#include <CramionFX/asset/MobileTextures.h>
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
@@ -467,7 +468,11 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
     // movil lee BC). Las recetas de los materiales se apuntan aqui (hilo
     // principal); comprimir lo que falte, en el hilo de la exportacion.
     job->compress_textures = !android && sync_ && asset::textureCacheWritable();
-    if (job->compress_textures) job->material_textures = sync_->materialTextureSources();
+    // Android con texturas de movil (opcion de la configuracion, apagada por
+    // defecto): ASTC/ETC2 a partir de las BC de la cache del editor.
+    job->mobile_texture_format = android && sync_ && asset::textureCacheWritable() ? config.android.texture_format : 0;
+    job->mobile_cache = project_.libraryFolder() / "Cache" / "MobileTextures";
+    if (job->compress_textures || job->mobile_texture_format > 0) job->material_textures = sync_->materialTextureSources();
 
     // --- El hilo que copia ---
     ExportJob* j = job.get();
@@ -730,6 +735,61 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 }
             }
             std::cout << "[Exportar] Texturas comprimidas: " << added.size() << " (" << (bytes >> 20) << " MB)\n";
+        }
+        // Android: las texturas en ASTC 4x4 (y ETC2 de respaldo) en TextureCache/
+        // con la clave que buscara el juego (MobileTextures.h). Lo convertido
+        // queda en Library/Cache/MobileTextures para la proxima vez.
+        if (j->android && j->mobile_texture_format > 0 && !j->cancel && j->error.empty()) {
+            std::vector<asset::MobileFormat> formats;
+            if (asset::astcEncoderAvailable()) formats.push_back(asset::MobileFormat::Astc4x4);
+            if (j->mobile_texture_format >= 2 || formats.empty()) formats.push_back(asset::MobileFormat::Etc2Rgba8);
+            std::unordered_set<std::string> added;
+            std::uint64_t bytes = 0;
+            std::size_t converted = 0;
+            const auto add = [&](const asset::TextureData& texture) {
+                for (const asset::MobileFormat format : formats) {
+                    if (j->cancel) return;
+                    std::filesystem::path file;
+                    const std::uint64_t key =
+                        asset::prepareMobileExportTexture(texture, j->assets_root, format, j->mobile_cache, file);
+                    if (key == 0) continue;
+                    char name[48];
+                    std::snprintf(name, sizeof(name), "TextureCache/%016llx%s", static_cast<unsigned long long>(key),
+                                  asset::mobileTextureExtension(format));
+                    if (!added.insert(name).second) continue;
+                    std::error_code e;
+                    const auto size = std::filesystem::file_size(file, e);
+                    if (e) continue;
+                    j->pack.push_back(project::PackInput{file, name});
+                    j->total += size;
+                    bytes += size;
+                    ++converted;
+                }
+            };
+            for (std::size_t i = 0; i < j->material_textures.size() && !j->cancel; ++i) {
+                {
+                    std::lock_guard lock(j->mutex);
+                    j->current = "Texturas de movil (" + std::to_string(i + 1) + "/" +
+                                 std::to_string(j->material_textures.size()) + "): " + j->material_textures[i].name;
+                }
+                add(j->material_textures[i]);
+            }
+            const std::size_t count = j->pack.size();
+            for (std::size_t i = 0; i < count && !j->cancel; ++i) {
+                std::string extension = dialogs::utf8(j->pack[i].source.extension());
+                std::transform(extension.begin(), extension.end(), extension.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (extension != ".crdata") continue;
+                {
+                    std::lock_guard lock(j->mutex);
+                    j->current = "Texturas de movil: " + dialogs::utf8(j->pack[i].source.stem());
+                }
+                for (const asset::TextureData& texture : assets::AssetManager::readModelTextures(j->pack[i].source)) {
+                    add(texture);
+                }
+            }
+            std::cout << "[Exportar] Texturas de movil (" << (formats.front() == asset::MobileFormat::Astc4x4 ? "ASTC 4x4" : "ETC2")
+                      << (formats.size() > 1 ? " + ETC2" : "") << "): " << converted << " (" << (bytes >> 20) << " MB)\n";
         }
         // Android no tiene compilador de shaders: cada .crshader va al paquete
         // tambien compilado (<archivo>.vert.spv / .frag.spv al lado).

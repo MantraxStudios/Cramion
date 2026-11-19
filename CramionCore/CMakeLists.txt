@@ -628,6 +628,15 @@ set_target_properties(cramion_stereo_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY "
 add_executable(CramionTextureTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TextureCompressionTests.cpp")
 target_link_libraries(CramionTextureTests PRIVATE Cramion::FX)
 
+# Pruebas de Android (sin GPU ni red): texturas de movil ASTC/ETC2 (solo
+# CramionFX) y RAM de los modelos + informes de cierre (CramionCore).
+add_executable(CramionMobileTextureTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MobileTextureTests.cpp")
+target_link_libraries(CramionMobileTextureTests PRIVATE Cramion::FX)
+target_compile_options(CramionMobileTextureTests PRIVATE -Wall -Wextra)
+add_executable(CramionRamCrashTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/RamCrashTests.cpp")
+target_link_libraries(CramionRamCrashTests PRIVATE Cramion::Core)
+target_compile_options(CramionRamCrashTests PRIVATE -Wall -Wextra)
+
 # Herramienta: banco de pruebas del render (ventana invisible): tiempos de GPU
 # por pasada y ruido temporal con la camara quieta (el "hormigueo" del
 # trazado de rayos). En su propia carpeta (bench/) con sus shaders: compilarla

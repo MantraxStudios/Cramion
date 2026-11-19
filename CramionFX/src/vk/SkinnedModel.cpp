@@ -397,6 +397,9 @@ vk::Format blockFormat(asset::TextureFormat format) {
         case asset::TextureFormat::Bc4: return vk::Format::eBc4UnormBlock;
         case asset::TextureFormat::Bc5: return vk::Format::eBc5UnormBlock;
         case asset::TextureFormat::Bc7: return vk::Format::eBc7UnormBlock;
+        // Las de movil (MobileTextures.h).
+        case asset::TextureFormat::Astc4x4: return vk::Format::eAstc4x4UnormBlock;
+        case asset::TextureFormat::Etc2Rgba8: return vk::Format::eEtc2R8G8B8A8UnormBlock;
         case asset::TextureFormat::Rgba8: break;
     }
     return vk::Format::eR8G8B8A8Unorm;
@@ -582,10 +585,14 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
             const asset::TextureData& texture = lazy ? decoded : stored;
             if (texture.format == asset::TextureFormat::Rgba8) {
                 createRgbaLod(out, device, texture.width, texture.height, texture.pixels.data(), lod, *batch);
-            } else if (!device.textureCompressionBcSupported()) {
+            } else if (texture.format == asset::TextureFormat::Astc4x4 ? !device.textureCompressionAstcSupported()
+                       : texture.format == asset::TextureFormat::Etc2Rgba8 ? !device.textureCompressionEtc2Supported()
+                                                                            : !device.textureCompressionBcSupported()) {
                 // GPU sin BC (casi todas las de movil): se descomprime aqui (el
                 // nivel 0; los mips los hace la GPU). Antes el modelo entero
                 // fallaba y el juego no arrancaba en esos moviles.
+                // (ASTC no se decodifica en la CPU: no llega aqui, la cache de
+                // movil solo se activa si la GPU lo lee.)
                 const std::vector<std::uint8_t> rgba = asset::decodeBlockCompressed(texture);
                 if (rgba.empty()) throw std::runtime_error("Textura comprimida con datos incompletos: " + texture.name);
                 createRgbaLod(out, device, texture.width, texture.height, rgba.data(), lod, *batch);

@@ -219,6 +219,34 @@ set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/vendor/ufbx/ufbx.c"
     PROPERTIES COMPILE_OPTIONS "-O2;-w")
 target_include_directories(CramionFX SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ufbx")
 
+# Compresor ASTC (astc-encoder de Arm, Apache 2.0, version 5.3.0 fijada con su
+# SHA-256): las texturas de Android se pasan a ASTC 4x4 al exportar
+# (MobileTextures.cpp). Solo el editor de PC: el movil no comprime nada. Solo
+# la libreria (sin su linea de ordenes ni su CMake: SOURCE_SUBDIR sin
+# CMakeLists), SSE2 (cualquier x86-64), sin avisos y siempre optimizado.
+if(NOT ANDROID)
+    FetchContent_Declare(astcenc
+        URL https://github.com/ARM-software/astc-encoder/archive/refs/tags/5.3.0.tar.gz
+        URL_HASH SHA256=6bd248f460b90576f90a5499c0f6b8d785b3af3837bcab82607d9a3b5bba77e2
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SOURCE_SUBDIR _sin_cmake
+    )
+    FetchContent_MakeAvailable(astcenc)
+    file(GLOB _cramion_astcenc_sources "${astcenc_SOURCE_DIR}/Source/astcenc_*.cpp")
+    add_library(cramion_astcenc STATIC ${_cramion_astcenc_sources})
+    target_include_directories(cramion_astcenc SYSTEM PUBLIC "${astcenc_SOURCE_DIR}/Source")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+        target_compile_definitions(cramion_astcenc PUBLIC ASTCENC_NEON=1 ASTCENC_SVE=0 ASTCENC_SSE=0 ASTCENC_AVX=0
+                                                          ASTCENC_POPCNT=0 ASTCENC_F16C=0)
+    else()
+        target_compile_definitions(cramion_astcenc PUBLIC ASTCENC_NEON=0 ASTCENC_SVE=0 ASTCENC_SSE=20 ASTCENC_AVX=0
+                                                          ASTCENC_POPCNT=0 ASTCENC_F16C=0)
+    endif()
+    target_compile_options(cramion_astcenc PRIVATE -O2 -w)
+    target_link_libraries(CramionFX PRIVATE cramion_astcenc)
+    target_compile_definitions(CramionFX PRIVATE CRAMION_HAS_ASTC_ENCODER=1)
+endif()
+
 # Vulkan Memory Allocator (AMD, MIT, un solo archivo): reparte grandes bloques
 # de memoria de la GPU entre los buffers y las texturas (antes, una asignacion
 # de Vulkan por recurso). La implementacion se compila en
