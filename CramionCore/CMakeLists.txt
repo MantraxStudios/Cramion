@@ -558,6 +558,12 @@ add_executable(CramionMeshTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MeshTests.cpp
 target_link_libraries(CramionMeshTests PRIVATE Cramion::Core)
 target_compile_options(CramionMeshTests PRIVATE -Wall -Wextra)
 
+# --- Pruebas del cargador de FBX con ufbx y de las formas de mezcla (consola).
+# Con carpetas como argumentos, paridad assimp/ufbx de sus .fbx ---
+add_executable(CramionFbxTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/FbxTests.cpp")
+target_link_libraries(CramionFbxTests PRIVATE Cramion::Core)
+target_compile_options(CramionFbxTests PRIVATE -Wall -Wextra)
+
 # --- Pruebas del modelado poligonal (mallas editables, consola) ---
 add_executable(CramionModelingTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ModelingTests.cpp")
 target_link_libraries(CramionModelingTests PRIVATE Cramion::Core)

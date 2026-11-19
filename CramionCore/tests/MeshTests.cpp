@@ -26,6 +26,8 @@
 
 #include <CramionFX/asset/ImageFile.h>
 #include <CramionFX/asset/Model.h>
+#include <CramionFX/asset/ModelCache.h>
+#include <sstream>
 #include <CramionFX/vk/FrameBudget.h>
 #include <CramionFX/vk/GraphicsSettings.h>
 
@@ -445,6 +447,133 @@ void testImportProgress() {
     check(progress.fraction() == 1.0f, "termina al 100 %");
     check(progress.stage() == "Terminado", "ultima etapa: Terminado");
     std::filesystem::remove_all(root, ec);
+}
+
+// Formas de mezcla (morph targets): bloque BSHP versionado al final de la
+// pieza (cache y .crdata), retrocompatible en los dos sentidos.
+void testBlendShapeStorage() {
+    std::printf("\n[Formas de mezcla: guardado]\n");
+    asset::ModelData model{};
+    model.name = "Cara";
+    std::vector<asset::SkinnedVertex>& vertices = model.vertices.mut();
+    for (int i = 0; i < 4; ++i) {
+        asset::SkinnedVertex v{};
+        v.position = Vec3{static_cast<float>(i), 0.0f, 0.0f};
+        v.normal = Vec3{0.0f, 1.0f, 0.0f};
+        v.weights[0] = 1.0f;
+        vertices.push_back(v);
+    }
+    model.indices = std::vector<std::uint32_t>{0, 1, 2, 0, 2, 3};
+    asset::SubMesh sub{};
+    sub.index_count = 6;
+    model.submeshes.push_back(sub);
+    model.vertex_colors = std::vector<std::uint32_t>{1u, 2u, 3u, 4u};
+    model.materials.push_back(asset::MaterialData{});
+    asset::BlendShape smile{};
+    smile.name = "Smile";
+    smile.default_weight = 0.25f;
+    smile.vertices = {1, 3};
+    smile.position_deltas = {Vec3{0.0f, 1.0f, 0.0f}, Vec3{0.0f, 2.0f, 0.0f}};
+    smile.normal_deltas = {Vec3{1.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, 0.0f}};
+    model.blend_shapes.push_back(smile);
+    asset::AnimationClip clip{};
+    clip.name = "Hablar";
+    clip.duration = 2.0f;
+    asset::BlendShapeTrack track{};
+    track.shape = 0;
+    track.keys = {{0.0f, 0.0f}, {2.0f, 1.0f}};
+    clip.blend_tracks.push_back(track);
+    model.animations.push_back(clip);
+
+    std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+    asset::writeModelPayload(stream, model);
+    const std::string bytes = stream.str();
+    std::stringstream in(bytes, std::ios::in | std::ios::binary);
+    asset::ModelData read{};
+    check(asset::readModelPayload(in, read, false, static_cast<std::streampos>(bytes.size())), "se lee");
+    check(read.blend_shapes.size() == 1 && read.blend_shapes[0].name == "Smile", "la forma vuelve");
+    if (!read.blend_shapes.empty()) {
+        const asset::BlendShape& s = read.blend_shapes[0];
+        check(s.vertices == smile.vertices && s.position_deltas.size() == 2 && s.normal_deltas.size() == 2 &&
+                  std::abs(s.position_deltas[1].y - 2.0f) < 1e-6f && std::abs(s.default_weight - 0.25f) < 1e-6f,
+              "con sus vertices, deltas y peso");
+    }
+    check(read.vertex_colors.size() == 4, "el color de vertice sigue (va antes)");
+    check(read.animations.size() == 1 && read.animations[0].blend_tracks.size() == 1 &&
+              read.animations[0].blend_tracks[0].keys.size() == 2,
+          "la pista de la toma vuelve");
+
+    // Un lector viejo para en la primera etiqueta que no conoce: aqui, se
+    // corta la pieza justo antes de BSHP (lo que veria un .crdata antiguo).
+    asset::ModelData no_shapes = model;
+    no_shapes.blend_shapes.clear();
+    std::stringstream old_stream(std::ios::in | std::ios::out | std::ios::binary);
+    asset::writeModelPayload(old_stream, no_shapes);
+    const std::string old_bytes = old_stream.str();
+    check(bytes.compare(0, old_bytes.size(), old_bytes) == 0, "sin formas, los mismos bytes que antes");
+    std::stringstream old_in(old_bytes, std::ios::in | std::ios::binary);
+    asset::ModelData old_read{};
+    check(asset::readModelPayload(old_in, old_read, false, static_cast<std::streampos>(old_bytes.size())) &&
+              old_read.blend_shapes.empty() && old_read.vertex_colors.size() == 4,
+          "un .crdata antiguo (sin el bloque) se lee igual");
+
+    // Version futura del bloque y otro bloque detras: se saltan.
+    std::string future = bytes;
+    const std::size_t tag = old_bytes.size();
+    future[tag + 4] = 9;  // version del bloque (u32 tras la etiqueta)
+    future += std::string("ZZZZ", 4) + std::string(8, '\0');
+    std::stringstream future_in(future, std::ios::in | std::ios::binary);
+    asset::ModelData future_read{};
+    check(asset::readModelPayload(future_in, future_read, false, static_cast<std::streampos>(future.size())) &&
+              future_read.blend_shapes.empty() && future_read.vertex_colors.size() == 4,
+          "una version futura del bloque se salta");
+
+    // Bloque danado (indice fuera del modelo): el modelo se lee sin formas.
+    asset::ModelData bad = model;
+    bad.blend_shapes[0].vertices[1] = 99;
+    std::stringstream bad_stream(std::ios::in | std::ios::out | std::ios::binary);
+    asset::writeModelPayload(bad_stream, bad);
+    const std::string bad_bytes = bad_stream.str();
+    std::stringstream bad_in(bad_bytes, std::ios::in | std::ios::binary);
+    asset::ModelData bad_read{};
+    check(asset::readModelPayload(bad_in, bad_read, false, static_cast<std::streampos>(bad_bytes.size())) &&
+              bad_read.blend_shapes.empty() && bad_read.indices.size() == 6,
+          "bloque danado: el modelo vale sin formas");
+
+    // Tamano del bloque imposible (u64 tras etiqueta y version) y cuentas
+    // gigantes dentro: el modelo se lee sin formas, sin reservar gigas.
+    std::string huge = bytes;
+    for (int i = 0; i < 8; ++i) huge[tag + 8 + static_cast<std::size_t>(i)] = static_cast<char>(0x7F);
+    std::stringstream huge_in(huge, std::ios::in | std::ios::binary);
+    asset::ModelData huge_read{};
+    check(asset::readModelPayload(huge_in, huge_read, false, static_cast<std::streampos>(huge.size())) &&
+              huge_read.blend_shapes.empty() && huge_read.vertex_colors.size() == 4 && huge_read.indices.size() == 6,
+          "tamano de bloque imposible: el modelo vale sin formas");
+    std::string giant = bytes;
+    // Cuenta de vertices de la primera forma: tras etiqueta (4), version (4),
+    // tamano (8), numero de formas (8), nombre (8 + 5) y peso (4).
+    const std::size_t vertex_count = tag + 4 + 4 + 8 + 8 + 8 + 5 + 4;
+    for (int i = 0; i < 8; ++i) giant[vertex_count + static_cast<std::size_t>(i)] = static_cast<char>(0x40);
+    std::stringstream giant_in(giant, std::ios::in | std::ios::binary);
+    asset::ModelData giant_read{};
+    check(asset::readModelPayload(giant_in, giant_read, false, static_cast<std::streampos>(giant.size())) &&
+              giant_read.blend_shapes.empty() && giant_read.animations.size() == 1 &&
+              giant_read.animations[0].blend_tracks.empty(),
+          "cuenta gigante dentro del bloque: sin formas ni pistas");
+
+    // Aplicarlas en la CPU y escalar.
+    const std::vector<asset::SkinnedVertex> moved = asset::applyBlendShapes(model, {0.5f});
+    check(std::abs(moved[1].position.y - 0.5f) < 1e-6f && std::abs(moved[3].position.y - 1.0f) < 1e-6f &&
+              std::abs(moved[0].position.y) < 1e-6f,
+          "applyBlendShapes: base + peso * delta");
+    check(std::abs(core::length(moved[1].normal) - 1.0f) < 1e-5f && moved[1].normal.x > 0.1f,
+          "las normales se mueven y se renormalizan");
+    check(std::abs(asset::sampleBlendShapeTrack(track, 1.0f) - 0.5f) < 1e-6f &&
+              std::abs(asset::sampleBlendShapeTrack(track, 5.0f) - 1.0f) < 1e-6f,
+          "sampleBlendShapeTrack interpola y se queda en el extremo");
+    check(asset::findBlendShape(model, "Smile") == 0 && asset::findBlendShape(model, "X") == -1, "findBlendShape");
+    asset::scaleModel(model, 2.0f);
+    check(std::abs(model.blend_shapes[0].position_deltas[1].y - 4.0f) < 1e-6f, "scaleModel escala las deltas");
 }
 
 // Static batching (exportar): cubos Static en un lote, un espejo sigue con
@@ -1675,6 +1804,7 @@ int main() {
     testMaterials();
     testClusters();
     testImportProgress();
+    testBlendShapeStorage();
     testStaticBatching();
     testFloatingOrigin();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);

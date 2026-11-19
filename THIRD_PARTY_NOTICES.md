@@ -20,6 +20,7 @@ Cramion uses the following libraries, each under its own license. Exported games
 | zstd | BSD-3-Clause | https://github.com/facebook/zstd |
 | nlohmann/json | MIT | https://github.com/nlohmann/json |
 | assimp | BSD-3-Clause | https://github.com/assimp/assimp |
+| ufbx 0.23.1 (cargador de FBX, `CramionFX/vendor/ufbx`, commit 26a482ae66871d7de36eb722aa060bce95bce274) | MIT o dominio público (Unlicense) | https://github.com/ufbx/ufbx |
 | stb (commit 4e9b368bfc071e97206ea5c6adba68dd0cbf8897) | Dominio público o MIT | https://github.com/nothings/stb |
 | OpenXR SDK (loader) | Apache-2.0 | https://github.com/KhronosGroup/OpenXR-SDK |
 | Vulkan SDK / headers | Apache-2.0 | https://vulkan.lunarg.com |
