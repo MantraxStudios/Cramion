@@ -78,3 +78,28 @@ Builds propios: `build-rm` (Release, Clang 23, Ninja, como `build-release`), `bu
 - `ctest --preset gpu` en un PC con GPU (abre una ventana invisible: `GpuStereoCheck`, `GpuRenderBench`); no se pasó aquí por la regla de no abrir ventanas.
 - Subir la rama a GitHub y mirar la primera pasada del workflow (no se hizo push), sobre todo la instalación de LLVM y del Vulkan SDK y el job de Linux.
 - Abrir en el editor un proyecto con modelos importados (`.crdata`) y montar un DataPack de verdad en Horizonz: los cambios solo afectan a archivos dañados, pero conviene verlo con datos reales.
+
+## Revisión (revisor independiente, sobre b74b46e)
+
+Revisado el diff `horizonz-1031...rm-ci` entero: CTest, presets, workflow, sanitizers, fuzzing, arreglos de formatos y dependencias.
+
+Comprobado y correcto (sin cambios):
+- Los topes nuevos coinciden con el formato: un nodo de `.crdata` ocupa como mínimo 80 bytes (u64 del nombre + i32 + Mat4 + i32) y una entrada del índice de `.crpack` 26 (u16 + 3 × u64); con archivos válidos nunca se rechaza nada. `readDataPackManifest` lee los mismos tipos que escribe `writeDataPackManifest`, y lo que ahora rechaza antes lanzaba `type_error` (no hay regresión para DataPacks reales).
+- Todos los `FetchContent` tienen etiqueta, commit o URL con versión; los SHA256 de stb y FSR 1 se verificaron al configurar `build-rm`.
+- Todas las pruebas que hay en el código están registradas en CTest (63 + 5 de fuzzing con `CRAMION_FUZZ`).
+- `cramion_sdkgen` sobre una copia de `CramionCore/sdk/cramion` no deja diferencias («sin cambios»): `Api.gen.h` sale del generador.
+
+Arreglado en la revisión:
+- **`ModelCache.cpp` (`Reader::checkCount`)**: si el flujo no tenía posición (`tellg() == -1`, un `std::istream` sin búsqueda), *cualquier* cadena o vector no vacío se daba por truncado y el modelo no cargaba. `readModelPayload` es API pública (`ModelCache.h`) y antes funcionaba con esos flujos. Ahora, sin posición o sin poder buscar el final, no se comprueba (se lee como antes; `read()` sigue fallando si faltan datos) y el flujo no se queda en error. Con `std::ifstream` (lo único que usa hoy el motor) no cambia nada.
+- **`ScriptingTests.cpp`**: con `CRAMION_TESTS_SILENT` se seguía creando el `AudioSystem` (abría el dispositivo de audio) antes de mirar la variable. Ahora se mira antes: sin dispositivo, como dicen las notas.
+- **`ci.yml`**: la comprobación del SDK va antes de las pruebas (antes, como `CramionFeatures21Tests` falla, el paso del SDK no llegaba a ejecutarse nunca) y también detecta archivos nuevos que cree el generador (`git diff` solo veía los ya subidos).
+- Pruebas nuevas en `CramionPackTests` (3): contenido de modelo de ida y vuelta, nombre de 1 TB rechazado sin reservarlo, y flujo sin posición que se lee como antes (fallaba sin el arreglo).
+
+Resultado tras la revisión:
+- `ctest --test-dir build-rm -L rapidos -LE gpu -j 1`: 58/59 (falla solo `CramionFeatures21Tests`, lightmapper, ya rota en la base). `CramionPackTests` 0 fallos (+3 comprobaciones), `CramionScriptingTests` 0 fallos y en silencio.
+- `ctest --test-dir build-fuzz -L fuzz`: **5/5** (ahora también `datapack`, que no se había repetido). `cramion_fuzz_crdata` 90 s más con el `ModelCache.cpp` nuevo: sin fallos.
+
+Sigue abierto (no se arregla aquí):
+- La CI de Windows saldrá en rojo por `CramionFeatures21Tests` hasta que se arregle el lightmapper (no es de este bloque).
+- `rapidos-asan` 54/59 (miniaudio, excepciones con ASan en Console/VisualScriptRuntime, tiempos): no entra en la CI todavía.
+- El job de Linux y las acciones de terceros siguen sin ejecutarse nunca.

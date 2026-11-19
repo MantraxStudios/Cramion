@@ -66,17 +66,21 @@ jobs:
       - name: Librerias y pruebas
         run: cmake --build --preset ci-windows --target cramion_tests CramionServer crwpack cramion_sdkgen
 
-      - name: Pruebas rapidas (sin GPU)
-        run: ctest --preset ci-windows
-
+      # Antes de las pruebas: si alguna falla, esta comprobacion se ve igual.
       - name: SDK de C++ al dia (cramion_sdkgen sin diferencias)
         shell: bash
         run: |
           ./build-ci/CramionCore/cramion_sdkgen CramionCore/sdk/cramion
-          git diff --ignore-cr-at-eol --exit-code -- CramionCore/sdk || {
+          # Cambios en lo ya subido y archivos nuevos que cree el generador.
+          nuevos="$(git ls-files --others --exclude-standard -- CramionCore/sdk)"
+          if ! git diff --ignore-cr-at-eol --exit-code -- CramionCore/sdk || [ -n "$nuevos" ]; then
+            if [ -n "$nuevos" ]; then echo "Archivos nuevos: $nuevos"; fi
             echo "::error::CramionCore/sdk/cramion no esta al dia: ejecuta cramion_sdkgen CramionCore/sdk/cramion y sube el resultado"
             exit 1
-          }
+          fi
+
+      - name: Pruebas rapidas (sin GPU)
+        run: ctest --preset ci-windows
 
       - name: Registro de las pruebas que fallan
         if: failure()

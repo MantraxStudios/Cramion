@@ -103,12 +103,21 @@ public:
     void checkCount(std::uint64_t count, std::size_t element) {
         if (count == 0) return;
         const std::streampos here = file_.tellg();
-        if (stream_end_ < 0 && here >= 0) {
+        if (here < 0 || no_end_) return;  // flujo sin posicion: se lee como antes
+        if (stream_end_ < 0) {
             file_.seekg(0, std::ios::end);
             stream_end_ = file_.tellg();
+            if (!file_ || stream_end_ < 0) {
+                // No se puede buscar el final: sin comprobar (read() sigue
+                // fallando si faltan datos), sin dejar el flujo en error.
+                file_.clear();
+                no_end_ = true;
+                stream_end_ = -1;
+            }
             file_.seekg(here);
+            if (no_end_) return;
         }
-        const std::int64_t left = (here < 0 || stream_end_ < 0) ? 0 : static_cast<std::int64_t>(stream_end_ - here);
+        const std::int64_t left = static_cast<std::int64_t>(stream_end_ - here);
         if (left <= 0 || count > static_cast<std::uint64_t>(left) / element) {
             throw std::runtime_error("datos del modelo truncados");
         }
@@ -159,6 +168,7 @@ private:
 
     std::istream& file_;
     std::streampos stream_end_ = -1;
+    bool no_end_ = false;
 };
 
 // Los tipos que se guardan como bloques de bytes.

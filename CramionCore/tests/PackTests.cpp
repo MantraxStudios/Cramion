@@ -5,15 +5,25 @@
 #include "CramionCore/project/Pack.h"
 #include "asset/CrData.h"  // interna de CramionAssets (src/asset)
 
+#include <CramionFX/asset/ModelCache.h>
 #include <nlohmann/json.hpp>
 
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <random>
+#include <sstream>
 #include <string>
 
 using namespace cramion;
+
+// Flujo que no se puede buscar (sin seekoff: tellg da -1), para probar que
+// readModelPayload no exige saber la posicion (revision ROADMAP 3.6).
+struct NoSeekBuf : std::streambuf {
+    explicit NoSeekBuf(std::string bytes) : data(std::move(bytes)) { setg(data.data(), data.data(), data.data() + data.size()); }
+    std::string data;
+};
 
 int failures = 0;
 void check(bool ok, const char* what) {
@@ -265,6 +275,44 @@ int main() {
         const std::uint32_t many = (1u << 24) - 1;
         patch(mesh, header_size + 8, &many, 4);            // numero de nodos
         check(!assets::crdata::readModel(mesh, h, read), ".crdata: 16 M de nodos en un archivo pequeno se rechaza");
+    }
+
+    // --- Contenido de un modelo (ModelCache): los contadores se comprueban
+    // contra lo que queda en el flujo, y un flujo sin posicion se lee como
+    // antes (revision) ---
+    {
+        asset::ModelData model;
+        model.name = "Caja";
+        model.materials.resize(1);
+        model.materials[0].name = "Madera";
+        model.nodes.resize(2);
+        model.nodes[0].name = "Raiz";
+        std::ostringstream out(std::ios::binary);
+        asset::writeModelPayload(out, model);
+        const std::string bytes = out.str();
+        const auto good = [](const asset::ModelData& m) {
+            return m.name == "Caja" && m.materials.size() == 1 && m.materials[0].name == "Madera" && m.nodes.size() == 2 &&
+                   m.nodes[0].name == "Raiz";
+        };
+        {
+            std::istringstream in(bytes, std::ios::binary);
+            asset::ModelData read;
+            check(asset::readModelPayload(in, read) && good(read), "modelo: ida y vuelta");
+        }
+        {
+            std::string bad = bytes;
+            const std::uint64_t huge = 1ull << 40;  // largo del nombre (lo primero)
+            std::memcpy(bad.data(), &huge, sizeof(huge));
+            std::istringstream in(bad, std::ios::binary);
+            asset::ModelData read;
+            check(!asset::readModelPayload(in, read), "modelo: nombre de 1 TB se rechaza sin reservarlo");
+        }
+        {
+            NoSeekBuf buffer(bytes);
+            std::istream in(&buffer);
+            asset::ModelData read;
+            check(asset::readModelPayload(in, read) && good(read), "modelo: flujo sin posicion se lee como antes");
+        }
     }
 
     // --- DataPack con rutas absolutas en el manifiesto (fuzzing): se saltan
