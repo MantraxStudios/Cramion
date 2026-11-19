@@ -438,6 +438,214 @@ api::Value hitValue(Runtime& rt, const physics::RaycastHit& hit) {
     return result;
 }
 
+// --- Barridos y solapes con forma (boxCast, capsuleCast, overlapBox, *All) ---
+// Mismos argumentos de cola que raycast: mascara, ignorar, triggers.
+void registerPhysicsShapeQueries(Runtime& rt) {
+    const auto hitList = [&rt](const std::vector<physics::RaycastHit>& hits) {
+        api::Value::Array out;
+        out.reserve(hits.size());
+        for (const physics::RaycastHit& h : hits) out.push_back(hitValue(rt, h));
+        return api::Value(std::move(out));
+    };
+    const auto entityList = [&rt](const std::vector<ecs::Entity>& list) {
+        api::Value::Array out;
+        out.reserve(list.size());
+        for (const ecs::Entity& e : list) out.push_back(rt.entityValue(e));
+        return api::Value(std::move(out));
+    };
+    const auto half = [](const api::Call& c, std::size_t i) {
+        const Vec3 h = c.vec3(i);
+        return Vec3{std::abs(h.x), std::abs(h.y), std::abs(h.z)};
+    };
+    rt.native.function("Physics.raycastAll", [&rt, hitList](api::Call& c) {
+        const Vec3 origin = c.vec3(0);
+        const Vec3 direction = c.vec3(1);
+        const float distance = static_cast<float>(c.number(2, 1000.0));
+        if (rt.physics == nullptr) return api::Value(api::Value::Array{});
+        return hitList(rt.physics->raycastAll(origin, direction, distance, queryFilter(rt, c, 3, 4)));
+    }, {"origen, direccion, distancia, mascara, ignorar, triggers",
+        "todos los que toca el rayo (uno por objeto, del mas cercano al mas lejano)", "lista de objetos"});
+    rt.native.function("Physics.sphereCastAll", [&rt, hitList](api::Call& c) {
+        const Vec3 origin = c.vec3(0);
+        const float radius = static_cast<float>(c.number(1));
+        const Vec3 direction = c.vec3(2);
+        const float distance = static_cast<float>(c.number(3, 1000.0));
+        if (rt.physics == nullptr) return api::Value(api::Value::Array{});
+        return hitList(rt.physics->sphereCastAll(origin, radius, direction, distance, queryFilter(rt, c, 4, 5)));
+    }, {"origen, radio, direccion, distancia, mascara, ignorar, triggers",
+        "todos los que toca la esfera al avanzar (del mas cercano al mas lejano)", "lista de objetos"});
+    // Caja: centro, semiejes (la mitad de cada medida) y giro (Quat; nil = sin giro).
+    rt.native.function("Physics.boxCast", [&rt, half](api::Call& c) {
+        const Vec3 center = c.vec3(0);
+        const Vec3 extents = half(c, 1);
+        const Quat rotation = c.quat(2, Quat{});
+        const Vec3 direction = c.vec3(3);
+        const float distance = static_cast<float>(c.number(4, 1000.0));
+        if (rt.physics == nullptr) return api::Value{};
+        physics::RaycastHit hit;
+        if (!rt.physics->boxCast(center, extents, rotation, direction, distance, hit, queryFilter(rt, c, 5, 6))) {
+            return api::Value{};
+        }
+        return hitValue(rt, hit);
+    }, {"centro, semiejes, giro, direccion, distancia, mascara, ignorar, triggers",
+        "caja que avanza: nil o {entity, point, normal, distance, layer, trigger}", "objeto"});
+    rt.native.function("Physics.boxCastAll", [&rt, half, hitList](api::Call& c) {
+        const Vec3 center = c.vec3(0);
+        const Vec3 extents = half(c, 1);
+        const Quat rotation = c.quat(2, Quat{});
+        const Vec3 direction = c.vec3(3);
+        const float distance = static_cast<float>(c.number(4, 1000.0));
+        if (rt.physics == nullptr) return api::Value(api::Value::Array{});
+        return hitList(rt.physics->boxCastAll(center, extents, rotation, direction, distance, queryFilter(rt, c, 5, 6)));
+    }, {"centro, semiejes, giro, direccion, distancia, mascara, ignorar, triggers",
+        "todos los que toca la caja al avanzar", "lista de objetos"});
+    // Capsula como la de Unity: los centros de sus dos semiesferas y el radio.
+    rt.native.function("Physics.capsuleCast", [&rt](api::Call& c) {
+        const Vec3 p1 = c.vec3(0);
+        const Vec3 p2 = c.vec3(1);
+        const float radius = static_cast<float>(c.number(2));
+        const Vec3 direction = c.vec3(3);
+        const float distance = static_cast<float>(c.number(4, 1000.0));
+        if (rt.physics == nullptr) return api::Value{};
+        physics::RaycastHit hit;
+        if (!rt.physics->capsuleCast(p1, p2, radius, direction, distance, hit, queryFilter(rt, c, 5, 6))) {
+            return api::Value{};
+        }
+        return hitValue(rt, hit);
+    }, {"punto1, punto2, radio, direccion, distancia, mascara, ignorar, triggers",
+        "capsula que avanza (centros de sus semiesferas): nil o {entity, point, normal, distance, layer, trigger}",
+        "objeto"});
+    rt.native.function("Physics.capsuleCastAll", [&rt, hitList](api::Call& c) {
+        const Vec3 p1 = c.vec3(0);
+        const Vec3 p2 = c.vec3(1);
+        const float radius = static_cast<float>(c.number(2));
+        const Vec3 direction = c.vec3(3);
+        const float distance = static_cast<float>(c.number(4, 1000.0));
+        if (rt.physics == nullptr) return api::Value(api::Value::Array{});
+        return hitList(rt.physics->capsuleCastAll(p1, p2, radius, direction, distance, queryFilter(rt, c, 5, 6)));
+    }, {"punto1, punto2, radio, direccion, distancia, mascara, ignorar, triggers",
+        "todos los que toca la capsula al avanzar", "lista de objetos"});
+    rt.native.function("Physics.overlapBox", [&rt, half, entityList](api::Call& c) {
+        const Vec3 center = c.vec3(0);
+        const Vec3 extents = half(c, 1);
+        const Quat rotation = c.quat(2, Quat{});
+        if (rt.physics == nullptr) return api::Value(api::Value::Array{});
+        return entityList(rt.physics->overlapBox(center, extents, rotation, queryFilter(rt, c, 3, 4)));
+    }, {"centro, semiejes, giro, mascara, ignorar, triggers", "los objetos que tocan la caja", "lista de Entity"});
+    rt.native.function("Physics.overlapCapsule", [&rt, entityList](api::Call& c) {
+        const Vec3 p1 = c.vec3(0);
+        const Vec3 p2 = c.vec3(1);
+        const float radius = static_cast<float>(c.number(2));
+        if (rt.physics == nullptr) return api::Value(api::Value::Array{});
+        return entityList(rt.physics->overlapCapsule(p1, p2, radius, queryFilter(rt, c, 3, 4)));
+    }, {"punto1, punto2, radio, mascara, ignorar, triggers", "los objetos que tocan la capsula", "lista de Entity"});
+}
+
+// --- Buses del mezclador (Audio.setBusVolume...): AudioSystem, Audio.h ---
+void registerAudioBuses(Runtime& rt) {
+    const auto busArg = [](const api::Call& c, std::size_t i) { return c.string(i); };
+    // Audio.setVolume / getVolume: el volumen general (el bus Master).
+    rt.native.function("Audio.setVolume", [&rt](api::Call& c) {
+        if (rt.audio != nullptr) rt.audio->setBusVolume(audio::mixer::kMaster, static_cast<float>(c.number(0)));
+        return api::Value{};
+    }, {"0.8", "Volumen general (el bus Master, 0..4)"});
+    rt.native.function("Audio.getVolume", [&rt](api::Call&) {
+        return api::Value(rt.audio != nullptr ? rt.audio->busVolume(audio::mixer::kMaster) : 1.0f);
+    }, {"", "Volumen general (el bus Master)", "numero"});
+    rt.native.function("Audio.setBusVolume", [&rt, busArg](api::Call& c) {
+        if (rt.audio != nullptr) rt.audio->setBusVolume(busArg(c, 0), static_cast<float>(c.number(1)));
+        return api::Value{};
+    }, {"\"Musica\", 0.5", "Volumen de un bus (lineal, 0..4): Master, Musica, Efectos, Ambiente, Voces, UI o uno del juego"});
+    rt.native.function("Audio.getBusVolume", [&rt, busArg](api::Call& c) {
+        return api::Value(rt.audio != nullptr ? rt.audio->busVolume(busArg(c, 0)) : -1.0f);
+    }, {"\"Musica\"", "Volumen de un bus (lineal; -1 si no existe)", "numero"});
+    rt.native.function("Audio.setBusVolumeDb", [&rt, busArg](api::Call& c) {
+        if (rt.audio != nullptr) rt.audio->setBusVolumeDb(busArg(c, 0), static_cast<float>(c.number(1)));
+        return api::Value{};
+    }, {"\"Musica\", -6", "Volumen de un bus en decibelios (-80 = nada, 0 = normal)"});
+    rt.native.function("Audio.getBusVolumeDb", [&rt, busArg](api::Call& c) {
+        return api::Value(rt.audio != nullptr ? rt.audio->busVolumeDb(busArg(c, 0)) : 0.0f);
+    }, {"\"Musica\"", "Volumen de un bus en decibelios", "numero"});
+    rt.native.function("Audio.setBusMute", [&rt, busArg](api::Call& c) {
+        if (rt.audio != nullptr) rt.audio->setBusMute(busArg(c, 0), c.boolean(1, true));
+        return api::Value{};
+    }, {"\"Musica\", true", "Calla (o no) un bus y todo lo que cuelga de el"});
+    rt.native.function("Audio.isBusMuted", [&rt, busArg](api::Call& c) {
+        return api::Value(rt.audio != nullptr && rt.audio->busMuted(busArg(c, 0)));
+    }, {"\"Musica\"", "Esta callado ese bus?", "bool"});
+    rt.native.function("Audio.getBusGain", [&rt, busArg](api::Call& c) {
+        return api::Value(rt.audio != nullptr ? rt.audio->busGain(busArg(c, 0)) : 1.0f);
+    }, {"\"Musica\"", "Volumen que llega a ese bus ahora (con sus padres, el silencio y el ducking)", "numero"});
+    rt.native.function("Audio.getBuses", [&rt](api::Call&) {
+        api::Value::Array out;
+        if (rt.audio == nullptr) return api::Value(std::move(out));
+        for (const audio::AudioBusInfo& b : rt.audio->buses()) {
+            api::Value item = api::Value::object();
+            item.set("name", b.name);
+            item.set("parent", b.parent);
+            item.set("volume", b.volume);
+            item.set("mute", b.mute);
+            item.set("gain", b.gain);
+            item.set("duck", b.duck);
+            out.push_back(std::move(item));
+        }
+        return api::Value(std::move(out));
+    }, {"", "Los buses: {name, parent, volume, mute, gain, duck}", "lista de objetos"});
+    rt.native.function("Audio.addBus", [&rt, busArg](api::Call& c) {
+        return api::Value(rt.audio != nullptr && rt.audio->addBus(busArg(c, 0), c.string(1, audio::mixer::kMaster)));
+    }, {"\"Pasos\", \"Efectos\"", "Bus nuevo del juego bajo otro (por defecto Master)", "bool"});
+    rt.native.function("Audio.setBusParent", [&rt, busArg](api::Call& c) {
+        return api::Value(rt.audio != nullptr && rt.audio->setBusParent(busArg(c, 0), c.string(1)));
+    }, {"\"Pasos\", \"Ambiente\"", "Cambia el padre de un bus", "bool"});
+    rt.native.function("Audio.resetBuses", [&rt](api::Call&) {
+        if (rt.audio != nullptr) rt.audio->resetBuses();
+        return api::Value{};
+    }, {"", "Todos los buses a 1, sin los del juego, ducking ni instantaneas"});
+    // Ducking: Audio.addDucking("Voces", "Musica", -12, 0.1, 0.8) -> id.
+    rt.native.function("Audio.addDucking", [&rt, busArg](api::Call& c) {
+        if (rt.audio == nullptr) return api::Value(-1.0);
+        return api::Value(static_cast<double>(rt.audio->addDucking(
+            busArg(c, 0), busArg(c, 1), static_cast<float>(c.number(2, -12.0)), static_cast<float>(c.number(3, 0.08)),
+            static_cast<float>(c.number(4, 0.6)), static_cast<float>(c.number(5, 0.01)))));
+    }, {"\"Voces\", \"Musica\", -12, 0.08, 0.6, 0.01",
+        "Mientras suena el primero, el segundo baja esos dB (ataque y liberacion en s, umbral); devuelve su id", "numero"});
+    rt.native.function("Audio.removeDucking", [&rt](api::Call& c) {
+        if (rt.audio != nullptr) {
+            if (c.has(0)) rt.audio->removeDucking(static_cast<int>(c.integer(0)));
+            else rt.audio->clearDucking();
+        }
+        return api::Value{};
+    }, {"id", "Quita un ducking (sin id: todos)"});
+    // Instantaneas: Audio.setSnapshot("Pausa", {Musica = 0.3, Efectos = 0}).
+    rt.native.function("Audio.setSnapshot", [&rt](api::Call& c) {
+        const std::string name = c.string(0);
+        const api::Value& table = c.arg(1);
+        if (rt.audio == nullptr) return api::Value{};
+        if (!table.isObject()) throw api::Error("Audio.setSnapshot: {Bus = volumen, ...}");
+        std::vector<std::pair<std::string, float>> volumes;
+        for (const auto& [bus, value] : table.fields()) {
+            if (value.isNumber()) volumes.emplace_back(bus, static_cast<float>(value.asNumber()));
+        }
+        rt.audio->setSnapshot(name, volumes);
+        return api::Value{};
+    }, {"\"Pausa\", {Musica = 0.3, Efectos = 0}", "Define una instantanea (volumen lineal de cada bus)"});
+    rt.native.function("Audio.saveSnapshot", [&rt](api::Call& c) {
+        if (rt.audio != nullptr) rt.audio->saveSnapshot(c.string(0));
+        return api::Value{};
+    }, {"\"Normal\"", "Guarda los volumenes de ahora como instantanea"});
+    rt.native.function("Audio.transitionToSnapshot", [&rt](api::Call& c) {
+        return api::Value(rt.audio != nullptr &&
+                          rt.audio->transitionToSnapshot(c.string(0), static_cast<float>(c.number(1, 0.0))));
+    }, {"\"Pausa\", 0.5", "Lleva los buses a una instantanea en esos segundos", "bool"});
+    rt.native.function("Audio.getSnapshots", [&rt](api::Call&) {
+        api::Value::Array out;
+        if (rt.audio != nullptr) {
+            for (const std::string& name : rt.audio->snapshots()) out.emplace_back(name);
+        }
+        return api::Value(std::move(out));
+    }, {"", "Nombres de las instantaneas", "lista de texto"});
+}
+
 void registerPhysicsAndAudio(Runtime& rt) {
     rt.native.function("Physics.raycast", [&rt](api::Call& c) {
         const Vec3 origin = c.vec3(0);
@@ -474,6 +682,7 @@ void registerPhysicsAndAudio(Runtime& rt) {
         return api::Value(std::move(out));
     }, {"centro, radio, mascara, ignorar, triggers", "los objetos que tocan la esfera (triggers como en raycast)",
         "lista de Entity"});
+    registerPhysicsShapeQueries(rt);
     // Mascara de capas por nombre: Physics.layerMask("Default", "Terreno").
     rt.native.function("Physics.layerMask", [&rt](api::Call& c) {
         std::uint32_t mask = 0;
@@ -536,6 +745,7 @@ void registerPhysicsAndAudio(Runtime& rt) {
     rt.native.function("Audio.reverbLevel", [&rt](api::Call&) {
         return api::Value(rt.audio != nullptr ? rt.audio->reverbLevel() : 0.0f);
     }, {"", "Reverberacion que se oye ahora (zonas)", "numero"});
+    registerAudioBuses(rt);
 }
 
 // --- Random: aleatorios con semilla (como Random de Unity) ----------------------------

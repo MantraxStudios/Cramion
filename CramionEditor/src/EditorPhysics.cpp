@@ -1482,6 +1482,20 @@ void EditorApp::drawPhysicsGizmos() {
         }
     }
 
+    // --- Juntas (Joints.h) de lo seleccionado: anclaje, punto conectado y eje ---
+    for (const physics::JointDebug& j : physics_.jointDebug(world_)) {
+        if (std::find(selected.begin(), selected.end(), j.entity) == selected.end()) continue;
+        const ImU32 color = j.broken ? kRayMiss : kCharacterColor;
+        overlayScreenDisc(j.anchor, gizmoWorldSize(j.anchor) * 0.03f, color);
+        overlayLine(j.anchor, j.connected_anchor, color);
+        if (j.type != physics::JointType::Distance && j.type != physics::JointType::Spring &&
+            j.type != physics::JointType::Fixed) {
+            const float size = gizmoWorldSize(j.anchor) * 0.25f;
+            overlayLine(j.anchor - j.axis * size, j.anchor + j.axis * size, fade(color, 0.8f));
+            overlayCone(j.anchor + j.axis * size, j.axis, size * 0.25f, size * 0.08f, color);
+        }
+    }
+
     // --- Consultas (las del juego y el probador) ---
     const auto drawRay = [&](const Vec3& from, const Vec3& to, bool hit, const Vec3& point, const Vec3& normal) {
         overlayLine(from, to, hit ? kRayHit : kRayMiss);

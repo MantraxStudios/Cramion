@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -319,6 +320,168 @@ void testAudioStop() {
     system.stop();
 }
 
+
+// Buses del mezclador: con los valores por defecto se oye igual que antes;
+// volumen, silencio, padres, ducking e instantaneas cambian lo que llega.
+void testAudioBuses() {
+    std::printf("Audio: buses del mezclador (Master, Musica, Efectos...)\n");
+    writeWav(kRoot / "Audio" / "agudo.wav", 4000.0);
+    writeWav(kRoot / "Audio" / "voz.wav", 1000.0);
+    ecs::World world;
+    world.create("Camara").add<audio::AudioListener>();
+    ecs::Entity radio = world.create("Radio");
+    audio::AudioSource& source = radio.add<audio::AudioSource>();
+    source.clip = "Audio/agudo.wav";
+    source.loop = true;
+    source.min_distance = 10.0f;
+    audio::AudioSystem system{audio::AudioSystem::Offline{}};
+    system.setAssetsRoot(kRoot);
+    std::vector<float> block(800 * 2);
+    const auto rms = [&](int warmup) {
+        for (int i = 0; i < warmup; ++i) {
+            system.update(world, 1.0f / 60.0f, Vec3{}, Vec3{0, 0, -1});
+            system.renderOffline(block.data(), 800);
+        }
+        double sum = 0.0;
+        for (int i = 0; i < 6; ++i) {
+            system.update(world, 1.0f / 60.0f, Vec3{}, Vec3{0, 0, -1});
+            system.renderOffline(block.data(), 800);
+            for (const float v : block) sum += static_cast<double>(v) * v;
+        }
+        return std::sqrt(sum / (6.0 * block.size()));
+    };
+
+    // Los de serie y sus padres.
+    const std::vector<audio::AudioBusInfo> buses = system.buses();
+    bool tree_ok = buses.size() == 6 && buses[0].name == "Master" && buses[0].parent.empty();
+    for (std::size_t i = 1; i < buses.size(); ++i) tree_ok = tree_ok && buses[i].parent == "Master" && buses[i].gain == 1.0f;
+    check(tree_ok, "Master, Musica, Efectos, Ambiente, Voces y UI; todos a 1 bajo Master");
+    check(system.hasBus("music") && system.hasBus("SFX") && system.hasBus("efectos") && !system.hasBus("Nada"),
+          "nombres sin mayusculas y alias en ingles (Music, SFX)");
+    check(std::abs(audio::linearToDb(0.5f) + 6.0206f) < 0.01f && std::abs(audio::dbToLinear(-6.0206f) - 0.5f) < 0.001f &&
+              audio::dbToLinear(-80.0f) == 0.0f,
+          "lineal <-> dB");
+
+    system.start(world);
+    const double base = rms(30);
+    system.setBusVolume("Musica", 0.0f);  // otro bus: no cambia nada
+    system.setBusVolume("Musica", 1.0f);
+    const double same = rms(10);
+    system.setBusVolume("Efectos", 0.5f);
+    const double half = rms(10);
+    system.setBusVolumeDb("Efectos", 0.0f);
+    system.setBusVolume("Master", 0.25f);
+    const double master = rms(10);
+    system.setBusVolume("Master", 1.0f);
+    system.setBusMute("Efectos", true);
+    const double muted = rms(10);
+    system.setBusMute("Efectos", false);
+    const double back = rms(10);
+    std::printf("  RMS: por defecto %.4f, Efectos 0.5 %.4f, Master 0.25 %.4f, callado %.6f, de vuelta %.4f\n", base, half, master,
+                muted, back);
+    check(base > 0.01 && std::abs(same - base) < base * 0.02, "con los valores por defecto suena como antes (y otro bus no le toca)");
+    check(std::abs(half / base - 0.5) < 0.05, "Efectos a 0.5: la mitad (una fuente sin bus va por Efectos)");
+    check(std::abs(master / base - 0.25) < 0.05, "Master multiplica a todos sus hijos");
+    check(muted < base * 0.01 && system.isPlaying(radio), "un bus callado no se oye (la fuente sigue sonando para el juego)");
+    check(std::abs(back - base) < base * 0.05, "al quitar el silencio vuelve igual");
+
+    // Bus del juego: se crea al usarlo y cuelga de Master; se puede mover bajo otro.
+    source.bus = "Radios";
+    rms(5);
+    check(system.hasBus("Radios") && system.busGain("Radios") == 1.0f, "un bus nuevo en AudioSource::bus se crea solo");
+    check(system.setBusParent("Radios", "Musica") && !system.setBusParent("Master", "Musica") &&
+              !system.setBusParent("Musica", "Radios"),
+          "cambiar el padre (sin ciclos ni mover Master)");
+    system.setBusVolume("Musica", 0.5f);
+    const double child = rms(10);
+    check(std::abs(child / base - 0.5) < 0.05 && std::abs(system.busGain("Radios") - 0.5f) < 1e-4f,
+          "el volumen del padre llega a sus hijos");
+    check(system.addBus("Pasos", "Efectos") && !system.addBus("Pasos") && !system.addBus("Otro", "NoExiste"),
+          "addBus (sin repetir ni padres que no existen)");
+
+    // Ducking: la voz baja la musica mientras suena (ataque y liberacion).
+    system.setBusVolume("Musica", 1.0f);
+    const int duck = system.addDucking("Voces", "Musica", -12.0f, 0.05f, 0.3f);
+    check(duck > 0 && system.addDucking("Voces", "NoExiste") == -1, "addDucking devuelve su id (-1 con un bus que no existe)");
+    rms(10);
+    const double music_alone = rms(5);
+    ecs::Entity speaker = world.create("Voz");
+    audio::AudioSource& voice = speaker.add<audio::AudioSource>();
+    voice.clip = "Audio/voz.wav";
+    voice.loop = true;
+    voice.min_distance = 10.0f;
+    voice.bus = "Voces";
+    system.play(speaker);
+    rms(20);
+    const float ducked_gain = system.busGain("Musica");
+    voice.mute = true;
+    rms(40);
+    const float released_gain = system.busGain("Musica");
+    std::printf("  ducking: Musica %.3f con voz, %.3f tras callarla (antes %.4f RMS)\n", ducked_gain, released_gain, music_alone);
+    check(std::abs(ducked_gain - audio::dbToLinear(-12.0f)) < 0.02f, "con la voz sonando la musica baja 12 dB");
+    check(released_gain > 0.99f, "al callar la voz vuelve (liberacion)");
+    system.removeDucking(duck);
+
+    // Instantaneas: transicion en dB, a mitad entre las dos.
+    system.saveSnapshot("Normal");
+    system.setSnapshot("Pausa", {{"Musica", 0.1f}, {"Efectos", 0.0f}});
+    check(system.snapshots().size() == 2, "dos instantaneas");
+    check(system.transitionToSnapshot("Pausa", 1.0f) && !system.transitionToSnapshot("NoExiste", 1.0f),
+          "transitionToSnapshot (false si no existe)");
+    system.updateBuses(0.5f);
+    const float mid = system.busVolume("Musica");
+    system.updateBuses(0.6f);
+    check(std::abs(mid - audio::dbToLinear(-10.0f)) < 0.01f && std::abs(system.busVolume("Musica") - 0.1f) < 1e-4f &&
+              system.busVolume("Efectos") == 0.0f,
+          "a mitad -10 dB (fundido en dB) y al final los de la instantanea");
+    system.transitionToSnapshot("Normal", 0.0f);
+    check(system.busVolume("Musica") == 1.0f && system.busVolume("Efectos") == 1.0f, "volver a la normal al momento");
+
+    // El clima va por Ambiente.
+    system.stop();
+    system.resetBuses();
+    check(!system.hasBus("Radios") && system.buses().size() == 6 && system.snapshots().empty(),
+          "resetBuses lo deja como al empezar");
+    source.mute = true;
+    voice.mute = true;
+    environment::Environment& env = world.create("Clima").add<environment::Environment>();
+    env.runtime.initialized = true;
+    env.runtime.current.rain = 1.0f;
+    env.runtime.wind_speed = 14.0f;
+    system.start(world);
+    const double weather = rms(60);
+    system.setBusVolume("Ambiente", 0.0f);
+    const double weather_off = rms(150);  // el ambiente se funde en ~0,35 s
+    system.setBusVolume("Ambiente", 1.0f);
+    std::printf("  RMS: clima %.4f, Ambiente a 0 %.6f\n", weather, weather_off);
+    check(weather > 0.005 && weather_off < weather * 0.05, "la lluvia y el viento van por el bus Ambiente");
+    system.stop();
+
+    // Se guarda con la escena; sin el campo (escenas viejas) queda vacio = Efectos.
+    source.bus = "Musica";
+    ecs::World copy;
+    ecs::deserializeWorld(copy, ecs::serializeWorld(world));
+    check(copy.findByName("Radio").get<audio::AudioSource>().bus == "Musica", "el bus se guarda con la escena");
+    nlohmann::json old = nlohmann::json::parse(ecs::serializeWorld(world));
+    bool erased = false;
+    std::function<void(nlohmann::json&)> strip = [&](nlohmann::json& j) {
+        if (j.is_object()) {
+            if (j.contains("bus") && j.contains("clip")) {
+                j.erase("bus");
+                erased = true;
+            }
+            for (auto& [k, v] : j.items()) strip(v);
+        } else if (j.is_array()) {
+            for (auto& v : j) strip(v);
+        }
+    };
+    strip(old);
+    ecs::World legacy;
+    ecs::deserializeWorld(legacy, old.dump());
+    check(erased && legacy.findByName("Radio").valid() && legacy.findByName("Radio").get<audio::AudioSource>().bus.empty(),
+          "una escena sin el campo bus se abre (Efectos)");
+}
+
 }  // namespace
 
 // Graphics: las opciones van al host; Graphics.post al volumen global.
@@ -369,6 +532,7 @@ int main() {
     testAudioOcclusion();
     testAudioRendered();
     testAudioStop();
+    testAudioBuses();
     std::filesystem::remove_all(kRoot);
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;

@@ -68,6 +68,17 @@ void AudioSource::reflect(ecs::PropertyVisitor& v) {
     }
     v.field({"reverb_send", "Envio a reverberacion", "Cuanto reverbera en las Audio Reverb Zone (0 = nada)"}, reverb_send,
             FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+    v.field({"bus", "Bus", "Bus del mezclador: Musica, Efectos, Ambiente, Voces, UI o uno del juego.\n"
+                           "Vacio = Efectos. Desde un script: Audio.setBusVolume(\"Musica\", 0.5)"},
+            bus);
+}
+
+float linearToDb(float linear) {
+    return linear <= 1e-4f ? -80.0f : std::max(20.0f * std::log10(linear), -80.0f);
+}
+
+float dbToLinear(float db) {
+    return db <= -80.0f ? 0.0f : std::pow(10.0f, db / 20.0f);
 }
 
 void AudioListener::reflect(ecs::PropertyVisitor& v) {
@@ -478,6 +489,181 @@ ma_result streamLength(ma_data_source*, ma_uint64* length) {
 
 ma_data_source_vtable kStreamVtable = {streamRead, streamSeek, streamFormat, streamCursor, streamLength, nullptr, 0};
 
+// -----------------------------------------------------------------------------
+// Buses del mezclador. Todo en el hilo principal: el volumen que llega a cada
+// bus (gain) se multiplica en la ganancia de cada voz (VoiceFx::gain, que ya
+// se funde por bloque) y en el volumen del ambiente. Con todo a 1 el
+// producto es 1 y se oye igual que sin buses.
+// -----------------------------------------------------------------------------
+
+std::string lowerAscii(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+struct Mixer {
+    struct Bus {
+        std::string name;
+        std::string key;  // en minusculas
+        int parent = -1;
+        float volume = 1.0f;
+        bool mute = false;
+        bool builtin = false;
+        float duck = 1.0f;   // producto de los ducking que le tocan (suavizado)
+        float gain = 1.0f;   // el que llega (calculado en refresh)
+        float level = 0.0f;  // lo que suena por el este frame (para el ducking)
+        float level_next = 0.0f;
+        // Fundido de una instantanea (en dB).
+        bool fading = false;
+        float fade_from_db = 0.0f, fade_to_db = 0.0f, fade_time = 0.0f, fade_duration = 0.0f;
+    };
+    struct Duck {
+        int id = 0;
+        int trigger = -1;
+        int target = -1;
+        float amount_db = -12.0f;
+        float attack = 0.08f;
+        float release = 0.6f;
+        float threshold = 0.01f;
+        float current = 1.0f;  // ganancia que aplica ahora
+    };
+    std::vector<Bus> buses;
+    std::vector<Duck> ducks;
+    int next_duck = 1;
+    std::unordered_map<std::string, std::vector<std::pair<std::string, float>>> snapshots;
+    std::uint64_t version = 1;  // sube con cada cambio de estructura (las voces vuelven a buscar su bus)
+
+    Mixer() { reset(); }
+
+    void reset() {
+        buses.clear();
+        ducks.clear();
+        snapshots.clear();
+        add(mixer::kMaster, -1, true);
+        for (const char* name : {mixer::kMusic, mixer::kEffects, mixer::kAmbient, mixer::kVoices, mixer::kUi}) add(name, 0, true);
+        ++version;
+        refresh();
+    }
+
+    int add(const std::string& name, int parent, bool builtin) {
+        Bus b;
+        b.name = name;
+        b.key = lowerAscii(name);
+        b.parent = parent;
+        b.builtin = builtin;
+        buses.push_back(std::move(b));
+        ++version;
+        return static_cast<int>(buses.size()) - 1;
+    }
+
+    // Nombre del juego -> bus (minusculas, y los nombres de Unity/Unreal en ingles).
+    int find(const std::string& name) const {
+        if (name.empty()) return -1;
+        std::string key = lowerAscii(name);
+        static const std::pair<const char*, const char*> kAliases[] = {
+            {"music", "musica"},     {"música", "musica"},  {"sfx", "efectos"},     {"effects", "efectos"},
+            {"fx", "efectos"},       {"ambient", "ambiente"}, {"ambience", "ambiente"}, {"environment", "ambiente"},
+            {"voice", "voces"},      {"voices", "voces"},   {"dialogue", "voces"},  {"dialog", "voces"},
+            {"voz", "voces"},        {"interfaz", "ui"},    {"interface", "ui"},    {"main", "master"}};
+        for (int pass = 0; pass < 2; ++pass) {
+            for (std::size_t i = 0; i < buses.size(); ++i) {
+                if (buses[i].key == key) return static_cast<int>(i);
+            }
+            if (pass == 1) break;
+            bool aliased = false;
+            for (const auto& [from, to] : kAliases) {
+                if (key == from) {
+                    key = to;
+                    aliased = true;
+                    break;
+                }
+            }
+            if (!aliased) break;
+        }
+        return -1;
+    }
+
+    // El bus de una fuente: vacio = Efectos; uno que no existe se crea bajo
+    // Master (los buses propios del juego salen solos al usarlos).
+    int resolve(const std::string& name, int fallback) {
+        if (name.empty()) return fallback;
+        const int found = find(name);
+        if (found >= 0) return found;
+        std::cerr << "[Audio] Bus nuevo \"" << name << "\" (bajo Master)\n";
+        const int index = add(name, 0, false);
+        refresh();
+        return index;
+    }
+
+    bool ancestorOf(int ancestor, int bus) const {
+        for (int b = bus; b >= 0; b = buses[static_cast<std::size_t>(b)].parent) {
+            if (b == ancestor) return true;
+        }
+        return false;
+    }
+
+    // gain de cada bus: el suyo por el de su padre (los padres van antes en la lista o no).
+    void refresh() {
+        std::vector<int> state(buses.size(), 0);  // 0 = sin calcular, 1 = calculando, 2 = listo
+        const std::function<float(int)> compute = [&](int i) -> float {
+            Bus& b = buses[static_cast<std::size_t>(i)];
+            if (state[static_cast<std::size_t>(i)] == 2) return b.gain;
+            state[static_cast<std::size_t>(i)] = 1;
+            float parent_gain = 1.0f;
+            if (b.parent >= 0 && state[static_cast<std::size_t>(b.parent)] != 1) parent_gain = compute(b.parent);
+            b.gain = (b.mute ? 0.0f : std::max(b.volume, 0.0f)) * std::max(b.duck, 0.0f) * parent_gain;
+            state[static_cast<std::size_t>(i)] = 2;
+            return b.gain;
+        };
+        for (std::size_t i = 0; i < buses.size(); ++i) compute(static_cast<int>(i));
+    }
+
+    float gain(int bus) const { return bus >= 0 && bus < static_cast<int>(buses.size()) ? buses[static_cast<std::size_t>(bus)].gain : 1.0f; }
+
+    // Lo que suena por un bus cuenta tambien para sus padres (ducking por Musica o por Master).
+    void report(int bus, float audible) {
+        for (int b = bus; b >= 0; b = buses[static_cast<std::size_t>(b)].parent) {
+            float& level = buses[static_cast<std::size_t>(b)].level_next;
+            level = std::max(level, audible);
+        }
+    }
+
+    void update(float dt) {
+        for (Bus& b : buses) {
+            b.level = b.level_next;
+            b.level_next = 0.0f;
+            if (!b.fading) continue;
+            b.fade_time += std::max(dt, 0.0f);
+            const float t = b.fade_duration > 1e-5f ? std::clamp(b.fade_time / b.fade_duration, 0.0f, 1.0f) : 1.0f;
+            const float db = b.fade_from_db + (b.fade_to_db - b.fade_from_db) * t;
+            b.volume = t >= 1.0f ? dbToLinear(b.fade_to_db) : dbToLinear(db);
+            if (t >= 1.0f) b.fading = false;
+        }
+        for (Bus& b : buses) b.duck = 1.0f;
+        for (Duck& d : ducks) {
+            if (d.trigger < 0 || d.target < 0 || d.trigger >= static_cast<int>(buses.size()) ||
+                d.target >= static_cast<int>(buses.size()))
+                continue;
+            const bool active = buses[static_cast<std::size_t>(d.trigger)].level > std::max(d.threshold, 0.0f);
+            const float goal = active ? dbToLinear(std::min(d.amount_db, 0.0f)) : 1.0f;
+            const float time = active ? d.attack : d.release;
+            // Lineal en dB: `time` segundos para recorrer toda la bajada.
+            if (time <= 1e-4f || dt <= 0.0f) {
+                d.current = dt > 0.0f || time <= 1e-4f ? goal : d.current;
+            } else {
+                const float span = std::max(-std::min(d.amount_db, 0.0f), 1.0f);
+                const float step = span * dt / time;
+                float now_db = linearToDb(d.current);
+                const float goal_db = linearToDb(goal);
+                now_db = now_db < goal_db ? std::min(now_db + step, goal_db) : std::max(now_db - step, goal_db);
+                d.current = (goal >= 1.0f && now_db >= -1e-3f) ? 1.0f : dbToLinear(now_db);
+            }
+            buses[static_cast<std::size_t>(d.target)].duck *= d.current;
+        }
+        refresh();
+    }
+};
+
 }  // namespace
 
 struct AudioSystem::Impl {
@@ -524,12 +710,26 @@ struct AudioSystem::Impl {
         float audible = 0.0f;  // volumen que llega al oyente (este frame)
         bool held = false;     // parada por la pausa del Play (vuelve al quitarla)
         bool stream = false;   // voz de streaming (video): no la calla su propio stream
+        // Bus del mezclador (cache del nombre de AudioSource::bus).
+        int bus = -1;
+        std::uint64_t bus_version = 0;
+        std::string bus_name;
         ~Voice() {
             if (loaded) ma_sound_uninit(&sound);
             if (fx_ok) ma_node_uninit(&fx.base, nullptr);
         }
     };
     std::unordered_map<entt::entity, std::unique_ptr<Voice>> voices;
+    // Buses del mezclador (setBusVolume...).
+    Mixer mixer;
+    int busOf(Voice& v, const AudioSource& s) {
+        if (v.bus_version != mixer.version || v.bus_name != s.bus || v.bus < 0) {
+            v.bus_name = s.bus;
+            v.bus = mixer.resolve(s.bus, std::max(mixer.find(mixer::kEffects), 0));
+            v.bus_version = mixer.version;
+        }
+        return v.bus;
+    }
     double clock = 0.0;  // segundos de juego (para el tiempo de las voces virtuales)
     std::size_t real_voices = 0;
     std::size_t virtual_voices = 0;
@@ -860,9 +1060,16 @@ struct AudioSystem::Impl {
             cutoff = cutoff > 0.0f ? std::min(cutoff, occluded) : occluded;
             gain = std::pow(std::clamp(listener.occlusion_volume, 0.0f, 1.0f), voice.walls);
         }
+        // Bus del mezclador: su volumen (con padres, silencio y ducking) y lo
+        // que suena por el (para el ducking). Con todo a 1 no cambia nada.
+        const int bus = busOf(voice, source);
+        const float bus_gain = mixer.gain(bus);
+        if (!voice.virtual_voice && voice.loaded && ma_sound_is_playing(&voice.sound) && !source.mute) {
+            mixer.report(bus, audibility(source, position, listener_position) * gain * bus_gain);
+        }
         voice.fx.low_pass.store(cutoff, std::memory_order_relaxed);
         voice.fx.high_pass.store(source.high_pass ? source.high_pass_cutoff : 0.0f, std::memory_order_relaxed);
-        voice.fx.gain.store(gain, std::memory_order_relaxed);
+        voice.fx.gain.store(gain * bus_gain, std::memory_order_relaxed);
         voice.fx.echo_wet.store(source.echo ? std::clamp(source.echo_wet, 0.0f, 1.0f) : 0.0f, std::memory_order_relaxed);
         voice.fx.echo_delay.store(std::clamp(source.echo_delay, 0.01f, 2.0f), std::memory_order_relaxed);
         voice.fx.echo_decay.store(source.echo_decay, std::memory_order_relaxed);
@@ -967,6 +1174,9 @@ void AudioSystem::update(ecs::World& world, float delta_seconds, const Vec3& cam
     if (d.master_ok) {
         d.master.low_pass.store(d.listener.low_pass ? d.listener.low_pass_cutoff : 0.0f, std::memory_order_relaxed);
     }
+    // Buses: instantaneas, ducking (con lo que sono el frame anterior) y el volumen que llega a cada uno.
+    d.mixer.update(delta_seconds);
+    const float ambient_gain = d.mixer.gain(d.mixer.find(mixer::kAmbient));
 
     // --- Reverberacion: la zona que mas envuelve al oyente ---
     float best = 0.0f;
@@ -1003,7 +1213,12 @@ void AudioSystem::update(ecs::World& world, float delta_seconds, const Vec3& cam
             if (on) {
                 const environment::WeatherState& s = rt.current;
                 d.weather_audio.setLevels(s.rain, std::clamp(rt.wind_speed / 16.0f, 0.0f, 1.5f), s.gusts, s.dust,
-                                          std::max(env->audio_volume, 0.0f));
+                                          std::max(env->audio_volume, 0.0f) * ambient_gain);
+                // Lo que suena del clima cuenta para el ducking del bus Ambiente.
+                const float weather_level = std::max({s.rain, std::clamp(rt.wind_speed / 16.0f, 0.0f, 1.0f), s.dust});
+                if (weather_level > 0.0f) {
+                    d.mixer.report(d.mixer.find(mixer::kAmbient), weather_level * std::max(env->audio_volume, 0.0f) * ambient_gain);
+                }
             } else {
                 d.weather_audio.setLevels(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
             }
@@ -1014,8 +1229,9 @@ void AudioSystem::update(ecs::World& world, float delta_seconds, const Vec3& cam
                 }
                 // Si se paso hace mucho (pausa, editor), no suena tarde.
                 if (on && rt.elapsed - it->time < 2.0) {
-                    d.weather_audio.thunder(std::clamp(it->volume * std::max(env->thunder_volume, 0.0f), 0.0f, 2.0f),
-                                            it->distance);
+                    d.weather_audio.thunder(
+                        std::clamp(it->volume * std::max(env->thunder_volume, 0.0f), 0.0f, 2.0f) * ambient_gain,
+                        it->distance);
                 }
                 it = rt.thunder.erase(it);
             }
@@ -1050,8 +1266,10 @@ void AudioSystem::update(ecs::World& world, float delta_seconds, const Vec3& cam
         if (it->second->loaded) {
             d.apply(*it->second, *source, e.worldPosition(), delta_seconds, e);
             // Callada por un video: no ocupa una voz real (se virtualiza y vuelve donde toque).
-            it->second->audible =
-                d.ownedByStream(e) ? 0.0f : Impl::audibility(*source, e.worldPosition(), d.listener_position);
+            // Con su bus callado tampoco ocupa una voz real.
+            it->second->audible = d.ownedByStream(e) ? 0.0f
+                                                     : Impl::audibility(*source, e.worldPosition(), d.listener_position) *
+                                                           d.mixer.gain(d.busOf(*it->second, *source));
         }
         ++it;
     }
@@ -1288,6 +1506,168 @@ double AudioSystem::outputLatencySeconds() const {
                           static_cast<double>(std::max<ma_uint32>(device->playback.internalPeriods, 1));
     return rate > 0.0 ? frames / rate : 0.0;
 }
+
+// --- Buses del mezclador ---------------------------------------------------------
+
+bool AudioSystem::addBus(const std::string& name, const std::string& parent) {
+    Mixer& m = impl_->mixer;
+    if (name.empty() || m.find(name) >= 0) return false;
+    const int p = m.find(parent.empty() ? std::string(mixer::kMaster) : parent);
+    if (p < 0) return false;
+    m.add(name, p, false);
+    m.refresh();
+    return true;
+}
+
+bool AudioSystem::hasBus(const std::string& name) const { return impl_->mixer.find(name) >= 0; }
+
+bool AudioSystem::setBusParent(const std::string& name, const std::string& parent) {
+    Mixer& m = impl_->mixer;
+    const int b = m.find(name);
+    const int p = m.find(parent);
+    if (b <= 0 || p < 0 || m.ancestorOf(b, p)) return false;  // Master (0) no tiene padre; sin ciclos
+    m.buses[static_cast<std::size_t>(b)].parent = p;
+    ++m.version;
+    m.refresh();
+    return true;
+}
+
+void AudioSystem::setBusVolume(const std::string& name, float linear) {
+    Mixer& m = impl_->mixer;
+    const int b = m.find(name);
+    if (b < 0) return;
+    Mixer::Bus& bus = m.buses[static_cast<std::size_t>(b)];
+    bus.volume = std::clamp(std::isfinite(linear) ? linear : 1.0f, 0.0f, 4.0f);
+    bus.fading = false;  // un valor puesto a mano manda sobre una instantanea a medias
+    m.refresh();
+}
+
+float AudioSystem::busVolume(const std::string& name) const {
+    const int b = impl_->mixer.find(name);
+    return b < 0 ? -1.0f : impl_->mixer.buses[static_cast<std::size_t>(b)].volume;
+}
+
+void AudioSystem::setBusVolumeDb(const std::string& name, float db) { setBusVolume(name, dbToLinear(db)); }
+
+float AudioSystem::busVolumeDb(const std::string& name) const {
+    const float v = busVolume(name);
+    return v < 0.0f ? -80.0f : linearToDb(v);
+}
+
+void AudioSystem::setBusMute(const std::string& name, bool mute) {
+    Mixer& m = impl_->mixer;
+    const int b = m.find(name);
+    if (b < 0) return;
+    m.buses[static_cast<std::size_t>(b)].mute = mute;
+    m.refresh();
+}
+
+bool AudioSystem::busMuted(const std::string& name) const {
+    const int b = impl_->mixer.find(name);
+    return b >= 0 && impl_->mixer.buses[static_cast<std::size_t>(b)].mute;
+}
+
+float AudioSystem::busGain(const std::string& name) const {
+    const int b = impl_->mixer.find(name);
+    return b < 0 ? 0.0f : impl_->mixer.gain(b);
+}
+
+std::vector<AudioBusInfo> AudioSystem::buses() const {
+    const Mixer& m = impl_->mixer;
+    std::vector<AudioBusInfo> out;
+    out.reserve(m.buses.size());
+    for (const Mixer::Bus& b : m.buses) {
+        AudioBusInfo info;
+        info.name = b.name;
+        info.parent = b.parent >= 0 ? m.buses[static_cast<std::size_t>(b.parent)].name : std::string();
+        info.volume = b.volume;
+        info.mute = b.mute;
+        info.duck = b.duck;
+        info.gain = b.gain;
+        info.builtin = b.builtin;
+        out.push_back(std::move(info));
+    }
+    return out;
+}
+
+void AudioSystem::resetBuses() { impl_->mixer.reset(); }
+
+int AudioSystem::addDucking(const std::string& trigger, const std::string& target, float amount_db, float attack,
+                            float release, float threshold) {
+    Mixer& m = impl_->mixer;
+    Mixer::Duck d;
+    d.trigger = m.find(trigger);
+    d.target = m.find(target);
+    if (d.trigger < 0 || d.target < 0 || d.trigger == d.target) return -1;
+    d.amount_db = std::clamp(amount_db, -80.0f, 0.0f);
+    d.attack = std::max(attack, 0.0f);
+    d.release = std::max(release, 0.0f);
+    d.threshold = std::max(threshold, 0.0f);
+    d.id = m.next_duck++;
+    m.ducks.push_back(d);
+    return d.id;
+}
+
+void AudioSystem::removeDucking(int id) {
+    Mixer& m = impl_->mixer;
+    m.ducks.erase(std::remove_if(m.ducks.begin(), m.ducks.end(), [id](const Mixer::Duck& d) { return d.id == id; }),
+                  m.ducks.end());
+    for (Mixer::Bus& b : m.buses) b.duck = 1.0f;
+    for (const Mixer::Duck& d : m.ducks) m.buses[static_cast<std::size_t>(d.target)].duck *= d.current;
+    m.refresh();
+}
+
+void AudioSystem::clearDucking() {
+    Mixer& m = impl_->mixer;
+    m.ducks.clear();
+    for (Mixer::Bus& b : m.buses) b.duck = 1.0f;
+    m.refresh();
+}
+
+void AudioSystem::setSnapshot(const std::string& name, const std::vector<std::pair<std::string, float>>& volumes) {
+    if (name.empty()) return;
+    impl_->mixer.snapshots[name] = volumes;
+}
+
+void AudioSystem::saveSnapshot(const std::string& name) {
+    if (name.empty()) return;
+    std::vector<std::pair<std::string, float>> volumes;
+    for (const Mixer::Bus& b : impl_->mixer.buses) volumes.emplace_back(b.name, b.fading ? dbToLinear(b.fade_to_db) : b.volume);
+    impl_->mixer.snapshots[name] = std::move(volumes);
+}
+
+bool AudioSystem::transitionToSnapshot(const std::string& name, float seconds) {
+    Mixer& m = impl_->mixer;
+    const auto it = m.snapshots.find(name);
+    if (it == m.snapshots.end()) return false;
+    for (const auto& [bus_name, volume] : it->second) {
+        const int b = m.find(bus_name);
+        if (b < 0) continue;
+        Mixer::Bus& bus = m.buses[static_cast<std::size_t>(b)];
+        const float target = std::clamp(volume, 0.0f, 4.0f);
+        if (seconds <= 0.0f) {
+            bus.volume = target;
+            bus.fading = false;
+            continue;
+        }
+        bus.fading = true;
+        bus.fade_from_db = linearToDb(bus.volume);
+        bus.fade_to_db = linearToDb(target);
+        bus.fade_time = 0.0f;
+        bus.fade_duration = seconds;
+    }
+    m.refresh();
+    return true;
+}
+
+std::vector<std::string> AudioSystem::snapshots() const {
+    std::vector<std::string> names;
+    for (const auto& [name, volumes] : impl_->mixer.snapshots) names.push_back(name);
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+void AudioSystem::updateBuses(float delta_seconds) { impl_->mixer.update(delta_seconds); }
 
 void registerAudioComponents() {
     ecs::ComponentRegistry& registry = ecs::ComponentRegistry::instance();

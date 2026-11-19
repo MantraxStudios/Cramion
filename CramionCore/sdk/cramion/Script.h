@@ -915,6 +915,69 @@ inline bool sphereCast(const Vec3& origin, float radius, const Vec3& direction, 
                                                                        triggersValue(triggers)});
     return hitFromValue(r, hit);
 }
+/// (interno) Mascara, ignorar y triggers: la cola de argumentos de las consultas.
+inline void queryTail(Values& args, std::uint32_t layer_mask, Entity ignore, QueryTriggers triggers) {
+    args.push_back(Value(static_cast<double>(layer_mask)));
+    args.push_back(ignore.id() != 0 ? Value(ignore) : Value());
+    args.push_back(triggersValue(triggers));
+}
+/// (interno) Una lista de la API a impactos.
+inline std::vector<RaycastHit> hitsFromValue(const Value& r) {
+    std::vector<RaycastHit> out;
+    for (std::size_t i = 0; i < r.size(); ++i) {
+        RaycastHit h;
+        if (hitFromValue(r[i], &h)) out.push_back(h);
+    }
+    return out;
+}
+/// Caja (centro, semiejes = mitad de cada medida, giro) que avanza; true si choca.
+inline bool boxCast(const Vec3& center, const Vec3& half_extents, const Quat& rotation, const Vec3& direction,
+                    float max_distance, RaycastHit* hit, std::uint32_t layer_mask = kDefaultLayers, Entity ignore = {},
+                    QueryTriggers triggers = QueryTriggers::UseGlobal) {
+    Values args{Value(center), Value(half_extents), Value(rotation), Value(direction), Value(max_distance)};
+    queryTail(args, layer_mask, ignore, triggers);
+    return hitFromValue(cramion::detail::api("Physics.boxCast", std::move(args)), hit);
+}
+/// Capsula (centros de sus dos semiesferas y radio) que avanza; true si choca.
+inline bool capsuleCast(const Vec3& point1, const Vec3& point2, float radius, const Vec3& direction, float max_distance,
+                        RaycastHit* hit, std::uint32_t layer_mask = kDefaultLayers, Entity ignore = {},
+                        QueryTriggers triggers = QueryTriggers::UseGlobal) {
+    Values args{Value(point1), Value(point2), Value(radius), Value(direction), Value(max_distance)};
+    queryTail(args, layer_mask, ignore, triggers);
+    return hitFromValue(cramion::detail::api("Physics.capsuleCast", std::move(args)), hit);
+}
+/// Todos los que toca un rayo (uno por objeto, del mas cercano al mas lejano).
+inline std::vector<RaycastHit> raycastAll(const Vec3& origin, const Vec3& direction, float max_distance,
+                                          std::uint32_t layer_mask = kDefaultLayers, Entity ignore = {},
+                                          QueryTriggers triggers = QueryTriggers::UseGlobal) {
+    Values args{Value(origin), Value(direction), Value(max_distance)};
+    queryTail(args, layer_mask, ignore, triggers);
+    return hitsFromValue(cramion::detail::api("Physics.raycastAll", std::move(args)));
+}
+/// Todos los que toca una esfera que avanza.
+inline std::vector<RaycastHit> sphereCastAll(const Vec3& origin, float radius, const Vec3& direction, float max_distance,
+                                             std::uint32_t layer_mask = kDefaultLayers, Entity ignore = {},
+                                             QueryTriggers triggers = QueryTriggers::UseGlobal) {
+    Values args{Value(origin), Value(radius), Value(direction), Value(max_distance)};
+    queryTail(args, layer_mask, ignore, triggers);
+    return hitsFromValue(cramion::detail::api("Physics.sphereCastAll", std::move(args)));
+}
+/// Todos los que toca una caja que avanza.
+inline std::vector<RaycastHit> boxCastAll(const Vec3& center, const Vec3& half_extents, const Quat& rotation,
+                                          const Vec3& direction, float max_distance, std::uint32_t layer_mask = kDefaultLayers,
+                                          Entity ignore = {}, QueryTriggers triggers = QueryTriggers::UseGlobal) {
+    Values args{Value(center), Value(half_extents), Value(rotation), Value(direction), Value(max_distance)};
+    queryTail(args, layer_mask, ignore, triggers);
+    return hitsFromValue(cramion::detail::api("Physics.boxCastAll", std::move(args)));
+}
+/// Todos los que toca una capsula que avanza.
+inline std::vector<RaycastHit> capsuleCastAll(const Vec3& point1, const Vec3& point2, float radius, const Vec3& direction,
+                                              float max_distance, std::uint32_t layer_mask = kDefaultLayers,
+                                              Entity ignore = {}, QueryTriggers triggers = QueryTriggers::UseGlobal) {
+    Values args{Value(point1), Value(point2), Value(radius), Value(direction), Value(max_distance)};
+    queryTail(args, layer_mask, ignore, triggers);
+    return hitsFromValue(cramion::detail::api("Physics.capsuleCastAll", std::move(args)));
+}
 }  // namespace Physics
 
 // --- Time ---

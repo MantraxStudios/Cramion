@@ -1,3 +1,4 @@
+#include "CramionCore/physics/Joints.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/spline/Spline.h"
 #include "CramionCore/world/WorldPartition.h"
@@ -323,6 +324,7 @@ void registerPhysicsComponents() {
     registry.registerComponent<SoftBody>("SoftBody", "Cuerpo blando (gelatina)", "Fisica");
     registry.registerComponent<ParticleSystem>("ParticleSystem", "Particle System", "Efectos");
     registerDestructionComponents();  // Destructible (Destruction.h)
+    registerJointComponents();        // FixedJoint, HingeJoint... (Joints.h)
     // La malla editable (modelado) va con su MeshCollider: se registra aqui
     // (lo llaman el editor y el reproductor antes de abrir escenas).
     modeling::registerModelingComponents();
