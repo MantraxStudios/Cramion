@@ -12,6 +12,7 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <iostream>
 #include <unordered_set>
 
@@ -67,9 +68,19 @@ std::string describeOverride(ecs::World& world, ecs::Entity root, const std::str
 const std::string& EditorApp::prefabText(const Uuid& uuid) {
     static const std::string kEmpty;
     if (prefab_texts_version_ != database_version_) {
-        prefab_texts_.clear();
-        prefab_docs_.clear();
+        forgetPrefabTexts();
         prefab_texts_version_ = database_version_;
+        // Donde esta cada prefab (los enlaces de anidados y variantes que no
+        // estan en su ruta relativa se buscan por UUID, tambien desde los
+        // hilos de IO).
+        if (database_) {
+            std::vector<std::pair<Uuid, std::filesystem::path>> locations;
+            for (const assets::AssetInfo& info : database_->all()) {
+                if (info.type != assets::AssetType::Prefab || info.path.empty()) continue;
+                locations.emplace_back(info.uuid, info.path.is_absolute() ? info.path : database_->root() / info.path);
+            }
+            ecs::setPrefabLocations(std::move(locations));
+        }
     }
     const std::string key = uuid.toString();
     if (const auto it = prefab_texts_.find(key); it != prefab_texts_.end()) return it->second;
@@ -160,6 +171,7 @@ void EditorApp::applyPrefab(ecs::Entity root) {
         std::cerr << "[Prefab] No se pudo guardar " << dialogs::utf8(path.filename()) << ": " << error << "\n";
         return;
     }
+    forgetPrefabTexts();  // los que lo usan (anidado o variante) tambien cambian
     prefab_texts_[uuid.toString()] = text;
     // Las demas instancias de la escena reciben la version nueva ya.
     const int updated = ecs::syncOutdatedInstances(world_, [&](const Uuid& id) { return prefabText(id); });
@@ -302,6 +314,27 @@ void EditorApp::drawPrefabInspectorBar(ecs::Entity entity) {
         if (ImGui::MenuItem("Seleccionar todas las instancias", nullptr, false, prefab.valid())) selectPrefabInstances(prefab);
         if (ImGui::MenuItem("Desempaquetar")) unpackPrefab(root);
         ImGui::SetItemTooltip("Quita el enlace: quedan objetos normales");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Crear variante desde esta instancia", nullptr, false, !missing && !playing())) {
+            createPrefabVariantFromInstance(root);
+        }
+        ImGui::SetItemTooltip("Un prefab nuevo basado en este con los cambios propios de la instancia;\n"
+                              "la instancia pasa a la variante. Lo que no cambia se sigue heredando.");
+        const Uuid base = missing ? Uuid{} : cachedPrefabVariantBase(prefab, path);
+        if (ImGui::MenuItem("Abrir la base", nullptr, false, base.valid() && !prefabPath(base).empty() && !playing())) {
+            openPrefabWorkspace(base);
+        }
+        if (ImGui::MenuItem("Desvincular de la base", nullptr, false, base.valid() && !playing())) {
+            std::string error;
+            if (ecs::detachPrefabVariant(path, &error)) {
+                forgetPrefabTexts();
+                syncPrefabInstances();
+                std::cout << "[Prefab] " << name << " ya no es una variante (se quedo con lo que tenia)\n";
+            } else {
+                std::cerr << "[Prefab] No se pudo desvincular: " << error << "\n";
+            }
+        }
+        ImGui::SetItemTooltip("La variante pasa a ser un prefab normal: los cambios de la base ya no le llegan");
         ImGui::EndPopup();
     }
     ImGui::SameLine();
@@ -348,12 +381,198 @@ void EditorApp::drawPrefabHierarchyMenu(ecs::Entity entity) {
     if (ImGui::MenuItem("Aplicar al prefab", nullptr, false, linked && !missing && !playing())) applyPrefab(root);
     if (ImGui::MenuItem("Revertir", nullptr, false, linked && !missing && !playing())) revertPrefab(root);
     if (ImGui::MenuItem("Desempaquetar", nullptr, false, linked)) unpackPrefab(root);
+    // Anidados: abrir o desvincular el prefab del que viene esta entidad.
+    {
+        const ecs::PrefabLink* link = linked ? entity.tryGet<ecs::PrefabLink>() : nullptr;
+        const std::filesystem::path path = linked && !missing ? prefabPath(root.get<ecs::PrefabInstance>().prefab.uuid) : std::filesystem::path{};
+        // Copia: abrir o desvincular vacia la cache.
+        const std::optional<ecs::PrefabOrigin> origin =
+            link != nullptr && !path.empty() && !link->source.empty()
+                ? cachedPrefabOrigin(root.get<ecs::PrefabInstance>().prefab.uuid, path, link->source)
+                : std::nullopt;
+        const bool nested = origin && !origin->nested.empty() && !origin->file.empty();
+        if (ImGui::MenuItem("Abrir prefab anidado", nullptr, false, nested && !playing())) openPrefabWorkspace(origin->prefab);
+        ImGui::SetItemTooltip("Edita el prefab que esta dentro de este (sus cambios llegan a todos los que lo usan)");
+        if (ImGui::MenuItem("Desvincular prefab anidado", nullptr, false, origin && !origin->nested.empty() && !playing())) {
+            std::string error;
+            if (ecs::unlinkNestedPrefab(path, origin->nested, &error)) {
+                forgetPrefabTexts();
+                syncPrefabInstances();
+                std::cout << "[Prefab] El prefab anidado pasa a ser parte propia del prefab\n";
+            } else {
+                std::cerr << "[Prefab] No se pudo desvincular: " << error << "\n";
+            }
+        }
+        if (ImGui::MenuItem("Crear variante", nullptr, false, linked && !missing && !playing())) createPrefabVariantFromInstance(root);
+    }
     if (ImGui::MenuItem("Seleccionar la raiz", nullptr, false, linked && root != entity)) selectOnly(root.uuid());
     if (ImGui::MenuItem("Mostrar el asset", nullptr, false, linked && !missing)) {
         current_folder_ = prefabPath(root.get<ecs::PrefabInstance>().prefab.uuid).parent_path();
         show_project_ = true;
     }
     ImGui::EndMenu();
+}
+
+// --- Anidados y variantes -----------------------------------------------------------
+
+namespace {
+
+// "<carpeta>/<base> Variante.crprefab" (o " Variante 2"... si ya existe).
+std::filesystem::path variantPath(const std::filesystem::path& base_file) {
+    const std::string stem = dialogs::utf8(base_file.stem()) + " Variante";
+    std::filesystem::path path = base_file.parent_path() / dialogs::fromUtf8(stem + ecs::kPrefabExtension);
+    for (int i = 2; std::filesystem::exists(path); ++i) {
+        path = base_file.parent_path() / dialogs::fromUtf8(stem + " " + std::to_string(i) + ecs::kPrefabExtension);
+    }
+    return path;
+}
+
+}  // namespace
+
+void EditorApp::forgetPrefabTexts() {
+    prefab_texts_.clear();
+    prefab_docs_.clear();
+    prefab_origins_.clear();
+    prefab_inherited_.clear();
+    prefab_variant_bases_.clear();
+}
+
+const std::optional<ecs::PrefabOrigin>& EditorApp::cachedPrefabOrigin(const Uuid& prefab, const std::filesystem::path& path,
+                                                                      const std::string& source) {
+    prefabText(prefab);  // vacia las caches si cambio la base de datos
+    const std::string key = prefab.toString() + "|" + source;
+    auto it = prefab_origins_.find(key);
+    if (it == prefab_origins_.end()) it = prefab_origins_.emplace(key, ecs::prefabEntityOrigin(path, source)).first;
+    return it->second;
+}
+
+Uuid EditorApp::cachedPrefabVariantBase(const Uuid& prefab, const std::filesystem::path& path) {
+    prefabText(prefab);
+    auto it = prefab_variant_bases_.find(prefab);
+    if (it == prefab_variant_bases_.end()) it = prefab_variant_bases_.emplace(prefab, ecs::prefabVariantBase(ecs::readPrefabFileRaw(path))).first;
+    return it->second;
+}
+
+void EditorApp::createPrefabVariantAsset(const std::filesystem::path& base_file) {
+    if (!has_project_ || playing()) return;
+    const std::filesystem::path path = variantPath(base_file);
+    std::string error;
+    if (!ecs::createPrefabVariant(base_file, path, &error)) {
+        std::cerr << "[Prefab] No se pudo crear la variante: " << error << "\n";
+        return;
+    }
+    std::cout << "[Prefab] Variante creada: " << dialogs::utf8(path.filename()) << " (hereda de "
+              << dialogs::utf8(base_file.filename()) << ")\n";
+    refreshDatabase();
+}
+
+void EditorApp::createPrefabVariantFromInstance(ecs::Entity root) {
+    if (!root.valid() || !root.has<ecs::PrefabInstance>() || playing()) return;
+    const std::filesystem::path base = prefabPath(root.get<ecs::PrefabInstance>().prefab.uuid);
+    if (base.empty()) {
+        std::cerr << "[Prefab] El asset del prefab ya no existe\n";
+        return;
+    }
+    const std::filesystem::path path = variantPath(base);
+    std::string error;
+    const std::string text = ecs::createVariantFromInstance(world_, root, base, path, &error);
+    if (text.empty()) {
+        std::cerr << "[Prefab] No se pudo crear la variante: " << error << "\n";
+        return;
+    }
+    std::cout << "[Prefab] Variante creada desde la instancia: " << dialogs::utf8(path.filename()) << "\n";
+    refreshDatabase();
+    commit();
+}
+
+OverrideHook* EditorApp::inspectorOverrideHook(ecs::Entity entity, const std::string& component) {
+    prefab_override_hook_ = OverrideHook{};
+    prefab_override_fields_.clear();
+    if (!has_project_ || !database_ || playing() || !entity.valid()) return nullptr;
+    const ecs::Entity root = ecs::prefabRoot(entity);
+    const ecs::PrefabLink* link = entity.tryGet<ecs::PrefabLink>();
+    if (!root.valid() || link == nullptr || link->source.empty()) return nullptr;
+    const Uuid prefab = root.get<ecs::PrefabInstance>().prefab.uuid;
+    const std::filesystem::path path = prefabPath(prefab);
+    if (path.empty()) return nullptr;
+    const std::string prefix = link->source + "|" + component + "|";
+    const bool in_prefab = root == prefabStageRoot();
+    if (in_prefab) {
+        // Pestana del prefab: sus diferencias guardadas respecto a la base o
+        // a los anidados (se rehacen al guardar).
+        prefabText(prefab);  // vacia las caches si cambio la base de datos
+        auto it = prefab_inherited_.find(prefab);
+        if (it == prefab_inherited_.end()) it = prefab_inherited_.emplace(prefab, ecs::prefabInheritedOverrides(path)).first;
+        for (const std::string& key : it->second) {
+            if (key.rfind(prefix, 0) == 0) prefab_override_fields_.push_back(key.substr(prefix.size()));
+        }
+    } else {
+        for (const std::string& key : root.get<ecs::PrefabInstance>().overrides) {
+            if (key.rfind(prefix, 0) == 0) prefab_override_fields_.push_back(key.substr(prefix.size()));
+        }
+    }
+    if (prefab_override_fields_.empty()) return nullptr;
+    // De donde viene la entidad (base de la variante o prefab anidado).
+    const std::optional<ecs::PrefabOrigin>& origin = cachedPrefabOrigin(prefab, path, link->source);
+    prefab_override_hook_.in_prefab = in_prefab;
+    prefab_override_hook_.can_apply_base = origin.has_value() && !origin->file.empty();
+    prefab_override_hook_.overridden = [this](const std::string& field) {
+        return std::find(prefab_override_fields_.begin(), prefab_override_fields_.end(), field) != prefab_override_fields_.end();
+    };
+    return &prefab_override_hook_;
+}
+
+void EditorApp::inspectorOverrideAction(ecs::Entity entity, const std::string& component) {
+    if (prefab_override_hook_.action == OverrideHook::Action::None) return;
+    pending_override_ = PendingOverride{entity.uuid(), component, prefab_override_hook_.field, prefab_override_hook_.action};
+    prefab_override_hook_.action = OverrideHook::Action::None;
+}
+
+void EditorApp::runPrefabOverrideAction() {
+    if (!pending_override_) return;
+    const PendingOverride request = *pending_override_;
+    pending_override_.reset();
+    if (playing()) return;
+    const ecs::Entity entity = world_.find(request.entity);
+    const ecs::Entity root = ecs::prefabRoot(entity);
+    const ecs::PrefabLink* link = entity.valid() ? entity.tryGet<ecs::PrefabLink>() : nullptr;
+    if (!root.valid() || link == nullptr) return;
+    const Uuid prefab = root.get<ecs::PrefabInstance>().prefab.uuid;
+    const std::filesystem::path path = prefabPath(prefab);
+    if (path.empty()) return;
+    const std::string key = link->source + "|" + request.component + "|" + request.field;
+    std::string error;
+    bool changed = false;
+    if (root == prefabStageRoot()) {
+        if (request.action == OverrideHook::Action::Revert) {
+            changed = ecs::revertInheritedOverride(world_, root, key, path);
+            if (!changed) std::cerr << "[Prefab] No se pudo revertir " << request.component << "." << request.field << "\n";
+        } else if (request.action == OverrideHook::Action::ApplyBase) {
+            if (ecs::applyInheritedOverride(world_, root, key, path, &error)) {
+                forgetPrefabTexts();
+                std::cout << "[Prefab] " << request.component << "." << request.field
+                          << " aplicado a la base (la diferencia se va al guardar este prefab)\n";
+            } else {
+                std::cerr << "[Prefab] No se pudo aplicar a la base: " << error << "\n";
+            }
+        }
+    } else if (request.action == OverrideHook::Action::Revert) {
+        changed = ecs::revertOverride(world_, root, key, prefabText(prefab));
+    } else {
+        const bool to_base = request.action == OverrideHook::Action::ApplyBase;
+        const std::string text = ecs::applyOverride(world_, root, key, path, to_base, &error);
+        if (text.empty()) {
+            std::cerr << "[Prefab] No se pudo aplicar " << request.component << "." << request.field << ": " << error << "\n";
+        } else {
+            forgetPrefabTexts();
+            prefab_texts_[prefab.toString()] = text;
+            const int updated = ecs::syncOutdatedInstances(world_, [&](const Uuid& id) { return prefabText(id); });
+            std::cout << "[Prefab] " << request.component << "." << request.field << " aplicado "
+                      << (to_base ? "a la base" : "al prefab") << ", " << updated << " instancia(s) actualizada(s)\n";
+            changed = true;
+        }
+    }
+    if (changed) commit();
 }
 
 }  // namespace cramion::editor

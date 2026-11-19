@@ -548,8 +548,9 @@ bool ImGuiPropertyVisitor::label(const ecs::Meta& meta, bool animatable) {
     const float max_w = std::max(column - start_x - ImGui::GetStyle().ItemSpacing.x - diamond, 10.0f);
     ImGui::PushID(meta.key);
     ImGui::Dummy(ImVec2(max_w, h));
-    ImGui::PopID();
     const bool hovered = ImGui::IsItemHovered();
+    overrideMark(meta, pos, h);  // cambio propio de prefab: barra azul y su menu
+    ImGui::PopID();
     const ImVec2 ts = ImGui::CalcTextSize(meta.label);
     const bool clipped = ts.x > max_w;
     ImGui::PushStyleColor(ImGuiCol_Text, hovered ? theme::kText : theme::kLabel);
@@ -567,6 +568,39 @@ bool ImGuiPropertyVisitor::label(const ecs::Meta& meta, bool animatable) {
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::PushID(meta.key);
     return true;
+}
+
+// Cambio propio de prefab: barra azul a la izquierda de la fila (como Unity)
+// y, con clic derecho en la etiqueta, Revertir / Aplicar. Solo los campos de
+// arriba del componente (los cambios propios se apuntan por campo).
+void ImGuiPropertyVisitor::overrideMark(const ecs::Meta& meta, ImVec2 row_min, float h) {
+    if (override_hook_ == nullptr || !override_hook_->overridden || !list_paths_.empty()) return;
+    if (!override_hook_->overridden(meta.key)) return;
+    const bool right_clicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+    const float x = ImGui::GetWindowPos().x + 1.0f;
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(x, row_min.y + 1.0f), ImVec2(x + 3.0f, row_min.y + h - 1.0f),
+                                              IM_COL32(95, 170, 255, 255), 1.0f);
+    if (right_clicked) ImGui::OpenPopup("##prefab_override");
+    if (ImGui::BeginPopup("##prefab_override")) {
+        OverrideHook& hook = *override_hook_;
+        const auto request = [&](OverrideHook::Action action) {
+            hook.action = action;
+            hook.field = meta.key;
+        };
+        ImGui::TextDisabled("%s", hook.in_prefab ? "Diferencia con la base" : "Cambio propio de la instancia");
+        ImGui::Separator();
+        if (hook.in_prefab) {
+            if (ImGui::MenuItem("Revertir al valor de la base")) request(OverrideHook::Action::Revert);
+            if (ImGui::MenuItem("Aplicar a la base", nullptr, false, hook.can_apply_base)) request(OverrideHook::Action::ApplyBase);
+            ImGui::SetItemTooltip("Escribe este valor en el prefab base (o en el prefab anidado del que viene)");
+        } else {
+            if (ImGui::MenuItem("Revertir")) request(OverrideHook::Action::Revert);
+            if (ImGui::MenuItem("Aplicar al prefab")) request(OverrideHook::Action::Apply);
+            if (ImGui::MenuItem("Aplicar a la base", nullptr, false, hook.can_apply_base)) request(OverrideHook::Action::ApplyBase);
+            ImGui::SetItemTooltip("Escribe este valor en la base de la variante (o en el prefab anidado del que viene)");
+        }
+        ImGui::EndPopup();
+    }
 }
 
 // --- Fotogramas clave (como Blender) ---

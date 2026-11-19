@@ -376,6 +376,23 @@ private:
     std::shared_ptr<const ecs::ParsedPrefab> prefabDocument(const Uuid& uuid);
     void drawPrefabInspectorBar(ecs::Entity entity);
     void drawPrefabHierarchyMenu(ecs::Entity entity);
+    // Anidados y variantes (EditorPrefabs.cpp): crear una variante (de un
+    // .crprefab o de una instancia, que pasa a ella), los cambios propios
+    // marcados en el Inspector (revertir / aplicar al prefab o a la base) y
+    // desvincular. Las caches de prefabs se vacian al guardar uno: los que lo
+    // usan cambian aunque su archivo no.
+    void createPrefabVariantAsset(const std::filesystem::path& base_file);
+    void createPrefabVariantFromInstance(ecs::Entity root);
+    void forgetPrefabTexts();
+    OverrideHook* inspectorOverrideHook(ecs::Entity entity, const std::string& component);
+    void inspectorOverrideAction(ecs::Entity entity, const std::string& component);
+    void runPrefabOverrideAction();
+    // De donde viene una entidad de un prefab y la base de una variante, con
+    // cache (los menus se dibujan en cada frame: sin ella, leer y resolver el
+    // .crprefab entero en cada uno).
+    const std::optional<ecs::PrefabOrigin>& cachedPrefabOrigin(const Uuid& prefab, const std::filesystem::path& path,
+                                                               const std::string& source);
+    Uuid cachedPrefabVariantBase(const Uuid& prefab, const std::filesystem::path& path);
 
     // --- Espacios de trabajo (EditorWorkspaces.cpp) ---
     // Pestanas debajo del menu, como los editores de assets de Unreal: la
@@ -1505,6 +1522,20 @@ private:
         std::shared_ptr<const ecs::ParsedPrefab> doc;
     };
     std::unordered_map<Uuid, PrefabDocCache> prefab_docs_;
+    // Anidados y variantes: de donde viene cada entidad y las diferencias de
+    // cada prefab respecto a su base (se vacian con prefab_texts_).
+    std::unordered_map<std::string, std::optional<ecs::PrefabOrigin>> prefab_origins_;
+    std::unordered_map<Uuid, std::vector<std::string>> prefab_inherited_;
+    std::unordered_map<Uuid, Uuid> prefab_variant_bases_;
+    OverrideHook prefab_override_hook_;
+    std::vector<std::string> prefab_override_fields_;
+    struct PendingOverride {
+        Uuid entity;
+        std::string component;
+        std::string field;
+        OverrideHook::Action action = OverrideHook::Action::None;
+    };
+    std::optional<PendingOverride> pending_override_;
 
     // Deshacer: historial por diferencias por entidad (EditorHistory.h).
     UndoHistory history_;

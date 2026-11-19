@@ -28,7 +28,13 @@ struct PrefabDocument {
 
 std::shared_ptr<const PrefabDocument> parsePrefabDocument(const std::string& text) {
     auto document = std::make_shared<PrefabDocument>();
-    document->prefab = json::parse(text, nullptr, false);
+    // Con anidados o variante, el documento resuelto (el mismo que instancia
+    // instantiatePrefab). Los textos de readPrefabFile ya vienen resueltos.
+    if (prefabNeedsResolve(text)) {
+        document->prefab = json::parse(resolvePrefabText(text), nullptr, false);
+    } else {
+        document->prefab = json::parse(text, nullptr, false);
+    }
     if (!document->prefab.is_object()) return nullptr;
     const auto it = document->prefab.find("entities");
     if (it == document->prefab.end() || !it->is_array()) return nullptr;

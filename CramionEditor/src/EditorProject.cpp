@@ -1355,6 +1355,11 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
                         requestNewBlueprint(info.uuid, info.type, info.name);
                     }
                     ImGui::SetItemTooltip("Un Blueprint nuevo (en Assets/Blueprints) con una copia de este prefab.");
+                    if (ImGui::MenuItem("Crear variante", nullptr, false, !playing())) {
+                        createPrefabVariantAsset(info.path.is_absolute() ? info.path : database_->root() / info.path);
+                    }
+                    ImGui::SetItemTooltip("Un prefab nuevo basado en este (al lado): hereda todo y guarda solo lo que cambies.\n"
+                                          "Los cambios de este le llegan salvo lo que la variante sobrescriba.");
                     const std::size_t count = ecs::prefabInstances(world_, info.uuid).size();
                     if (ImGui::MenuItem(("Seleccionar instancias (" + std::to_string(count) + ")").c_str(), nullptr, false, count > 0)) {
                         selectPrefabInstances(info.uuid);

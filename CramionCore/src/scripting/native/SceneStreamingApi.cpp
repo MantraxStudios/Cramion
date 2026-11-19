@@ -86,6 +86,7 @@ struct ParseJob {
     std::filesystem::file_time_type known_stamp{};  // el de la cache (si habia)
     Template known;                                 // el de la cache (si habia)
     std::size_t known_bytes = 0;
+    std::uint64_t writes = 0;  // ecs::prefabWriteGeneration() al lanzarla
     // Lo escribe la tarea:
     Template prefab;
     std::filesystem::file_time_type stamp{};
@@ -165,6 +166,17 @@ struct State {
         world = nullptr;
     }
 
+    // Si se escribio algun .crprefab (un prefab con anidados o variante
+    // cambia con lo que usa aunque su archivo no): la cache entera fuera.
+    std::uint64_t prefab_writes = 0;
+    void checkPrefabWrites() {
+        const std::uint64_t writes = ecs::prefabWriteGeneration();
+        if (writes == prefab_writes) return;
+        prefab_writes = writes;
+        cache.clear();
+        cache_bytes = 0;
+    }
+
     void trimCache() {
         const std::size_t limit = static_cast<std::size_t>(std::max(0, g_prefab_cache_mb.get())) * 1024u * 1024u;
         while (cache_bytes > limit && !cache.empty()) {
@@ -186,8 +198,10 @@ Template compileText(const std::string& text, std::size_t& bytes) {
 }
 
 std::shared_ptr<ParseJob> launchParse(State& s, const std::filesystem::path& file, const std::string& key) {
+    s.checkPrefabWrites();
     auto job = std::make_shared<ParseJob>();
     job->file = file;
+    job->writes = s.prefab_writes;
     if (const auto it = s.cache.find(key); it != s.cache.end()) {
         it->second.last_use = ++s.use_clock;
         // Comprobada hace poco: sin tocar el disco (antes, un stat por
@@ -238,12 +252,18 @@ void remember(State& s, const std::string& key, const Template& prefab, std::fil
     s.trimCache();
 }
 
-void remember(State& s, const std::string& key, const ParseJob& job) { remember(s, key, job.prefab, job.stamp, job.bytes); }
+// Una lectura lanzada antes de escribirse un .crprefab puede traer el prefab
+// de antes (anidados y variantes): vale para lo que se pidio, no para la cache.
+void remember(State& s, const std::string& key, const ParseJob& job) {
+    if (job.writes != ecs::prefabWriteGeneration()) return;
+    remember(s, key, job.prefab, job.stamp, job.bytes);
+}
 
 // La plantilla ya, en este hilo (Scene.instantiate, Scene.acquire sin pool
 // lleno): de la cache si esta al dia; si no, se lee, se parsea y se compila
 // aqui (la primera vez cuesta lo de antes; las siguientes, solo crear).
 Template templateNow(State& s, const std::filesystem::path& file, const std::string& key) {
+    s.checkPrefabWrites();
     const auto now = std::chrono::steady_clock::now();
     const auto it = s.cache.find(key);
     if (it != s.cache.end() && now - it->second.checked < kStampCheck) {
