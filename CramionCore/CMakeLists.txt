@@ -199,8 +199,11 @@ if(WIN32)
     target_link_libraries(CramionAssets PRIVATE shell32 ole32)
 endif()
 if(NOT ANDROID)
-add_executable(cramion_asset_tool "${CMAKE_CURRENT_SOURCE_DIR}/tools/AssetTool.cpp")
-target_link_libraries(cramion_asset_tool PRIVATE Cramion::Assets)
+# Importer.cpp registra CVars (asset.fbx.Loader, asset.import.BlendShapes):
+# la herramienta no enlaza CramionCore, asi que lleva su propio registro.
+add_executable(cramion_asset_tool "${CMAKE_CURRENT_SOURCE_DIR}/tools/AssetTool.cpp"
+                                  "${CMAKE_CURRENT_SOURCE_DIR}/src/cvar/CVar.cpp")
+target_link_libraries(cramion_asset_tool PRIVATE Cramion::Assets nlohmann_json::nlohmann_json)
 target_compile_options(cramion_asset_tool PRIVATE -Wall -Wextra)
 endif()
 

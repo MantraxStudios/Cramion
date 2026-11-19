@@ -116,6 +116,14 @@ function(cramion_register_tests)
     cramion_test(CramionCppScriptTests LABELS lentos TIMEOUT 900)  # compila scripts de C++ con clang
     cramion_test(CramionVoxelTests LABELS lentos TIMEOUT 900)
     cramion_test(CramionTextureTests)
+    # Tanda del ROADMAP 2.8.0 (rm-*): las pruebas nuevas de cada bloque.
+    cramion_test(CramionCoroutineTests)           # SCRIPTS: corrutinas e invoke
+    cramion_test(CramionRenderLayersTests)        # CAPAS: capas de render, viewmodel, Outline
+    cramion_test(CramionOutputTests)              # SALIDA: LUT .cube, HDR, baja latencia
+    cramion_test(CramionReflectionProbeTests)     # LUZ: sondas con caja
+    cramion_test(CramionFbxTests)                 # UFBX: cargador de FBX y formas de mezcla
+    cramion_test(CramionMobileTextureTests)       # ANDROID: ASTC/ETC2
+    cramion_test(CramionRamCrashTests)            # ANDROID: presupuesto de RAM e informes de cierre
 
     # --- CramionCore/tests/native: una por modulo de la API de scripting ---
     file(GLOB api_tests "${CMAKE_SOURCE_DIR}/CramionCore/tests/native/*Tests.cpp")

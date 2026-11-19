@@ -13,11 +13,11 @@ Tamaños: **S** (horas a 2 días), **M** (1-2 semanas), **L** (3-6 semanas), **X
 El motor ya está muy por encima de lo habitual en un motor propio: diferido Vulkan 1.3 con modo compatible, PBR de Disney completo, PCSS, RT (sombras, reflejos, DDGI, path tracing), FSR 3.1 y DLSS 4, océano FFT, follaje en GPU, Hi-Z, meshlets, VFX Graph en GPU, World Partition con HLOD, Jolt (ragdoll, vehículos, tela, fractura), Recast/Detour con multitudes, servidor dedicado con compensación de lag, Motion Matching, Enhanced Input y un editor completo con MCP. Lo que falta no son técnicas sueltas, sino **robustez** y **arquitectura para escenas grandes**:
 
 1. **El editor no escala del todo:** parar Play y volver de una pestaña de prefab siguen rehaciendo el mundo entero.
-2. **Flujo de assets:** el importador de FBX sigue sin ufbx.
-3. **Prefabs y spawn:** no hay prefabs anidados ni variantes.
-4. **Render para juego:** sin máscara reactiva para DLSS.
-5. **Animación de gameplay:** no hay capas con máscara, aditivas, root motion, eventos (notifies) ni montages.
-6. **Plataforma y seguridad:** no hay CI ni CTest y el `.crpack` se descomprime entero al primer arranque.
+2. **Flujo de assets:** 🟡 ufbx ya está (2.8.0) detrás de `asset.fbx.Loader`; falta probarlo con FBX reales y que pase a ser el de por defecto.
+3. **Prefabs y spawn:** ✅ prefabs anidados y variantes en 2.8.0 (falta probar el editor a mano).
+4. **Render para juego:** ✅ máscara reactiva para DLSS en 2.8.0 (falta verla en GPU).
+5. **Animación de gameplay:** ✅ capas con máscara, aditivas, root motion, eventos (notifies) y montages en 2.8.0 (falta verlos en GPU).
+6. **Plataforma y seguridad:** 🟡 CTest y la CI ya están (2.8.0, sin la primera pasada en GitHub); el `.crpack` se sigue descomprimiendo entero al primer arranque.
 
 ---
 
@@ -27,7 +27,7 @@ Lo que más rinde por esfuerzo, en orden de ataque. Lista completa por área en 
 
 | # | Título | Área | Dónde | Tam. | Por qué |
 |---|---|---|---|---|---|
-| 1 | 🟡 FBX con una toma rota | Núcleo | `CramionFX/src/asset/ModelLoader.cpp:1059-1074` | L | ufbx como cargador de FBX, como hizo Godot 4.3. **🟡 2026-10-20 (R1):** la relectura sin validar + `repairAnimations` ya está. Falta ufbx. |
+| 1 | 🟡 FBX con una toma rota | Núcleo | `CramionFX/src/asset/ModelLoader.cpp:1059-1074` | L | ufbx como cargador de FBX, como hizo Godot 4.3. **🟡 2026-10-20 (R1):** la relectura sin validar + `repairAnimations` ya está. **🟡 2.8.0:** ufbx 0.23.1 detrás de `asset.fbx.Loader` (por defecto sigue assimp); falta probarlo con FBX reales y decidir si pasa a ser el de por defecto. |
 | 2 | 🟡 Recarga de assets editados en disco | Núcleo/Editor | `EditorProject.cpp:91-133`; `AssetDatabase.cpp:70-150` | L | **🟡 2026-10-20 (R2, R5):** faltan imágenes de UI, sprites, capas de `.crterrain`, texturas incrustadas en `.crdata`, skyboxes, los cambios hechos con el editor cerrado y el vigilante en macOS. |
 | 3 | 🟡 Física de edición incremental sin medir | Editor | `EditorPhysics.cpp:514-515`; `PhysicsSystem.cpp:2952-3060` | S | Falta medir en el editor con Ashbound la «Física» en reposo con `physics.IncrementalEditSync` a 0 y a 1. |
 | 4 | 🟡 World Partition en el editor: huellas del mundo entero | Núcleo/Editor | `CramionCore/include/CramionCore/world/WorldPartition.h:2-30` | — | Pendiente: `UndoHistory::absorb` para no calcular huellas del mundo entero en cada frame con celdas entrando. |
@@ -35,7 +35,7 @@ Lo que más rinde por esfuerzo, en orden de ataque. Lista completa por área en 
 | 6 | 🟡 Viajes IPC de los scripts | Scripting | `CppScripts.cpp` ~2589-2640, ~1194, ~772 | M | **🟡 (R1, R5):** falta juntar callbacks, mensajes y `Create`. |
 | 7 | 🟡 Mando: lo que falta | Scripting/Input | `CramionDM/src/Window.cpp`, `WindowX11.cpp`, `Input.cpp` | M | Faltan GameInput, HID genéricos en Windows, vibración en Android y compilar `WindowX11.cpp` en Linux. |
 | 8 | 🟡 Referencias sin UUID | Editor | `EditorProject.cpp:701-718, 1240-1248` | M | Siguen sin UUID las rutas dentro del código `.cpp` y las escenas por nombre. |
-| 9 | No hay CI ni CTest | Plataforma | raíz (sin `.github/`), todos los `CMakeLists` (sin `add_test`) | L | ~60 ejecutables de tests a mano; Android y shaders compatibles se compilan a mano. Las regresiones se ven al jugar. |
+| 9 | 🟡 CI y CTest | Plataforma | `cmake/CramionTests.cmake`; `.github/workflows/ci.yml` | L | **🟡 2.8.0:** CTest con etiquetas, presets y workflow de GitHub. Falta la primera pasada real en GitHub (sobre todo Linux), arreglar `CramionFeatures21Tests` (la CI de Windows sale en rojo), dejar `rapidos-asan` en verde y meter Android y `cramion_docgen`. |
 
 ---
 
@@ -49,21 +49,21 @@ Cada ítem: **prioridad · tamaño** — dónde — por qué. Comparación con U
 
 - 🟡 **`waitIdle()` en caminos de juego** — P1 · M — ver tabla, punto 5. *Quedan sombras locales, cambio de resolución y filtrado de texturas.*
 - 🟡 **LOD automático** — P1 · M — *Falta el fundido con tramado en personajes, sombras, mesh shaders y modo compatible.* — `CramionFX/src/asset/MeshLod.cpp`.
-- **DLSS sin máscara reactiva** — P1 · M — `TemporalUpscalers.cpp/.h:39-55`. FSR 3 y el TAA propio ya la reciben (transparentes y reflejos nítidos); falta pasarla a NGX.
+- ✅ **DLSS sin máscara reactiva** — P1 · M — *Hecho en 2.8.0: `pInBiasCurrentColorMask`, CVar `render.DlssReactiveMask`; falta mirarlo en GPU.* — `TemporalUpscalers.cpp`.
 - 🟡 **Ruido de `.crshader`** — P2 · S — *Falta compartir el voronoi con el Shader Graph.* — `CramionFX/shaders/surface_common.glsl`.
 
 #### Añadir
 
 - 🟡 **Color por vértice** — P1 · M — *Falta `RuntimeMesh.colors` y la interfaz en el editor.* — `Model.h:24-35` (SkinnedVertex).
 - 🟡 **Parámetros de material por instancia** — P1 · M — *Falta `INSTANCE_DATA` en `vertex()` y su nodo.* — `Components.h:98-114` (MeshRenderer). Es una versión ligera de B8 de MEJORA (sin esperar a bindless).
-- **Outlines de juego, capas de render y arma en primera persona** — P1 · M — `VulkanRenderer.h:518-521` (setOutlinedActors, solo editor); `Components.h` (Camera sin máscara). Faltan silueta a través de paredes (MOBA), bitmask de capas en MeshRenderer y Camera, y modo «viewmodel» con FOV propio. UE5 Custom Depth/Stencil, Unity Rendering Layers, Godot `cull_mask`.
-- **Baja latencia (Reflex / Anti-Lag 2 / present_wait)** — P1 · M — `drawFrame`; `VulkanSwapchain.cpp`; `VulkanCommon.h:61`. Necesario en shooters y para la generación de frames. UE5 y Unity 6 tienen Reflex.
-- **Sondas de reflexión colocables con caja** — P2 · M — `ReflectionProbe.h:16-46`; `lighting.frag:73`. Una sola sonda pegada a la cámara; en gama media es la fuente principal de reflejos. Array de sondas horneadas con paralaje de caja.
+- 🟡 **Outlines de juego, capas de render y arma en primera persona** — P1 · M — *2.8.0: hecho (capas en MeshRenderer, culling mask, `shadow_layers`, viewmodel, componente Outline en el juego). Faltan capas en partículas/VFX, terreno, vegetación, vóxeles, agua y sprites, capas de luz que controlen la iluminación, sombra y VR del viewmodel, y probar en GPU.* — `VulkanRenderer.h:518-521` (setOutlinedActors, solo editor); `Components.h` (Camera sin máscara). Faltan silueta a través de paredes (MOBA), bitmask de capas en MeshRenderer y Camera, y modo «viewmodel» con FOV propio. UE5 Custom Depth/Stencil, Unity Rendering Layers, Godot `cull_mask`.
+- 🟡 **Baja latencia (Reflex / Anti-Lag 2 / present_wait)** — P1 · M — *2.8.0: hecho, apagado por defecto; falta probarlo en NVIDIA, AMD y otra GPU, y la notificación fuera de banda de Reflex.* — `drawFrame`; `VulkanSwapchain.cpp`; `VulkanCommon.h:61`. Necesario en shooters y para la generación de frames. UE5 y Unity 6 tienen Reflex.
+- 🟡 **Sondas de reflexión colocables con caja** — P2 · M — *2.8.0: hecho (`ReflectionProbeBox`, `.crrefl`, mezcla de 2 por píxel). Faltan modo compatible, agua y vidrio, gizmo de la caja, `.crrefl` comprimido, API de scripts y probar en GPU.* — `ReflectionProbe.h:16-46`; `lighting.frag:73`. Una sola sonda pegada a la cámara; en gama media es la fuente principal de reflejos. Array de sondas horneadas con paralaje de caja.
 - 🟡 **Herramientas de depuración de GPU** — P2 · S — *Faltan nombres en las pipelines gráficas y en las texturas de los modelos.* — `VulkanInstance.cpp:26-90, 166`.
-- **Salida HDR10/scRGB** — P2 · M — `VulkanSwapchain.cpp:101, 170-185` (solo `eSrgbNonlinear`). El motor ya renderiza en HDR con AgX.
+- 🟡 **Salida HDR10/scRGB** — P2 · M — *2.8.0: hecho, apagado por defecto; falta probarlo en una pantalla HDR, `ldr_color_` de 16 bits para un HDR exacto y la UI en el mundo.* — `VulkanSwapchain.cpp:101, 170-185` (solo `eSrgbNonlinear`). El motor ya renderiza en HDR con AgX.
 - **Piel con subsurface en pantalla y modelo de ojo** — P3 · M — `disney_brdf.glsl`; `lighting.frag:1531`. Para primeros planos (selección de héroe, tienda).
 - **XeSS y generación de frames** — P3 · M — `GraphicsSettings.h:22`. Depende de la baja latencia.
-- **LUT 3D importable (.cube)** — P3 · S — `composite.frag:15-49`.
+- ✅ **LUT 3D importable (.cube)** — P3 · S — *Hecho en 2.8.0 (`PostProcessing.color_lut`). Queda: cambiar de LUT aún relee el `.cube` con `waitIdle`, sin recarga al editar el archivo ni selector de archivo.* — `composite.frag`.
 
 #### Mejorar
 
@@ -71,7 +71,7 @@ Cada ítem: **prioridad · tamaño** — dónde — por qué. Comparación con U
 - 🟡 **Escena de rayos incremental** — P1 · L — *Queda la reconstrucción entera al editar un modelo que ya está en la escena.* — `VulkanRendererRayScene.cpp`.
 - 🟡 **Decals** — P1 · M — *Falta el recorte por clúster 3D.* — `gbuffer_surface.glsl`.
 - **Niebla en froxels para transparentes** — P2 · L — `volumetric.frag`; `vfx.frag`, `particle.frag`, `glass.frag`, `sprite.frag` sin niebla. Todo lo transparente brilla a través de la niebla. Volumen 3D compartido como en UE5, HDRP y Godot.
-- **GTAO con normales dobladas y oclusión especular** — P2 · M — `ssao.frag:1-16`. XeGTAO (MIT).
+- 🟡 **GTAO con normales dobladas y oclusión especular** — P2 · M — *2.8.0: hecho detrás de `render.ao.Gtao` (apagado). Faltan cadena de mips de profundidad, historia temporal propia y probar en GPU.* — `gtao.frag`. XeGTAO (MIT).
 - **Terreno: agujeros, triplanar, mezcla por altura** — P2 · M — `terrain.frag`; `Terrain.h:38` (8 capas). Agujeros para cuevas y caminos, sin estiramiento en acantilados.
 - **HLOD de World Partition con texturas horneadas** — P2 · M — `ProxyMesh.h:1-30`; `WorldPartition.cpp:140-152, 1201`. Hoy un color medio por grupo de materiales («plastilina»). Distinto de B11/B12 de MEJORA: es lo que le falta al HLOD que ya existe.
 - **Orden entre familias de transparentes / OIT** — P3 · L — `VulkanRenderer.cpp:6209-6240`. El humo detrás de una ventana se pinta encima del vidrio.
@@ -80,29 +80,29 @@ Cada ítem: **prioridad · tamaño** — dónde — por qué. Comparación con U
 
 #### Reparar
 
-- 🟡 **FBX con toma rota** — P1 · L — *Falta ufbx (2-4 semanas con pruebas de paridad).* — tabla, punto 1.
+- 🟡 **FBX con toma rota** — P1 · L — *2.8.0: ufbx detrás de `asset.fbx.Loader`; falta probarlo con FBX reales.* — tabla, punto 1.
 
 #### Añadir
 
 - 🟡 **Recarga en caliente de assets editados en disco** — P1 · L — *Faltan algunos tipos, los skyboxes y los cambios con el editor cerrado.* — tabla, punto 2.
-- **Prefabs anidados y variantes** — P1 · L — `Prefab.h:24`; `Prefab.cpp:172` (flattenNested), :227, :412. Héroes con skins, minions por facción y piezas reutilizadas obligan a duplicar. Unity Nested/Variants, UE5 Child Blueprints, Godot escenas heredadas.
-- **Animator con capas, máscara de huesos y aditivas** — P1 · L — `AnimatorController.h`; `CramionFX/anim/Animator.h` (evaluateBlend). Lanzar o apuntar con el torso mientras se corre, retroceso, aim offsets.
-- **Root motion** — P1 · M — `Components.h:120-142`; `RenderSyncMotion.cpp:269`. Ataques con avance, esquivas, saltos de habilidad.
-- **Eventos (notifies) y curvas en los clips, con ventana de clips en el editor** — P1 · M — `Model.h:224-235`; `EditorAnimator.cpp` (solo el grafo). El fotograma del golpe y el cast point de un MOBA se sincronizan con esto. Incluye una ventana para previsualizar y recorrer un clip y marcar eventos.
-- **Buses de audio y volumen maestro, de música y de efectos** — P1 · M — `audio/Audio.h:38-66, 109-190`; `CoreApi.cpp:408-444`. Ni siquiera hay deslizadores para el menú de opciones; después, ducking e instantáneas. Unity AudioMixer, UE5 Submix, Godot AudioServer.
+- 🟡 **Prefabs anidados y variantes** — P1 · L — *2.8.0: hecho (`prefab.SaveNested` apagada por defecto). Faltan aplicar por separado entidades y componentes añadidos o quitados desde el Inspector, iconos propios, cambiar la base de una variante, herramientas MCP y probar el editor a mano.* — `Prefab.h:24`; `Prefab.cpp:172` (flattenNested), :227, :412. Héroes con skins, minions por facción y piezas reutilizadas obligan a duplicar. Unity Nested/Variants, UE5 Child Blueprints, Godot escenas heredadas.
+- 🟡 **Animator con capas, máscara de huesos y aditivas** — P1 · L — *2.8.0: hecho. Faltan selector y editor de `.crmask`, el estado en vivo de las capas en la ventana Animator y probar en GPU.* — `AnimatorController.h`; `CramionFX/anim/Animator.h` (evaluateBlend). Lanzar o apuntar con el torso mientras se corre, retroceso, aim offsets.
+- ✅ **Root motion** — P1 · M — *Hecho en 2.8.0 (Transform, Character Controller, Rigidbody, Script). Queda: no combinarlo con el Motion Matching y tirones con LOD de animación en modo Rigidbody.* — `Components.h:120-142`; `RenderSyncMotion.cpp:269`. Ataques con avance, esquivas, saltos de habilidad.
+- 🟡 **Eventos (notifies) y curvas en los clips, con ventana de clips en el editor** — P1 · M — *2.8.0: hecho. Faltan editor de curvas, recarga en caliente del `.crclipmeta` y que el DataPack lo recoja.* — `Model.h:224-235`; `EditorAnimator.cpp` (solo el grafo). El fotograma del golpe y el cast point de un MOBA se sincronizan con esto. Incluye una ventana para previsualizar y recorrer un clip y marcar eventos.
+- 🟡 **Buses de audio y volumen maestro, de música y de efectos** — P1 · M — *2.8.0: hecho con ducking e instantáneas. Faltan buses por proyecto en un archivo, ventana Mezclador con medidores, efectos por bus y el bus de los one-shot en las repeticiones.* — `audio/Audio.h:38-66, 109-190`; `CoreApi.cpp:408-444`. Ni siquiera hay deslizadores para el menú de opciones; después, ducking e instantáneas. Unity AudioMixer, UE5 Submix, Godot AudioServer.
 - **Red autoritativa con predicción y reconciliación** — P1 · XL — `net/Network.h:1-45`; `NetworkObject.h`. El dueño es la autoridad de su posición: trampas y mala sensación con latencia. UE5 CharacterMovement con predicción, Unity Netcode for Entities.
-- **Montages / slots de animación puntual** — P2 · M — depende de capas y eventos.
-- **Morph targets** — P2 · L — `ModelLoader.cpp`, `Model.h`, `SkinnedPass.cpp` (no se lee `mAnimMeshes`).
+- ✅ **Montages / slots de animación puntual** — P2 · M — *Hecho en 2.8.0.*
+- 🟡 **Morph targets** — P2 · L — *2.8.0: se importan (ufbx y assimp) y se guardan (bloque `BSHP`). Faltan aplicarlos en la GPU (`morph.comp`), la API `setBlendShapeWeight` y que el Animator muestree `blend_tracks`.* — `ModelLoader.cpp`, `Model.h`, `SkinnedPass.cpp` (no se lee `mAnimMeshes`).
 - **Opciones de importación: cortar clips, bucle, esqueleto compartido y colisión UCX** — P2 · M — `Importer.h:43-67`.
 - **Carga de escenas asíncrona y aditiva, entidades persistentes** — P2 · M — `CoreApi.cpp:102-111`; `PlayerMain.cpp:1209-1260`. HUD, lobby, precargar la siguiente partida.
 - **Grafo de dependencias de assets** — P2 · M — `AssetDatabase.h`; reutilizar `DataPack.h:59` (collectDependencies). Base para exportar solo lo usado (3.5), el visor de referencias y el borrado seguro (3.4).
-- **Seguimiento y presupuesto de RAM (incluido Android)** — P2 · M — `AssetManager.h:127-147` (`models_` sin expulsión); `profiling/`; `AndroidSupport.cpp` (sin `onTrimMemory`). La VRAM ya tiene LRU (2.5.2); la RAM no, y en Android el proceso muere sin informe.
+- 🟡 **Seguimiento y presupuesto de RAM (incluido Android)** — P2 · M — *2.8.0: presupuesto LRU de modelos y avisos de memoria baja (apagado por defecto). Falta que RenderSync suelte los modelos sin instancias (hoy libera poco) y liberar otras cachés.* — `AssetManager.h:127-147` (`models_` sin expulsión); `profiling/`; `AndroidSupport.cpp` (sin `onTrimMemory`). La VRAM ya tiene LRU (2.5.2); la RAM no, y en Android el proceso muere sin informe.
 - **Audio: variaciones aleatorias, prioridades, curvas de atenuación y HRTF** — P2 · M — `Audio.h:36-66`; `Audio.cpp:23`.
 - **Red: RPC por objeto, mensajes no fiables, delta y presupuesto** — P2 · M — `Network.h:10-12`; `Network.cpp:416-437, 559-579`.
 - **Navmesh horneada y guardada** — P2 · M — `NavigationSystem.cpp:1-21, 711-721`. Hoy se rehace en cada arranque y en el servidor.
 - **Navegación: enlaces fuera de malla, áreas con coste, varios tipos de agente** — P2 · L — `Navigation.h:57-120`.
-- **Juntas de física (bisagra, fija, muelle, 6DOF)** — P2 · M — `PhysicsComponents.h`. Jolt ya las trae.
-- **Consultas: boxCast, capsuleCast, overlapBox, raycastAll en 3D** — P2 · S — `CoreApi.cpp:352`; `Api.gen.h:1605`.
+- 🟡 **Juntas de física (bisagra, fija, muelle, 6DOF)** — P2 · M — *2.8.0: hecho. Faltan motores por eje de la 6DOF, réplica por red y un gizmo más rico.* — `PhysicsComponents.h`. Jolt ya las trae.
+- ✅ **Consultas: boxCast, capsuleCast, overlapBox, raycastAll en 3D** — P2 · S — *Hecho en 2.8.0.* — `CoreApi.cpp:352`; `Api.gen.h:1605`.
 - **Ragdoll con motores y parcial** — P3 · M — `Ragdoll.h`; `PhysicsSystem.cpp:794-951`.
 - **Behavior Trees con subárboles; EQS** — P3 · M — `ai/BehaviorTree.h`.
 - **Captura de fallos en el servidor dedicado** — P3 · S — `CramionEditor/server/ServerMain.cpp` (sin `set_terminate` ni minidump, que sí tienen editor y player).
@@ -123,13 +123,13 @@ El aislamiento de scripts en `CramionScriptHost.exe` es más robusto que en Unit
 #### Reparar
 
 - 🟡 **Mando en escritorio** — P1 · M — *Faltan GameInput, HID genéricos, vibración en Android y `WindowX11.cpp` en Linux.* — tabla, punto 7.
-- **Orden de ejecución no determinista** — P2 · S — `CppScripts.cpp:1111` (`unordered_map`), ~1872. Errores de «un frame tarde» irreproducibles; impide lockstep, replays y rollback. Orden estable y prioridad por clase (Unity Script Execution Order, UE5 TickGroups).
+- ✅ **Orden de ejecución no determinista** — P2 · S — *Hecho en 2.8.0 (`kExecutionOrder`, `script.ExecutionOrder`; solo scripts de C++).* — `CppScripts.cpp:1111` (`unordered_map`), ~1872. Errores de «un frame tarde» irreproducibles; impide lockstep, replays y rollback. Orden estable y prioridad por clase (Unity Script Execution Order, UE5 TickGroups).
 - **Respuestas de más de 4 MB truncadas sin aviso** — P3 · S — `CppScripts.cpp` ~778, ~799; `ScriptHost.cpp:158`.
 
 #### Añadir
 
 - **Rotación y escala en RectTransform** — P1 · M — `UI.h:69-76, 261, 266`; `UiRenderer.cpp`. Brújulas, minimapa que gira, indicadores de daño, «pop» por escala; hit-test con la transformación inversa.
-- **Corrutinas y temporizadores para el juego** — P2 · M — `Script.h`; `Test.h` ya tiene la maquinaria (`Task`, `waitSeconds`, `waitUntil`). Sacarla a `cramion::Task<T>` cancelada en onDestroy/onDisable.
+- 🟡 **Corrutinas y temporizadores para el juego** — P2 · M — *2.8.0: hecho en C++ (`cramion/Coroutine.h`). Faltan en Visual Scripts, unificar `Test.h` y un `Time.timeScale` global.* — `Script.h`; `Test.h` ya tiene la maquinaria (`Task`, `waitSeconds`, `waitUntil`). Sacarla a `cramion::Task<T>` cancelada en onDestroy/onDisable.
 - **Depuración de C++** — P2 · M — `CppScripts.cpp:68-74` (TimeoutMs 2000, Optimize true). Botón «Adjuntar depurador», `-O0` en modo Depurar, sin tiempo máximo con `IsDebuggerPresent`, `launch.json`; perfil por clase.
 - **Inspector en Play con valores vivos de `Property<T>`** — P2 · M — `CppScripts.cpp` ~1776-1785; `EditorCppScripts.cpp`. `Op::Snapshot` ya existe.
 - **UIEventTrigger y Button: central, rueda, pointer down/up, pulsación larga** — P2 · S — `UI.h:124-134, 245-259, 302-335`; `UiRenderer.cpp:317-335`.
@@ -157,7 +157,7 @@ El aislamiento de scripts en `CramionScriptHost.exe` es más robusto que en Unit
 #### Añadir
 
 - **Play con N clientes y servidor** — P1 · M — `EditorPhysics.cpp` ~620-700. Imprescindible para probar un 5v5. UE5 Number of Players, Unity Multiplayer Play Mode, Godot Run Multiple Instances.
-- **Dibujo de depuración desde scripts** — P1 · S — `Api.gen.h:190-197` (solo `Debug.warn`). `Debug.drawLine/Sphere/Box/Ray/Text` con duración; el editor ya tiene `overlayLine`.
+- ✅ **Dibujo de depuración desde scripts** — P1 · S — *Hecho en 2.8.0 (`Debug.draw*`); falta verlo en GPU.* — `Api.gen.h:190-197` (solo `Debug.warn`). `Debug.drawLine/Sphere/Box/Ray/Text` con duración; el editor ya tiene `overlayLine`.
 - **Selección por recuadro, ajuste a vértice y superficie, bajar al suelo** — P2 · M — `EditorViewport.cpp:123-143`; `EditorSceneView.cpp:612`.
 - **Visor de referencias y borrado seguro** — P2 · M — `EditorProject.cpp:1719-1770` (el modal además recorre carpetas cada frame). Depende del grafo de dependencias (3.2).
 - **Shader Graph: subgrafos y materiales derivados (padre e instancias)** — P2 · L — `ShaderGraph.cpp:110-340`; `EditorGraphs.cpp` (vista previa en CPU); `MaterialAsset.h`.
@@ -182,14 +182,14 @@ Ya existe y está bien: manejador de crash con minidump en Windows, escritura at
 
 #### Reparar
 
-- **Licencias en los juegos exportados y dependencias sin versión fija** — P2 · S — `EditorExport.cpp`; `PackageRelease.cmake:73-81`; `CramionFX/CMakeLists.txt:61, 83` (stb y FidelityFX con `GIT_TAG master`). Revisar si SPIRV-Tools/SPIRV-Cross se enlazan y faltan en `THIRD_PARTY_NOTICES.md`.
+- 🟡 **Licencias en los juegos exportados y dependencias sin versión fija** — P2 · S — *2.8.0: dependencias fijadas (stb, FSR 1) y `THIRD_PARTY_NOTICES.md` completado; falta revisar las licencias del export.* — `EditorExport.cpp`; `PackageRelease.cmake:73-81`; `CramionFX/CMakeLists.txt:61, 83` (stb y FidelityFX con `GIT_TAG master`). Revisar si SPIRV-Tools/SPIRV-Cross se enlazan y faltan en `THIRD_PARTY_NOTICES.md`.
 
 #### Añadir
 
-- **Envío de informes de crash; informe completo en Android y en el player** — P1 · M — `LoadingScreen.cpp`; `EditorCrashReport.cpp:20-21`; `AndroidSupport.cpp:270-290` (funciones vacías). Subir el `.dmp` al `web-api` propio.
-- **CI con CTest** — P1 · L — tabla, punto 9. Windows + Android + Linux (servidor), tests, shaders compatibles, regenerar SDK y manual.
+- 🟡 **Envío de informes de crash; informe completo en Android y en el player** — P1 · M — *2.8.0: informe completo en Android y envío opcional (apagado). Faltan el receptor en `web-api` y el consentimiento del jugador.* — `LoadingScreen.cpp`; `EditorCrashReport.cpp:20-21`; `AndroidSupport.cpp:270-290` (funciones vacías). Subir el `.dmp` al `web-api` propio.
+- 🟡 **CI con CTest** — P1 · L — tabla, punto 9. Windows + Android + Linux (servidor), tests, shaders compatibles, regenerar SDK y manual.
 - **Pruebas del render con imágenes de referencia** — P1 · L — ningún test usa `VulkanRenderer` ni `VulkanDevice`. Capturas comparadas, pasada con validación que falle y umbrales en `RenderBench` y `StreamingBench`.
-- **Sanitizers y fuzzing de formatos externos** — P2 · M — `.crwpack`, `.datapack`, escenas y red. Clang ya es el compilador.
+- 🟡 **Sanitizers y fuzzing de formatos externos** — P2 · M — *2.8.0: `CRAMION_SANITIZE` y 5 objetivos de libFuzzer. Faltan `rapidos-asan` en verde (54/59), pasadas largas y objetivos de `.crui`, `.crcontroller` y WebSocket.* — `.crwpack`, `.datapack`, escenas y red. Clang ya es el compilador.
 - **Player nativo para Linux / Steam Deck** — P2 · L — `EditorExport.cpp:128-132`; ya existen `WindowX11.cpp` y el preset `linux-release`.
 - **iOS, macOS, web y consolas** — P2 · XL — solo Vulkan; MoltenVK sería la ruta en Apple. Para Overthrow el objetivo móvil sigue siendo el cliente web en Safari de iPhone, así que no bloquea el port.
 
@@ -224,6 +224,9 @@ CI con CTest y pruebas del render · informes de crash enviados · VFS sobre `.c
 
 **3.0 — AAA y red competitiva**
 Red autoritativa con predicción y reconciliación, RPC y hitboxes por hueso · niebla en froxels · sondas con caja · GTAO · HDR10 · terreno avanzado · HLOD texturizado · morph targets · Timeline con pistas · perfilador de memoria y GPU · edición multiescena · extensiones del editor. Y lo grande de MEJORA.md: B7/B8 (bindless e instancia con material), B3, B11/B12.
+
+**2.8.0 (sin publicar) — tanda del ROADMAP integrada en `rm-integra`**
+Hecho: dibujo de depuración, corrutinas y orden de ejecución · buses de audio, consultas con forma y juntas · capas, aditivas, root motion, eventos y montages · capas de render, viewmodel, Outline y DLSS reactivo · baja latencia, HDR10/scRGB y LUT .cube · sondas con caja y GTAO · CTest, CI, sanitizers y fuzzing · ufbx y morph targets (sin GPU) · prefabs anidados y variantes · presupuesto de RAM, informes de cierre en Android y ASTC/ETC2. Todo lo visual queda por probar a mano en GPU y en el editor (ver CHANGELOG.md).
 
 ---
 
