@@ -10,7 +10,9 @@
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/gameplay/Localization.h"
 #include "CramionCore/scripting/CppScripts.h"
+#include "CramionCore/scripting/DebugDraw.h"
 #include "CramionCore/scripting/NativeApi.h"
+#include "CramionCore/scripting/ScriptOrder.h"
 #include "CramionCore/scripting/Scripting.h"
 
 #include <chrono>
@@ -289,6 +291,80 @@ CRAMION_SCRIPT(Pool)
 CRAMION_SCRIPT(Hilo)
 CRAMION_SCRIPT(Vacio)
 )");
+    // Corrutinas e invoke (Coroutine.h), Debug.draw* desde C++ y el orden de
+    // ejecucion (kExecutionOrder + script.ExecutionOrder).
+    write(assets / "Scripts" / "Corrutinas.cpp", R"(#include <cramion/Script.h>
+#include <string>
+using namespace cramion;
+class Corre : public Script {
+public:
+    void start() override {
+        startCoroutine(pasos());
+        invoke([] { Scene::find("Invocado").setName("invocado"); }, 0.04f);
+        Debug::drawLine(Vec3{0, 0, 0}, Vec3{0, 3, 0}, Color(1, 0, 0, 0.5f), 10.0f);
+        Debug::drawText(Vec3{0, 3, 0}, "hola", Color(1, 1, 0), 10.0f);
+        Debug::drawBox(Vec3{0, 0, 0}, Vec3{1, 1, 1}, Quat{}, Color(0, 1, 0), 10.0f, false);
+    }
+    Task<int> doble(int x) {
+        co_await nextFrame();
+        co_return x * 2;
+    }
+    Task<> pasos() {
+        entity().setName("c0");
+        co_await nextFrame();
+        entity().setName("c1");
+        co_await waitFrames(2);
+        entity().setName("c3");
+        const int n = co_await doble(4);
+        entity().setName("c" + std::to_string(n));
+        co_await waitSeconds(0.1f);
+        entity().setName("fin");
+    }
+};
+class Eterna : public Script {
+public:
+    int vueltas = 0;
+    void start() override { startCoroutine(girar()); }
+    Task<> girar() {
+        for (;;) {
+            ++vueltas;
+            entity().setName("v" + std::to_string(vueltas));
+            co_await nextFrame();
+        }
+    }
+};
+static std::string g_orden;
+static void anota(const std::string& quien) {
+    if (g_orden.size() >= 5) return;
+    g_orden += quien;
+    if (g_orden.size() == 5) Scene::find("Registro").setName(g_orden);
+}
+class OrdenA : public Script {
+public:
+    static constexpr int kExecutionOrder = 10;
+    void update(float) override { anota("A"); }
+};
+class OrdenB : public Script {
+public:
+    Property<std::string> marca{this, "marca", "B"};
+    void update(float) override { anota(marca); }
+};
+class OrdenC : public Script {
+public:
+    static constexpr int kExecutionOrder = -5;
+    void update(float) override { anota("C"); }
+};
+class OrdenD : public Script {
+public:
+    void update(float) override { anota("D"); }
+};
+CRAMION_SCRIPT(Corre)
+CRAMION_SCRIPT(Eterna)
+CRAMION_SCRIPT(OrdenA)
+CRAMION_SCRIPT(OrdenB)
+CRAMION_SCRIPT(OrdenC)
+CRAMION_SCRIPT(OrdenD)
+)");
     // La plantilla de un script nuevo: Plantilla.h (clase) + Plantilla.cpp (metodos).
     write(assets / "Scripts" / "Plantilla.h", scripting::cppScriptHeaderTemplate("Plantilla"));
     write(assets / "Scripts" / "Plantilla.cpp", scripting::cppScriptTemplate("Plantilla"));
@@ -491,6 +567,81 @@ CRAMION_SCRIPT(Vacio)
         check(cpp.stats().faulted == 0 && cpp.running(), "el proceso sigue sano tras las llamadas desde otro hilo");
         cpp.stop();
         pool_scripts.stop();
+    }
+
+    // Corrutinas, invoke, Debug.draw* desde C++ y orden de ejecucion.
+    {
+        ecs::World co_world;
+        ecs::Entity registro = co_world.create("Registro");
+        ecs::Entity invocado = co_world.create("Invocado");
+        ecs::Entity corre = co_world.create("Corre");
+        corre.add<scripting::CppScript>().class_name = "Corre";
+        ecs::Entity eterna = co_world.create("Eterna");
+        eterna.add<scripting::CppScript>().class_name = "Eterna";
+        // Creados en este orden: A (10), B1 (0), C (-5), B2 (0), D (0, pero -20 en los ajustes del proyecto).
+        const auto orden = [&](const char* name, const char* cls, const char* marca) {
+            ecs::Entity e = co_world.create(name);
+            scripting::CppScript& sc = e.add<scripting::CppScript>();
+            sc.class_name = cls;
+            if (marca != nullptr) sc.setValue("marca", std::string("\"") + marca + "\"");
+        };
+        orden("A", "OrdenA", nullptr);
+        orden("B1", "OrdenB", "1");
+        orden("C", "OrdenC", nullptr);
+        orden("B2", "OrdenB", "2");
+        orden("D", "OrdenD", nullptr);
+        cvar::Registry::instance().set("script.ExecutionOrder", "OrdenD=-20");
+        debugdraw::shared().setEditor(true);
+        debugdraw::shared().clear();
+        scripting::ScriptSystem co_scripts;
+        co_scripts.start(co_world);
+        cpp.setScriptSystem(&co_scripts);
+        cpp.start(co_world);
+        const float dt = 1.0f / 60.0f;
+        cpp.update(co_world, dt);  // awake, onEnable, start (la corrutina corre hasta su primera espera) y update
+        check(corre.name() == "c0", "startCoroutine corre ya hasta su primera espera (" + corre.name() + ")");
+        check(registro.name() == "DC12A",
+              "orden de ejecucion: prioridad (script.ExecutionOrder y kExecutionOrder) y despues creacion (" + registro.name() + ")");
+        // Debug.draw* desde C++ (con su color y alfa) llega al motor.
+        const debugdraw::DebugDraw& dd = debugdraw::shared();
+        check(dd.lineCount() == 13 && dd.textCount() == 1, "Debug::drawLine/drawBox/drawText desde C++ (" + std::to_string(dd.lineCount()) +
+                                                                 " segmentos, " + std::to_string(dd.textCount()) + " texto)");
+        gfx::OverlayGeometry g;
+        debugdraw::shared().build(g);
+        check(g.lines.size() == 2 && g.top_lines.size() == 24 && ((g.lines[0].color >> 24) & 0xFFu) == 128,
+              "con su color y alfa; la caja sin profundidad va encima");
+        cpp.update(co_world, dt);
+        check(corre.name() == "c1", "nextFrame: sigue en el frame siguiente (" + corre.name() + ")");
+        cpp.update(co_world, dt);
+        cpp.update(co_world, dt);
+        check(corre.name() == "c3", "waitFrames(2) (" + corre.name() + ")");
+        check(invocado.name() == "invocado", "invoke(fn, 0,04 s) salto (" + invocado.name() + ")");
+        cpp.update(co_world, dt);
+        check(corre.name() == "c8", "co_await de una Task<int> con su resultado (" + corre.name() + ")");
+        for (int i = 0; i < 8; ++i) cpp.update(co_world, dt);
+        check(corre.name() == "fin", "waitSeconds(0,1) y la corrutina termina (" + corre.name() + ")");
+        const std::string vueltas = eterna.name();
+        eterna.get<scripting::CppScript>().enabled = false;  // onDisable: se para
+        cpp.update(co_world, dt);
+        cpp.update(co_world, dt);
+        check(eterna.name() == vueltas && vueltas.size() > 1, "desactivar el script para su corrutina (" + eterna.name() + ")");
+        eterna.get<scripting::CppScript>().enabled = true;
+        cpp.update(co_world, dt);
+        check(eterna.name() == vueltas, "y al reactivarlo no vuelve sola (como Unity)");
+        check(cpp.stats().faulted == 0, "sin scripts desactivados por fallos");
+        cpp.stop();
+        co_scripts.stop();
+        debugdraw::shared().setEditor(false);
+        cvar::Registry::instance().find("script.ExecutionOrder")->reset();
+    }
+    // El texto de los ajustes del proyecto (script.ExecutionOrder).
+    {
+        const auto parsed = scripting::parseExecutionOrder(" Jugador = -100; Camara:50,\nEnemigo=+7 ; roto ; Malo=x ;=3");
+        check(parsed.size() == 3 && parsed.at("Jugador") == -100 && parsed.at("Camara") == 50 && parsed.at("Enemigo") == 7,
+              "script.ExecutionOrder: \"Clase=prioridad\" separados por ; , o lineas (lo que no se entiende se salta)");
+        check(scripting::ScriptOrderKey{-1, 9} < scripting::ScriptOrderKey{0, 1} &&
+                  scripting::ScriptOrderKey{0, 1} < scripting::ScriptOrderKey{0, 2},
+              "orden: prioridad y despues creacion");
     }
 
     // Un viaje por fase (script.cpp.BatchCalls) frente a uno por script y evento.

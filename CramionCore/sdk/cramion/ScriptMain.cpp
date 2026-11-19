@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -49,6 +50,7 @@ struct ClassEntry {
     std::string file;
     Factory factory;
     std::uint32_t events = ~0u;  // los eventos que sobrescribe (todos si no se sabe)
+    int order = 0;               // prioridad en el orden de ejecucion (kExecutionOrder)
 };
 std::vector<ClassEntry>& classes() {
     static std::vector<ClassEntry> list;
@@ -188,6 +190,10 @@ void registerClass(const char* name, const char* file, Factory factory) { classe
 
 void registerClass(const char* name, const char* file, Factory factory, std::uint32_t events) {
     classes().push_back({name, file != nullptr ? file : "", factory, events});
+}
+
+void registerClass(const char* name, const char* file, Factory factory, std::uint32_t events, int order) {
+    classes().push_back({name, file != nullptr ? file : "", factory, events, order});
 }
 
 std::vector<CVarDecl>& pendingCVars() {
@@ -497,6 +503,240 @@ Value apiFast(cppproto::ApiOp op, std::string_view key, const Value* self, const
     return {};
 }
 
+// --- Corrutinas y temporizadores (Coroutine.h) ------------------------------------
+// Una lista por DLL, en el orden en que se crean (determinista). Se reanudan
+// en coTick() (evento Time: una vez por frame, tras los update). Lo parado se
+// marca y se quita al terminar la vuelta: una corrutina puede parar otras (o a
+// si misma) mientras corre, y la que corre no se destruye hasta que espera.
+namespace {
+
+struct CoEntry {
+    std::uint64_t id = 0;
+    Script* owner = nullptr;
+    std::coroutine_handle<> handle;   // la raiz (vacia: temporizador)
+    CoPromiseBase* promise = nullptr;
+    std::uint64_t wait_frame = 0;      // frame en que se puso a esperar (ese no se mira)
+    std::function<void()> fn;          // temporizador: lo que llama
+    float remaining = 0.0f;            // temporizador: segundos que faltan
+    float interval = -1.0f;            // temporizador: < 0, una vez
+    bool dead = false;
+    bool timer() const { return !handle; }
+};
+
+std::vector<std::unique_ptr<CoEntry>> g_co;
+std::uint64_t g_co_next = 1;
+std::uint64_t g_co_running = 0;  // la corrutina que se esta ejecutando
+int g_co_depth = 0;              // > 0: dentro de coTick o de una corrutina (no se compacta)
+
+CoEntry* coFind(std::uint64_t id) {
+    for (const auto& e : g_co) {
+        if (e->id == id) return e.get();
+    }
+    return nullptr;
+}
+
+// Quita lo parado (fuera de la vuelta y de cualquier corrutina).
+void coCompact() {
+    if (g_co_depth > 0) return;
+    g_co.erase(std::remove_if(g_co.begin(), g_co.end(), [](const std::unique_ptr<CoEntry>& e) { return e->dead; }), g_co.end());
+}
+
+// Libera la corrutina parada (si no es la que esta corriendo: esa, al esperar).
+void coRelease(CoEntry& e) {
+    e.dead = true;
+    e.fn = nullptr;
+    if (e.handle && e.id != g_co_running) {
+        std::coroutine_handle<> h = std::exchange(e.handle, {});
+        e.promise = nullptr;
+        try {
+            h.destroy();  // destruye tambien las Task anidadas que esperaba
+        } catch (...) {
+        }
+    }
+}
+
+std::string coWho(const CoEntry& e) {
+    std::string who = "?";
+    try {
+        if (e.owner != nullptr) who = e.owner->entity().name();
+    } catch (...) {
+    }
+    return who;
+}
+
+void coReportError(const CoEntry& e, std::exception_ptr error, const char* what) {
+    std::string text;
+    try {
+        std::rethrow_exception(error);
+    } catch (const std::exception& ex) {
+        text = std::string("excepcion: ") + ex.what();
+    } catch (...) {
+        text = "excepcion desconocida";
+    }
+    try {
+        Debug::error(std::string(what) + " de " + coWho(e) + ": " + text + " (se paro)");
+    } catch (...) {
+    }
+}
+
+// Reanuda la corrutina hasta su siguiente espera (o hasta que termina).
+void coResume(CoEntry& e) {
+    CoPromiseBase* root = e.promise;
+    if (root == nullptr || !e.handle) return;
+    root->wait = {};
+    const std::uint64_t prev = std::exchange(g_co_running, e.id);
+    ++g_co_depth;
+    {
+        const CurrentScript scope(e.owner);
+        root->leaf.resume();  // las excepciones del cuerpo quedan en su promesa
+    }
+    --g_co_depth;
+    g_co_running = prev;
+    if (e.handle.done()) {
+        if (root->error) coReportError(e, root->error, "Corrutina");
+        coRelease(e);
+        return;
+    }
+    if (e.dead) {  // se paro a si misma mientras corria: ahora que espera, fuera
+        coRelease(e);
+        return;
+    }
+    e.wait_frame = g_event.frame;
+}
+
+// La espera ya se cumplio (y la descuenta). Puede lanzar (waitUntil).
+bool coReady(CoWait& w, float dt) {
+    switch (w.kind) {
+        case CoWait::Kind::Frames: return --w.frames <= 0;
+        case CoWait::Kind::Seconds: w.seconds -= dt; return !(w.seconds > 0.0f);
+        case CoWait::Kind::Realtime: return std::chrono::steady_clock::now() >= w.deadline;
+        case CoWait::Kind::Until: return !w.condition || w.condition();
+        case CoWait::Kind::While: return !w.condition || !w.condition();
+        case CoWait::Kind::Coroutine: return !coRunning(w.coroutine);
+        default: return true;
+    }
+}
+
+}  // namespace
+
+std::uint64_t coStart(Script* owner, std::coroutine_handle<> handle, CoPromiseBase* promise) {
+    if (!handle || promise == nullptr) return 0;
+    auto entry = std::make_unique<CoEntry>();
+    entry->id = g_co_next++;
+    entry->owner = owner;
+    entry->handle = handle;
+    entry->promise = promise;
+    promise->root = promise;
+    promise->leaf = handle;
+    CoEntry& e = *entry;
+    g_co.push_back(std::move(entry));
+    const std::uint64_t id = e.id;
+    coResume(e);  // como StartCoroutine: corre ya hasta su primera espera
+    coCompact();
+    return id;
+}
+
+void coStop(std::uint64_t id) {
+    CoEntry* e = coFind(id);
+    if (e == nullptr || e->dead) return;
+    coRelease(*e);
+    coCompact();
+}
+
+bool coRunning(std::uint64_t id) {
+    const CoEntry* e = id != 0 ? coFind(id) : nullptr;
+    return e != nullptr && !e->dead;
+}
+
+void coStopOwned(const Script* owner, bool coroutines, bool timers) {
+    for (const auto& e : g_co) {
+        if (e->dead || e->owner != owner) continue;
+        if (e->timer() ? timers : coroutines) coRelease(*e);
+    }
+    coCompact();
+}
+
+std::uint64_t timerStart(Script* owner, std::function<void()> fn, float delay, float interval) {
+    if (!fn) return 0;
+    auto entry = std::make_unique<CoEntry>();
+    entry->id = g_co_next++;
+    entry->owner = owner;
+    entry->fn = std::move(fn);
+    entry->remaining = delay > 0.0f ? delay : 0.0f;
+    entry->interval = interval;
+    entry->wait_frame = g_event.frame;  // como mucho, en el siguiente frame
+    const std::uint64_t id = entry->id;
+    g_co.push_back(std::move(entry));
+    return id;
+}
+
+bool timerAny(const Script* owner) {
+    for (const auto& e : g_co) {
+        if (!e->dead && e->owner == owner && e->timer()) return true;
+    }
+    return false;
+}
+
+std::size_t coCount(const Script* owner) {
+    std::size_t n = 0;
+    for (const auto& e : g_co) {
+        if (!e->dead && (owner == nullptr || e->owner == owner)) ++n;
+    }
+    return n;
+}
+
+void coTick() {
+    if (g_co.empty()) return;
+    const std::uint64_t frame = g_event.frame;
+    const float dt = g_event.delta_time;
+    // Las de ahora, en orden; las que se creen durante la vuelta, el siguiente frame.
+    std::vector<std::uint64_t> ids;
+    ids.reserve(g_co.size());
+    for (const auto& e : g_co) {
+        if (!e->dead) ids.push_back(e->id);
+    }
+    ++g_co_depth;
+    for (const std::uint64_t id : ids) {
+        CoEntry* e = coFind(id);
+        if (e == nullptr || e->dead || e->wait_frame == frame) continue;
+        if (e->timer()) {
+            e->remaining -= dt;
+            if (e->remaining > 0.0f) continue;
+            const bool repeat = e->interval >= 0.0f;
+            if (repeat) {
+                e->remaining += e->interval;
+                if (e->remaining < 0.0f) e->remaining = 0.0f;  // no se acumulan saltos tras un frame largo
+                e->wait_frame = frame;
+            } else {
+                e->dead = true;  // ya salta (invoke)
+            }
+            const std::function<void()> fn = e->fn;  // copia: puede cancelarse a si mismo
+            try {
+                const CurrentScript scope(e->owner);
+                fn();
+            } catch (...) {
+                if (CoEntry* again = coFind(id)) {
+                    coReportError(*again, std::current_exception(), "invoke");
+                    coRelease(*again);
+                }
+            }
+            if (CoEntry* again = coFind(id); again != nullptr && !repeat) coRelease(*again);
+            continue;
+        }
+        bool ready = false;
+        try {
+            ready = coReady(e->promise->wait, dt);
+        } catch (...) {  // la condicion de waitUntil / waitWhile fallo
+            coReportError(*e, std::current_exception(), "Corrutina (condicion de waitUntil/waitWhile)");
+            coRelease(*e);
+            continue;
+        }
+        if (ready) coResume(*e);
+    }
+    --g_co_depth;
+    coCompact();
+}
+
 Value apiRequest(const Value& request) {
     if (!onScriptThread()) {
         const std::string fn = request["fn"].asString();
@@ -564,6 +804,12 @@ CRAMION_EXPORT const char* cramion_class_name(int i) {
 // no envia los demas. Opcional: sin esta exportacion (DLL anterior), todos.
 CRAMION_EXPORT std::uint32_t cramion_class_events(int i) {
     return i >= 0 && i < static_cast<int>(detail::classes().size()) ? detail::classes()[static_cast<std::size_t>(i)].events : ~0u;
+}
+
+// La prioridad de la clase i en el orden de ejecucion (kExecutionOrder; menor =
+// antes). Opcional: sin esta exportacion (DLL anterior), 0.
+CRAMION_EXPORT int cramion_class_order(int i) {
+    return i >= 0 && i < static_cast<int>(detail::classes().size()) ? detail::classes()[static_cast<std::size_t>(i)].order : 0;
 }
 
 // Las clases con su archivo y sus propiedades (JSON). Devuelve el tamano que
@@ -662,17 +908,31 @@ CRAMION_EXPORT int cramion_call(void* instance, std::uint32_t event, const cpppr
             case cppproto::Event::Awake: s->awake(); break;
             case cppproto::Event::Start: s->start(); break;
             case cppproto::Event::Enable: s->onEnable(); break;
-            case cppproto::Event::Disable: s->onDisable(); break;
+            case cppproto::Event::Disable:
+                // Sus corrutinas y temporizadores se paran (aunque onDisable falle).
+                try {
+                    s->onDisable();
+                } catch (...) {
+                    detail::coStopOwned(s, true, true);
+                    throw;
+                }
+                detail::coStopOwned(s, true, true);
+                break;
             case cppproto::Event::Update: s->update(dt); break;
             case cppproto::Event::FixedUpdate: s->fixedUpdate(dt); break;
             case cppproto::Event::LateUpdate: s->lateUpdate(dt); break;
-            case cppproto::Event::Destroy: s->onDestroy(); break;
+            case cppproto::Event::Destroy:
+                detail::coStopOwned(s, true, true);
+                s->onDestroy();
+                break;
             case cppproto::Event::CollisionEnter: s->onCollisionEnter(c); break;
             case cppproto::Event::CollisionStay: s->onCollisionStay(c); break;
             case cppproto::Event::CollisionExit: s->onCollisionExit(c); break;
             case cppproto::Event::TriggerEnter: s->onTriggerEnter(c.other); break;
             case cppproto::Event::TriggerStay: s->onTriggerStay(c.other); break;
             case cppproto::Event::TriggerExit: s->onTriggerExit(c.other); break;
+            // Fin de los update del frame: las corrutinas y los invoke de todos los scripts.
+            case cppproto::Event::Time: detail::coTick(); break;
             default: break;
         }
     } catch (const std::exception& e) {
@@ -789,6 +1049,7 @@ CRAMION_EXPORT void cramion_destroy(void* instance) {
     auto* s = static_cast<Script*>(instance);
     live.erase(std::remove(live.begin(), live.end(), s), live.end());
     detail::eraseCallbacksOf(s);
+    detail::coStopOwned(s, true, true);  // antes de borrarlo: sus corrutinas lo usan
     // Lo que registre el destructor tampoco sobrevive al script.
     std::vector<std::uint64_t> unowned;
     try {

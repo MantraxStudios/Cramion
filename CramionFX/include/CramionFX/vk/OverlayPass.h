@@ -2,6 +2,7 @@
 #define CRAMION_VK_OVERLAY_PASS_H
 
 #include "CramionFX/vk/OverlayGeometry.h"
+#include "CramionFX/vk/StrokeFont.h"
 #include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
@@ -55,6 +56,10 @@ private:
     void appendTriangles(const std::vector<OverlayVertex>& triangles, const core::Mat4& view_projection);
     void appendLines(const std::vector<OverlayVertex>& lines, const core::Mat4& view_projection,
                      float half_width, vk::Extent2D viewport);
+    void appendClipSegment(core::Vec4 ca, core::Vec4 cb, std::uint32_t color_a, std::uint32_t color_b, float extent,
+                           float sx, float sy);
+    void appendTexts(const std::vector<OverlayText>& texts, bool on_top, const core::Mat4& view_projection,
+                     float half_width, vk::Extent2D viewport);
 
     vk::raii::PipelineLayout layout_{nullptr};
     vk::raii::Pipeline visible_pipeline_{nullptr};
@@ -64,6 +69,7 @@ private:
     std::vector<std::uint32_t> vertex_counts_;
     std::vector<std::uint32_t> tested_counts_;  // vertices con prueba de profundidad (los primeros)
     std::vector<Vertex> scratch_;
+    std::vector<StrokeSegment> text_segments_;  // Debug.drawText (se reutiliza)
 };
 
 }  // namespace cramion::gfx

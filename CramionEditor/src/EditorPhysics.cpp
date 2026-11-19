@@ -15,6 +15,7 @@
 #include <CramionCore/spline/Spline.h>
 #include <CramionCore/cvar/CVar.h>
 #include <CramionCore/profiling/Profiler.h>
+#include <CramionCore/scripting/DebugDraw.h>
 #include <CramionCore/scripting/NativeApi.h>
 #include "EditorApp.h"
 
@@ -560,6 +561,9 @@ void EditorApp::togglePause() {
 }
 
 void EditorApp::updatePhysics(float delta_seconds) {
+    // Debug.draw*: el editor recoge solo en Play (antes de los scripts de este
+    // frame); en modo edicion nadie lo pintaria y se quedaria guardado.
+    debugdraw::shared().setEditor(playing());
     if (!physics_.running()) return;
     console_events_this_frame_ = 0;
     console_events_skipped_ = 0;
@@ -628,6 +632,18 @@ void EditorApp::updatePhysics(float delta_seconds) {
         }
     }
     renderer_.setParticles(particles_.drawList(scene_.camera().position()));
+    // Debug.drawLine/drawSphere/drawText... de los scripts: en Play, en las
+    // vistas de Escena y Juego (setEditor, al empezar). Sin nada, ni se toca.
+    {
+        debugdraw::DebugDraw& debug_draw = debugdraw::shared();
+        if (playing() && !debug_draw.empty()) {
+            gfx::OverlayGeometry geometry;
+            debug_draw.build(geometry);
+            renderer_.setDebugGeometry(std::move(geometry));
+        } else if (!renderer_.debugGeometry().empty()) {
+            renderer_.setDebugGeometry({});
+        }
+    }
     updateFluids(delta_seconds);  // liquidos (EditorFluid.cpp)
     updateEffects(delta_seconds);  // VFX Graph, 2D y repeticiones (EditorEffects.cpp)
     // Incendios (fire::Fire): en Play; en el editor solo los que tienen

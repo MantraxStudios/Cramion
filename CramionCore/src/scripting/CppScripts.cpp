@@ -13,6 +13,7 @@
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/scripting/CppScriptIpc.h"
 #include "CramionCore/scripting/NativeApi.h"
+#include "CramionCore/scripting/ScriptOrder.h"
 
 #include <CramionDM/Input.h>
 #include <CramionDM/KeyCode.h>
@@ -105,6 +106,20 @@ cvar::CVar<bool> g_in_process("script.cpp.InProcess", true,
                               "(sin cambios de contexto; un fallo de hardware de un script cierra el juego). El editor siempre "
                               "usa el proceso aparte",
                               cvar::Saved);
+
+// Orden de ejecucion determinista (ScriptOrder.h): prioridad por clase y, a
+// igual prioridad, el orden de creacion. Antes iban en el orden de una tabla
+// hash (distinto en cada maquina y sesion): false vuelve a ese orden.
+cvar::CVar<bool> g_stable_order("script.cpp.StableOrder", true,
+                                "Ejecutar los scripts de C++ en un orden fijo: por prioridad de su clase (script.ExecutionOrder "
+                                "o kExecutionOrder en la clase; menor = antes) y despues por orden de creacion. Igual en el "
+                                "editor, el juego y el servidor (false: el orden de antes, sin garantias)",
+                                cvar::Saved);
+cvar::CVar<std::string> g_execution_order("script.ExecutionOrder", "",
+                                          "Prioridad de cada clase de script de C++ (como Script Execution Order de Unity; "
+                                          "menor = antes, 0 por defecto): \"Jugador=-100; Camara=50\". Pisa kExecutionOrder "
+                                          "de la clase",
+                                          cvar::Saved);
 
 // El script del SDK que corre las pruebas (cramion/Test.h): sus pruebas con co_await
 // son corrutinas cuyas tramas y codigo viven en la DLL del proceso de scripts.
@@ -664,6 +679,7 @@ struct LocalScripts {
     using CountFn = int (*)();
     using NameFn = const char* (*)(int);
     using EventsFn = std::uint32_t (*)(int);
+    using OrderFn = int (*)(int);
     using CreateFn = void* (*)(const char*, std::uint64_t, const char*, char*, int);
     using CallFn = int (*)(void*, std::uint32_t, const proto::EventArgs*, char*, int);
     using DestroyFn = void (*)(void*);
@@ -678,6 +694,7 @@ struct LocalScripts {
     CountFn count = nullptr;
     NameFn name = nullptr;
     EventsFn events = nullptr;  // opcional (DLL anterior: todos los eventos)
+    OrderFn order = nullptr;    // opcional (DLL anterior: prioridad 0)
     CreateFn create = nullptr;
     CallFn call = nullptr;
     DestroyFn destroy = nullptr;
@@ -728,6 +745,7 @@ struct LocalScripts {
         count = reinterpret_cast<CountFn>(symbol("cramion_class_count"));
         name = reinterpret_cast<NameFn>(symbol("cramion_class_name"));
         events = reinterpret_cast<EventsFn>(symbol("cramion_class_events"));
+        order = reinterpret_cast<OrderFn>(symbol("cramion_class_order"));
         create = reinterpret_cast<CreateFn>(symbol("cramion_create"));
         call = reinterpret_cast<CallFn>(symbol("cramion_call"));
         destroy = reinterpret_cast<DestroyFn>(symbol("cramion_destroy"));
@@ -805,6 +823,8 @@ struct HostProcess {
     // Los eventos que sobrescribe cada clase de Load (en el orden de los nombres;
     // ~0u = todos, con un proceso o una DLL que no lo dicen).
     std::vector<std::uint32_t> class_events;
+    // La prioridad de cada clase (kExecutionOrder; 0 si no la dice).
+    std::vector<int> class_orders;
     // La DLL en el mismo proceso (LocalScripts) en vez de CramionScriptHost.
     bool local = false;
 
@@ -1273,6 +1293,15 @@ struct HostProcess {
                 if (r.ok() && i < class_events.size()) class_events[i] = mask;
             }
         }
+        // Y su prioridad (orden de ejecucion; un proceso anterior no la manda: 0).
+        class_orders.assign(classes.size(), 0);
+        if (r.ok() && r.remaining() >= sizeof(std::uint32_t)) {
+            const std::uint32_t m = r.u32();
+            for (std::uint32_t i = 0; i < m && r.ok(); ++i) {
+                const auto order = static_cast<std::int32_t>(r.u32());
+                if (r.ok() && i < class_orders.size()) class_orders[i] = order;
+            }
+        }
         return true;
     }
 
@@ -1301,10 +1330,12 @@ struct HostProcess {
         const int n = l.count();
         classes.clear();
         class_events.clear();
+        class_orders.clear();
         for (int i = 0; i < n; ++i) {
             const char* name = l.name(i);
             classes.push_back(name != nullptr ? name : "");
             class_events.push_back(l.events != nullptr ? l.events(i) : ~0u);
+            class_orders.push_back(l.order != nullptr ? l.order(i) : 0);
         }
         local = true;
         return true;
@@ -1527,6 +1558,7 @@ struct CppScriptSystem::Impl {
         bool wanted = false;   // el script y su objeto estan activos (lo que deberia ver)
         bool enabled = false;  // ya se le llamo a onEnable (y aun no a onDisable)
         std::uint32_t events = ~0u;  // los que sobrescribe su clase (bit 1 << proto::Event), al crearla
+        int order = 0;               // prioridad de su clase (orden de ejecucion; menor = antes)
     };
     HostProcess host;
     ecs::World* world = nullptr;
@@ -1576,6 +1608,10 @@ struct CppScriptSystem::Impl {
     std::uint64_t posted = 0;     // eventos enviados por post() (los no sobrescritos no cuentan)
     std::vector<entt::entity> live;     // liveHandles()
     std::vector<entt::entity> pending;  // sync()
+    // Orden de ejecucion (ScriptOrder.h): lo leido de script.ExecutionOrder y un vector que se reutiliza.
+    std::string order_text;
+    std::unordered_map<std::string, int> order_overrides;
+    std::vector<std::pair<ScriptOrderKey, entt::entity>> order_scratch;
     static constexpr std::size_t kBatchMax = 16384;  // ~1,3 MB por mensaje (el bloque es de 4 MB)
     // Vivo mientras exista este sistema: el sumidero de callbacks que se da a
     // ScriptSystem lo mira (puede durar mas o menos que nosotros).
@@ -1646,6 +1682,37 @@ struct CppScriptSystem::Impl {
             return false;
         }
         return true;
+    }
+
+    // La prioridad de una clase: la de los ajustes del proyecto (script.ExecutionOrder)
+    // o la de la clase (kExecutionOrder, de la ultima carga); 0 si ninguna la dice.
+    int orderOf(const std::string& cls) {
+        const std::string text = g_execution_order.get();
+        if (text != order_text) {
+            order_text = text;
+            order_overrides = parseExecutionOrder(text);
+        }
+        if (const auto it = order_overrides.find(cls); it != order_overrides.end()) return it->second;
+        for (std::size_t i = 0; i < classes.size() && i < host.class_orders.size(); ++i) {
+            if (classes[i] == cls) return host.class_orders[i];
+        }
+        return 0;
+    }
+
+    // Ordena instancias por prioridad de su clase y despues por creacion (su id
+    // crece con cada instancia nueva). Sin script.cpp.StableOrder, como estaban.
+    void sortByOrder(std::vector<entt::entity>& handles) {
+        if (!g_stable_order.get() || handles.size() < 2) return;
+        order_scratch.clear();
+        for (const entt::entity h : handles) {
+            const auto it = instances.find(h);
+            ScriptOrderKey key;
+            if (it != instances.end()) key = ScriptOrderKey{it->second.order, it->second.id};
+            order_scratch.emplace_back(key, h);
+        }
+        std::stable_sort(order_scratch.begin(), order_scratch.end(),
+                         [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (std::size_t i = 0; i < handles.size(); ++i) handles[i] = order_scratch[i].second;
     }
 
     // Los eventos que sobrescribe una clase (de la ultima carga; todos si no se sabe).
@@ -2320,7 +2387,13 @@ struct CppScriptSystem::Impl {
         // Lo que deberia estar activo: un activeInHierarchy() por script, solo si
         // el componente esta activado.
         bool any = false;
-        for (const entt::entity h : registry.view<CppScript>()) {
+        // La vista de EnTT va del ultimo componente anadido al primero: al reves,
+        // las instancias nuevas reciben su id (el orden de creacion del orden de
+        // ejecucion) en el orden en que se anadieron sus scripts.
+        pending.clear();
+        for (const entt::entity h : registry.view<CppScript>()) pending.push_back(h);
+        for (auto ph = pending.rbegin(); ph != pending.rend(); ++ph) {
+            const entt::entity h = *ph;
             const CppScript& s = registry.get<CppScript>(h);
             if (s.class_name.empty() || faulted.contains(h)) continue;
             const bool active = s.enabled && w.wrap(h).activeInHierarchy();
@@ -2342,8 +2415,12 @@ struct CppScriptSystem::Impl {
         }
         pending.clear();
         for (auto& [h, inst] : instances) {
-            if (!inst.created && inst.wanted) pending.push_back(h);
+            if (!inst.created && inst.wanted) {
+                inst.order = orderOf(inst.cls);
+                pending.push_back(h);
+            }
         }
+        sortByOrder(pending);  // awake en el orden de ejecucion
         for (const entt::entity h : pending) {
             auto it = instances.find(h);
             if (it == instances.end() || !host.running()) break;
@@ -2357,6 +2434,7 @@ struct CppScriptSystem::Impl {
             proto::Writer msg;
             msg.u32(inst.id).str(inst.cls).u64(idOf(h)).str(values.dump());
             inst.events = eventsOf(inst.cls);
+            inst.order = orderOf(inst.cls);
             std::string message;
             const Outcome o = request(ipc::Op::Create, msg, message);
             if (o != Outcome::Ok) {
@@ -2395,6 +2473,7 @@ struct CppScriptSystem::Impl {
         for (auto& [h, inst] : instances) {
             if (inst.created && inst.wanted != inst.enabled) pending.push_back(h);
         }
+        sortByOrder(pending);
         for (const entt::entity h : pending) {
             auto it = instances.find(h);
             if (it == instances.end() || !host.running()) break;
@@ -2432,9 +2511,20 @@ struct CppScriptSystem::Impl {
     // Quien lo recorre vuelve a buscar cada una: un fallo cambia su estado.
     const std::vector<entt::entity>& liveHandles() {
         live.clear();
-        for (const auto& [h, inst] : instances) {
-            if (inst.created && !faulted.contains(h)) live.push_back(h);
+        if (!g_stable_order.get()) {
+            for (const auto& [h, inst] : instances) {
+                if (inst.created && !faulted.contains(h)) live.push_back(h);
+            }
+            return live;
         }
+        // Orden de ejecucion (prioridad y creacion), con la clave a mano: sin
+        // volver a buscar cada instancia (esto va cada frame).
+        order_scratch.clear();
+        for (const auto& [h, inst] : instances) {
+            if (inst.created && !faulted.contains(h)) order_scratch.emplace_back(ScriptOrderKey{inst.order, inst.id}, h);
+        }
+        std::sort(order_scratch.begin(), order_scratch.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (const auto& [key, h] : order_scratch) live.push_back(h);
         return live;
     }
 
@@ -2595,6 +2685,7 @@ struct CppScriptSystem::Impl {
     void forEachLive(Fn&& fn) {
         std::vector<entt::entity> handles;
         for (const auto& [h, inst] : instances) handles.push_back(h);
+        sortByOrder(handles);
         for (const entt::entity h : handles) {
             if (!host.running()) return;
             auto it = instances.find(h);
@@ -2983,7 +3074,7 @@ bool CppScriptSystem::upToDate() const {
         if (std::filesystem::last_write_time(p, ec) > built) return false;
     }
     for (const char* f : {"cramion/Script.h", "cramion/Value.h", "cramion/Types.h", "cramion/Api.gen.h", "cramion/CppProtocol.h",
-                          "cramion/ScriptMain.cpp", "cramion/WsClient.h"}) {
+                          "cramion/ScriptMain.cpp", "cramion/WsClient.h", "cramion/Coroutine.h"}) {
         const auto t = std::filesystem::last_write_time(impl_->sdk_folder / f, ec);
         if (!ec && t > built) return false;
     }
@@ -3389,8 +3480,20 @@ void CppScriptSystem::update(ecs::World& world, float delta_seconds) {
         // Las desactivadas (onDisable) no reciben nada; su start espera a onEnable.
         const proto::EventArgs a = d.args(delta_seconds);
         const std::vector<entt::entity>& live = d.liveHandles();
-        const std::uint64_t posted_before = d.posted;
         for (const proto::Event phase : {proto::Event::Start, proto::Event::Update, proto::Event::LateUpdate}) {
+            // Tras todos los update: un evento Time (a una instancia cualquiera)
+            // en el que la DLL reanuda las corrutinas y los invoke de todos los
+            // scripts (Coroutine.h), como Unity. Va en el mismo lote: sin viaje.
+            // Tambien pone el tiempo del SDK (Time::deltaTime...) cuando ninguna
+            // sobrescribe start/update/lateUpdate. Una DLL anterior no hace nada.
+            if (phase == proto::Event::LateUpdate && d.host.running()) {
+                for (const entt::entity h : live) {
+                    const auto it = d.instances.find(h);
+                    if (it == d.instances.end() || !it->second.created || d.faulted.contains(h)) continue;
+                    d.post(h, it->second, proto::Event::Time, a);
+                    break;
+                }
+            }
             for (const entt::entity h : live) {
                 const auto it = d.instances.find(h);
                 if (!d.host.running()) break;
@@ -3404,17 +3507,6 @@ void CppScriptSystem::update(ecs::World& world, float delta_seconds) {
                     continue;
                 }
                 d.post(h, inst, phase, a);
-            }
-        }
-        // Ninguna sobrescribe start/update/lateUpdate (no hubo nada que enviar):
-        // el tiempo del SDK (Time::deltaTime, time, frameCount), que leen los
-        // callbacks, mensajes y corrutinas, avanza igual con un evento Time.
-        if (d.posted == posted_before && d.host.running()) {
-            for (const entt::entity h : live) {
-                const auto it = d.instances.find(h);
-                if (it == d.instances.end() || !it->second.created || d.faulted.contains(h)) continue;
-                d.post(h, it->second, proto::Event::Time, a);
-                break;
             }
         }
         d.runBatch();

@@ -36,6 +36,7 @@
 // API por su nombre. Pruebas automaticas: cramion/Test.h.
 #pragma once
 
+#include "Coroutine.h"
 #include "CppProtocol.h"
 #include "Types.h"
 #include "Value.h"
@@ -126,6 +127,11 @@ inline cppproto::Writer& scratchWriter() {
 }
 }  // namespace detail
 
+namespace detail {
+// Un color con su alfa para la API (una lista: el Vec3 del lote no lleva alfa).
+inline Value drawColor(const Color& c) { return Value(Values{Value(c.r), Value(c.g), Value(c.b), Value(c.a)}); }
+}  // namespace detail
+
 // --- Debug ---
 namespace Debug {
 /// Escribe en la Consola (y en la Consola C++).
@@ -145,6 +151,46 @@ inline void error(std::string_view text) {
     cppproto::Writer w;
     w.u32(2).str(text);
     detail::rpc(cppproto::Rpc::Log, w);
+}
+
+// --- Dibujo de depuracion en el mundo (Debug.drawLine... de la API) ---
+// Se ve en el Play del editor (vistas de Escena y Juego) y, en el juego
+// exportado, con la CVar debug.draw.InGame. duration: segundos del juego
+// (0 = un frame); depthTest false: se ve a traves de la geometria. Van en el
+// lote (sin esperar al motor).
+/// Linea de depuracion de `from` a `to`.
+inline void drawLine(const Vec3& from, const Vec3& to, const Color& color = Color(1, 1, 1), float duration = 0.0f,
+                     bool depthTest = true) {
+    detail::api("Debug.drawLine", Values{Value(from), Value(to), detail::drawColor(color), Value(duration), Value(depthTest)});
+}
+/// Rayo de depuracion: de origin a origin + direction.
+inline void drawRay(const Vec3& origin, const Vec3& direction, const Color& color = Color(1, 1, 1), float duration = 0.0f,
+                    bool depthTest = true) {
+    detail::api("Debug.drawRay", Values{Value(origin), Value(direction), detail::drawColor(color), Value(duration), Value(depthTest)});
+}
+/// Esfera de alambre de depuracion.
+inline void drawSphere(const Vec3& center, float radius, const Color& color = Color(1, 1, 1), float duration = 0.0f,
+                       bool depthTest = true) {
+    detail::api("Debug.drawSphere", Values{Value(center), Value(radius), detail::drawColor(color), Value(duration), Value(depthTest)});
+}
+/// Caja de alambre de depuracion (size: tamano entero; rotation: su giro).
+inline void drawBox(const Vec3& center, const Vec3& size, const Quat& rotation = Quat{}, const Color& color = Color(1, 1, 1),
+                    float duration = 0.0f, bool depthTest = true) {
+    detail::api("Debug.drawBox", Values{Value(center), Value(size), Value(rotation), detail::drawColor(color), Value(duration),
+                                        Value(depthTest)});
+}
+/// Flecha de depuracion de `from` a `to` (head: largo de la punta en metros; <= 0, automatico).
+inline void drawArrow(const Vec3& from, const Vec3& to, const Color& color = Color(1, 1, 1), float duration = 0.0f,
+                      bool depthTest = true, float head = -1.0f) {
+    detail::api("Debug.drawArrow", Values{Value(from), Value(to), detail::drawColor(color), Value(duration), Value(depthTest),
+                                          Value(head)});
+}
+/// Texto de depuracion en el mundo, centrado en `position` (size: alto en pixeles).
+/// Por defecto se lee a traves de todo (depthTest false).
+inline void drawText(const Vec3& position, std::string_view text, const Color& color = Color(1, 1, 1), float duration = 0.0f,
+                     float size = 14.0f, bool depthTest = false) {
+    detail::api("Debug.drawText", Values{Value(position), Value(text), detail::drawColor(color), Value(duration), Value(depthTest),
+                                         Value(size)});
 }
 }  // namespace Debug
 
@@ -1104,6 +1150,52 @@ public:
     /// on("OnVolumen", [this](const Value& v) { Prefs::setFloat("volumen", v); });
     void on(const std::string& name, std::function<void(const Value&)> fn) { handlers_[name] = std::move(fn); }
 
+    // --- Corrutinas y temporizadores (cramion/Coroutine.h; como Unity) ---
+    // Se paran solos en onDisable (desactivar el script o su objeto) y en onDestroy.
+    /// Empieza una corrutina: corre ya hasta su primera espera (co_await waitSeconds/nextFrame...).
+    Coroutine startCoroutine(Task<> task) {
+        Task<>::Handle h = task.release();
+        return h ? Coroutine(detail::coStart(this, h, &h.promise())) : Coroutine();
+    }
+    /// Para una corrutina (si es la que corre, al llegar a su siguiente espera).
+    void stopCoroutine(const Coroutine& c) {
+        if (c.id() != 0) detail::coStop(c.id());
+    }
+    /// Para todas las corrutinas de este script (no los invoke: cancelInvoke).
+    void stopAllCoroutines() { detail::coStopOwned(this, true, false); }
+    /// Llama a fn dentro de `delay` segundos del juego (una vez).
+    Timer invoke(std::function<void()> fn, float delay = 0.0f) {
+        return Timer(detail::timerStart(this, std::move(fn), delay, -1.0f));
+    }
+    /// Llama a fn dentro de `delay` segundos y despues cada `interval` segundos.
+    Timer invokeRepeating(std::function<void()> fn, float delay, float interval) {
+        return Timer(detail::timerStart(this, std::move(fn), delay, interval > 0.0f ? interval : 0.0f));
+    }
+    /// Cancela un invoke / invokeRepeating.
+    void cancelInvoke(const Timer& t) { t.cancel(); }
+    /// Cancela todos los invoke de este script.
+    void cancelInvoke() { detail::coStopOwned(this, false, true); }
+    /// Hay algun invoke pendiente en este script.
+    bool isInvoking() const { return detail::timerAny(this); }
+    /// co_await waitSeconds(1.5f): segundos del juego.
+    static detail::CoWaiter waitSeconds(float seconds) { return co::waitSeconds(seconds); }
+    /// co_await waitSecondsRealtime(1.5f): segundos reales (sigue en pausa).
+    static detail::CoWaiter waitSecondsRealtime(float seconds) { return co::waitSecondsRealtime(seconds); }
+    /// co_await waitFrames(3): frames del juego.
+    static detail::CoWaiter waitFrames(int frames) { return co::waitFrames(frames); }
+    /// co_await nextFrame(): el siguiente frame.
+    static detail::CoWaiter nextFrame() { return co::nextFrame(); }
+    /// co_await waitUntil([&] { return listo; }): cada frame hasta que sea verdad.
+    template <class F>
+    static detail::CoWaiter waitUntil(F condition) {
+        return co::waitUntil(std::move(condition));
+    }
+    /// co_await waitWhile([&] { return cargando; }): cada frame mientras sea verdad.
+    template <class F>
+    static detail::CoWaiter waitWhile(F condition) {
+        return co::waitWhile(std::move(condition));
+    }
+
 private:
     friend struct ScriptAccess;
     friend class detail::PropertyBase;
@@ -1140,6 +1232,20 @@ void registerClass(const char* name, const char* file, Factory factory);
 // events: los eventos que la clase sobrescribe (bit 1 << cppproto::Event); el
 // motor no envia los demas (un update() vacio no cuesta un viaje al proceso).
 void registerClass(const char* name, const char* file, Factory factory, std::uint32_t events);
+// Con su prioridad en el orden de ejecucion (kExecutionOrder; menor = antes).
+void registerClass(const char* name, const char* file, Factory factory, std::uint32_t events, int order);
+
+// La prioridad de T: `static constexpr int kExecutionOrder = -100;` en la clase
+// (como [DefaultExecutionOrder] de Unity); 0 si no la tiene. Los ajustes del
+// proyecto (CVar script.ExecutionOrder) la pisan.
+template <typename T>
+constexpr int executionOrderOf() {
+    if constexpr (requires { requires std::is_integral_v<std::remove_cvref_t<decltype(T::kExecutionOrder)>>; }) {
+        return static_cast<int>(T::kExecutionOrder);
+    } else {
+        return 0;
+    }
+}
 
 // 1 si T (o una base suya que no es Script) sobrescribe `fn`. &T::fn tiene el
 // tipo de puntero a miembro de la clase que lo declara: si es Script, nadie lo
@@ -1168,7 +1274,8 @@ constexpr std::uint32_t eventMask() {
     mask |= bit(E::TriggerStay, CRAMION_DETAIL_OVERRIDES(onTriggerStay, void(Entity)));
     mask |= bit(E::TriggerExit, CRAMION_DETAIL_OVERRIDES(onTriggerExit, void(Entity)));
     mask |= bit(E::Enable, CRAMION_DETAIL_OVERRIDES(onEnable, void()));
-    mask |= bit(E::Disable, CRAMION_DETAIL_OVERRIDES(onDisable, void()));
+    // Siempre: al desactivarse se paran sus corrutinas y temporizadores (Coroutine.h).
+    mask |= bit(E::Disable, 1u);
     return mask;
 }
 #undef CRAMION_DETAIL_OVERRIDES
@@ -1176,7 +1283,7 @@ constexpr std::uint32_t eventMask() {
 template <typename T>
 struct Registrar {
     Registrar(const char* name, const char* file) {
-        registerClass(name, file, []() -> Script* { return new T(); }, eventMask<T>());
+        registerClass(name, file, []() -> Script* { return new T(); }, eventMask<T>(), executionOrderOf<T>());
     }
 };
 }  // namespace detail

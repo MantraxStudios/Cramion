@@ -65,6 +65,9 @@ const std::set<std::string> kSkipMembers = {"Time.deltaTime", "Time.time", "Time
                                             "Input.mouse",    "Input.key",  "Input.keyDown",       "Input.keyUp",
                                             "Input.axis",     "Input.mouseButton", "Input.keyMode",  "Debug.log",
                                             "Debug.warning",  "Debug.error",
+                                            // El dibujo de depuracion, con tipos (Vec3, Color, Quat) en Script.h.
+                                            "Debug.drawLine", "Debug.drawRay", "Debug.drawSphere", "Debug.drawBox",
+                                            "Debug.drawArrow", "Debug.drawText",
                                             // Las del SDK escritas a mano (con tipos): la de la API, con Api::call.
                                             "Scene.find", "Scene.findWithTag", "Scene.create", "Scene.getPositions",
                                             "Scene.setPositions", "Scene.setTransforms", "Physics.raycast", "Physics.sphereCast", "Scene.loadAsync", "Scene.unloadAsync",

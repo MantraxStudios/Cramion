@@ -552,6 +552,13 @@ target_compile_options(CramionCppScriptTests PRIVATE -Wall -Wextra)
 target_compile_definitions(CramionCppScriptTests PRIVATE
     CRAMION_SDK_DIR="${CMAKE_CURRENT_SOURCE_DIR}/sdk" CRAMION_BIN_DIR="${CMAKE_BINARY_DIR}")
 
+# --- Pruebas de las corrutinas y los invoke de los scripts de C++ (consola, sin
+# motor ni proceso de scripts: el SDK compilado aqui, con frames simulados) ---
+add_executable(CramionCoroutineTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CoroutineTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/sdk/cramion/ScriptMain.cpp")
+target_include_directories(CramionCoroutineTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/sdk")
+target_compile_options(CramionCoroutineTests PRIVATE -Wall -Wextra)
+
 # --- Pruebas del mundo de bloques (consola) ---
 add_executable(CramionVoxelTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/VoxelTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/VoxelDimensionTests.cpp")
