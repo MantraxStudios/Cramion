@@ -114,6 +114,29 @@ public:
         return static_cast<std::int64_t>(end - here);
     }
 
+    // Como podVector y string, sin pasar de `end`: un tamano danado (bloque
+    // BSHP) no reserva gigas antes de fallar.
+    template <typename T>
+    void podVectorWithin(std::vector<T>& values, std::streampos end) {
+        static_assert(std::is_trivially_copyable_v<T>);
+        std::uint64_t count = 0;
+        pod(count);
+        const std::int64_t left = remaining(end);
+        if (left < 0 || count > static_cast<std::uint64_t>(left) / sizeof(T)) {
+            throw std::runtime_error("datos del modelo corruptos");
+        }
+        values.resize(static_cast<std::size_t>(count));
+        read(values.data(), values.size() * sizeof(T));
+    }
+    void stringWithin(std::string& text, std::streampos end) {
+        std::uint64_t count = 0;
+        pod(count);
+        const std::int64_t left = remaining(end);
+        if (left < 0 || count > static_cast<std::uint64_t>(left)) throw std::runtime_error("datos del modelo corruptos");
+        text.resize(static_cast<std::size_t>(count));
+        read(text.data(), text.size());
+    }
+
     std::streampos tell() { return file_.tellg(); }
     void seek(std::streampos position) {
         file_.clear();  // (tras un bloque que fallo a medias)
@@ -183,17 +206,17 @@ void writeBlendShapes(Writer& out, const ModelData& model) {
     }
 }
 
-void readBlendShapes(Reader& in, ModelData& model) {
+void readBlendShapes(Reader& in, ModelData& model, std::streampos end) {
     std::uint64_t count = 0;
     in.pod(count);
     if (count > (1u << 20)) throw std::runtime_error("formas de mezcla corruptas");
     model.blend_shapes.resize(static_cast<std::size_t>(count));
     for (BlendShape& shape : model.blend_shapes) {
-        in.string(shape.name);
+        in.stringWithin(shape.name, end);
         in.pod(shape.default_weight);
-        in.podVector(shape.vertices);
-        in.podVector(shape.position_deltas);
-        in.podVector(shape.normal_deltas);
+        in.podVectorWithin(shape.vertices, end);
+        in.podVectorWithin(shape.position_deltas, end);
+        in.podVectorWithin(shape.normal_deltas, end);
         // Coherencia: indices dentro del modelo y una delta por vertice.
         if (shape.position_deltas.size() != shape.vertices.size()) shape.position_deltas.resize(shape.vertices.size());
         if (!shape.normal_deltas.empty() && shape.normal_deltas.size() != shape.vertices.size()) {
@@ -211,7 +234,7 @@ void readBlendShapes(Reader& in, ModelData& model) {
         std::vector<BlendShapeTrack> list(static_cast<std::size_t>(tracks));
         for (BlendShapeTrack& track : list) {
             in.pod(track.shape);
-            in.podVector(track.keys);
+            in.podVectorWithin(track.keys, end);
         }
         if (c < model.animations.size()) {
             std::erase_if(list, [&](const BlendShapeTrack& t) { return t.shape >= model.blend_shapes.size(); });
@@ -410,10 +433,14 @@ void readPayload(Reader& in, ModelData& model, bool skip_texture_bytes = false, 
             std::uint64_t bytes = 0;
             in.pod(version);
             in.pod(bytes);
+            // Tamano imposible (bloque danado o cortado): sin formas, y lo que
+            // viniera detras se ignora (no se puede saber donde empieza).
+            const std::int64_t left = in.remaining(end);
+            if (left < 0 || bytes > static_cast<std::uint64_t>(left)) break;
             const std::streampos block_end = in.tell() + static_cast<std::streamoff>(bytes);
             if (version == kBlendShapeBlockVersion) {
                 try {
-                    readBlendShapes(in, model);
+                    readBlendShapes(in, model, block_end);
                 } catch (const std::exception&) {
                     // Bloque danado: el modelo vale igual, sin formas.
                     model.blend_shapes.clear();

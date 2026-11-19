@@ -539,6 +539,27 @@ void testBlendShapeStorage() {
               bad_read.blend_shapes.empty() && bad_read.indices.size() == 6,
           "bloque danado: el modelo vale sin formas");
 
+    // Tamano del bloque imposible (u64 tras etiqueta y version) y cuentas
+    // gigantes dentro: el modelo se lee sin formas, sin reservar gigas.
+    std::string huge = bytes;
+    for (int i = 0; i < 8; ++i) huge[tag + 8 + static_cast<std::size_t>(i)] = static_cast<char>(0x7F);
+    std::stringstream huge_in(huge, std::ios::in | std::ios::binary);
+    asset::ModelData huge_read{};
+    check(asset::readModelPayload(huge_in, huge_read, false, static_cast<std::streampos>(huge.size())) &&
+              huge_read.blend_shapes.empty() && huge_read.vertex_colors.size() == 4 && huge_read.indices.size() == 6,
+          "tamano de bloque imposible: el modelo vale sin formas");
+    std::string giant = bytes;
+    // Cuenta de vertices de la primera forma: tras etiqueta (4), version (4),
+    // tamano (8), numero de formas (8), nombre (8 + 5) y peso (4).
+    const std::size_t vertex_count = tag + 4 + 4 + 8 + 8 + 8 + 5 + 4;
+    for (int i = 0; i < 8; ++i) giant[vertex_count + static_cast<std::size_t>(i)] = static_cast<char>(0x40);
+    std::stringstream giant_in(giant, std::ios::in | std::ios::binary);
+    asset::ModelData giant_read{};
+    check(asset::readModelPayload(giant_in, giant_read, false, static_cast<std::streampos>(giant.size())) &&
+              giant_read.blend_shapes.empty() && giant_read.animations.size() == 1 &&
+              giant_read.animations[0].blend_tracks.empty(),
+          "cuenta gigante dentro del bloque: sin formas ni pistas");
+
     // Aplicarlas en la CPU y escalar.
     const std::vector<asset::SkinnedVertex> moved = asset::applyBlendShapes(model, {0.5f});
     check(std::abs(moved[1].position.y - 0.5f) < 1e-6f && std::abs(moved[3].position.y - 1.0f) < 1e-6f &&

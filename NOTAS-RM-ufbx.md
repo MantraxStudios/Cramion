@@ -99,3 +99,28 @@ Por eso **`asset.fbx.Loader` arranca en `anterior`**: el criterio era "igual en 
 2. Reimportar un modelo ya importado con cada cargador y que la escena/prefab que lo usa siga igual.
 3. Un FBX con formas (cara con blend shapes): que importe sin errores, que el `.crdata` crezca y que se vea igual que antes (la GPU todavía no las aplica). Abrirlo con un editor de la versión anterior: debe cargar igual (ignora el bloque).
 4. `loadModel` de una escena de demostración con un FBX suelto, con los dos cargadores (cachés `.cramcache` y `.ufbx.cramcache` separadas).
+
+## Revisión
+
+Revisión independiente del diff `horizonz-1031...rm-ufbx` (commit 9fc27fc).
+
+**Arreglado**
+- **Bloque `BSHP` con un tamaño dañado tumbaba el modelo entero**: si el `u64` de tamaño del bloque apuntaba más allá del final, `seek` fallaba (en un `stringstream` siempre) y `readModelPayload` devolvía `false`, al contrario de lo que dicen las notas ("un bloque dañado deja el modelo sin formas"). Ahora, un tamaño mayor que lo que queda de la pieza deja el modelo sin formas y no se lee nada más detrás.
+- **Cuentas gigantes dentro del bloque**: `podVector`/`string` hacían `resize(count)` con la cuenta leída antes de comprobar nada (un byte dañado podía pedir gigas antes de fallar). Las lecturas del bloque (`podVectorWithin`/`stringWithin`) comprueban la cuenta contra los bytes que quedan del bloque. El resto del formato no se toca.
+- `THIRD_PARTY_NOTICES.md`: la fila de ufbx tenía la codificación rota ("pÃºblico").
+- **Faltaba probar el camino de assimp de las formas**, que es el que corre por defecto (`asset.fbx.Loader = anterior` y `asset.import.BlendShapes = true`): la prueba de la caja solo imprimía cuántas formas daba assimp. Nueva `testGltfMorph` en `CramionFbxTests`: glTF escrito por la prueba con un morph target, peso por defecto y toma que anima el peso; comprueba la forma dispersa, el peso, aplicarla, la pista y que con la CVar apagada sale como antes.
+- `CramionMeshTests`: dos comprobaciones nuevas (tamaño de bloque imposible, cuenta gigante dentro del bloque).
+
+**Revisado sin cambios**
+- Retrocompatibilidad: sin formas los bytes son los de siempre; un lector viejo para en la etiqueta `BSHP` y `CrData` salta al final de la pieza por su tamaño; la caché vieja (`end = -1`) también para. La versión de la caché no cambia: las cachés `.cramcache` ya hechas con assimp no traen formas hasta que cambie el FBX (no importa: nada las usa todavía).
+- Coste en frames: ninguno (no hay código de render nuevo). Solo memoria: `readModelGeometry` del juego también carga el bloque `BSHP` de los modelos que lo tengan, aunque nadie lo use todavía.
+- Hilos: el cargador y la CVar de formas son atómicos; ufbx no tiene estado global.
+- La elección de cargador no toca glTF/DAE/OBJ ni nada con el valor por defecto.
+
+**Limitación encontrada (anotada, no cambiada)**
+- Las formas solo se guardan si el modelo ya se importa animado (piel o nodos con malla animados). Una malla con formas sin esqueleto ni animación de nodos (una cara suelta, un objeto con morphs y una toma que solo anima pesos) se importa como escenario horneado (`PreTransformVertices` / modo estático) y pierde las formas y sus pistas, con los dos cargadores. Cambiarlo cambia la estructura de modelos ya importados (dejan de ir en clusteres, otra jerarquía), así que debe ir detrás de una CVar cuando se haga la parte de GPU.
+- Con assimp, una malla sin piel instanciada en varios nodos añade sus vértices a la forma una vez por instancia (la lista deja de ser creciente); `applyBlendShapes` lo tolera.
+
+**Pruebas tras la revisión** (compilado con `compila.sh` en `build-rm`: CramionFbxTests y CramionMeshTests, que recompilan CramionFX y CramionCore)
+- `CramionFbxTests`: **58 comprobaciones, 0 fallos** (8 nuevas de `testGltfMorph`; assimp da la forma "Up" con 1 vértice, peso 0.25 y la pista de peso de la toma).
+- `CramionMeshTests`: **197 comprobaciones, 0 fallos** (2 nuevas del bloque `BSHP`; la de tamaño imposible fallaba antes del arreglo).

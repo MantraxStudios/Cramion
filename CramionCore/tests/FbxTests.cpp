@@ -24,6 +24,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <initializer_list>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -664,6 +666,99 @@ void testBrokenTake() {
     check(r.ok && r.model.indices.size() == 36, "con su malla");
 }
 
+// --- glTF con morph target (assimp: el camino por defecto) ---
+
+std::string base64(const std::vector<unsigned char>& bytes) {
+    static const char* table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    for (std::size_t i = 0; i < bytes.size(); i += 3) {
+        const unsigned v = (static_cast<unsigned>(bytes[i]) << 16) |
+                           ((i + 1 < bytes.size() ? static_cast<unsigned>(bytes[i + 1]) : 0u) << 8) |
+                           (i + 2 < bytes.size() ? static_cast<unsigned>(bytes[i + 2]) : 0u);
+        out += table[(v >> 18) & 63];
+        out += table[(v >> 12) & 63];
+        out += i + 1 < bytes.size() ? table[(v >> 6) & 63] : '=';
+        out += i + 2 < bytes.size() ? table[v & 63] : '=';
+    }
+    return out;
+}
+
+// Un triangulo con la forma "Up" (el tercer vertice sube 1 en z), peso 0.25
+// por defecto y una toma "Talk" de 1 s que mueve el nodo (asi se importa
+// animado) y lleva el peso de 0 a 1.
+std::string morphGltf() {
+    std::vector<unsigned char> buffer;
+    const auto floats = [&](std::initializer_list<float> values) {
+        for (const float f : values) {
+            unsigned char b[4];
+            std::memcpy(b, &f, 4);
+            buffer.insert(buffer.end(), b, b + 4);
+        }
+    };
+    floats({0, 0, 0, 1, 0, 0, 0, 1, 0});  // 0: posiciones
+    floats({0, 0, 0, 0, 0, 0, 0, 0, 1});  // 36: deltas de la forma
+    floats({0, 1});                       // 72: tiempos
+    floats({0, 1});                       // 80: pesos
+    floats({0, 0, 0, 0, 2, 0});           // 88: traslacion del nodo
+    std::ostringstream s;
+    s << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],)"
+      << R"("nodes":[{"name":"Tri","mesh":0}],)"
+      << R"("meshes":[{"name":"TriMesh","weights":[0.25],"extras":{"targetNames":["Up"]},)"
+      << R"("primitives":[{"attributes":{"POSITION":0},"targets":[{"POSITION":1}]}]}],)"
+      << R"("buffers":[{"byteLength":)" << buffer.size() << R"(,"uri":"data:application/octet-stream;base64,)"
+      << base64(buffer) << R"("}],)"
+      << R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},)"
+      << R"({"buffer":0,"byteOffset":72,"byteLength":8},{"buffer":0,"byteOffset":80,"byteLength":8},)"
+      << R"({"buffer":0,"byteOffset":88,"byteLength":24}],)"
+      << R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},)"
+      << R"({"bufferView":1,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[0,0,1]},)"
+      << R"({"bufferView":2,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]},)"
+      << R"({"bufferView":3,"componentType":5126,"count":2,"type":"SCALAR"},)"
+      << R"({"bufferView":4,"componentType":5126,"count":2,"type":"VEC3"}],)"
+      << R"("animations":[{"name":"Talk","samplers":[{"input":2,"output":3},{"input":2,"output":4}],)"
+      << R"("channels":[{"sampler":0,"target":{"node":0,"path":"weights"}},)"
+      << R"({"sampler":1,"target":{"node":0,"path":"translation"}}]}]})";
+    return s.str();
+}
+
+void testGltfMorph() {
+    std::printf("\n[Formas de mezcla de glTF, assimp]\n");
+    const std::filesystem::path file = writeTemp("morph.gltf", morphGltf());
+    const LoadResult r = load(file, asset::FbxLoader::Assimp, false);
+    check(r.ok, "se lee");
+    if (!r.ok) {
+        std::printf("    %s\n", r.error.c_str());
+        return;
+    }
+    const asset::ModelData& m = r.model;
+    check(m.blend_shapes.size() == 1, "una forma");
+    if (m.blend_shapes.empty()) return;
+    const asset::BlendShape& up = m.blend_shapes[0];
+    std::printf("    forma \"%s\", %zu vertices, peso %.2f\n", up.name.c_str(), up.vertices.size(), up.default_weight);
+    check(up.vertices.size() == 1 && up.position_deltas.size() == 1 &&
+              approx(up.position_deltas[0], Vec3{0.0f, 0.0f, 1.0f}, 1e-5f),
+          "solo el vertice que se mueve, con su delta");
+    check(approx(up.default_weight, 0.25f, 1e-5f), "peso por defecto del archivo");
+    if (!up.vertices.empty() && up.vertices[0] < m.vertices.size()) {
+        const std::vector<asset::SkinnedVertex> moved = asset::applyBlendShapes(m, {0.5f});
+        check(approx(moved[up.vertices[0]].position.z, m.vertices[up.vertices[0]].position.z + 0.5f, 1e-5f),
+              "aplicada al 50 %");
+    }
+    const bool track = !m.animations.empty() && m.animations[0].blend_tracks.size() == 1;
+    check(track, "la toma anima el peso");
+    if (track) {
+        check(approx(asset::sampleBlendShapeTrack(m.animations[0].blend_tracks[0], 0.5f), 0.5f, 1e-3f),
+              "peso 0.5 a mitad");
+    }
+    // Sin la CVar, como antes: ninguna forma.
+    asset::setImportBlendShapes(false);
+    const LoadResult off = load(file, asset::FbxLoader::Assimp, false);
+    asset::setImportBlendShapes(true);
+    check(off.ok && off.model.blend_shapes.empty() && off.model.animations.size() == 1 &&
+              off.model.animations[0].blend_tracks.empty(),
+          "asset.import.BlendShapes = false: sin formas ni pistas");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -728,6 +823,7 @@ int main(int argc, char** argv) {
         testAnimatedCube(asset::FbxLoader::Ufbx);
         testHierarchy();
         testBrokenTake();
+        testGltfMorph();
     }
     std::string env;
 #if defined(_WIN32)
