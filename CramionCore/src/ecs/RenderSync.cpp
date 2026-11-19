@@ -1631,6 +1631,16 @@ void RenderSync::prefetchClips(std::uint32_t model, const Uuid& controller_uuid,
             if (child.clip.valid()) externalClip(model, child.clip.uuid, scene);
         }
     }
+    // Y los de las capas de encima.
+    for (const AnimatorLayer& layer : controller.layers) {
+        if (layer.reference_clip.valid()) externalClip(model, layer.reference_clip.uuid, scene);
+        for (const AnimatorState& state : layer.states) {
+            if (state.clip.valid()) externalClip(model, state.clip.uuid, scene);
+            for (const BlendTreeChild& child : state.children) {
+                if (child.clip.valid()) externalClip(model, child.clip.uuid, scene);
+            }
+        }
+    }
 }
 
 anim::Animator& RenderSync::stateAnimator(AnimationState& state) {
@@ -1773,6 +1783,8 @@ void RenderSync::reset(scene::Scene& scene) {
     pending_clips_.clear();  // (la tarea solo usa sus copias: no hace falta esperarla)
     marca("prefetched_controllers_");
     prefetched_controllers_.clear();
+    clip_meta_done_.clear();  // por indice de modelo: otra escena
+    layer_masks_.clear();
     marca("decal_textures_");
     decal_textures_.clear();
     marca("rivers_");
@@ -4124,6 +4136,14 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             float speed = animator->speed;
             bool restart = false;
             bool controlled = false;  // la pose ya la hizo el controlador
+            // Root motion (apagado = como siempre) y eventos/curvas de los clips
+            // del modelo (archivo lateral, una vez por modelo).
+            const bool root_motion = animator->root_motion != RootMotionMode::Off;
+            state.animator.setRootMotionNode(root_motion ? rootMotionNode(state, data, animator->root_bone) : -1);
+            ensureClipMeta(*model, renderer_component->model.uuid, scene);
+            // Vista previa de la ventana de clips del editor: ese clip en ese instante.
+            const bool previewing = animator->runtime.preview_clip >= 0 &&
+                                    animator->runtime.preview_clip < static_cast<int>(data.animations.size());
 
             // Con controlador: la maquina de estados elige el clip.
             // Puntero sin contar referencias (lo guarda controllers_, que no
@@ -4139,7 +4159,17 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 }
                 if (controller && !controller->states.empty()) prefetchClips(*model, animator->controller.uuid, *controller, scene);
             }
-            if (controller && !controller->states.empty()) {
+            if (previewing) {
+                deferred_pose = 1;
+                deferred_begin = static_cast<std::uint32_t>(pending_samples.size());
+                deferred_count = 1;
+                pending_samples.push_back(anim::ClipSample{animator->runtime.preview_clip,
+                                                           std::max(animator->runtime.preview_time, 0.0f), 1.0f});
+                state.clip = -3;
+                state.controller_state = -1;
+                posed = true;
+                controlled = true;
+            } else if (controller && !controller->states.empty()) {
                 CR_PROFILE_SCOPE("Maquina de estados");
                 // El clip del estado actual aun se esta leyendo (streaming): este
                 // frame no se dibuja (mejor que verlo un instante en pose T).
@@ -4177,13 +4207,14 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 };
                 // Muestras de un estado en su fase (0..1) con un peso; devuelve la
                 // duracion del ciclo (la media de sus clips segun sus pesos).
-                const auto stateSamples = [&](int index, float phase, float weight, std::vector<anim::ClipSample>* out) {
+                const auto stateSamples = [&](int index, float phase, float weight, std::vector<anim::ClipSample>* out,
+                                              float dphase = 0.0f) {
                     if (index < 0 || index >= static_cast<int>(controller->states.size())) return 0.0f;
                     const AnimatorState& st = controller->states[static_cast<std::size_t>(index)];
                     if (!st.isBlendTree()) {
                         const int c = resolveClip(st.clip_name, st.clip);
                         const float d = c >= 0 ? data.animations[static_cast<std::size_t>(c)].duration : 0.0f;
-                        if (out != nullptr) out->push_back({c, phase * d, weight});
+                        if (out != nullptr) out->push_back({c, phase * d, weight, dphase * d, st.loop});
                         return d;
                     }
                     const float px = animatorParameterValue(*controller, runtime, st.blend_parameter);
@@ -4204,7 +4235,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                         if (out != nullptr) {
                             // Velocidad negativa: el clip va hacia atras (andar de espaldas).
                             const float t = child.speed < 0.0f ? 1.0f - phase : phase;
-                            out->push_back({c, t * data.animations[static_cast<std::size_t>(c)].duration, weights[k]});
+                            const float clip_d = data.animations[static_cast<std::size_t>(c)].duration;
+                            out->push_back({c, t * clip_d, weights[k], (child.speed < 0.0f ? -dphase : dphase) * clip_d, st.loop});
                         }
                     }
                     if (out != nullptr && used > 1e-6f) {
@@ -4214,10 +4246,19 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 };
                 const auto advance = [&](int index, float& phase, float dt) {
                     const float cycle = stateSamples(index, phase, 0.0f, nullptr);
-                    if (cycle <= 0.0f) return;
+                    if (cycle <= 0.0f) return 0.0f;
                     const AnimatorState& st = controller->states[static_cast<std::size_t>(index)];
-                    phase += dt * animator->speed * st.speed / cycle;
-                    phase = st.loop ? phase - std::floor(phase) : std::clamp(phase, 0.0f, 1.0f);
+                    const float step = dt * animator->speed * st.speed / cycle;
+                    if (st.loop) {
+                        phase += step;
+                        phase -= std::floor(phase);
+                        return step;
+                    }
+                    // Sin bucle, lo que avanzo de verdad: parado al final no
+                    // repite eventos ni root motion.
+                    const float before = phase;
+                    phase = std::clamp(phase + step, 0.0f, 1.0f);
+                    return phase - before;
                 };
 
                 // CrossFade pedido por el juego: manda sobre las transiciones.
@@ -4260,7 +4301,9 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 }
                 runtime.state = std::clamp(runtime.state, 0, static_cast<int>(controller->states.size()) - 1);
                 float inertial_duration = 0.0f;
+                bool entered = false;  // estado nuevo este frame (sus eventos del principio)
                 if (runtime.state != state.controller_state || (forced && state.controller_state >= 0)) {
+                    entered = true;
                     // Fundido o inercializacion desde el estado que sonaba (si
                     // la transicion lo pide).
                     const AnimatorTransition* transition =
@@ -4290,11 +4333,13 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 const AnimatorState& st = controller->states[static_cast<std::size_t>(runtime.state)];
                 if (runtime.state_name != st.name) runtime.state_name = st.name;  // sin copiar el texto cada frame
                 const float cycle = stateSamples(runtime.state, state.phase, 0.0f, nullptr);
+                float base_dphase = 0.0f, fade_dphase = 0.0f;
                 if (animator->playing) {
                     runtime.state_time += anim_dt * std::abs(animator->speed * st.speed);
-                    advance(runtime.state, state.phase, anim_dt);
+                    const float advanced = advance(runtime.state, state.phase, anim_dt);  // (como antes, tambien en repeticion)
+                    base_dphase = runtime.replay_control ? 0.0f : advanced;
                     if (state.fade_state >= 0) {
-                        advance(state.fade_state, state.fade_phase, anim_dt);
+                        fade_dphase = advance(state.fade_state, state.fade_phase, anim_dt);
                         state.fade_time += anim_dt;
                         if (state.fade_time >= state.fade_duration) state.fade_state = -1;
                     }
@@ -4310,12 +4355,21 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 if (state.fade_state >= 0 && state.fade_duration > 0.0f) {
                     const float t = std::clamp(state.fade_time / state.fade_duration, 0.0f, 1.0f);
                     fresh = t * t * (3.0f - 2.0f * t);
-                    stateSamples(state.fade_state, state.fade_phase, 1.0f - fresh, &samples);
+                    stateSamples(state.fade_state, state.fade_phase, 1.0f - fresh, &samples, fade_dphase);
                 }
-                stateSamples(runtime.state, state.phase, fresh, &samples);
+                const std::size_t current_begin = samples.size();
+                stateSamples(runtime.state, state.phase, fresh, &samples, base_dphase);
+                // Capas de encima, montage, eventos y curvas (RenderSyncAnim.cpp).
+                state.plan.base.assign(samples.begin(), samples.end());
+                const AnimatorSyncSource base_sync{runtime.state, state.phase, base_dphase, state.fade_state,
+                                                   state.fade_phase, state.fade_state >= 0 ? 1.0f - fresh : 0.0f, entered};
+                const bool layered = buildAnimationLayers(e, *animator, controller, state, *model, data, scene, anim_dt,
+                                                          base_sync, current_begin);
                 const bool inertial_start = inertial_duration > 0.0f && state.inertial.hasHistory() && animator->playing;
                 if (inertial_start) {
                     state.animator.evaluateBlend(samples);
+                } else if (layered) {
+                    deferred_pose = 3;  // evaluateLayered(state.plan), en paralelo
                 } else {
                     // Lo normal: la pose se evalua despues, en paralelo con la
                     // de los demas personajes (ver pending_actors).
@@ -4343,6 +4397,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     const std::vector<Mat4> before = state.animator.locals();
                     state.animator.evaluateBlend(samples);
                     state.inertial.start(now, before, inertial_duration, anim_dt);
+                    if (layered) state.animator.evaluateLayered(state.plan);
                 }
                 inertial_tracked = animator->playing;
                 state.clip = -3;  // sin controlador otra vez: vuelve a elegir clip
@@ -4373,6 +4428,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 state.animator.setSpeed(speed);
                 if (animator->playing) {
                     const bool inertial_switch = switched && animator->blend_time > 0.0f && state.inertial.hasHistory();
+                    const float time_before = state.animator.time();
                     if (inertial_switch) {
                         state.animator.update(anim_dt);
                     } else {
@@ -4382,6 +4438,25 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     }
                     animator->time = state.animator.time();
                     posed = true;
+                    {
+                        // Montage, root motion y eventos del clip: con muestras.
+                        const bool loop_clip = state.loop;
+                        state.plan.base.clear();
+                        // Sin bucle, lo que avanzo de verdad (parado al final: nada).
+                        const float clip_delta = loop_clip ? anim_dt * speed : state.animator.time() - time_before;
+                        state.plan.base.push_back(anim::ClipSample{clip, state.animator.time(), 1.0f, clip_delta, loop_clip});
+                        const AnimatorSyncSource base_sync{-1, 0.0f, 0.0f, -1, 0.0f, 0.0f, switched || restart};
+                        const bool layered = buildAnimationLayers(e, *animator, nullptr, state, *model, data, scene,
+                                                                  anim_dt, base_sync, 0);
+                        if (layered) {
+                            deferred_pose = 3;
+                        } else if (root_motion && clip >= 0) {
+                            deferred_pose = 1;
+                            deferred_begin = static_cast<std::uint32_t>(pending_samples.size());
+                            deferred_count = 1;
+                            pending_samples.push_back(state.plan.base.front());
+                        }
+                    }
                     if (inertial_switch) {
                         const std::vector<Mat4> now = state.animator.locals();
                         state.animator.setTime(animator->time - anim_dt * speed);
@@ -4436,6 +4511,22 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         const bool posed = pending.posed;
         const bool inertial_tracked = pending.inertial_tracked;
         const bool cacheable = pending.cacheable;
+        // Root motion de este frame (modelo -> mundo): lo aplica el juego en Play.
+        if (posed && !lod_skip && state.animator.rootMotionNode() >= 0) {
+            const anim::RootMotion& motion = state.animator.rootMotion();
+            if (motion.yaw != 0.0f || motion.position.x != 0.0f || motion.position.z != 0.0f) {
+                if (Animator* a = e.tryGet<Animator>()) {
+                    AnimatorRuntime& rt = a->runtime;
+                    rt.root_delta_position = rt.root_delta_position + transformDirection(e.worldMatrix(), motion.position);
+                    rt.root_delta_yaw += motion.yaw;
+                    // Fuera de Play nadie lo recoge: no crece sin limite.
+                    if (core::length(rt.root_delta_position) > 1000.0f) {
+                        rt.root_delta_position = Vec3{};
+                        rt.root_delta_yaw = 0.0f;
+                    }
+                }
+            }
+        }
         // Transicion inercial en curso: el desfase se suma a la pose animada
         // (antes del IK, que sigue apoyando los pies donde toca).
         if (inertial_tracked && data.nodes.size() > 1) {
@@ -4604,6 +4695,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 animator.evaluateBlend(pending_samples.data() + p.deferred_begin, p.deferred_count);
             } else if (p.deferred_pose == 2) {
                 animator.evaluate();
+            } else if (p.deferred_pose == 3) {
+                animator.evaluateLayered(p.state->plan);
             }
         };
         if (pending_poses.size() >= 2 && g_anim_parallel.get() && jobs::workerCount() > 0) {

@@ -153,6 +153,12 @@ struct Animator {
     // Sin controlador: al cambiar de clip, segundos de inercializacion (el
     // cuerpo pasa a la animacion nueva conservando su impulso; 0 = corte seco).
     float blend_time = 0.2f;
+    // Root motion (apagado por defecto: la pose tal cual, como siempre). Lo que
+    // la raiz avanza en XZ y gira en Y sale de la pose y mueve, en Play, el
+    // Transform, el Character Controller o el Rigidbody (o lo recibe el script
+    // en OnAnimatorMove). root_bone vacio = el hueso mas alto del esqueleto.
+    RootMotionMode root_motion = RootMotionMode::Off;
+    std::string root_bone;
 
     // Estado de la maquina (no se guarda en la escena).
     AnimatorRuntime runtime;

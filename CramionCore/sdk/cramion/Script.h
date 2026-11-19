@@ -1190,6 +1190,8 @@ public:
     virtual void onMessage(const std::string& name, const Value& value) {
         if (name == "OnOriginShift") onOriginShift(value);
         if (name == "OnNetVar") onNetVar(value["key"].asString(), value["value"]);
+        if (name == "OnAnimationEvent") onAnimationEvent(value["name"].asString(), value["clip"].asString(), value["params"]);
+        if (name == "OnAnimatorMove") onAnimatorMove(value["deltaPosition"].asVec3(), value["deltaRotation"].asFloat());
         const auto it = handlers_.find(name);
         if (it != handlers_.end()) it->second(value);
     }
@@ -1197,6 +1199,12 @@ public:
     virtual void onOriginShift(const Vec3& /*offset*/) {}
     /// Objeto de red: llego un cambio de una variable sincronizada (setNetVar del dueno o del servidor).
     virtual void onNetVar(const std::string& /*key*/, const Value& /*value*/) {}
+    /// Evento (notify) de un clip que suena: el fotograma del golpe, un paso... (ventana de clips del
+    /// editor). Llega una sola vez aunque el clip salte o de vueltas. `params`: texto o JSON del evento.
+    virtual void onAnimationEvent(const std::string& /*name*/, const std::string& /*clip*/, const Value& /*params*/) {}
+    /// Root motion del Animator en modo Script: lo que la animacion avanzo (mundo) y giro en Y (grados)
+    /// este frame. Aplicalo tu (move, Transform...), como OnAnimatorMove de Unity.
+    virtual void onAnimatorMove(const Vec3& /*delta_position*/, float /*delta_yaw_degrees*/) {}
     /// Recarga en caliente (guardaste el .cpp en Play): lo que devuelvas aqui llega a onAfterReload
     /// de la instancia nueva. Las Property<T> se conservan solas; guarda aqui el resto (variables privadas).
     /// Las corrutinas vivas (co_await) NO se conservan: su trama y su codigo son de la DLL anterior.

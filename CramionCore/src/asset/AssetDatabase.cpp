@@ -73,6 +73,7 @@ constexpr JsonKind kJsonKinds[] = {
     {".crfracture", AssetType::Fracture, true, "Fractura sin UUID o danada"},
     {".crrt", AssetType::RenderTexture, false, "Render Texture sin UUID o danado"},
     {".crmat", AssetType::Material, false, "Material sin UUID o danado"},
+    {".crmask", AssetType::BoneMask, false, "Mascara de huesos sin UUID o danada"},
 };
 
 // El asset de un archivo (sin tamano) o nada si no es un asset; avisa de los
