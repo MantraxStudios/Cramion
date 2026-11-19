@@ -526,6 +526,10 @@ private:
     void syncLightsAndEnvironment(World& world, scene::Scene& scene,
                                   gfx::VulkanRenderer& renderer);
     void syncCamera(World& world, scene::Scene& scene);
+    // Contornos de juego (componente Outline) y la mascara reactiva de DLSS
+    // (RM-capas, RenderSyncLayers.cpp). Antes de las Render Textures.
+    void syncOutlines(World& world, gfx::VulkanRenderer& renderer, float delta_seconds);
+    float outline_clock_ = 0.0f;  // segundos (pulso de los contornos)
     void syncTerrains(World& world, gfx::VulkanRenderer& renderer, const core::Vec3& eye);
     core::Vec3 grass_eye_{};  // camara: los que apartan la hierba, los mas cercanos
     // Sistema de ambiente (environment/Environment.h): segundos del frame

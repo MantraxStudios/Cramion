@@ -134,6 +134,11 @@ struct MeshRenderer {
     // Malla creada por codigo (RuntimeMesh.h; como MeshFilter.mesh de Unity):
     // si hay, se dibuja en lugar de `model`. No se guarda en la escena.
     std::shared_ptr<Mesh> mesh;
+    // Capas de render (bit i = capa i, con los nombres de las capas del
+    // proyecto): una camara lo dibuja si comparte alguna con su culling_mask;
+    // una luz, su sombra si comparte alguna con su shadow_layers. Por defecto
+    // la capa 0 ("Default"), que todas ven.
+    std::uint32_t render_layers = 1u;
 
     void reflect(PropertyVisitor& v);
 };
@@ -429,6 +434,8 @@ struct Light {
     float source_radius = 0.05f;
     // Modo en el horneado (Mixta / Horneada / Solo tiempo real).
     LightBakeMode bake_mode = LightBakeMode::Mixed;
+    // Capas de render que proyectan su sombra (bit i = capa i). Todas por defecto.
+    std::uint32_t shadow_layers = 0xFFFFFFFFu;
 
     void reflect(PropertyVisitor& v);
 };
@@ -446,6 +453,17 @@ struct Camera {
     // Target Texture (como Unity): lo que ve esta camara va a esa Render
     // Texture (.crrt) en vez de a la pantalla.
     assets::AssetRef target_texture{{}, assets::AssetType::RenderTexture};
+    // Culling mask (como Unity): las capas de render que dibuja. Todas por defecto.
+    std::uint32_t culling_mask = 0xFFFFFFFFu;
+    // Arma en primera persona: las capas de `viewmodel_layers` (0 = ninguna)
+    // se dibujan con su propio campo de vision, delante de todo (no atraviesan
+    // paredes), con su luz, las sombras que reciben y sus vectores de
+    // movimiento. `viewmodel_near`: lo mas cerca del ojo que queda el arma;
+    // `viewmodel_depth`: fraccion del rango de profundidad que ocupa.
+    std::uint32_t viewmodel_layers = 0u;
+    float viewmodel_fov = 60.0f;
+    float viewmodel_near = 0.01f;
+    float viewmodel_depth = 0.02f;
 
     void reflect(PropertyVisitor& v);
 };

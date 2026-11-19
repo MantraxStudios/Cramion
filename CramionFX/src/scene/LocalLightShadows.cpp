@@ -23,7 +23,8 @@ bool LocalLightShadows::Signature::operator==(const Signature& other) const {
     return valid == other.valid && position.x == other.position.x &&
            position.y == other.position.y && position.z == other.position.z &&
            direction.x == other.direction.x && direction.y == other.direction.y &&
-           direction.z == other.direction.z && range == other.range && angle == other.angle;
+           direction.z == other.direction.z && range == other.range && angle == other.angle &&
+           layers == other.layers;
 }
 
 Vec3 LocalLightShadows::faceDirection(std::uint32_t face) {
@@ -89,7 +90,8 @@ void LocalLightShadows::updateSpots(const LightSet& lights, std::uint32_t map_si
         shadow.texel_scale = 2.0f * tan_half / static_cast<float>(map_size);
         shadow.active = true;
 
-        const Signature signature{light.position, direction, light.range, half_angle, true};
+        shadow.layers = light.shadow_layers;
+        const Signature signature{light.position, direction, light.range, half_angle, true, light.shadow_layers};
         shadow.dirty = !(signature == spot_rendered_[slot]);
         spot_rendered_[slot] = signature;
 
@@ -242,7 +244,8 @@ void LocalLightShadows::updatePoints(const Camera& camera, const LightSet& light
 
         // La intensidad no entra en la firma: el parpadeo de una luz no
         // cambia la sombra.
-        const Signature signature{light.position, Vec3{}, light.range, fov, true};
+        shadow.layers = light.shadow_layers;
+        const Signature signature{light.position, Vec3{}, light.range, fov, true, light.shadow_layers};
         shadow.dirty = !(signature == point_rendered_[slot]);
         point_rendered_[slot] = signature;
     }

@@ -220,6 +220,11 @@ public:
     const vk::raii::Pipeline& outlineMaskPipeline(bool visible_only) const {
         return visible_only ? outline_visible_pipeline_ : outline_silhouette_pipeline_;
     }
+    // Contornos de juego (game_outline_mask.frag): igual, pero cada objeto
+    // escribe pick_id / 255 (su estilo + 1) en vez de 1 (RM-capas).
+    const vk::raii::Pipeline& gameOutlineMaskPipeline(bool visible_only) const {
+        return visible_only ? game_outline_visible_pipeline_ : game_outline_silhouette_pipeline_;
+    }
     const vk::raii::PipelineLayout& glassLayout() const { return glass_layout_; }
 
     // Picking por ID (pick.frag): escribe GpuSkinnedPush::pick_id en una
@@ -240,7 +245,7 @@ private:
     void createGlassPipeline(const VulkanDevice& device, vk::Format color_format,
                              vk::Format depth_format);
     vk::raii::Pipeline createOutlinePipeline(const VulkanDevice& device, vk::Format depth_format,
-                                             bool visible_only, bool pick = false) const;
+                                             bool visible_only, bool pick = false, bool game = false) const;
     vk::raii::Pipeline createShadowPipeline(const VulkanDevice& device, vk::Format depth_format,
                                             bool depth_clamp, float slope_bias,
                                             bool alpha_tested, bool tessellated = false,
@@ -297,6 +302,8 @@ private:
     vk::raii::Pipeline outline_silhouette_pipeline_{nullptr};
     vk::raii::Pipeline outline_visible_pipeline_{nullptr};
     vk::raii::Pipeline pick_pipeline_{nullptr};
+    vk::raii::Pipeline game_outline_silhouette_pipeline_{nullptr};
+    vk::raii::Pipeline game_outline_visible_pipeline_{nullptr};
 };
 
 }  // namespace cramion::gfx

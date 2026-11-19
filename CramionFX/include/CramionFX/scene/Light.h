@@ -24,6 +24,8 @@ struct DirectionalLight {
     core::Vec3 direction{-0.45f, -0.80f, -0.40f};  // Hacia donde viajan los rayos.
     core::Vec3 color{1.0f, 0.95f, 0.85f};
     float intensity = 2.2f;
+    // Capas de render que proyectan su sombra (bit i = capa i). Todas por defecto.
+    std::uint32_t shadow_layers = 0xFFFFFFFFu;
 };
 
 // Luz puntual: irradia en todas direcciones y se atenua con la distancia.
@@ -40,6 +42,8 @@ struct PointLight {
     // voxeles ya llevan esa luz propagada por celdas, que no atraviesa paredes;
     // la puntual, sin sombra, si (y ademas la sumaba dos veces).
     bool skip_voxels = false;
+    // Capas de render que proyectan su sombra (bit i = capa i).
+    std::uint32_t shadow_layers = 0xFFFFFFFFu;
 };
 
 // Foco: luz puntual limitada a un cono. Entre el angulo interior y el exterior
@@ -56,6 +60,8 @@ struct SpotLight {
     bool cast_shadows = true;
     float shadow_strength = 1.0f;  // cuanto oscurece su sombra (0..1)
     float source_radius = 0.05f;   // tamano de la bombilla (m)
+    // Capas de render que proyectan su sombra (bit i = capa i).
+    std::uint32_t shadow_layers = 0xFFFFFFFFu;
 };
 
 // Iluminacion ambiental de relleno (cielo).

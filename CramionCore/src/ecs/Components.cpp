@@ -2,6 +2,7 @@
 #include "CramionCore/anim/Keyframes.h"
 
 #include "CramionCore/ecs/MathUtil.h"
+#include "CramionCore/ecs/Outline.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/environment/Environment.h"
 #include "SerializerInternal.h"
@@ -55,6 +56,10 @@ void MeshRenderer::reflect(PropertyVisitor& v) {
              "Con opacidad < 1: se mezcla como un transparente (suave) en vez de disolverse con tramado "
              "(ajedrezado). Cuesta mas mientras se funde"},
             smooth_fade);
+    v.layerMask({"render_layers", "Capas de render",
+                 "Las camaras lo dibujan si su Culling Mask incluye alguna de sus capas; las luces, su sombra "
+                 "si sus Capas con sombra incluyen alguna (nombres: capas del proyecto)"},
+                render_layers);
     // INSTANCE_DATA(i) de su .crshader: xyz y w por separado (el visitante no
     // tiene Vec4). Cero = sin datos.
     static constexpr Meta kDataXyz[kInstanceDataCount] = {
@@ -140,6 +145,11 @@ void Light::reflect(PropertyVisitor& v) {
                "con sus sombras horneadas en el lightmap (sin coste de sombras); las puntuales y los focos, con "
                "su luz y sus sombras horneadas (no se dibujan). Solo tiempo real: el horneado la ignora"},
               bake_mode, kBakeModes);
+    if (all || cast_shadows) {
+        v.layerMask({"shadow_layers", "Capas con sombra",
+                     "Capas de render (Mesh Renderer) cuya sombra proyecta esta luz"},
+                    shadow_layers);
+    }
 }
 
 void Camera::reflect(PropertyVisitor& v) {
@@ -157,6 +167,21 @@ void Camera::reflect(PropertyVisitor& v) {
              "Render Texture (.crrt) donde se dibuja lo que ve esta camara (pantallas, espejos, minimapas). "
              "Con una asignada no se usa como camara del juego"},
             target_texture, assets::AssetType::RenderTexture);
+    v.layerMask({"culling_mask", "Culling Mask", "Capas de render (Mesh Renderer) que dibuja esta camara"},
+                culling_mask);
+    v.layerMask({"viewmodel_layers", "Capas del arma (viewmodel)",
+                 "Arma en primera persona: estas capas se dibujan con su propio campo de vision y delante de todo "
+                 "(no atraviesan paredes). Ninguna = apagado"},
+                viewmodel_layers);
+    if (v.wantsAllFields() || viewmodel_layers != 0u) {
+        v.field({"viewmodel_fov", "Campo de vision del arma", "Vertical, en grados"}, viewmodel_fov,
+                FloatRange{10.0f, 150.0f, 0.5f, "%.1f°", true});
+        v.field({"viewmodel_near", "Plano cercano del arma", "Lo mas cerca del ojo que queda el arma"},
+                viewmodel_near, FloatRange{0.001f, 1.0f, 0.001f, "%.3f m"});
+        v.field({"viewmodel_depth", "Profundidad del arma",
+                 "Parte del rango de profundidad que ocupa (delante de todo lo demas)"},
+                viewmodel_depth, FloatRange{0.0005f, 0.5f, 0.001f, "%.4f"});
+    }
 }
 
 void Sky::reflect(PropertyVisitor& v) {
@@ -917,6 +942,7 @@ void registerBuiltinComponents(ComponentRegistry& registry) {
     registry.registerComponent<environment::Environment>("Environment", "Ambiente (clima y hora)", "Entorno");
     registry.registerComponent<PostProcessing>("PostProcessing", "Post-procesado", "Renderizado");
     registry.registerComponent<Decal>("Decal", "Decal", "Renderizado");
+    registry.registerComponent<Outline>("Outline", "Contorno (Outline)", "Renderizado");
     registry.registerComponent<Profiler>("Profiler", "Profiler", "Depuracion");
 }
 

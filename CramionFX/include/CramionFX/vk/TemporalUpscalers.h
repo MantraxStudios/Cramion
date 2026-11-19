@@ -44,7 +44,8 @@ struct UpscaleDispatch {
     UpscaleImage motion;  // UV actual - UV anterior (sin jitter), resolucion interna
     UpscaleImage output;  // pantalla (con uso STORAGE)
     // Opcional (image nula = sin ella): opacidad de los transparentes, R8 a la
-    // resolucion interna. FSR 3 la usa como reactive y transparencyAndComposition.
+    // resolucion interna. FSR 3 la usa como reactive y transparencyAndComposition;
+    // DLSS, como Bias Current Color Mask (VulkanRenderer::setDlssReactiveMask).
     UpscaleImage reactive;
     std::uint32_t render_width = 0;
     std::uint32_t render_height = 0;

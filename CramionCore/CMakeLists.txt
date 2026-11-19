@@ -369,6 +369,8 @@ add_executable(CramionCoreTests
     "${CMAKE_CURRENT_SOURCE_DIR}/src/environment/Environment.cpp"
     # Components.cpp registra KeyframeAnimation (reflect).
     "${CMAKE_CURRENT_SOURCE_DIR}/src/anim/Keyframes.cpp"
+    # Components.cpp registra Outline (reflect; RM-capas).
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ecs/Outline.cpp"
 )
 target_include_directories(CramionCoreTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(CramionCoreTests PRIVATE Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json)
@@ -400,6 +402,11 @@ target_compile_options(CramionCinematicsTests PRIVATE -Wall -Wextra)
 add_executable(CramionKeyframeTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/KeyframeTests.cpp")
 target_link_libraries(CramionKeyframeTests PRIVATE Cramion::Core)
 target_compile_options(CramionKeyframeTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas de las capas de render, el viewmodel y los contornos (consola, RM-capas) ---
+add_executable(CramionRenderLayersTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/RenderLayersTests.cpp")
+target_link_libraries(CramionRenderLayersTests PRIVATE Cramion::Core)
+target_compile_options(CramionRenderLayersTests PRIVATE -Wall -Wextra)
 
 # --- Pruebas del terreno (consola) ---
 add_executable(CramionTerrainTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TerrainTests.cpp")
